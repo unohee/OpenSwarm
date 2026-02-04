@@ -5,14 +5,20 @@
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
+    "predev": "pkill -f 'tsx src/index.ts' 2>/dev/null || true",
     "dev": "node --env-file=.env --import=tsx src/index.ts",
+    "prestart": "pkill -f 'dist/index.js' 2>/dev/null || true",
     "build": "tsc",
     "start": "node --env-file=.env dist/index.js",
+    "stop": "pkill -f 'node --env-file=.env.*claude-swarm' 2>/dev/null || echo 'No process running'",
     "lint": "oxlint src/",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.72.1",
+    "@lancedb/lancedb": "^0.23.0",
     "@linear/sdk": "^19.0.0",
+    "apache-arrow": "^18.1.0",
     "croner": "^8.0.0",
     "discord.js": "^14.14.1",
     "yaml": "^2.8.2",
