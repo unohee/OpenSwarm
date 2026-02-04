@@ -1,0 +1,28 @@
+{
+  "name": "claude-swarm",
+  "version": "0.1.0",
+  "description": "Autonomous Claude Code agents orchestrator with Discord control and Linear memory",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "node --env-file=.env --import=tsx src/index.ts",
+    "build": "tsc",
+    "start": "node --env-file=.env dist/index.js",
+    "lint": "oxlint src/",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@linear/sdk": "^19.0.0",
+    "croner": "^8.0.0",
+    "discord.js": "^14.14.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "bun-types": "^1.1.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.5.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
