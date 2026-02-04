@@ -13,6 +13,7 @@ import type { SwarmEvent, AgentStatus, LinearIssueInfo } from './types.js';
 import * as tmux from './tmux.js';
 import * as linear from './linear.js';
 import * as github from './github.js';
+import * as dev from './dev.js';
 
 let client: Client | null = null;
 let reportChannelId: string = '';
@@ -107,6 +108,22 @@ async function handleMessage(msg: Message): Promise<void> {
       case 'notifications':
       case 'notif':
         await handleNotifications(msg);
+        break;
+
+      case 'dev':
+        await handleDev(msg, args);
+        break;
+
+      case 'repos':
+        await handleRepos(msg);
+        break;
+
+      case 'tasks':
+        await handleTasks(msg);
+        break;
+
+      case 'cancel':
+        await handleCancel(msg, args[0]);
         break;
 
       case 'help':
@@ -298,11 +315,224 @@ async function handleNotifications(msg: Message): Promise<void> {
 }
 
 /**
+ * !dev <repo> "<task>" - 특정 저장소에서 개발 작업 실행
+ */
+async function handleDev(msg: Message, args: string[]): Promise<void> {
+  // !dev list - 알려진 저장소 목록 (repos로 리다이렉트)
+  if (args[0] === 'list') {
+    await handleRepos(msg);
+    return;
+  }
+
+  // !dev scan - ~/dev 스캔
+  if (args[0] === 'scan') {
+    const repos = dev.scanDevRepos();
+    if (repos.length === 0) {
+      await msg.reply('~/dev에서 Git 저장소를 찾을 수 없습니다.');
+      return;
+    }
+    await msg.reply(`**~/dev 저장소 목록:**\n${repos.map(r => `- ${r}`).join('\n')}`);
+    return;
+  }
+
+  // !dev <repo> "<task>" 파싱
+  const repo = args[0];
+  const taskMatch = msg.content.match(/!dev \S+ "(.+)"/s);
+  const task = taskMatch?.[1];
+
+  if (!repo || !task) {
+    await msg.reply(
+      '**사용법:** `!dev <repo> "<task>"`\n' +
+      '**예시:** `!dev pykis "get_balance API 파라미터 확인해줘"`\n\n' +
+      '`!dev list` - 알려진 저장소 목록\n' +
+      '`!dev scan` - ~/dev 폴더 스캔'
+    );
+    return;
+  }
+
+  // 경로 확인
+  const resolvedPath = dev.resolveRepoPath(repo);
+  if (!resolvedPath) {
+    await msg.reply(
+      `❌ 저장소를 찾을 수 없습니다: \`${repo}\`\n\n` +
+      '`!dev list`로 사용 가능한 저장소를 확인하세요.'
+    );
+    return;
+  }
+
+  // 작업 시작 알림
+  await msg.reply(`🚀 **${repo}**에서 작업 시작...\n📁 \`${resolvedPath}\`\n📝 \`${task.slice(0, 100)}${task.length > 100 ? '...' : ''}\``);
+
+  // 진행 상황 수집용
+  let progressChunks: string[] = [];
+  let lastProgressMsg: Message | null = null;
+  let progressTimer: NodeJS.Timeout | null = null;
+
+  // 작업 실행
+  const result = await dev.runDevTask(
+    repo,
+    task,
+    msg.author.username,
+    // onProgress: 10초마다 중간 진행 상황 알림
+    (chunk) => {
+      progressChunks.push(chunk);
+
+      if (!progressTimer) {
+        progressTimer = setTimeout(async () => {
+          const combined = progressChunks.join('').slice(-500);
+          if (combined.trim()) {
+            try {
+              lastProgressMsg = await msg.reply(`**[${repo}] 진행 중...**\n\`\`\`\n${combined}\n\`\`\``);
+            } catch { /* 무시 */ }
+          }
+          progressChunks = [];
+          progressTimer = null;
+        }, 10000);
+      }
+    },
+    // onComplete: 완료 시 결과 전송
+    async (output, exitCode) => {
+      if (progressTimer) {
+        clearTimeout(progressTimer);
+      }
+
+      // 결과 분할 전송 (Discord 2000자 제한)
+      const MAX_LEN = 1800;
+      const truncated = output.length > MAX_LEN * 3
+        ? `...(${output.length - MAX_LEN * 3}자 생략)\n\n${output.slice(-MAX_LEN * 3)}`
+        : output;
+
+      const statusEmoji = exitCode === 0 ? '✅' : '⚠️';
+      const header = `${statusEmoji} **[${repo}] 완료** (exit: ${exitCode})`;
+
+      // 결과가 짧으면 한 번에
+      if (truncated.length <= MAX_LEN) {
+        await msg.reply(`${header}\n\`\`\`\n${truncated || '(출력 없음)'}\n\`\`\``);
+      } else {
+        // 결과가 길면 분할
+        await msg.reply(header);
+
+        const chunks = [];
+        for (let i = 0; i < truncated.length; i += MAX_LEN) {
+          chunks.push(truncated.slice(i, i + MAX_LEN));
+        }
+
+        for (let i = 0; i < Math.min(chunks.length, 3); i++) {
+          await msg.reply(`\`\`\`\n${chunks[i]}\n\`\`\``);
+        }
+
+        if (chunks.length > 3) {
+          await msg.reply(`...(출력이 너무 깁니다. 전체 ${chunks.length}개 청크 중 3개만 표시)`);
+        }
+      }
+    }
+  );
+
+  if ('error' in result) {
+    await msg.reply(`❌ ${result.error}`);
+  }
+}
+
+/**
+ * !repos - 알려진 저장소 목록
+ */
+async function handleRepos(msg: Message): Promise<void> {
+  const repos = dev.listKnownRepos();
+
+  const embed = new EmbedBuilder()
+    .setTitle('📁 알려진 저장소')
+    .setColor(0x00ae86)
+    .setDescription('`!dev <별칭> "<작업>"` 형식으로 사용');
+
+  const available = repos.filter(r => r.exists);
+  const unavailable = repos.filter(r => !r.exists);
+
+  if (available.length > 0) {
+    embed.addFields({
+      name: '✅ 사용 가능',
+      value: available.map(r => `\`${r.alias}\` → ${r.path}`).join('\n'),
+      inline: false,
+    });
+  }
+
+  if (unavailable.length > 0) {
+    embed.addFields({
+      name: '❌ 경로 없음',
+      value: unavailable.map(r => `\`${r.alias}\` → ${r.path}`).join('\n'),
+      inline: false,
+    });
+  }
+
+  embed.addFields({
+    name: '💡 팁',
+    value: '`!dev scan`으로 ~/dev 폴더 전체 스캔\n상대경로도 가능: `!dev tools/pykis "..."`',
+    inline: false,
+  });
+
+  await msg.reply({ embeds: [embed] });
+}
+
+/**
+ * !tasks - 실행 중인 dev 작업 목록
+ */
+async function handleTasks(msg: Message): Promise<void> {
+  const tasks = dev.getActiveTasks();
+
+  if (tasks.length === 0) {
+    await msg.reply('실행 중인 dev 작업이 없습니다.');
+    return;
+  }
+
+  const embed = new EmbedBuilder()
+    .setTitle('🔄 실행 중인 작업')
+    .setColor(0xffaa00);
+
+  for (const task of tasks) {
+    const elapsed = Math.floor((Date.now() - task.startedAt) / 1000);
+    embed.addFields({
+      name: `${task.repo}`,
+      value: `ID: \`${task.taskId}\`\n경로: ${task.path}\n요청자: ${task.requestedBy}\n경과: ${elapsed}초`,
+      inline: false,
+    });
+  }
+
+  embed.setFooter({ text: '!cancel <taskId>로 취소 가능' });
+
+  await msg.reply({ embeds: [embed] });
+}
+
+/**
+ * !cancel <taskId> - 작업 취소
+ */
+async function handleCancel(msg: Message, taskId: string): Promise<void> {
+  if (!taskId) {
+    await msg.reply('사용법: `!cancel <taskId>`\n`!tasks`로 작업 ID 확인');
+    return;
+  }
+
+  const success = dev.cancelTask(taskId);
+
+  if (success) {
+    await msg.reply(`⏹️ 작업 취소됨: \`${taskId}\``);
+  } else {
+    await msg.reply(`❌ 작업을 찾을 수 없습니다: \`${taskId}\``);
+  }
+}
+
+/**
  * !help - 도움말
  */
 async function handleHelp(msg: Message): Promise<void> {
   const help = `
 **🤖 Claude Swarm 명령어**
+
+**🔧 개발 작업** (Claude 파견)
+\`!dev <repo> "<task>"\` - 저장소에서 개발 작업 실행
+\`!dev list\` - 알려진 저장소 목록
+\`!dev scan\` - ~/dev 폴더 스캔
+\`!repos\` - 저장소 목록 상세
+\`!tasks\` - 실행 중인 작업 목록
+\`!cancel <taskId>\` - 작업 취소
 
 **에이전트 관리**
 \`!status [session]\` - 에이전트 상태 확인
@@ -320,6 +550,11 @@ async function handleHelp(msg: Message): Promise<void> {
 \`!notif\` - GitHub 알림 확인
 
 \`!help\` - 이 도움말
+
+---
+**예시:**
+\`!dev pykis "get_balance 함수 파라미터 확인해줘"\`
+\`!dev tools/pykiwoom "실시간 구독 로직 분석"\`
 `;
 
   await msg.reply(help);
