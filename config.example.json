@@ -1,0 +1,33 @@
+{
+  "discordToken": "YOUR_DISCORD_BOT_TOKEN",
+  "discordChannelId": "YOUR_DISCORD_CHANNEL_ID",
+  "linearApiKey": "YOUR_LINEAR_API_KEY",
+  "linearTeamId": "YOUR_LINEAR_TEAM_ID",
+  "defaultHeartbeatInterval": 1800000,
+  "agents": [
+    {
+      "name": "openclaw",
+      "projectPath": "/home/unohee/dev/openclaw",
+      "heartbeatInterval": 1800000,
+      "linearLabel": "openclaw",
+      "enabled": true,
+      "paused": false
+    },
+    {
+      "name": "pykis",
+      "projectPath": "/home/unohee/dev/tools/pykis",
+      "heartbeatInterval": 2700000,
+      "linearLabel": "pykis",
+      "enabled": true,
+      "paused": false
+    },
+    {
+      "name": "pykiwoom",
+      "projectPath": "/home/unohee/dev/tools/pykiwoom",
+      "heartbeatInterval": 2700000,
+      "linearLabel": "pykiwoom",
+      "enabled": true,
+      "paused": false
+    }
+  ]
+}
