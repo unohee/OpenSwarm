@@ -4,7 +4,7 @@
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { homedir } from 'node:os';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync, statSync, writeFileSync, appendFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 /**
@@ -92,10 +92,9 @@ export function scanDevRepos(): string[] {
   const devDir = expandPath('~/dev');
   if (!existsSync(devDir)) return [];
 
-  const { readdirSync, statSync } = require('node:fs');
   try {
     return readdirSync(devDir)
-      .filter((name: string) => {
+      .filter((name) => {
         const fullPath = resolve(devDir, name);
         try {
           return statSync(fullPath).isDirectory() &&
@@ -170,6 +169,10 @@ export async function runDevTask(
 
   // 완료 처리
   claudeProcess.on('close', (code) => {
+    // 리포트 파일 생성
+    const duration = Math.floor((Date.now() - devTask.startedAt) / 1000);
+    generateReport(devTask, code, duration);
+
     onComplete?.(devTask.output, code);
     activeTasks.delete(taskId);
   });
@@ -214,4 +217,95 @@ export function cancelTask(taskId: string): boolean {
  */
 export function addKnownRepo(alias: string, path: string): void {
   KNOWN_REPOS[alias.toLowerCase()] = path;
+}
+
+/**
+ * 작업 리포트 생성
+ */
+function generateReport(task: DevTask, exitCode: number | null, durationSec: number): void {
+  const now = new Date();
+  const dateStr = now.toISOString().split('T')[0]; // YYYY-MM-DD
+  const timeStr = now.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+
+  // 리포트 파일 경로 (저장소 내 reports/ 디렉토리)
+  const reportsDir = resolve(task.path, 'reports');
+  const reportFile = resolve(reportsDir, `${dateStr}-report.md`);
+
+  // reports 디렉토리 생성
+  try {
+    if (!existsSync(reportsDir)) {
+      const fs = require('fs');
+      fs.mkdirSync(reportsDir, { recursive: true });
+    }
+  } catch (err) {
+    console.error(`[Report] Failed to create reports directory: ${err}`);
+    return;
+  }
+
+  // 출력 요약 (너무 길면 잘라냄)
+  const outputSummary = task.output.length > 3000
+    ? task.output.slice(-3000) + '\n\n...(truncated)'
+    : task.output;
+
+  // 상태 이모지
+  const statusEmoji = exitCode === 0 ? '✅' : exitCode === null ? '⚠️' : '❌';
+  const statusText = exitCode === 0 ? '성공' : exitCode === null ? '중단됨' : `실패 (code: ${exitCode})`;
+
+  // 리포트 내용
+  const reportEntry = `
+---
+
+## ${statusEmoji} ${timeStr} 작업 리포트
+
+| 항목 | 내용 |
+|------|------|
+| **요청자** | ${task.requestedBy} |
+| **작업** | ${task.task.slice(0, 100)}${task.task.length > 100 ? '...' : ''} |
+| **상태** | ${statusText} |
+| **소요시간** | ${formatDuration(durationSec)} |
+
+### 작업 내용
+
+\`\`\`
+${task.task}
+\`\`\`
+
+### 실행 결과
+
+\`\`\`
+${outputSummary.trim() || '(출력 없음)'}
+\`\`\`
+
+`;
+
+  // 파일이 존재하면 append, 없으면 헤더와 함께 생성
+  try {
+    if (existsSync(reportFile)) {
+      appendFileSync(reportFile, reportEntry, 'utf-8');
+    } else {
+      const header = `# ${dateStr} 작업 리포트
+
+> 이 파일은 Claude Swarm에 의해 자동 생성됩니다.
+> 저장소: \`${task.path}\`
+
+`;
+      writeFileSync(reportFile, header + reportEntry, 'utf-8');
+    }
+    console.log(`[Report] Generated: ${reportFile}`);
+  } catch (err) {
+    console.error(`[Report] Failed to write report: ${err}`);
+  }
+}
+
+/**
+ * 시간 포맷팅
+ */
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${seconds}초`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSec = seconds % 60;
+  if (minutes < 60) return `${minutes}분 ${remainingSec}초`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMin = minutes % 60;
+  return `${hours}시간 ${remainingMin}분`;
 }

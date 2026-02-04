@@ -13,6 +13,8 @@ import * as tmux from './tmux.js';
 import * as linear from './linear.js';
 import * as discord from './discord.js';
 import * as github from './github.js';
+import * as scheduler from './scheduler.js';
+import * as web from './web.js';
 
 let state: ServiceState = {
   running: false,
@@ -37,6 +39,10 @@ export async function startService(config: SwarmConfig): Promise<void> {
   // Discord 초기화
   await discord.initDiscord(config.discordToken, config.discordChannelId);
   console.log('Discord bot started');
+
+  // 웹 인터페이스 시작
+  await web.startWebServer(3847);
+  console.log('Web interface started at http://localhost:3847');
 
   // GitHub 레포 설정
   githubRepos = config.githubRepos ?? [];
@@ -75,13 +81,18 @@ export async function startService(config: SwarmConfig): Promise<void> {
   state.running = true;
   state.startedAt = Date.now();
 
+  // 스케줄러 시작
+  await scheduler.startAllSchedules();
+  const schedules = await scheduler.listSchedules();
+  console.log(`Scheduler started with ${schedules.length} schedules`);
+
   console.log(`Service started with ${config.agents.length} agents`);
 
   // 시작 알림
   await discord.reportEvent({
     type: 'issue_started',
     session: 'swarm',
-    message: `Claude Swarm 시작됨. ${config.agents.length}개 에이전트 활성화.`,
+    message: `Claude Swarm 시작됨. ${config.agents.length}개 에이전트, ${schedules.length}개 스케줄 활성화.`,
     timestamp: Date.now(),
   });
 }
@@ -412,6 +423,14 @@ export async function stopService(): Promise<void> {
     console.log(`Timer stopped for ${name}`);
   }
   state.timers.clear();
+
+  // 스케줄러 중지
+  scheduler.stopAllSchedules();
+  console.log('Scheduler stopped');
+
+  // 웹 서버 중지
+  await web.stopWebServer();
+  console.log('Web server stopped');
 
   // Discord 종료
   await discord.stopDiscord();
