@@ -1,0 +1,29 @@
+# Claude Swarm Configuration
+# 환경변수는 ${VAR_NAME} 또는 ${VAR_NAME:-default} 형식으로 사용
+# 이 파일을 config.yaml로 복사하여 사용하세요
+
+discord:
+  token: ${DISCORD_TOKEN}
+  channelId: ${DISCORD_CHANNEL_ID}
+  webhookUrl: ${DISCORD_WEBHOOK_URL:-}  # 선택적
+
+linear:
+  apiKey: ${LINEAR_API_KEY}
+  teamId: ${LINEAR_TEAM_ID}
+
+github:
+  repos:
+    - unohee/claude-swarm  # owner/repo 형식
+  checkInterval: 300000  # 5분 (ms)
+
+# 에이전트 목록
+agents:
+  - name: main
+    projectPath: ~/dev/claude-swarm
+    heartbeatInterval: 1800000  # 30분 (ms)
+    linearLabel: main  # Linear 이슈 필터용 라벨
+    enabled: true
+    paused: false
+
+# 기본 heartbeat 간격 (ms)
+defaultHeartbeatInterval: 1800000  # 30분

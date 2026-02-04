@@ -83,6 +83,8 @@ export type SwarmConfig = {
   discordToken: string;
   /** Discord 채널 ID (보고용) */
   discordChannelId: string;
+  /** Discord Webhook URL (선택적) */
+  discordWebhookUrl?: string;
   /** Linear API 키 */
   linearApiKey: string;
   /** Linear 팀 ID */
