@@ -879,7 +879,7 @@ async function handleAuto(msg: Message, args: string[]): Promise<void> {
 
   // !auto start [schedule] - 시작
   if (subCommand === 'start') {
-    const schedule = args[1] || '0 */2 * * *'; // 기본: 2시간마다
+    const schedule = args[1] || '*/30 * * * *'; // 기본: 30분마다
 
     await msg.reply(`🚀 자율 실행 모드 시작 중...\nSchedule: \`${schedule}\``);
 
@@ -918,7 +918,7 @@ async function handleAuto(msg: Message, args: string[]): Promise<void> {
         linearTeamId: process.env.LINEAR_TEAM_ID || '',
         allowedProjects: ['~/dev'],
         heartbeatSchedule: schedule,
-        autoExecute: false, // 기본은 승인 필요
+        autoExecute: true, // 자동 실행 (승인 불필요)
         maxConsecutiveTasks: 3,
         cooldownSeconds: 300,
         dryRun: false,
