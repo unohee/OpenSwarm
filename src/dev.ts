@@ -146,13 +146,14 @@ export async function runDevTask(
 
   const taskId = `${repo}-${Date.now()}`;
 
-  // Claude CLI 실행
-  const claudeProcess = spawn('claude', ['-p', task, '--output-format', 'text'], {
+  // Claude CLI 실행 (자율 실행을 위해 권한 우회)
+  const claudeProcess = spawn('claude', [
+    '-p', task,
+    '--output-format', 'text',
+    '--dangerously-skip-permissions'
+  ], {
     cwd: path,
-    env: {
-      ...process.env,
-      // 권한 우회 없이 실행 (안전하게)
-    },
+    env: process.env,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
