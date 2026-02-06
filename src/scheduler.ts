@@ -1,21 +1,18 @@
 // ============================================
 // Claude Swarm - Dynamic Scheduler
-// OpenClaw 아키텍처 기반 tmux pane 스케줄러
+// spawn 기반 실행 (tmux 불필요)
 // ============================================
 
 import { Cron } from 'croner';
+import { spawn } from 'child_process';
 import { resolve } from 'path';
 import { homedir } from 'os';
 import * as fs from 'fs/promises';
-import * as tmux from './tmux.js';
-import { checkWorkAllowed, getTimeWindowSummary } from './timeWindow.js';
+import { checkWorkAllowed } from './timeWindow.js';
 
 // 스케줄 저장 경로
 const SCHEDULE_DIR = resolve(homedir(), '.claude-swarm');
 const SCHEDULE_FILE = resolve(SCHEDULE_DIR, 'schedules.json');
-
-// 기본 tmux 세션 이름
-const SWARM_SESSION = 'swarm';
 
 // 스케줄 작업 인터페이스
 export interface ScheduledJob {
@@ -25,18 +22,41 @@ export interface ScheduledJob {
   prompt: string;
   schedule: string; // cron 표현식 또는 interval (예: "30m", "1h", "0 9 * * *")
   enabled: boolean;
-  paneIndex?: number;
   createdAt: number;
   lastRun?: number;
   createdBy?: string; // Discord 사용자
 }
 
+// 실행 결과 인터페이스
+export interface JobResult {
+  jobId: string;
+  success: boolean;
+  output: string;
+  error?: string;
+  startedAt: number;
+  finishedAt: number;
+}
+
 // 실행 중인 cron 작업
 const activeJobs: Map<string, Cron> = new Map();
 
-// pane 할당 관리
-const paneAssignments: Map<string, number> = new Map();
-let nextPaneIndex = 0;
+// 실행 중인 프로세스 (동시 실행 방지용)
+const runningProcesses: Map<string, ReturnType<typeof spawn>> = new Map();
+
+// 최근 실행 결과 (보고용)
+const recentResults: JobResult[] = [];
+const MAX_RESULTS = 50;
+
+// 결과 리스너 (Discord 보고 등)
+type ResultListener = (result: JobResult) => void;
+let resultListener: ResultListener | null = null;
+
+/**
+ * 결과 리스너 등록
+ */
+export function setResultListener(listener: ResultListener): void {
+  resultListener = listener;
+}
 
 /**
  * 스케줄 파일 로드
@@ -61,11 +81,10 @@ async function saveSchedules(schedules: ScheduledJob[]): Promise<void> {
 
 /**
  * interval 문자열을 cron 표현식으로 변환
- * 예: "30m" -> 매 30분, "1h" -> 매 1시간, "2h" -> 매 2시간
  */
 function intervalToCron(interval: string): string {
   const match = interval.match(/^(\d+)(m|h|d)$/);
-  if (!match) return interval; // 이미 cron 표현식이면 그대로 반환
+  if (!match) return interval;
 
   const [, value, unit] = match;
   const num = parseInt(value, 10);
@@ -77,62 +96,85 @@ function intervalToCron(interval: string): string {
       if (num === 1) return '0 * * * *';
       return `0 */${num} * * *`;
     case 'd':
-      return `0 9 */${num} * *`; // 매일 9시
+      return `0 9 */${num} * *`;
     default:
       return interval;
   }
 }
 
 /**
- * tmux swarm 세션 초기화
+ * Claude CLI를 spawn으로 실행
  */
-export async function initSwarmSession(): Promise<void> {
-  const exists = await tmux.sessionExists(SWARM_SESSION);
-  if (!exists) {
-    // 기본 세션 생성 (홈 디렉토리에서)
-    await tmux.createSession(SWARM_SESSION, homedir());
-    console.log(`[Scheduler] Created swarm session: ${SWARM_SESSION}`);
-  }
-}
+async function runClaudeCli(
+  projectPath: string,
+  prompt: string,
+  jobId: string
+): Promise<{ success: boolean; output: string; error?: string }> {
+  return new Promise((resolve) => {
+    const expandedPath = projectPath.replace('~', homedir());
 
-/**
- * 프로젝트용 pane 생성 또는 가져오기
- */
-async function getOrCreatePane(jobId: string, projectPath: string): Promise<string> {
-  // 활성 윈도우 인덱스 조회
-  const windowIndex = await tmux.getActiveWindowIndex(SWARM_SESSION);
+    // 프롬프트 파일 저장
+    const promptFile = `${SCHEDULE_DIR}/prompt-${jobId}.txt`;
+    fs.writeFile(promptFile, prompt).then(() => {
+      const cmd = 'bash';
+      const args = [
+        '-c',
+        `cd "${expandedPath}" && claude -p "$(cat ${promptFile})" --output-format stream-json --permission-mode bypassPermissions`,
+      ];
 
-  // 이미 할당된 pane이 있으면 반환
-  if (paneAssignments.has(jobId)) {
-    const paneIndex = paneAssignments.get(jobId)!;
-    return `${SWARM_SESSION}:${windowIndex}.${paneIndex}`;
-  }
+      console.log(`[Scheduler] Spawning Claude CLI for ${jobId}...`);
+      const proc = spawn(cmd, args, {
+        cwd: expandedPath,
+        env: process.env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
 
-  // 새 pane 생성
-  const expandedPath = projectPath.replace('~', homedir());
+      runningProcesses.set(jobId, proc);
 
-  try {
-    // 새 pane 분할 (수직)
-    await tmux.execCommand(
-      `tmux split-window -t "${SWARM_SESSION}:${windowIndex}" -v -c "${expandedPath}"`
-    );
+      let stdout = '';
+      let stderr = '';
 
-    // pane 레이아웃 정리
-    await tmux.execCommand(`tmux select-layout -t "${SWARM_SESSION}:${windowIndex}" tiled`);
+      proc.stdout?.on('data', (data) => {
+        stdout += data.toString();
+      });
 
-    // 현재 pane 수 확인
-    const paneCount = await tmux.getPaneCount(SWARM_SESSION);
-    const paneIndex = paneCount - 1;
+      proc.stderr?.on('data', (data) => {
+        stderr += data.toString();
+      });
 
-    paneAssignments.set(jobId, paneIndex);
-    console.log(`[Scheduler] Created pane ${windowIndex}.${paneIndex} for job ${jobId}`);
+      proc.on('close', (code) => {
+        runningProcesses.delete(jobId);
 
-    return `${SWARM_SESSION}:${windowIndex}.${paneIndex}`;
-  } catch (err) {
-    console.error(`[Scheduler] Failed to create pane:`, err);
-    // 실패 시 기본 pane 사용
-    return `${SWARM_SESSION}:${windowIndex}.0`;
-  }
+        // stream-json 출력에서 result 추출
+        let resultText = stdout;
+        try {
+          const lines = stdout.split('\n').filter(Boolean);
+          const resultLine = lines.find((l) => l.includes('"type":"result"'));
+          if (resultLine) {
+            const parsed = JSON.parse(resultLine);
+            resultText = parsed.result || stdout;
+          }
+        } catch {
+          // 파싱 실패시 원본 사용
+        }
+
+        resolve({
+          success: code === 0,
+          output: resultText.slice(0, 2000), // 최대 2000자
+          error: stderr || undefined,
+        });
+      });
+
+      proc.on('error', (err) => {
+        runningProcesses.delete(jobId);
+        resolve({
+          success: false,
+          output: '',
+          error: err.message,
+        });
+      });
+    });
+  });
 }
 
 /**
@@ -142,30 +184,47 @@ async function runScheduledJob(job: ScheduledJob): Promise<void> {
   // 시간 윈도우 체크
   const timeCheck = checkWorkAllowed();
   if (!timeCheck.allowed) {
-    console.log(`[Scheduler] Job "${job.name}" 스킵: ${timeCheck.reason} (현재: ${timeCheck.currentTime})`);
-    // 다음 허용 시간까지 대기
-    if (timeCheck.nextAllowedTime) {
-      console.log(`[Scheduler] 다음 허용 시간: ${timeCheck.nextAllowedTime}`);
-    }
+    console.log(
+      `[Scheduler] Job "${job.name}" 스킵: ${timeCheck.reason} (현재: ${timeCheck.currentTime})`
+    );
+    return;
+  }
+
+  // 이미 실행 중인지 체크
+  if (runningProcesses.has(job.id)) {
+    console.log(`[Scheduler] Job "${job.name}" 이미 실행 중, 스킵`);
     return;
   }
 
   console.log(`[Scheduler] Running job: ${job.name}`);
+  const startedAt = Date.now();
 
   try {
-    // pane 가져오기/생성
-    const paneTarget = await getOrCreatePane(job.id, job.projectPath);
+    const { success, output, error } = await runClaudeCli(
+      job.projectPath,
+      job.prompt,
+      job.id
+    );
 
-    // 프롬프트를 임시 파일에 저장
-    const promptFile = resolve(SCHEDULE_DIR, `prompt-${job.id}.txt`);
-    await fs.writeFile(promptFile, job.prompt);
+    const result: JobResult = {
+      jobId: job.id,
+      success,
+      output,
+      error,
+      startedAt,
+      finishedAt: Date.now(),
+    };
 
-    // Claude Code 실행 명령 전송 (bash 사용하여 glob 확장 방지)
-    const expandedPath = job.projectPath.replace('~', homedir());
-    // bash -c로 실행하여 zsh glob 문제 회피, --permission-mode bypassPermissions로 신뢰 프롬프트 회피
-    const command = `bash -c 'cd "${expandedPath}" && claude -p "$(cat ${promptFile})" --permission-mode bypassPermissions'`;
+    // 결과 저장
+    recentResults.unshift(result);
+    if (recentResults.length > MAX_RESULTS) {
+      recentResults.pop();
+    }
 
-    await tmux.sendKeysToPane(paneTarget, command);
+    // 리스너에게 알림
+    if (resultListener) {
+      resultListener(result);
+    }
 
     // 마지막 실행 시간 업데이트
     const schedules = await loadSchedules();
@@ -174,9 +233,11 @@ async function runScheduledJob(job: ScheduledJob): Promise<void> {
     );
     await saveSchedules(updated);
 
-    console.log(`[Scheduler] Job ${job.name} started in pane ${paneTarget}`);
+    console.log(
+      `[Scheduler] Job ${job.name} ${success ? '완료' : '실패'} (${Math.round((result.finishedAt - startedAt) / 1000)}s)`
+    );
   } catch (err) {
-    console.error(`[Scheduler] Job ${job.name} failed:`, err);
+    console.error(`[Scheduler] Job ${job.name} 에러:`, err);
   }
 }
 
@@ -224,7 +285,9 @@ export async function addSchedule(
  */
 export async function removeSchedule(nameOrId: string): Promise<boolean> {
   const schedules = await loadSchedules();
-  const index = schedules.findIndex((s) => s.name === nameOrId || s.id === nameOrId);
+  const index = schedules.findIndex(
+    (s) => s.name === nameOrId || s.id === nameOrId
+  );
 
   if (index === -1) return false;
 
@@ -237,8 +300,12 @@ export async function removeSchedule(nameOrId: string): Promise<boolean> {
     activeJobs.delete(job.id);
   }
 
-  // pane 할당 제거
-  paneAssignments.delete(job.id);
+  // 실행 중인 프로세스 종료
+  const proc = runningProcesses.get(job.id);
+  if (proc) {
+    proc.kill('SIGTERM');
+    runningProcesses.delete(job.id);
+  }
 
   // 저장
   schedules.splice(index, 1);
@@ -251,7 +318,9 @@ export async function removeSchedule(nameOrId: string): Promise<boolean> {
 /**
  * 스케줄 작업 일시 중지/재개
  */
-export async function toggleSchedule(nameOrId: string): Promise<ScheduledJob | null> {
+export async function toggleSchedule(
+  nameOrId: string
+): Promise<ScheduledJob | null> {
   const schedules = await loadSchedules();
   const job = schedules.find((s) => s.name === nameOrId || s.id === nameOrId);
 
@@ -269,7 +338,9 @@ export async function toggleSchedule(nameOrId: string): Promise<ScheduledJob | n
     activeJobs.delete(job.id);
   }
 
-  console.log(`[Scheduler] ${job.enabled ? 'Enabled' : 'Disabled'} schedule: ${job.name}`);
+  console.log(
+    `[Scheduler] ${job.enabled ? 'Enabled' : 'Disabled'} schedule: ${job.name}`
+  );
   return job;
 }
 
@@ -299,8 +370,6 @@ async function startCronJob(job: ScheduledJob): Promise<void> {
  * 모든 스케줄 로드 및 시작
  */
 export async function startAllSchedules(): Promise<void> {
-  await initSwarmSession();
-
   const schedules = await loadSchedules();
   console.log(`[Scheduler] Loading ${schedules.length} schedules...`);
 
@@ -320,6 +389,13 @@ export function stopAllSchedules(): void {
     console.log(`[Scheduler] Stopped cron: ${id}`);
   }
   activeJobs.clear();
+
+  // 실행 중인 프로세스도 종료
+  for (const [id, proc] of runningProcesses) {
+    proc.kill('SIGTERM');
+    console.log(`[Scheduler] Killed process: ${id}`);
+  }
+  runningProcesses.clear();
 }
 
 /**
@@ -330,30 +406,27 @@ export async function listSchedules(): Promise<ScheduledJob[]> {
 }
 
 /**
- * 즉시 실행 (시간 제한 무시 옵션)
+ * 즉시 실행
  */
-export async function runNow(nameOrId: string, bypassTimeWindow = false): Promise<boolean> {
+export async function runNow(
+  nameOrId: string,
+  bypassTimeWindow = false
+): Promise<boolean> {
   const schedules = await loadSchedules();
   const job = schedules.find((s) => s.name === nameOrId || s.id === nameOrId);
 
   if (!job) return false;
 
   if (bypassTimeWindow) {
-    // 시간 제한 무시하고 직접 실행
     console.log(`[Scheduler] Running job: ${job.name} (시간 제한 우회)`);
-    const paneTarget = await getOrCreatePane(job.id, job.projectPath);
-    const promptFile = resolve(SCHEDULE_DIR, `prompt-${job.id}.txt`);
-    await fs.writeFile(promptFile, job.prompt);
-    const expandedPath = job.projectPath.replace('~', homedir());
-    const command = `bash -c 'cd "${expandedPath}" && claude -p "$(cat ${promptFile})" --permission-mode bypassPermissions'`;
-    await tmux.sendKeysToPane(paneTarget, command);
+    const { success } = await runClaudeCli(job.projectPath, job.prompt, job.id);
 
     const updatedSchedules = await loadSchedules();
     const updated = updatedSchedules.map((s) =>
       s.id === job.id ? { ...s, lastRun: Date.now() } : s
     );
     await saveSchedules(updated);
-    return true;
+    return success;
   }
 
   await runScheduledJob(job);
@@ -361,15 +434,57 @@ export async function runNow(nameOrId: string, bypassTimeWindow = false): Promis
 }
 
 /**
+ * 최근 실행 결과 조회
+ */
+export function getRecentResults(limit = 10): JobResult[] {
+  return recentResults.slice(0, limit);
+}
+
+/**
+ * 실행 중인 작업 목록
+ */
+export function getRunningJobs(): string[] {
+  return Array.from(runningProcesses.keys());
+}
+
+/**
+ * 스케줄 목록 포맷팅
+ */
+export function formatScheduleList(schedules: ScheduledJob[]): string {
+  if (schedules.length === 0) {
+    return '등록된 스케줄이 없습니다.';
+  }
+
+  return schedules
+    .map((s, i) => {
+      const status = s.enabled ? '✅' : '⏸️';
+      const lastRun = s.lastRun
+        ? new Date(s.lastRun).toLocaleString('ko-KR')
+        : '없음';
+      return `${i + 1}. ${status} **${s.name}**\n   📁 ${s.projectPath}\n   ⏰ ${s.schedule} | 마지막: ${lastRun}`;
+    })
+    .join('\n\n');
+}
+
+/**
  * 자연어에서 스케줄 정보 파싱
- * 예: "StockAPI 30분마다 개발해줘" -> { name: "StockAPI", schedule: "30m", ... }
  */
 export function parseScheduleFromNaturalLanguage(
   text: string
-): { name?: string; schedule?: string; projectPath?: string; prompt?: string } | null {
-  const result: { name?: string; schedule?: string; projectPath?: string; prompt?: string } = {};
+): {
+  name?: string;
+  schedule?: string;
+  projectPath?: string;
+  prompt?: string;
+} | null {
+  const result: {
+    name?: string;
+    schedule?: string;
+    projectPath?: string;
+    prompt?: string;
+  } = {};
 
-  // 프로젝트 이름 추출 (첫 단어 또는 따옴표 안)
+  // 프로젝트 이름 추출
   const nameMatch = text.match(/["']([^"']+)["']|^(\S+)/);
   if (nameMatch) {
     result.name = nameMatch[1] || nameMatch[2];
@@ -380,81 +495,25 @@ export function parseScheduleFromNaturalLanguage(
   if (intervalMatch) {
     const [, num, unit] = intervalMatch;
     const unitMap: Record<string, string> = {
-      '분': 'm', 'min': 'm', 'm': 'm',
-      '시간': 'h', 'hour': 'h', 'h': 'h',
-      '일': 'd', 'd': 'd',
+      분: 'm',
+      min: 'm',
+      m: 'm',
+      시간: 'h',
+      hour: 'h',
+      h: 'h',
+      일: 'd',
+      d: 'd',
     };
     result.schedule = `${num}${unitMap[unit.toLowerCase()] || 'm'}`;
   }
 
   // 매일/매주 등
   if (text.includes('매일') || text.includes('daily')) {
-    result.schedule = '0 9 * * *'; // 매일 9시
+    result.schedule = '0 9 * * *';
   }
   if (text.includes('매주') || text.includes('weekly')) {
-    result.schedule = '0 9 * * 1'; // 매주 월요일 9시
-  }
-
-  // 작업 내용 추출
-  const actionMatch = text.match(/(개발|작업|체크|확인|빌드|테스트|리뷰|보고)/);
-  if (actionMatch) {
-    result.prompt = text; // 전체 텍스트를 프롬프트로
+    result.schedule = '0 9 * * 1';
   }
 
   return Object.keys(result).length > 0 ? result : null;
-}
-
-/**
- * 스케줄 정보를 포맷팅된 문자열로 반환
- */
-export function formatScheduleList(schedules: ScheduledJob[]): string {
-  if (schedules.length === 0) {
-    return '등록된 스케줄이 없습니다.';
-  }
-
-  // 시간 윈도우 상태 포함
-  const timeStatus = getTimeWindowSummary();
-
-  const list = schedules
-    .map((s, i) => {
-      const status = s.enabled ? '🟢' : '⏸️';
-      const lastRun = s.lastRun ? new Date(s.lastRun).toLocaleString('ko-KR') : '없음';
-      return `${i + 1}. ${status} **${s.name}**\n   📁 ${s.projectPath}\n   ⏰ ${s.schedule}\n   🕐 마지막 실행: ${lastRun}`;
-    })
-    .join('\n\n');
-
-  return `${timeStatus}\n\n---\n\n${list}`;
-}
-
-// 메인 진입점 - 직접 실행 시 스케줄러 시작
-import { fileURLToPath } from 'url';
-import { argv } from 'process';
-
-const isMainModule = argv[1]?.includes('scheduler');
-
-if (isMainModule) {
-  console.log('[Scheduler] Starting Claude Swarm Scheduler...');
-
-  startAllSchedules()
-    .then(() => {
-      console.log('[Scheduler] All schedules loaded. Running...');
-      console.log('[Scheduler] Press Ctrl+C to stop.');
-    })
-    .catch((err) => {
-      console.error('[Scheduler] Failed to start:', err);
-      process.exit(1);
-    });
-
-  // 프로세스 종료 시 정리
-  process.on('SIGINT', () => {
-    console.log('\n[Scheduler] Shutting down...');
-    stopAllSchedules();
-    process.exit(0);
-  });
-
-  process.on('SIGTERM', () => {
-    console.log('\n[Scheduler] Terminated.');
-    stopAllSchedules();
-    process.exit(0);
-  });
 }
