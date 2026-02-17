@@ -3,8 +3,8 @@
 // Claude Swarm - Entry Point
 // ============================================
 
-import { loadConfig, validateConfig } from './config.js';
-import { startService, stopService } from './service.js';
+import { loadConfig, validateConfig } from './core/config.js';
+import { startService, stopService } from './core/service.js';
 
 async function main(): Promise<void> {
   console.log('╔════════════════════════════════════════╗');
