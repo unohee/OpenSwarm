@@ -283,4 +283,6 @@ export type AutonomousStartupConfig = {
   projectAgents?: ProjectAgentConfig[];
   /** Task decomposition config (Planner Agent) */
   decomposition?: DecompositionConfig;
+  /** Git worktree mode: 이슈마다 독립 worktree에서 작업 후 PR 자동 생성 */
+  worktreeMode?: boolean;
 };

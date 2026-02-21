@@ -30,6 +30,8 @@ export interface SchedulerConfig {
   maxConcurrent: number;
   /** Allow concurrent execution on same project */
   allowSameProjectConcurrent?: boolean;
+  /** Git worktree mode: each task runs in its own isolated worktree (bypasses project busy check) */
+  worktreeMode?: boolean;
 }
 
 export interface SchedulerStats {
@@ -151,7 +153,7 @@ export class TaskScheduler extends EventEmitter {
    * Check if project is currently busy
    */
   isProjectBusy(projectPath: string): boolean {
-    if (this.config.allowSameProjectConcurrent) {
+    if (this.config.worktreeMode || this.config.allowSameProjectConcurrent) {
       return false;
     }
 
@@ -167,7 +169,7 @@ export class TaskScheduler extends EventEmitter {
    * Return list of currently busy projects
    */
   getBusyProjects(): string[] {
-    if (this.config.allowSameProjectConcurrent) {
+    if (this.config.worktreeMode || this.config.allowSameProjectConcurrent) {
       return [];
     }
 

@@ -18,6 +18,13 @@ import * as linear from '../linear/index.js';
 import * as planner from '../support/planner.js';
 import { t } from '../locale/index.js';
 import { broadcastEvent } from '../core/eventHub.js';
+import {
+  buildBranchName,
+  createWorktree,
+  commitAndCreatePR,
+  removeWorktree,
+} from '../support/worktreeManager.js';
+import type { WorktreeInfo } from '../support/worktreeManager.js';
 
 // ============================================
 // Discord Reporter
@@ -90,6 +97,8 @@ export interface ExecutionContext {
   decompositionThresholdMinutes?: number;
   getRolesForProject: (projectPath: string) => DefaultRolesConfig | undefined;
   reportToDiscord: (message: string | EmbedBuilder) => Promise<void>;
+  /** Git worktree mode: 이슈마다 독립 worktree에서 작업 후 PR 자동 생성 */
+  worktreeMode?: boolean;
 }
 
 // ============================================
@@ -330,58 +339,118 @@ export async function executePipeline(
     }
   }
 
-  const roles = ctx.getRolesForProject(projectPath);
-  const pipeline = createPipelineFromConfig(roles, ctx.pairMaxAttempts ?? 3);
+  // ============================================
+  // Git Worktree: 이슈별 독립 브랜치에서 작업
+  // ============================================
+  let worktreeInfo: WorktreeInfo | null = null;
+  let actualPath = projectPath;
 
-  pipeline.on('stage:start', ({ stage }) => {
-    console.log(`[Pipeline] Stage started: ${stage}`);
-  });
-
-  const taskReportCtx = {
-    issueIdentifier: task.issueIdentifier || task.issueId,
-    projectName: task.linearProject?.name,
-    projectPath,
-  };
-
-  pipeline.on('stage:complete', async ({ stage, result }) => {
-    console.log(`[Pipeline] Stage completed: ${stage}, success=${result.success}`);
-    await reportStageResult(stage, result, ctx.reportToDiscord, taskReportCtx);
-  });
-
-  pipeline.on('revision:start', ({ stage }) => {
-    void ctx.reportToDiscord(t('runner.pipeline.revisionNeeded', { stage }));
-  });
-
-  const stages = getEnabledStages(roles);
-  const issueRef = task.issueIdentifier || task.issueId || '';
-  const projectDisplay = task.linearProject?.name
-    ? `📁 ${task.linearProject.name} (${projectPath.split('/').slice(-2).join('/')})`
-    : projectPath.split('/').slice(-2).join('/');
-
-  const startEmbed = new EmbedBuilder()
-    .setTitle(t('runner.pipeline.starting'))
-    .setColor(0x00AE86)
-    .addFields(
-      { name: t('runner.result.taskLabel'), value: task.title, inline: false },
-      { name: 'Project', value: projectDisplay, inline: true },
-      ...(issueRef ? [{ name: 'Issue', value: issueRef, inline: true }] : []),
-      { name: 'Stages', value: stages.join(' → '), inline: true },
-    )
-    .setTimestamp();
-
-  await ctx.reportToDiscord(startEmbed);
-
-  if (task.issueId) {
+  if (ctx.worktreeMode && task.issueId && task.issueIdentifier) {
+    const branchName = buildBranchName(task.issueIdentifier, task.title);
     try {
-      await linear.logPairStart(task.issueId, `pipeline-${Date.now()}`, projectPath);
+      worktreeInfo = await createWorktree(projectPath, task.issueId, branchName);
+      actualPath = worktreeInfo.worktreePath;
+      broadcastEvent({
+        type: 'log',
+        data: {
+          taskId: task.issueId,
+          stage: 'worktree',
+          line: `Worktree: ${actualPath} (branch: ${branchName})`,
+        },
+      });
     } catch (err) {
-      console.error('[Pipeline] Linear logPairStart failed:', err);
-      // Continue pipeline even if this fails
-      await linear.updateIssueState(task.issueId, 'In Progress');
+      console.warn('[Worktree] Failed to create worktree, falling back to main repo:', err);
     }
   }
 
-  return pipeline.run(task, projectPath);
+  try {
+    const roles = ctx.getRolesForProject(projectPath); // 원본 경로로 설정 조회
+    const pipeline = createPipelineFromConfig(roles, ctx.pairMaxAttempts ?? 3);
+
+    pipeline.on('stage:start', ({ stage }) => {
+      console.log(`[Pipeline] Stage started: ${stage}`);
+    });
+
+    const taskReportCtx = {
+      issueIdentifier: task.issueIdentifier || task.issueId,
+      projectName: task.linearProject?.name,
+      projectPath: actualPath,
+    };
+
+    pipeline.on('stage:complete', async ({ stage, result }) => {
+      console.log(`[Pipeline] Stage completed: ${stage}, success=${result.success}`);
+      await reportStageResult(stage, result, ctx.reportToDiscord, taskReportCtx);
+    });
+
+    pipeline.on('revision:start', ({ stage }) => {
+      void ctx.reportToDiscord(t('runner.pipeline.revisionNeeded', { stage }));
+    });
+
+    const stages = getEnabledStages(roles);
+    const issueRef = task.issueIdentifier || task.issueId || '';
+    const projectDisplay = task.linearProject?.name
+      ? `📁 ${task.linearProject.name} (${actualPath.split('/').slice(-2).join('/')})`
+      : actualPath.split('/').slice(-2).join('/');
+
+    const startEmbed = new EmbedBuilder()
+      .setTitle(t('runner.pipeline.starting'))
+      .setColor(0x00AE86)
+      .addFields(
+        { name: t('runner.result.taskLabel'), value: task.title, inline: false },
+        { name: 'Project', value: projectDisplay, inline: true },
+        ...(issueRef ? [{ name: 'Issue', value: issueRef, inline: true }] : []),
+        { name: 'Stages', value: stages.join(' → '), inline: true },
+        ...(worktreeInfo ? [{ name: 'Branch', value: worktreeInfo.branchName, inline: true }] : []),
+      )
+      .setTimestamp();
+
+    await ctx.reportToDiscord(startEmbed);
+
+    if (task.issueId) {
+      try {
+        await linear.logPairStart(task.issueId, `pipeline-${Date.now()}`, projectPath);
+      } catch (err) {
+        console.error('[Pipeline] Linear logPairStart failed:', err);
+        // Continue pipeline even if this fails
+        await linear.updateIssueState(task.issueId, 'In Progress');
+      }
+    }
+
+    // worktree 경로에서 파이프라인 실행
+    const result = await pipeline.run(task, actualPath);
+
+    // PR 생성 (worktree 모드 + 성공 + Reviewer 승인)
+    if (worktreeInfo && result.success && result.finalStatus !== 'rejected') {
+      try {
+        const prUrl = await commitAndCreatePR(
+          worktreeInfo,
+          task.title,
+          task.issueIdentifier || '',
+          task.description || '',
+        );
+        result.prUrl = prUrl;
+        broadcastEvent({
+          type: 'log',
+          data: {
+            taskId: task.issueId || task.id,
+            stage: 'pr',
+            line: `PR created: ${prUrl}`,
+          },
+        });
+      } catch (err) {
+        console.error('[Worktree] PR creation failed:', err);
+      }
+    }
+
+    return result;
+  } finally {
+    // 성공/실패 무관하게 worktree 정리
+    if (worktreeInfo) {
+      await removeWorktree(worktreeInfo).catch((err) =>
+        console.warn('[Worktree] Cleanup failed:', err)
+      );
+    }
+  }
 }
 
 function getEnabledStages(roles?: DefaultRolesConfig): PipelineStage[] {

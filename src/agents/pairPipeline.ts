@@ -66,6 +66,8 @@ export interface PipelineResult {
     projectPath?: string;
     taskTitle?: string;
   };
+  /** PR URL (worktree mode에서 자동 생성된 PR) */
+  prUrl?: string;
 }
 
 export interface PipelineContext {
