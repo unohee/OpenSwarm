@@ -3,8 +3,9 @@
 // Decompose large issues into 30-min sub-tasks
 // ============================================
 
-import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { writeFileSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import type { TaskItem } from '../orchestration/decisionEngine.js';
 import { t, getPrompts } from '../locale/index.js';
@@ -64,17 +65,11 @@ function buildPlannerPrompt(options: PlannerOptions): string {
  */
 export async function runPlanner(options: PlannerOptions): Promise<PlannerResult> {
   const prompt = buildPlannerPrompt(options);
-  const promptFile = `/tmp/planner-prompt-${Date.now()}.txt`;
-  const cwd = expandPath(options.projectPath);
 
   try {
-    await fs.writeFile(promptFile, prompt);
-
     const output = await runClaudeCli(
-      promptFile,
-      cwd,
-      options.timeoutMs ?? 600000,  // 10 min timeout (CLI startup + analysis time)
-      options.model ?? 'claude-sonnet-4-20250514',
+      prompt,
+      options.timeoutMs ?? 120000,  // 2 min timeout
       options.onLog
     );
 
@@ -88,105 +83,91 @@ export async function runPlanner(options: PlannerOptions): Promise<PlannerResult
       totalEstimatedMinutes: 0,
       error: error instanceof Error ? error.message : String(error),
     };
-  } finally {
-    try {
-      await fs.unlink(promptFile);
-    } catch {
-      // ignore
-    }
   }
 }
 
 /**
- * Run Claude CLI
+ * Run Claude CLI from /tmp to avoid project-specific MCP servers and hooks.
+ * STONKS has session-start.sh + playwright/pykis/linear MCP servers that
+ * cause >10min startup when claude runs from the project directory.
  */
-function runClaudeCli(
-  promptFile: string,
-  cwd: string,
+async function runClaudeCli(
+  prompt: string,
   timeoutMs: number,
-  model: string,
   onLog?: (line: string) => void
 ): Promise<string> {
-  return new Promise((resolve, reject) => {
-    // Use stdbuf -oL to force line-buffered stdout on the pipe
-    // (Claude CLI buffers stdout when not attached to a TTY, causing no real-time output)
-    const args = [
-      '-c',
-      `stdbuf -oL claude -p "$(cat ${promptFile})" --output-format stream-json --permission-mode bypassPermissions --model ${model} --max-turns 3`,
-    ];
+  const tmpFile = `/tmp/planner-prompt-${Date.now()}.txt`;
+  writeFileSync(tmpFile, prompt);
 
-    const proc = spawn('/bin/sh', args, {
-      cwd,
-      shell: false,
-      env: { ...process.env, FORCE_COLOR: '0' },
+  return new Promise<string>((resolve, reject) => {
+    const proc = spawn(
+      'claude',
+      ['--output-format', 'text', '--max-turns', '1', '-p', prompt],
+      {
+        shell: false,
+        cwd: '/tmp',   // Neutral dir — no project .claude/ settings loaded
+        env: process.env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }
+    );
+
+    let output = '';
+    proc.stdout?.on('data', (chunk: Buffer) => {
+      const text = chunk.toString();
+      output += text;
+      if (onLog) {
+        text.split('\n').filter((l: string) => l.trim()).forEach((l: string) => onLog(l));
+      }
     });
-
-    let stdout = '';
-    let stderr = '';
-    let lineBuffer = '';
 
     const timer = setTimeout(() => {
       proc.kill('SIGTERM');
-      // 10 sec grace period after SIGTERM, then SIGKILL if still alive
-      setTimeout(() => {
-        try { proc.kill('SIGKILL'); } catch { /* already dead */ }
-      }, 10000);
       reject(new Error(`Planner timeout after ${timeoutMs}ms`));
     }, timeoutMs);
 
-    proc.stdout.on('data', (data) => {
-      const chunk = data.toString();
-      stdout += chunk;
-      // Parse stream-json lines and extract human-readable text for dashboard
-      if (onLog) {
-        lineBuffer += chunk;
-        const lines = lineBuffer.split('\n');
-        lineBuffer = lines.pop() ?? '';
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          try {
-            const event = JSON.parse(line) as Record<string, unknown>;
-            // Extract text from assistant streaming events
-            if (event.type === 'assistant') {
-              const msg = event.message as Record<string, unknown> | undefined;
-              const content = msg?.content;
-              if (Array.isArray(content)) {
-                for (const block of content as Array<Record<string, unknown>>) {
-                  if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
-                    // Split long text into lines for readability
-                    block.text.split('\n').filter((l: string) => l.trim()).forEach((l: string) => onLog(l));
-                  }
-                }
-              }
-            }
-          } catch { /* incomplete or non-JSON line */ }
-        }
-      }
-    });
-    proc.stderr.on('data', (data) => { stderr += data.toString(); });
-
-    proc.on('close', (code) => {
+    proc.on('close', (code: number | null) => {
       clearTimeout(timer);
-      if (code === 0 || stdout.length > 0) {
-        resolve(stdout);
+      try { unlinkSync(tmpFile); } catch { /* ignore */ }
+      if (code === 0 || output.trim()) {
+        resolve(output);
       } else {
-        reject(new Error(`Planner failed (code ${code}): ${stderr}`));
+        reject(new Error(`Claude CLI exited with code ${code}`));
       }
     });
 
-    proc.on('error', (err) => {
+    proc.on('error', (err: Error) => {
       clearTimeout(timer);
+      try { unlinkSync(tmpFile); } catch { /* ignore */ }
       reject(err);
     });
   });
 }
 
 /**
- * Parse Planner output (supports stream-json and legacy json format)
+ * Parse Planner output (plain text or stream-json fallback)
  */
 function parsePlannerOutput(output: string, originalTitle: string): PlannerResult {
   try {
-    // Try stream-json format: find the result line (newline-delimited JSON events)
+    // Primary: plain text output — find ```json block directly
+    const jsonBlockMatch = output.match(/```json\s*([\s\S]*?)\s*```/);
+    if (jsonBlockMatch) {
+      try {
+        const parsed = JSON.parse(jsonBlockMatch[1]) as Record<string, unknown>;
+        if ('needsDecomposition' in parsed) {
+          console.log('[Planner] Parsed JSON block from plain text output');
+          return {
+            success: true,
+            originalIssue: originalTitle,
+            needsDecomposition: Boolean(parsed.needsDecomposition),
+            reason: parsed.reason as string | undefined,
+            subTasks: Array.isArray(parsed.subTasks) ? parsed.subTasks as SubTask[] : [],
+            totalEstimatedMinutes: (parsed.totalEstimatedMinutes as number) || 0,
+          };
+        }
+      } catch { /* not valid JSON, try other methods */ }
+    }
+
+    // Fallback: stream-json format (newline-delimited JSON events)
     const lines = output.split('\n').filter(l => l.trim());
     for (const line of lines) {
       try {
@@ -197,15 +178,10 @@ function parsePlannerOutput(output: string, originalTitle: string): PlannerResul
       } catch { /* not a complete JSON line */ }
     }
 
-    // Fallback: try legacy --output-format json (array format)
-    const match = output.match(/\[[\s\S]*\]/);
-    if (match) {
-      const arr = JSON.parse(match[0]) as Array<Record<string, unknown>>;
-      for (const item of arr) {
-        if (item.type === 'result' && typeof item.result === 'string') {
-          return parsePlanResult(item.result as string, originalTitle);
-        }
-      }
+    // Fallback: direct JSON object in text
+    const objMatch = output.match(/\{\s*"needsDecomposition"/);
+    if (objMatch) {
+      return parseDirectJson(output, objMatch.index!, originalTitle);
     }
 
     return extractFromText(output, originalTitle);
