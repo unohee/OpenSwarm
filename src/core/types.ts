@@ -119,6 +119,8 @@ export type SwarmConfig = {
   autonomous?: AutonomousStartupConfig;
   /** PR auto-improvement config */
   prProcessor?: PRProcessorConfig;
+  /** 장기 작업 모니터 설정 */
+  monitors?: LongRunningMonitorConfig[];
 };
 
 /**
@@ -207,12 +209,16 @@ export type RoleConfig = {
   model: string;
   /** Timeout (ms), 0 = unlimited */
   timeoutMs: number;
+  /** Model to escalate to on repeated failure */
+  escalateModel?: string;
+  /** Escalate after this iteration number (default: 3) */
+  escalateAfterIteration?: number;
 };
 
 /**
  * Pipeline stage
  */
-export type PipelineStage = 'worker' | 'reviewer' | 'tester' | 'documenter';
+export type PipelineStage = 'worker' | 'reviewer' | 'tester' | 'documenter' | 'auditor' | 'skill-documenter';
 
 /**
  * Per-project agent configuration
@@ -228,6 +234,8 @@ export type ProjectAgentConfig = {
     reviewer?: Partial<RoleConfig>;
     tester?: Partial<RoleConfig>;
     documenter?: Partial<RoleConfig>;
+    auditor?: Partial<RoleConfig>;
+    'skill-documenter'?: Partial<RoleConfig>;
   };
 };
 
@@ -239,6 +247,8 @@ export type DefaultRolesConfig = {
   reviewer: RoleConfig;
   tester?: RoleConfig;
   documenter?: RoleConfig;
+  auditor?: RoleConfig;
+  'skill-documenter'?: RoleConfig;
 };
 
 /**
@@ -258,6 +268,48 @@ export type DecompositionConfig = {
 /**
  * Autonomous execution mode configuration
  */
+// ============================================
+// Long-Running Monitor Types
+// ============================================
+
+/** 완료 판정 전략 */
+export type CompletionCheck =
+  | { type: 'exit-code'; successExitCode?: number }
+  | { type: 'output-regex'; successPattern: string; failurePattern?: string }
+  | { type: 'http-status'; expectedStatus?: number };
+
+/** 모니터 설정 (config.yaml 또는 API 등록) */
+export type LongRunningMonitorConfig = {
+  id: string;
+  name: string;
+  /** 상태 확인용 bash 명령어 */
+  checkCommand: string;
+  completionCheck: CompletionCheck;
+  /** Linear 이슈 ID (상태 변경 시 코멘트) */
+  issueId?: string;
+  /** N번째 heartbeat마다 체크 (기본 1 = 매번) */
+  checkInterval?: number;
+  /** 타임아웃 시간 (기본 48) */
+  maxDurationHours?: number;
+  /** Discord 알림 (기본 true) */
+  notify?: boolean;
+  metadata?: Record<string, unknown>;
+};
+
+/** 모니터 런타임 상태 */
+export type MonitorState = 'pending' | 'running' | 'completed' | 'failed' | 'timeout';
+
+/** 런타임 모니터 (설정 + 상태) */
+export type LongRunningMonitor = LongRunningMonitorConfig & {
+  state: MonitorState;
+  registeredAt: number;
+  lastCheckedAt?: number;
+  checkCount: number;
+  heartbeatsSinceRegister: number;
+  lastOutput?: string;
+  lastExitCode?: number;
+};
+
 export type AutonomousStartupConfig = {
   /** Auto-enable on service start */
   enabled: boolean;

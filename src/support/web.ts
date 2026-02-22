@@ -6,18 +6,20 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { writeFileSync, unlinkSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
 import { getChatHistory } from '../discord/index.js';
-import { addSSEClient, getActiveSSECount, broadcastEvent } from '../core/eventHub.js';
+import { addSSEClient, getActiveSSECount, broadcastEvent, getLogBuffer, getStageBuffer, getChatBuffer } from '../core/eventHub.js';
 import { extractCostFromStreamJson, formatCost } from './costTracker.js';
 import { scanLocalProjects } from './projectMapper.js';
 import type { AutonomousRunner } from '../automation/autonomousRunner.js';
 import { DASHBOARD_HTML } from './dashboardHtml.js';
+import { getGraph, toProjectSlug, getProjectHealth, scanAndCache, listGraphs } from '../knowledge/index.js';
+import { getProjectGitInfo, startGitStatusPoller } from './gitStatus.js';
+import { getActiveMonitors, registerMonitor, unregisterMonitor } from '../automation/longRunningMonitor.js';
+import type { LongRunningMonitorConfig } from '../core/types.js';
 
 let server: ReturnType<typeof createServer> | null = null;
 let runnerRef: AutonomousRunner | undefined;
-
-const chatHistory: { role: 'user' | 'agent'; text: string; ts: number }[] = [];
 
 // ============================================
 // Pinned + enabled repos persistence
@@ -62,8 +64,9 @@ export function setWebRunner(runner: AutonomousRunner): void {
   for (const path of _reposCfg.enabled) {
     runner.enableProject(path);
   }
-  // Pre-seed path cache from pinned projects so tasks without execution history are still matched
-  for (const path of pinnedProjects) {
+  // Pre-seed path cache from pinned + enabled projects so tasks without execution history are still matched
+  const allSeeded = new Set([...pinnedProjects, ..._reposCfg.enabled]);
+  for (const path of allSeeded) {
     const name = path.split('/').pop();
     if (name) runner.registerProjectPath(name, path);
   }
@@ -103,13 +106,14 @@ export async function startWebServer(port: number = 3847): Promise<void> {
 
       // ---- SSE stream ----
       } else if (url === '/api/events') {
+        const skipReplay = req.url?.includes('skipReplay=1') ?? false;
         res.writeHead(200, {
           'Content-Type': 'text/event-stream',
           'Cache-Control': 'no-cache',
           'Connection': 'keep-alive',
         });
         res.write(':connected\n\n');
-        addSSEClient(res);
+        addSSEClient(res, skipReplay);
 
       // ---- Stats ----
       } else if (url === '/api/stats') {
@@ -132,7 +136,7 @@ export async function startWebServer(port: number = 3847): Promise<void> {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ running, queued }));
 
-      // ---- Projects GET (user-managed list only) ----
+      // ---- Projects GET (pinned + active projects) ----
       } else if (url === '/api/projects' && req.method === 'GET') {
         const enabledPaths = new Set(runnerRef?.getEnabledProjects() ?? []);
         const taskInfo = runnerRef?.getProjectsInfo() ?? [];
@@ -140,18 +144,32 @@ export async function startWebServer(port: number = 3847): Promise<void> {
         // Fallback: match by project name (for tasks not yet executed → path not cached)
         const byName = new Map(taskInfo.map(p => [p.name, p]));
 
-        const result = Array.from(pinnedProjects).map(p => {
+        // Start with pinned projects
+        const allPaths = new Set(pinnedProjects);
+        // Auto-include enabled projects and projects with active tasks
+        for (const path of enabledPaths) allPaths.add(path);
+        for (const info of taskInfo) {
+          if (info.path && (info.running.length > 0 || info.queued.length > 0)) {
+            allPaths.add(info.path);
+          }
+        }
+
+        const result = await Promise.all(Array.from(allPaths).map(async p => {
           const dirName = p.split('/').pop() ?? p;
           const info = byPath.get(p) ?? byName.get(dirName);
+          const gitInfo = await getProjectGitInfo(p);
           return {
             path: p,
             name: dirName,
             enabled: enabledPaths.has(p),
+            pinned: pinnedProjects.has(p),
             running: info?.running ?? [],
             queued:  info?.queued  ?? [],
             pending: info?.pending ?? [],
+            git: gitInfo.git,
+            prs: gitInfo.prs,
           };
-        });
+        }));
 
         result.sort((a, b) => {
           const aActive = a.running.length + a.queued.length + a.pending.length;
@@ -237,8 +255,28 @@ export async function startWebServer(port: number = 3847): Promise<void> {
 
       // ---- Chat history ----
       } else if (url === '/api/chat/history' && req.method === 'GET') {
+        const buf = getChatBuffer();
+        const history = buf
+          .filter((ev): ev is Extract<typeof ev, { type: 'chat:user' | 'chat:agent' }> =>
+            ev.type === 'chat:user' || ev.type === 'chat:agent'
+          )
+          .map(ev => ({
+            role: ev.type === 'chat:user' ? 'user' as const : 'agent' as const,
+            text: ev.data.text,
+            ts: ev.data.ts,
+          }));
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(chatHistory.slice(-50)));
+        res.end(JSON.stringify(history.slice(-50)));
+
+      // ---- Log buffer snapshot ----
+      } else if (url === '/api/logs' && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(getLogBuffer()));
+
+      // ---- Stage buffer snapshot ----
+      } else if (url === '/api/stages' && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(getStageBuffer()));
 
       // ---- Chat message ----
       } else if (url === '/api/chat' && req.method === 'POST') {
@@ -258,7 +296,6 @@ export async function startWebServer(port: number = 3847): Promise<void> {
         }
 
         broadcastEvent({ type: 'chat:user', data: { text: message, ts: Date.now() } });
-        chatHistory.push({ role: 'user', text: message, ts: Date.now() });
 
         // Build context-aware prompt (이전 대화 포함)
         const stats    = runnerRef?.getStats();
@@ -267,10 +304,14 @@ export async function startWebServer(port: number = 3847): Promise<void> {
         const state    = runnerRef?.getState();
         const uptimeSec = state?.startedAt ? Math.floor((Date.now() - state.startedAt) / 1000) : 0;
 
-        // 현재 메시지 제외한 최근 10개 대화 이력 포맷
-        const recentHistory = chatHistory.slice(-11, -1);
+        // chatBuffer에서 최근 10개 대화 이력 포맷 (현재 메시지 제외)
+        const chatBuf = getChatBuffer()
+          .filter((ev): ev is Extract<typeof ev, { type: 'chat:user' | 'chat:agent' }> =>
+            ev.type === 'chat:user' || ev.type === 'chat:agent'
+          );
+        const recentHistory = chatBuf.slice(-11, -1);
         const historyBlock = recentHistory.length > 0
-          ? recentHistory.map(m => (m.role === 'user' ? 'User' : 'VEGA') + ': ' + m.text).join('\n\n')
+          ? recentHistory.map(m => (m.type === 'chat:user' ? 'User' : 'VEGA') + ': ' + m.data.text).join('\n\n')
           : '';
 
         const contextPrompt = [
@@ -336,11 +377,168 @@ export async function startWebServer(port: number = 3847): Promise<void> {
 
         try { unlinkSync(tmpFile); } catch {}
 
-        chatHistory.push({ role: 'agent', text: response, ts: Date.now() });
         broadcastEvent({ type: 'chat:agent', data: { text: response, ts: Date.now() } });
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, response }));
+
+      // ---- Service control: status ----
+      } else if (url === '/api/service/status' && req.method === 'GET') {
+        try {
+          const result = await new Promise<string>((resolve) => {
+            execFile('systemctl', ['--user', 'is-active', 'claude-swarm'], (_err, stdout) => {
+              resolve(stdout.trim());
+            });
+          });
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ status: result }));
+        } catch {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ status: 'unknown' }));
+        }
+
+      // ---- Service control: stop ----
+      } else if (url === '/api/service/stop' && req.method === 'POST') {
+        try {
+          await new Promise<void>((resolve, reject) => {
+            execFile('systemctl', ['--user', 'stop', 'claude-swarm'], (err) => {
+              if (err) reject(err); else resolve();
+            });
+          });
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true }));
+        } catch (e) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: String(e) }));
+        }
+
+      // ---- Service control: restart ----
+      } else if (url === '/api/service/restart' && req.method === 'POST') {
+        try {
+          await new Promise<void>((resolve, reject) => {
+            execFile('systemctl', ['--user', 'restart', 'claude-swarm'], (err) => {
+              if (err) reject(err); else resolve();
+            });
+          });
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true }));
+        } catch (e) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: String(e) }));
+        }
+
+      // ---- Knowledge Graph: project health ----
+      } else if (url.startsWith('/api/knowledge/') && req.method === 'GET') {
+        const projectSlug = url.replace('/api/knowledge/', '').split('?')[0];
+        if (!projectSlug) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Missing project slug' }));
+        } else {
+          try {
+            const graph = await getGraph(projectSlug);
+            if (!graph) {
+              res.writeHead(404, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'Graph not found. Run a scan first.' }));
+            } else {
+              const health = getProjectHealth(graph);
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({
+                slug: projectSlug,
+                scannedAt: graph.scannedAt,
+                nodeCount: graph.nodeCount,
+                edgeCount: graph.edgeCount,
+                ...health,
+              }));
+            }
+          } catch (e) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: String(e) }));
+          }
+        }
+
+      // ---- Knowledge Graph: list all ----
+      } else if (url === '/api/knowledge' && req.method === 'GET') {
+        try {
+          const slugs = await listGraphs();
+          const result = [];
+          for (const slug of slugs) {
+            const graph = await getGraph(slug);
+            if (graph) {
+              result.push({
+                slug,
+                nodeCount: graph.nodeCount,
+                edgeCount: graph.edgeCount,
+                scannedAt: graph.scannedAt,
+                summary: graph.buildSummary(),
+              });
+            }
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(result));
+        } catch (e) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: String(e) }));
+        }
+
+      // ---- Knowledge Graph: trigger scan ----
+      } else if (url === '/api/knowledge/scan' && req.method === 'POST') {
+        const body = await readBody(req);
+        try {
+          const { projectPath } = JSON.parse(body) as { projectPath: string };
+          if (!projectPath) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Missing projectPath' }));
+          } else {
+            const resolvedPath = projectPath.replace('~', homedir());
+            res.writeHead(202, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true, slug: toProjectSlug(resolvedPath) }));
+            // Non-blocking scan
+            scanAndCache(resolvedPath, { force: true }).catch(e =>
+              console.error('[Web] Knowledge scan error:', e)
+            );
+          }
+        } catch {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Invalid JSON' }));
+        }
+
+      // ---- Pipeline history (time-ordered) ----
+      } else if (url === '/api/pipeline/history' && req.method === 'GET') {
+        const limitParam = (req.url?.split('?')[1] || '').match(/limit=(\d+)/);
+        const limit = limitParam ? Math.min(Number(limitParam[1]), 100) : 50;
+        const history = runnerRef?.getPipelineHistory(limit) ?? [];
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(history));
+
+      // ---- Monitors: list ----
+      } else if (url === '/api/monitors' && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(getActiveMonitors()));
+
+      // ---- Monitors: register ----
+      } else if (url === '/api/monitors' && req.method === 'POST') {
+        const body = await readBody(req);
+        try {
+          const config = JSON.parse(body) as LongRunningMonitorConfig;
+          if (!config.id || !config.name || !config.checkCommand || !config.completionCheck) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Missing required fields: id, name, checkCommand, completionCheck' }));
+            return;
+          }
+          const monitor = registerMonitor(config);
+          res.writeHead(201, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(monitor));
+        } catch {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Invalid JSON' }));
+        }
+
+      // ---- Monitors: delete ----
+      } else if (url.startsWith('/api/monitors/') && req.method === 'DELETE') {
+        const monitorId = url.replace('/api/monitors/', '');
+        const deleted = unregisterMonitor(monitorId);
+        res.writeHead(deleted ? 200 : 404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: deleted }));
 
       // ---- Discord history (legacy) ----
       } else if (url === '/api/history') {
@@ -366,6 +564,7 @@ export async function startWebServer(port: number = 3847): Promise<void> {
 
     server.listen(port, () => {
       console.log(`Web interface running at http://localhost:${port}`);
+      startGitStatusPoller(() => Array.from(pinnedProjects));
       resolve();
     });
   });

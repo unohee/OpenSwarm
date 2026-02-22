@@ -1,10 +1,7 @@
-// ============================================
 // Claude Swarm - Autonomous Runner
 // Heartbeat → Decision → Execution → Report
-// ============================================
-
 import { Cron } from 'croner';
-import { loadTaskState, saveTaskState, buildProjectsInfo, type TaskState, type ProjectInfo } from './runnerState.js';
+import { loadTaskState, saveTaskState, buildProjectsInfo, appendPipelineHistory, getPipelineHistory, type TaskState, type ProjectInfo, type PipelineHistoryEntry } from './runnerState.js';
 import {
   DecisionEngine,
   DecisionResult,
@@ -17,6 +14,7 @@ import { formatParsedTaskSummary, loadParsedTask } from '../orchestration/taskPa
 import { saveCognitiveMemory } from '../memory/index.js';
 import { EmbedBuilder } from 'discord.js';
 import * as linear from '../linear/index.js';
+import { updateProjectAfterTask } from '../linear/projectUpdater.js';
 import { TaskScheduler, initScheduler } from '../orchestration/taskScheduler.js';
 import {
   PipelineResult,
@@ -27,16 +25,13 @@ import * as planner from '../support/planner.js';
 import * as execution from './runnerExecution.js';
 import { reportToDiscord, fetchLinearTasks } from './runnerExecution.js';
 import { t } from '../locale/index.js';
-import { broadcastEvent } from '../core/eventHub.js';
-import type { SwarmStats } from '../core/eventHub.js'; // eslint-disable-line @typescript-eslint/no-unused-vars
+import { broadcastEvent, type SwarmStats } from '../core/eventHub.js';
 import { pruneWorktrees } from '../support/worktreeManager.js';
+import { refreshGraph, toProjectSlug } from '../knowledge/index.js';
+import { checkAllMonitors, getActiveMonitors } from './longRunningMonitor.js';
 
 // Re-export integration setters (used by service.ts)
 export { setDiscordReporter, setLinearFetcher } from './runnerExecution.js';
-
-// ============================================
-// Types
-// ============================================
 
 export interface AutonomousConfig {
   linearTeamId: string;
@@ -76,11 +71,6 @@ export interface RunnerState {
   startedAt?: number;
 }
 
-
-// ============================================
-// Autonomous Runner
-// ============================================
-
 let runnerInstance: AutonomousRunner | null = null;
 
 export class AutonomousRunner {
@@ -97,6 +87,17 @@ export class AutonomousRunner {
   // Explicitly enabled project paths (allow-list; empty = nothing runs)
   private enabledProjects = new Set<string>();
 
+  /** Check if a resolved path is under any enabled project */
+  private isProjectEnabled(resolvedPath: string): boolean {
+    if (this.enabledProjects.size === 0) return false;
+    if (this.enabledProjects.has(resolvedPath)) return true;
+    // Check if resolvedPath is a subdirectory of any enabled project
+    for (const enabled of this.enabledProjects) {
+      if (resolvedPath.startsWith(enabled + '/')) return true;
+    }
+    return false;
+  }
+
   // Last fetched Linear tasks (for dashboard display)
   private lastFetchedTasks: TaskItem[] = [];
 
@@ -108,9 +109,6 @@ export class AutonomousRunner {
   private failedTaskCounts = new Map<string, number>();
   private static readonly MAX_RETRY_COUNT = 2;
 
-  // Rate limiting: max 1 issue per hour
-  private lastTaskStartedAt = 0;
-  private static readonly RATE_LIMIT_MS = 60 * 60 * 1000; // 1 hour
 
   private get taskStateRef(): TaskState {
     return { completedTaskIds: this.completedTaskIds, failedTaskCounts: this.failedTaskCounts };
@@ -124,9 +122,6 @@ export class AutonomousRunner {
     saveTaskState(this.taskStateRef);
   }
 
-  /**
-   * Format task project/issue context string
-   */
   private formatTaskContext(task: TaskItem): string {
     const parts: string[] = [];
     if (task.linearProject?.name) parts.push(`[${task.linearProject.name}]`);
@@ -158,14 +153,10 @@ export class AutonomousRunner {
     this.setupSchedulerEvents();
   }
 
-  /**
-   * Set up scheduler events
-   */
   private setupSchedulerEvents(): void {
     this.scheduler.on('started', async (running) => {
       const taskCtx = this.formatTaskContext(running.task);
       console.log(`[Scheduler] Task started: ${taskCtx} ${running.task.title}`);
-      this.lastTaskStartedAt = Date.now();
       broadcastEvent({ type: 'task:started', data: { taskId: running.task.id, title: running.task.title, issueIdentifier: running.task.issueIdentifier } });
     });
 
@@ -173,6 +164,7 @@ export class AutonomousRunner {
       const taskCtx = this.formatTaskContext(task);
       console.log(`[Scheduler] Task completed: ${taskCtx} ${task.title}`);
       broadcastEvent({ type: 'task:completed', data: { taskId: task.id, success: result.success, duration: result.totalDuration } });
+      this.recordPipelineHistory(task, result);
       await reportToDiscord(formatPipelineResult(result));
 
       // Track as completed to prevent re-selection (persist to disk)
@@ -184,6 +176,7 @@ export class AutonomousRunner {
       // Skip Linear state update for decomposed tasks (markAsDecomposed already moves to Done)
       if (result.finalStatus === 'decomposed') {
         console.log(`[Scheduler] Task decomposed into sub-issues, skipping Done state`);
+        this.scheduleNextHeartbeat();
         return;
       }
 
@@ -209,12 +202,26 @@ export class AutonomousRunner {
           console.warn(`[Scheduler] Memory save failed (non-critical):`, memErr);
         }
       }
+
+      // Linear 프로젝트 Status Update + Overview 갱신 (non-blocking)
+      if (task.linearProject) {
+        updateProjectAfterTask(task.linearProject.id, task.linearProject.name, {
+          title: task.title,
+          success: result.success,
+          duration: result.totalDuration,
+          issueIdentifier: task.issueIdentifier,
+          cost: result.totalCost?.costUsd,
+        }).catch(e => console.warn('[Scheduler] Project update failed:', e));
+      }
+
+      this.scheduleNextHeartbeat();
     });
 
     this.scheduler.on('failed', async ({ task, result }) => {
       const taskCtx = this.formatTaskContext(task);
       console.log(`[Scheduler] Task failed: ${taskCtx} ${task.title}`);
       broadcastEvent({ type: 'task:completed', data: { taskId: task.id, success: false, duration: result.totalDuration } });
+      this.recordPipelineHistory(task, result);
       await reportToDiscord(formatPipelineResult(result));
 
       // If rejected, change to Blocked immediately
@@ -225,7 +232,7 @@ export class AutonomousRunner {
           await linear.logBlocked(task.issueId, 'autonomous-runner',
             t('runner.reviewRejected', { feedback: result.reviewResult?.feedback || t('common.fallback.noDescription') })
           );
-          console.log(`[Scheduler] Issue ${task.issueId} marked as Blocked (rejected)`);
+          console.log(`[Scheduler] Issue ${task.issueId} marked as Todo (blocked) (rejected)`);
         } catch (err) {
           console.error(`[Scheduler] Failed to update issue state:`, err);
         }
@@ -245,7 +252,7 @@ export class AutonomousRunner {
             await linear.logBlocked(task.issueId, 'autonomous-runner',
               `Autonomous execution failed ${count} times. Moving to Blocked for manual review.`
             );
-            console.log(`[Scheduler] Issue ${task.issueId} marked as Blocked (max retries exceeded)`);
+            console.log(`[Scheduler] Issue ${task.issueId} marked as Todo (blocked) (max retries exceeded)`);
           } catch (err) {
             console.error(`[Scheduler] Failed to update issue state:`, err);
           }
@@ -254,6 +261,19 @@ export class AutonomousRunner {
           this.saveTaskState();
         }
       }
+
+      // Linear 프로젝트 Status Update + Overview 갱신 (non-blocking)
+      if (task.linearProject) {
+        updateProjectAfterTask(task.linearProject.id, task.linearProject.name, {
+          title: task.title,
+          success: result.success,
+          duration: result.totalDuration,
+          issueIdentifier: task.issueIdentifier,
+          cost: result.totalCost?.costUsd,
+        }).catch(e => console.warn('[Scheduler] Project update failed:', e));
+      }
+
+      this.scheduleNextHeartbeat();
     });
 
     this.scheduler.on('error', async ({ task, error }) => {
@@ -268,9 +288,6 @@ export class AutonomousRunner {
     });
   }
 
-  /**
-   * Filter out tasks already completed or exceeding retry limit
-   */
   private filterAlreadyProcessed(tasks: TaskItem[]): TaskItem[] {
     return tasks.filter(task => {
       const id = task.issueId || task.id;
@@ -285,9 +302,17 @@ export class AutonomousRunner {
     });
   }
 
-  /**
-   * Execute tasks in available slots
-   */
+  /** Schedule next heartbeat (debounced 5s) */
+  private _nextHeartbeatTimer: ReturnType<typeof setTimeout> | null = null;
+  private scheduleNextHeartbeat(): void {
+    if (this._nextHeartbeatTimer) return; // already scheduled
+    console.log('[AutonomousRunner] Scheduling next heartbeat in 5s (event-driven)');
+    this._nextHeartbeatTimer = setTimeout(() => {
+      this._nextHeartbeatTimer = null;
+      void this.heartbeat();
+    }, 5000);
+  }
+
   private async runAvailableTasks(): Promise<void> {
     if (!this.config.pairMode || !this.config.maxConcurrentTasks) {
       return; // Parallel processing disabled
@@ -298,9 +323,6 @@ export class AutonomousRunner {
     });
   }
 
-  /**
-   * Get role configuration for a project
-   */
   private getRolesForProject(projectPath: string): DefaultRolesConfig | undefined {
     // Find per-project configuration
     const projectConfig = this.config.projectAgents?.find(
@@ -317,7 +339,7 @@ export class AutonomousRunner {
         },
         reviewer: {
           enabled: true,
-          model: this.config.reviewerModel || 'claude-3-5-haiku-20241022',
+          model: this.config.reviewerModel || 'claude-haiku-4-5-20251001',
           timeoutMs: this.config.reviewerTimeoutMs ?? 0,
         },
       };
@@ -326,7 +348,7 @@ export class AutonomousRunner {
     // Apply per-project overrides
     const base = this.config.defaultRoles || {
       worker: { enabled: true, model: 'claude-sonnet-4-20250514', timeoutMs: 0 },
-      reviewer: { enabled: true, model: 'claude-3-5-haiku-20241022', timeoutMs: 0 },
+      reviewer: { enabled: true, model: 'claude-haiku-4-5-20251001', timeoutMs: 0 },
     };
 
     if (!projectConfig?.roles) {
@@ -346,9 +368,6 @@ export class AutonomousRunner {
     } as DefaultRolesConfig;
   }
 
-  /**
-   * Start the runner
-   */
   async start(): Promise<void> {
     if (this.state.isRunning) {
       console.log('[AutonomousRunner] Already running');
@@ -361,7 +380,7 @@ export class AutonomousRunner {
     if (this.config.worktreeMode) {
       for (const projectPath of this.config.allowedProjects) {
         const resolvedPath = projectPath.replace('~', process.env.HOME || '');
-        pruneWorktrees(resolvedPath).catch(() => {});
+        pruneWorktrees(resolvedPath).catch((e) => console.error(`[AutonomousRunner] Worktree prune failed for ${resolvedPath}:`, e));
       }
     }
 
@@ -387,9 +406,6 @@ export class AutonomousRunner {
     }
   }
 
-  /**
-   * Stop the runner
-   */
   stop(): void {
     if (this.cronJob) {
       this.cronJob.stop();
@@ -399,9 +415,6 @@ export class AutonomousRunner {
     console.log('[AutonomousRunner] Stopped');
   }
 
-  /**
-   * Build SwarmStats from current state
-   */
   private buildStats(): SwarmStats {
     const stats = this.scheduler.getStats();
     return {
@@ -413,14 +426,28 @@ export class AutonomousRunner {
     };
   }
 
+  private refreshKnowledgeGraphs(): void {
+    for (const projectPath of this.config.allowedProjects) {
+      const resolvedPath = projectPath.replace('~', process.env.HOME || '');
+      refreshGraph(resolvedPath).then(graph => {
+        if (graph) {
+          const slug = toProjectSlug(resolvedPath);
+          broadcastEvent({
+            type: 'knowledge:updated',
+            data: { projectSlug: slug, nodeCount: graph.nodeCount, edgeCount: graph.edgeCount },
+          });
+        }
+      }).catch((e) => {
+        console.error(`[AutonomousRunner] Knowledge graph refresh failed for ${resolvedPath}:`, e);
+      });
+    }
+  }
+
   /** 대시보드 LIVE LOG에 시스템 메시지 전송 */
   private syslog(line: string): void {
     broadcastEvent({ type: 'log', data: { taskId: 'system', stage: 'heartbeat', line } });
   }
 
-  /**
-   * Execute heartbeat
-   */
   async heartbeat(): Promise<void> {
     console.log('[AutonomousRunner] Heartbeat triggered');
     this.state.lastHeartbeat = Date.now();
@@ -429,6 +456,16 @@ export class AutonomousRunner {
     this.syslog('▶ Heartbeat started');
 
     try {
+      // 0. Knowledge graph refresh (비동기, 실패해도 서비스 중단 안 함)
+      this.refreshKnowledgeGraphs();
+
+      // 0.5 Long-running monitor 패시브 체크 (time window 이전)
+      const active = getActiveMonitors().filter(m => m.state === 'pending' || m.state === 'running');
+      if (active.length > 0) {
+        const checked = await checkAllMonitors().catch(() => 0);
+        this.syslog(`✓ Monitors: ${checked} checked / ${active.length} active`);
+      }
+
       // 1. Check time window
       const timeCheck = checkWorkAllowed();
       if (!timeCheck.allowed) {
@@ -437,16 +474,6 @@ export class AutonomousRunner {
         return;
       }
       this.syslog('✓ Time window: allowed');
-
-      // 1.5. Rate limit: max 1 issue per hour
-      if (this.lastTaskStartedAt > 0) {
-        const elapsed = Date.now() - this.lastTaskStartedAt;
-        if (elapsed < AutonomousRunner.RATE_LIMIT_MS) {
-          const remainMin = Math.ceil((AutonomousRunner.RATE_LIMIT_MS - elapsed) / 60000);
-          this.syslog(`⏳ Rate limited: next task in ${remainMin}min`);
-          return;
-        }
-      }
 
       // 2. Fetch tasks from Linear
       this.syslog('⟳ Fetching tasks from Linear...');
@@ -485,20 +512,18 @@ export class AutonomousRunner {
       await this.handleDecision(decision);
       this.state.consecutiveErrors = 0;
 
-    } catch (error: any) {
+    } catch (error) {
       this.state.consecutiveErrors++;
-      console.error('[AutonomousRunner] Heartbeat error:', error.message);
-      this.syslog(`✗ Heartbeat error: ${error.message}`);
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error('[AutonomousRunner] Heartbeat error:', msg);
+      this.syslog(`✗ Heartbeat error: ${msg}`);
 
       if (this.state.consecutiveErrors >= 3) {
-        await reportToDiscord(t('runner.consecutiveErrors', { count: this.state.consecutiveErrors, error: error.message }));
+        await reportToDiscord(t('runner.consecutiveErrors', { count: this.state.consecutiveErrors, error: msg }));
       }
     }
   }
 
-  /**
-   * Parallel processing heartbeat (uses DecisionEngine.heartbeatMultiple)
-   */
   private async heartbeatParallel(tasks: TaskItem[]): Promise<void> {
     const availableSlots = this.scheduler.getAvailableSlots();
     const runningCount = this.scheduler.getStats().running;
@@ -512,8 +537,8 @@ export class AutonomousRunner {
     // Get list of already running projects
     const busyProjects = this.scheduler.getBusyProjects();
 
-    // Rate limit: only allow 1 task per heartbeat cycle
-    const maxSlots = 1;
+    // Allow up to 2 new tasks per heartbeat cycle to ramp up smoothly
+    const maxSlots = Math.min(2, availableSlots);
 
     // Pre-filter tasks to enabled projects only (before DecisionEngine selection)
     // This prevents DecisionEngine from wasting its max-slot budget on non-enabled projects.
@@ -528,11 +553,20 @@ export class AutonomousRunner {
         const cachedPath = this.projectPathCache.get(projName)
           ?? this.projectPathCache.get(projName.toLowerCase())
           ?? this.projectPathCache.get(projName.replace(/-/g, ' '));
-        // If path is cached: only allow if explicitly enabled; otherwise block
-        return cachedPath ? this.enabledProjects.has(cachedPath) : false;
+        if (!cachedPath) {
+          this.syslog(`  ⚠ No path cache for project "${projName}" — skipping ${task.issueIdentifier}`);
+          return false;
+        }
+        const enabled = this.isProjectEnabled(cachedPath);
+        if (!enabled) {
+          this.syslog(`  ⚠ Project "${projName}" (${cachedPath}) not enabled — skipping ${task.issueIdentifier}`);
+        }
+        return enabled;
       });
       if (tasksForEngine.length === 0) {
-        this.syslog(`⚠ No enabled tasks (${executableTasks.length} executable, ${tasks.length - executableTasks.length} backlog — enable a project first)`);
+        this.syslog(`⚠ No enabled tasks (${executableTasks.length} executable, ${tasks.length - executableTasks.length} backlog)`);
+        this.syslog(`  Path cache: [${[...this.projectPathCache.entries()].map(([k,v]) => `${k}→${v}`).join(', ')}]`);
+        this.syslog(`  Enabled: [${[...this.enabledProjects].join(', ')}]`);
         return;
       }
       this.syslog(`  Tasks: ${tasksForEngine.length} enabled-or-uncached / ${executableTasks.length} executable / ${tasks.length} total`);
@@ -580,7 +614,7 @@ export class AutonomousRunner {
       }
 
       // Skip if project is not in enabled list (allow-list; empty = nothing runs)
-      if (this.enabledProjects.size > 0 && !this.enabledProjects.has(projectPath)) {
+      if (this.enabledProjects.size > 0 && !this.isProjectEnabled(projectPath)) {
         this.syslog(`  Project not enabled: ${projectPath}`);
         continue;
       }
@@ -609,48 +643,24 @@ export class AutonomousRunner {
     await this.runAvailableTasks();
   }
 
-  /**
-   * Handle decision
-   */
+  /** Handle decision */
   private async handleDecision(decision: DecisionResult): Promise<void> {
-    console.log(`[AutonomousRunner] handleDecision: action=${decision.action}`);
     switch (decision.action) {
       case 'execute':
-        console.log('[AutonomousRunner] Entering execute case');
-        if (decision.task && decision.workflow) {
-          console.log(`[AutonomousRunner] About to execute task: ${decision.task.title}`);
-          await this.executeTask(decision.task, decision.workflow);
-          console.log('[AutonomousRunner] executeTask completed');
-        }
+        if (decision.task && decision.workflow) await this.executeTask(decision.task, decision.workflow);
         break;
-
       case 'defer':
-        if (decision.task) {
-          this.state.pendingApproval = decision.task;
-          await this.requestApproval(decision);
-        }
+        if (decision.task) { this.state.pendingApproval = decision.task; await this.requestApproval(decision); }
         break;
-
       case 'skip':
-        console.log(`[AutonomousRunner] Skipped: ${decision.reason}`);
-        break;
-
       case 'add_to_backlog':
-        console.log(`[AutonomousRunner] Added to backlog: ${decision.reason}`);
         break;
     }
   }
 
-  /**
-   * Execute task
-   */
   private async executeTask(task: TaskItem, workflow: any): Promise<void> {
-    console.log(`[AutonomousRunner] executeTask called, pairMode=${this.config.pairMode}`);
-    // If pair mode, use pair execution
     if (this.config.pairMode) {
-      console.log('[AutonomousRunner] Calling executeTaskPairMode...');
       await this.executeTaskPairMode(task);
-      console.log('[AutonomousRunner] executeTaskPairMode completed');
       return;
     }
 
@@ -690,13 +700,8 @@ export class AutonomousRunner {
     await this.reportExecutionResult(task, result);
   }
 
-  /**
-   * Execute task in pair mode (Worker/Reviewer loop)
-   * Legacy mode - processes single task without parallel execution
-   */
+  /** Execute task in pair mode (legacy single-task) */
   private async executeTaskPairMode(task: TaskItem): Promise<void> {
-    console.log('[AutonomousRunner] executeTaskPairMode started');
-
     // Auto-resolve project path
     const projectPath = await this.resolveProjectPath(task);
 
@@ -709,7 +714,7 @@ export class AutonomousRunner {
     }
 
     // Skip if project is not in enabled list (allow-list; empty = nothing runs)
-    if (this.enabledProjects.size > 0 && !this.enabledProjects.has(projectPath)) {
+    if (this.enabledProjects.size > 0 && !this.isProjectEnabled(projectPath)) {
       console.log(`[AutonomousRunner] Project not enabled, skipping: ${projectPath}`);
       return;
     }
@@ -775,7 +780,7 @@ export class AutonomousRunner {
           await linear.logBlocked(task.issueId, 'autonomous-runner',
             t('runner.reviewRejected', { feedback: result.reviewResult?.feedback || t('common.fallback.noDescription') })
           );
-          console.log(`[AutonomousRunner] Issue ${task.issueId} marked as Blocked (rejected)`);
+          console.log(`[AutonomousRunner] Issue ${task.issueId} marked as Todo (blocked) (rejected)`);
         }
         // If failed, keep In Progress (retry on next heartbeat)
       } catch (err) {
@@ -783,10 +788,6 @@ export class AutonomousRunner {
       }
     }
   }
-
-  // ============================================
-  // Delegation to runnerExecution.ts
-  // ============================================
 
   private getExecCtx(): execution.ExecutionContext {
     return {
@@ -806,7 +807,7 @@ export class AutonomousRunner {
     return execution.resolveProjectPath(this.getExecCtx(), task);
   }
 
-  private async decomposeTask(task: TaskItem, projectPath: string, targetMinutes: number): Promise<boolean> {
+  private async decomposeTask(task: TaskItem, projectPath: string, targetMinutes: number): Promise<boolean | 'no-decomp'> {
     return execution.decomposeTask(this.getExecCtx(), task, projectPath, targetMinutes);
   }
 
@@ -822,9 +823,6 @@ export class AutonomousRunner {
     return execution.reportExecutionResult(task, result, reportToDiscord);
   }
 
-  /**
-   * Manual approval
-   */
   async approve(): Promise<boolean> {
     if (!this.state.pendingApproval) {
       return false;
@@ -843,9 +841,6 @@ export class AutonomousRunner {
     return false;
   }
 
-  /**
-   * Manual rejection
-   */
   reject(): boolean {
     if (!this.state.pendingApproval) {
       return false;
@@ -855,9 +850,6 @@ export class AutonomousRunner {
     return true;
   }
 
-  /**
-   * Run now (manual trigger)
-   */
   async runNow(): Promise<void> {
     await this.heartbeat();
   }
@@ -890,6 +882,31 @@ export class AutonomousRunner {
   resumeScheduler(): void { this.scheduler.resume(); }
   getQueuedTasks() { return this.scheduler.getQueuedTasks(); }
   getRunningTasks() { return this.scheduler.getRunningTasks(); }
+  getPipelineHistory(limit = 50) { return getPipelineHistory(limit); }
+
+  private recordPipelineHistory(task: TaskItem, result: PipelineResult): void {
+    const entry: PipelineHistoryEntry = {
+      sessionId: result.sessionId,
+      issueIdentifier: task.issueIdentifier || task.issueId,
+      issueId: task.issueId,
+      taskTitle: task.title,
+      projectName: task.linearProject?.name,
+      projectPath: result.taskContext?.projectPath,
+      success: result.success,
+      finalStatus: result.finalStatus,
+      iterations: result.iterations,
+      totalDuration: result.totalDuration,
+      stages: result.stages.map(s => ({ stage: s.stage, success: s.success, duration: s.duration })),
+      cost: result.totalCost ? {
+        costUsd: result.totalCost.costUsd,
+        inputTokens: result.totalCost.inputTokens,
+        outputTokens: result.totalCost.outputTokens,
+      } : undefined,
+      prUrl: result.prUrl,
+      completedAt: new Date().toISOString(),
+    };
+    appendPipelineHistory(entry);
+  }
 
   disableProject(projectPath: string): void {
     this.enabledProjects.delete(projectPath);
@@ -906,10 +923,7 @@ export class AutonomousRunner {
     return Array.from(this.enabledProjects);
   }
 
-  /**
-   * Pre-register a project path in the cache (name → path).
-   * Used by web layer to seed paths from pinned projects before any task runs.
-   */
+  /** Pre-register project path in cache (name → path) */
   registerProjectPath(name: string, projectPath: string): void {
     if (!this.projectPathCache.has(name)) {
       this.projectPathCache.set(name, projectPath);
@@ -932,13 +946,6 @@ export class AutonomousRunner {
   }
 }
 
-// ============================================
-// Singleton & Convenience Functions
-// ============================================
-
-/**
- * Get runner instance
- */
 export function getRunner(config?: AutonomousConfig): AutonomousRunner {
   if (!runnerInstance && config) {
     runnerInstance = new AutonomousRunner(config);

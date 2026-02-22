@@ -83,6 +83,17 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     .btn:disabled { opacity: 0.4; cursor: default; }
     .btn-active { border-color: var(--amber); color: var(--amber); }
     .btn-active:hover:not(:disabled) { background: #332200; border-color: var(--amber); }
+    .btn-danger { border-color: #551111; color: var(--red); }
+    .btn-danger:hover:not(:disabled) { background: #220000; border-color: var(--red); }
+    .svc-group { display: flex; align-items: center; gap: 4px; margin-right: 8px; }
+    .svc-status {
+      font-size: 9px; padding: 1px 6px;
+      border: 1px solid var(--dim); color: var(--dim);
+      letter-spacing: 0.1em; text-transform: uppercase;
+    }
+    .svc-status.active { border-color: var(--green); color: var(--green); }
+    .svc-status.inactive { border-color: var(--red); color: var(--red); }
+    .svc-sep { color: var(--border); margin: 0 2px; }
 
     /* ===== STATS BAR ===== */
     .stats-bar {
@@ -206,6 +217,16 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       border-bottom: 1px solid var(--border2);
     }
     .issue-row:last-child { border-bottom: none; }
+    .git-info { color: var(--dim); font-size: 9px; display: flex; gap: 6px; align-items: center; }
+    .git-branch-name { color: var(--cyan); }
+    .git-dirty { color: var(--amber); }
+    .git-sync { color: var(--dim); }
+    .pr-row { display: flex; align-items: center; gap: 4px; padding: 2px 0; font-size: 11px; border-bottom: 1px solid var(--border2); }
+    .pr-row:last-child { border-bottom: none; }
+    .pr-num { color: var(--cyan); font-size: 9px; min-width: 32px; }
+    .pr-branch { color: var(--green-lo); font-size: 9px; max-width: 80px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .pr-title { flex: 1; color: var(--white); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .pr-age { color: var(--dim); font-size: 9px; flex-shrink: 0; }
     .idot { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; }
     .idot-run { background: var(--green); }
     .idot-que { background: var(--amber); }
@@ -229,18 +250,39 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     .sdot.complete { background: var(--green); }
     .sdot.fail   { background: var(--red); }
     .sname { color: var(--white); min-width: 70px; }
+    .srepo { color: var(--green-lo); font-size: 9px; min-width: 50px; max-width: 90px; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .stask { color: var(--cyan); font-size: 10px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .selapsed { color: var(--amber); font-size: 9px; flex-shrink: 0; min-width: 36px; text-align: right; }
+    .smodel { color: var(--dim); font-size: 9px; flex-shrink: 0; min-width: 56px; text-align: right; }
+    .stokens { color: var(--amber); font-size: 9px; flex-shrink: 0; min-width: 80px; text-align: right; white-space: nowrap; }
     .sstatus { margin-left: auto; font-size: 9px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.06em; flex-shrink: 0; }
 
     /* ===== LOG ===== */
-    .log-area { font-size: 11px; line-height: 1.6; }
-    .log-line { padding: 2px 0; border-bottom: 1px solid var(--border2); display: flex; gap: 4px; align-items: flex-start; }
-    .ltag { color: var(--green-lo); min-width: 44px; flex-shrink: 0; padding-top: 1px; }
-    .lstage { color: var(--cyan); min-width: 55px; flex-shrink: 0; font-size: 10px; padding-top: 1px; }
-    .ltext { color: var(--dim); word-break: break-word; white-space: pre-wrap; flex: 1; min-width: 0; }
+    .log-area { font-size: 11px; line-height: 1.5; padding: 4px 0; }
+    .log-line { padding: 3px 8px; display: flex; gap: 6px; align-items: flex-start; border-radius: 2px; margin: 1px 0; }
+    .log-line:hover { background: rgba(255,255,255,0.03); }
+    .log-line.log-success .ltext { color: var(--green); }
+    .log-line.log-fail .ltext { color: var(--red); }
+    .log-line.log-warn .ltext { color: var(--amber); }
+    .log-line.log-system { opacity: 0.6; }
+    .log-line.log-heading { border-top: 1px solid var(--border2); margin-top: 6px; padding-top: 8px; }
+    .ltime { color: var(--dim); font-size: 9px; flex-shrink: 0; min-width: 36px; opacity: 0.7; padding-top: 2px; font-variant-numeric: tabular-nums; }
+    .licon { flex-shrink: 0; min-width: 14px; text-align: center; font-size: 11px; padding-top: 1px; }
+    .ltag { color: var(--green-lo); min-width: 52px; flex-shrink: 0; padding-top: 1px; font-size: 10px; font-weight: 500; }
+    .lstage { color: var(--cyan); min-width: 60px; flex-shrink: 0; font-size: 10px; padding-top: 1px; text-transform: uppercase; letter-spacing: 0.03em; opacity: 0.8; }
+    .ltext { color: #99aa99; word-break: break-word; white-space: pre-wrap; flex: 1; min-width: 0; }
+    .ltext .lhighlight { color: var(--white); font-weight: 500; }
+    .ltext .lcost { color: var(--amber); font-size: 10px; }
+    .ltext .lfiles { color: var(--cyan); font-size: 10px; }
+    .log-line.log-spacer { height: 6px; padding: 0; margin: 0; min-height: 6px; }
+    .log-line.log-separator { opacity: 0.2; padding: 0 8px; margin: 4px 0; }
+    .log-line.log-separator .ltext { color: var(--dim); }
+    .log-line.log-code .ltext { font-family: 'JetBrains Mono', 'Fira Code', monospace; color: var(--cyan); opacity: 0.8; font-size: 10px; }
+    .log-line.log-heading2 .ltext { color: var(--white); font-weight: 600; font-size: 12px; }
+    .log-line.log-tool .ltext { color: var(--dim); font-style: italic; font-size: 10px; }
 
     /* ===== CHAT ===== */
-    .chat-col { display: flex; flex-direction: column; height: 100%; }
+    .chat-col { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
     .chat-messages {
       flex: 1;
       overflow-y: auto;
@@ -305,6 +347,110 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     .repo-item-name { color: var(--green); font-weight: bold; }
     .repo-item-path { color: var(--dim); font-size: 10px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .repo-item-badge { font-size: 9px; padding: 1px 5px; border: 1px solid var(--green-lo); color: var(--green-mid); flex-shrink: 0; }
+
+    /* ===== TAB BAR (hidden on desktop) ===== */
+    .tab-bar { display: none; }
+
+    /* ===== MOBILE RESPONSIVE ===== */
+    @media (max-width: 768px) {
+      html, body { overflow: auto; }
+
+      /* Header */
+      header {
+        height: auto;
+        min-height: 38px;
+        flex-wrap: wrap;
+        padding: 6px 0.75rem;
+        gap: 4px;
+      }
+      .hdr-fullname { display: none; }
+      .hdr-right { width: 100%; justify-content: flex-end; }
+      .svc-group .btn { font-size: 0; padding: 4px 8px; min-height: 32px; }
+      .svc-group #svc-stop-btn::after { content: "\\23F8"; font-size: 12px; }
+      .svc-group #svc-restart-btn::after { content: "\\21BB"; font-size: 12px; }
+      #hb-btn { min-height: 32px; }
+
+      /* Stats bar */
+      .stats-bar {
+        height: auto;
+        min-height: 32px;
+        flex-wrap: wrap;
+        padding: 4px 0.75rem;
+        gap: 0.5rem;
+        font-size: 11px;
+      }
+      .stat-divider { display: none; }
+
+      /* Tab bar */
+      .tab-bar {
+        display: flex;
+        background: var(--bg2);
+        border-bottom: 1px solid var(--border);
+      }
+      .tab {
+        flex: 1;
+        font-family: inherit;
+        font-size: 11px;
+        letter-spacing: 0.1em;
+        padding: 10px 0;
+        min-height: 44px;
+        background: transparent;
+        border: none;
+        border-bottom: 2px solid transparent;
+        color: var(--dim);
+        cursor: pointer;
+        text-align: center;
+        transition: all 0.15s;
+      }
+      .tab.active {
+        color: var(--green);
+        border-bottom-color: var(--green);
+      }
+
+      /* Main grid → single column */
+      .main-grid {
+        display: flex;
+        flex-direction: column;
+        height: auto;
+        min-height: calc(100vh - 160px);
+        overflow: visible;
+      }
+      .col {
+        display: none;
+        border-right: none;
+        overflow: visible;
+        min-height: calc(100vh - 200px);
+      }
+      .col.mob-active {
+        display: flex;
+        flex: 1;
+      }
+
+      /* Repo picker → fullscreen */
+      #repo-picker > div {
+        width: 100% !important;
+        max-height: 90vh !important;
+        margin: 5vh 0 0;
+      }
+      .repo-item { min-height: 44px; }
+
+      /* Chat input → sticky bottom */
+      .chat-input-area {
+        position: sticky;
+        bottom: 0;
+        z-index: 10;
+        min-height: 44px;
+      }
+      .chat-input { min-height: 32px; font-size: 14px; }
+      .chat-send { min-height: 36px; padding: 4px 12px; }
+
+      /* Touch targets */
+      .btn { min-height: 36px; padding: 4px 10px; }
+      .proj-hdr { min-height: 44px; padding: 8px 7px; }
+      .toggle { width: 40px; height: 22px; }
+      .slider:before { height: 14px; width: 14px; left: 3px; bottom: 3px; }
+      input:checked + .slider:before { transform: translateX(18px); }
+    }
   </style>
 </head>
 <body>
@@ -315,6 +461,12 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     <span class="hdr-sep">::</span>
     <span class="hdr-sub">SUPERVISOR</span>
     <div class="hdr-right">
+      <div class="svc-group">
+        <span class="svc-status" id="svc-status">...</span>
+        <span class="svc-sep">│</span>
+        <button class="btn btn-danger" id="svc-stop-btn" onclick="svcAction('stop')">⏸ STOP</button>
+        <button class="btn" id="svc-restart-btn" onclick="svcAction('restart')">↻ RESTART</button>
+      </div>
       <span id="sse-status">CONNECTING</span>
       <button class="btn btn-active" id="hb-btn" onclick="triggerHeartbeat()">▶ HEARTBEAT</button>
     </div>
@@ -335,6 +487,13 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     <div class="stat"><span class="stat-label">COST</span><span class="stat-val cyan" id="stat-cost">$0.00</span></div>
   </div>
 
+  <!-- TAB BAR (mobile only) -->
+  <div class="tab-bar">
+    <button class="tab active" data-tab="0">REPOS</button>
+    <button class="tab" data-tab="1">PIPELINE</button>
+    <button class="tab" data-tab="2">CHAT</button>
+  </div>
+
   <!-- MAIN GRID -->
   <div class="main-grid">
 
@@ -348,6 +507,15 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         </div>
         <div class="panel-body" id="project-list">
           <div class="empty">loading...</div>
+        </div>
+      </div>
+      <div class="panel" id="monitor-panel" style="display:none">
+        <div class="panel-hdr">
+          <span class="panel-hdr-title">MONITORS</span>
+          <span class="panel-hdr-badge" id="monitor-count"></span>
+        </div>
+        <div class="panel-body" id="monitor-list">
+          <div class="empty">no monitors</div>
         </div>
       </div>
     </div>
@@ -418,6 +586,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 
     let projects = [];
     let expandedProjects = new Set();
+    let knowledgeCache = {};
     let logLines = [];
     let stageRows = [];
     let chatBusy = false;
@@ -425,10 +594,13 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     const taskProjectMap = new Map();
     // taskId → { title, issueIdentifier } for pipeline display
     const taskTitleMap = new Map();
+    // taskId → start timestamp for elapsed time
+    const taskStartMap = new Map();
 
     // ---- SSE ----
-    function connectSSE() {
-      const es = new EventSource("/api/events");
+    function connectSSE(skipReplay) {
+      const url = skipReplay ? "/api/events?skipReplay=1" : "/api/events";
+      const es = new EventSource(url);
       const statusEl = document.getElementById("sse-status");
       es.onopen = () => { statusEl.textContent = "LIVE"; statusEl.className = "connected"; };
       es.onmessage = e => {
@@ -437,7 +609,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       };
       es.onerror = () => {
         statusEl.textContent = "RECONNECTING"; statusEl.className = "disconnected";
-        es.close(); setTimeout(connectSSE, 3000);
+        es.close(); setTimeout(function() { connectSSE(false); }, 3000);
       };
     }
 
@@ -452,6 +624,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         case "task:started": {
           const p = taskProjectMap.get(ev.data.taskId);
           if (ev.data.title) taskTitleMap.set(ev.data.taskId, { title: ev.data.title, issueIdentifier: ev.data.issueIdentifier });
+          taskStartMap.set(ev.data.taskId, Date.now());
           if (p) updateProjectTask(p, ev.data.taskId, ev.data.title, null, "running");
           break;
         }
@@ -476,6 +649,10 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           break;
         }
         case "chat:agent": appendChatMsg("agent", ev.data.text, null, ev.data.ts); break;
+        case "monitor:checked":
+        case "monitor:stateChange":
+          fetchMonitors();
+          break;
         case "heartbeat": {
           const btn = document.getElementById("hb-btn");
           btn.disabled = false; btn.textContent = "▶ HEARTBEAT";
@@ -495,6 +672,38 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         document.getElementById("stat-uptime").textContent =
           (h ? h + "h " : "") + (m ? m + "m " : "") + ss + "s";
       }
+    }
+
+    // ---- Service control ----
+    async function fetchSvcStatus() {
+      try {
+        const res = await fetch("/api/service/status");
+        const data = await res.json();
+        const el = document.getElementById("svc-status");
+        const status = data.status || "unknown";
+        el.textContent = status;
+        el.className = "svc-status " + (status === "active" ? "active" : "inactive");
+      } catch {
+        const el = document.getElementById("svc-status");
+        el.textContent = "unknown";
+        el.className = "svc-status inactive";
+      }
+    }
+
+    async function svcAction(action) {
+      const label = action === "stop" ? "STOP" : "RESTART";
+      if (!confirm("서비스를 " + label + " 하시겠습니까?")) return;
+      const btnId = action === "stop" ? "svc-stop-btn" : "svc-restart-btn";
+      const btn = document.getElementById(btnId);
+      btn.disabled = true;
+      try {
+        await fetch("/api/service/" + action, { method: "POST" });
+        addLogLine({ taskId: "system", stage: "service", line: "Service " + action + " requested" });
+      } catch(e) {
+        addLogLine({ taskId: "system", stage: "error", line: "Service " + action + " failed: " + e.message });
+      }
+      btn.disabled = false;
+      setTimeout(fetchSvcStatus, 2000);
     }
 
     // ---- Heartbeat trigger ----
@@ -577,7 +786,35 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
             "<div class=\\"issue-sec-label\\">linear (" + p.pending.length + ")</div>" +
             p.pending.map(t => issueRow(t, "idot-pnd")).join("")
           );
+          // Open PRs
+          if (p.prs && p.prs.length) {
+            secs.push(
+              "<div class=\\"issue-sec-label\\">open PRs (" + p.prs.length + ")</div>" +
+              p.prs.map(function(pr) {
+                return "<div class=\\"pr-row\\">" +
+                  "<span class=\\"pr-num\\">#" + pr.number + "</span>" +
+                  "<span class=\\"pr-branch\\" title=\\"" + escapeAttr(pr.branch) + "\\">" + escapeHtml(pr.branch) + "</span>" +
+                  "<span class=\\"pr-title\\" title=\\"" + escapeAttr(pr.title) + "\\">" + escapeHtml(pr.title) + "</span>" +
+                  "<span class=\\"pr-age\\">" + fmtAge(pr.updatedAt) + "</span>" +
+                "</div>";
+              }).join("")
+            );
+          }
           if (!secs.length) secs.push("<div class=\\"empty\\" style=\\"padding:4px\\">no issues</div>");
+          // Knowledge graph health info (if cached)
+          var kgData = knowledgeCache[p.name] || knowledgeCache[p.path];
+          if (kgData && kgData.summary) {
+            var s = kgData.summary;
+            secs.push(
+              "<div class=\\"issue-sec-label\\">code health</div>" +
+              "<div style=\\"padding:2px 8px;font-size:10px;color:#88aa88\\">" +
+                "modules:" + s.totalModules + " tests:" + s.totalTestFiles +
+                " untested:" + s.untestedModules.length +
+                " churn:" + (s.avgChurnScore || 0).toFixed(2) +
+                (s.hotModules.length ? " hot:" + s.hotModules.slice(0,3).map(function(m){return m.split("/").pop()}).join(",") : "") +
+              "</div>"
+            );
+          }
           issuesHtml = "<div class=\\"proj-issues\\">" + secs.join("") + "</div>";
         }
 
@@ -588,6 +825,14 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
             "<div class=\\"proj-info\\">" +
               "<div class=\\"proj-name\\">" + escapeHtml(p.name) + "</div>" +
               "<div class=\\"proj-path\\">" + escapeHtml(p.path) + "</div>" +
+              (p.git ? "<div class=\\"git-info\\">" +
+                "\\u2387 <span class=\\"git-branch-name\\">" + escapeHtml(p.git.branch) + "</span>" +
+                (p.git.hasChanges ? " <span class=\\"git-dirty\\">\\u25CF " + p.git.uncommittedFiles + "</span>" : "") +
+                ((p.git.ahead || p.git.behind) ? " <span class=\\"git-sync\\">" +
+                  (p.git.ahead ? "\\u2191" + p.git.ahead : "") +
+                  (p.git.behind ? " \\u2193" + p.git.behind : "") +
+                "</span>" : "") +
+              "</div>" : "") +
             "</div>" +
             "<div class=\\"proj-counts\\">" +
               (p.running.length ? "<span class=\\"cnt cnt-run\\">" + p.running.length + "r</span>" : "") +
@@ -655,6 +900,22 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       if (stageRows.length > MAX_STAGE) stageRows = stageRows.slice(-MAX_STAGE);
       renderStages();
     }
+    function shortModel(name) {
+      if (!name) return "";
+      if (name.includes("sonnet-4-5")) return "sonnet-4.5";
+      if (name.includes("haiku-4-5")) return "haiku-4.5";
+      if (name.includes("opus-4-6")) return "opus-4.6";
+      if (name.includes("opus-4")) return "opus-4";
+      if (name.includes("sonnet-4")) return "sonnet-4";
+      var parts = name.split("-");
+      return parts[parts.length - 1];
+    }
+    function fmtTokens(n) {
+      if (n == null) return "";
+      if (n >= 1000000) return (n / 1000000).toFixed(1) + "M";
+      if (n >= 1000) return (n / 1000).toFixed(1) + "k";
+      return String(n);
+    }
     function renderStages() {
       const el = document.getElementById("stage-list");
       const cnt = document.getElementById("stage-count");
@@ -664,19 +925,40 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         const info = r.taskId ? taskTitleMap.get(r.taskId) : null;
         let taskLabel = "";
         if (info) {
-          // issueIdentifier 있으면 우선 표시, 없으면 title 앞 25자
           taskLabel = info.issueIdentifier
             ? info.issueIdentifier + (info.title ? " " + info.title.slice(0, 22) : "")
             : (info.title ? info.title.slice(0, 30) : "");
         } else if (r.taskId) {
-          // fallback: 짧은 해시
           taskLabel = r.taskId.slice(0, 8);
+        }
+        // repo name from projectPath
+        const projPath = r.taskId ? taskProjectMap.get(r.taskId) : null;
+        const repoName = projPath ? projPath.split("/").pop() : "";
+        // elapsed time
+        const startTs = r.taskId ? taskStartMap.get(r.taskId) : null;
+        let elapsed = "";
+        if (startTs) {
+          const sec = Math.floor((Date.now() - startTs) / 1000);
+          if (sec < 60) elapsed = sec + "s";
+          else if (sec < 3600) elapsed = Math.floor(sec / 60) + "m" + (sec % 60) + "s";
+          else elapsed = Math.floor(sec / 3600) + "h" + Math.floor((sec % 3600) / 60) + "m";
+        }
+        // model/token info (only on complete)
+        var modelStr = r.model ? shortModel(r.model) : "";
+        var tokenStr = "";
+        if (r.inputTokens || r.outputTokens) {
+          tokenStr = fmtTokens(r.inputTokens) + "/" + fmtTokens(r.outputTokens);
+          if (r.costUsd != null) tokenStr += " $" + r.costUsd.toFixed(2);
         }
         return (
           "<div class=\\"stage-row\\">" +
           "<div class=\\"sdot " + (r.status || "") + "\\"></div>" +
+          "<div class=\\"srepo\\">" + escapeHtml(repoName) + "</div>" +
           "<div class=\\"sname\\">" + escapeHtml(r.stage) + "</div>" +
           "<div class=\\"stask\\" title=\\"" + escapeAttr(r.taskId || "") + "\\">" + escapeHtml(taskLabel) + "</div>" +
+          "<div class=\\"smodel\\">" + escapeHtml(modelStr) + "</div>" +
+          "<div class=\\"stokens\\">" + escapeHtml(tokenStr) + "</div>" +
+          "<div class=\\"selapsed\\">" + elapsed + "</div>" +
           "<div class=\\"sstatus\\">" + (r.status || "") + "</div>" +
           "</div>"
         );
@@ -686,10 +968,73 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 
     // ---- Log ----
     function addLogLine(data) {
+      data._ts = Date.now();
       logLines.push(data);
       if (logLines.length > MAX_LOG) logLines = logLines.slice(-MAX_LOG);
       renderLog();
     }
+
+    function classifyLog(line) {
+      if (!line) return { cls: "log-spacer", icon: "" };
+      if (line === "───") return { cls: "log-separator", icon: "" };
+      if (/^■ /.test(line)) return { cls: "log-heading2", icon: "■" };
+      if (/^[┌└│]/.test(line)) return { cls: "log-code", icon: "" };
+      if (/^▸ /.test(line)) return { cls: "log-tool", icon: "▸" };
+      if (/^▶|Heartbeat started|Stage started|Iteration [0-9]/.test(line)) return { cls: "log-heading", icon: "▶" };
+      if (/^✓|success=true|approved|completed|Done|Created sub-issue/.test(line)) return { cls: "log-success", icon: "✓" };
+      if (/^✗|success=false|failed|error|Error|rejected|exceeded/.test(line)) return { cls: "log-fail", icon: "✗" };
+      if (/^⟳|Fetching|Decomposing|Running|Scheduling|Spawning/.test(line)) return { cls: "", icon: "⟳" };
+      if (/^⛔|Blocked|Time window|blocked/.test(line)) return { cls: "log-warn", icon: "⛔" };
+      if (/^—|No task|already completed|no log/.test(line)) return { cls: "log-system", icon: "—" };
+      if (/Cost:|\\$[\\.0-9]/.test(line)) return { cls: "", icon: "💲" };
+      if (/Git detected|files changed|filesChanged/.test(line)) return { cls: "", icon: "📁" };
+      if (/Selected [0-9]+ tasks/.test(line)) return { cls: "", icon: "🎯" };
+      if (/Enqueued|executePipeline/.test(line)) return { cls: "", icon: "📋" };
+      if (/Direct path|Project|path found/.test(line)) return { cls: "log-system", icon: "📂" };
+      return { cls: "", icon: "·" };
+    }
+
+    function formatLogText(raw) {
+      if (!raw) return "";
+      // Detect and humanize raw JSON that slipped through
+      const trimmed = raw.trim();
+      if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+        try {
+          const obj = JSON.parse(trimmed);
+          if (obj.needsDecomposition === false) {
+            const r = obj.reason ? obj.reason.slice(0, 120) : "";
+            raw = "\\u2713 \\uBD84\\uD574 \\uBD88\\uD544\\uC694 (" + (obj.totalEstimatedMinutes || "?") + "\\uBD84) " + r;
+          } else if (obj.needsDecomposition === true && obj.subTasks) {
+            raw = "\\uD83D\\uDD00 " + obj.subTasks.length + "\\uAC1C \\uC11C\\uBE0C\\uD0DC\\uC2A4\\uD06C\\uB85C \\uBD84\\uD574 (\\uCD1D " + (obj.totalEstimatedMinutes || "?") + "\\uBD84)";
+          } else if (obj.success !== undefined) {
+            raw = (obj.success ? "\\u2713 " : "\\u2717 ") + (obj.summary || obj.error || JSON.stringify(obj).slice(0, 120));
+          }
+        } catch { /* not valid JSON */ }
+      }
+      let t = escapeHtml(raw);
+      // inline bold: **text** → highlighted
+      t = t.replace(/\\*\\*([^*]+)\\*\\*/g, '<span class="lhighlight">$1</span>');
+      // highlight cost figures
+      t = t.replace(/(\\$[\\d.]+)/g, '<span class="lcost">$1</span>');
+      // highlight file counts
+      t = t.replace(/(\\d+ files? changed)/g, '<span class="lfiles">$1</span>');
+      // highlight durations
+      t = t.replace(/(\\d+\\.\\d+s|\\d+ms)/g, '<span class="lcost">$1</span>');
+      // highlight task titles in quotes
+      t = t.replace(/(&quot;[^&]+&quot;)/g, '<span class="lhighlight">$1</span>');
+      // highlight issue identifiers
+      t = t.replace(/(INT-\\d+)/g, '<span class="lhighlight">$1</span>');
+      return t;
+    }
+
+    function fmtLogTime(ts) {
+      if (!ts) return "";
+      const d = new Date(ts);
+      return d.getHours().toString().padStart(2,"0") + ":" +
+             d.getMinutes().toString().padStart(2,"0") + ":" +
+             d.getSeconds().toString().padStart(2,"0");
+    }
+
     function renderLog() {
       const el = document.getElementById("log-list");
       const cnt = document.getElementById("log-count");
@@ -697,16 +1042,27 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       if (cnt) cnt.textContent = logLines.length + "/" + MAX_LOG;
       const atBottom = el.scrollHeight - el.scrollTop <= el.clientHeight + 50;
       el.innerHTML = logLines.map(l => {
-        // taskId가 UUID면 issueIdentifier 조회, 아니면 그대로
         const info = l.taskId ? taskTitleMap.get(l.taskId) : null;
         const tag = info?.issueIdentifier
           ? info.issueIdentifier
-          : (l.taskId || "").slice(0, 8);
+          : (l.taskId === "system" ? "SYS" : (l.taskId || "").slice(0, 8));
+        const { cls, icon } = classifyLog(l.line);
+        // spacer/separator는 최소 렌더링
+        if (cls === "log-spacer") return "<div class=\\"log-line log-spacer\\"></div>";
+        if (cls === "log-separator") return "<div class=\\"log-line log-separator\\"><span class=\\"ltext\\">───────────────────</span></div>";
+        const time = fmtLogTime(l._ts);
+        const stage = l.stage && l.stage !== "heartbeat" ? l.stage : "";
+        // heading2: strip ■ prefix (icon handles it)
+        const displayLine = cls === "log-heading2" ? (l.line || "").replace(/^■ /, "") : l.line;
+        // tool: strip ▸ prefix
+        const displayLine2 = cls === "log-tool" ? (displayLine || "").replace(/^▸ /, "") : displayLine;
         return (
-          "<div class=\\"log-line\\">" +
-          "<span class=\\"ltag\\" title=\\"" + escapeAttr(l.taskId || "") + "\\">[" + escapeHtml(tag) + "]</span>" +
-          "<span class=\\"lstage\\">" + escapeHtml(l.stage || "") + "</span>" +
-          "<span class=\\"ltext\\">" + escapeHtml(l.line || "") + "</span>" +
+          "<div class=\\"log-line " + cls + "\\">" +
+          "<span class=\\"ltime\\">" + time + "</span>" +
+          "<span class=\\"licon\\">" + icon + "</span>" +
+          "<span class=\\"ltag\\" title=\\"" + escapeAttr(l.taskId || "") + "\\">" + escapeHtml(tag) + "</span>" +
+          (stage ? "<span class=\\"lstage\\">" + escapeHtml(stage) + "</span>" : "") +
+          "<span class=\\"ltext\\">" + formatLogText(displayLine2) + "</span>" +
           "</div>"
         );
       }).join("");
@@ -774,6 +1130,20 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     }
 
     // ---- Utils ----
+    function fmtAge(isoDate) {
+      if (!isoDate) return "";
+      var diff = Math.max(0, Date.now() - new Date(isoDate).getTime());
+      var sec = Math.floor(diff / 1000);
+      if (sec < 60) return sec + "s";
+      var min = Math.floor(sec / 60);
+      if (min < 60) return min + "m";
+      var hr = Math.floor(min / 60);
+      if (hr < 24) return hr + "h";
+      var day = Math.floor(hr / 24);
+      if (day < 7) return day + "d";
+      var wk = Math.floor(day / 7);
+      return wk + "w";
+    }
     function escapeHtml(text) {
       const d = document.createElement("div"); d.textContent = String(text || ""); return d.innerHTML;
     }
@@ -860,13 +1230,54 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       el.style.opacity = "1";
     }
 
+    // ---- Monitors ----
+    var monitorsData = [];
+    async function fetchMonitors() {
+      try {
+        const res = await fetch("/api/monitors");
+        if (res.ok) { monitorsData = await res.json(); renderMonitors(); }
+      } catch {}
+    }
+    function renderMonitors() {
+      const panel = document.getElementById("monitor-panel");
+      const el = document.getElementById("monitor-list");
+      const countEl = document.getElementById("monitor-count");
+      if (!monitorsData.length) { panel.style.display = "none"; return; }
+      panel.style.display = "";
+      const active = monitorsData.filter(m => m.state === "pending" || m.state === "running");
+      countEl.textContent = active.length + "/" + monitorsData.length;
+      el.innerHTML = monitorsData.map(function(m) {
+        var stateColor = m.state === "running" ? "var(--green)" : m.state === "completed" ? "var(--cyan)" : m.state === "failed" || m.state === "timeout" ? "var(--red)" : "var(--dim)";
+        var elapsed = m.registeredAt ? fmtDur(Date.now() - m.registeredAt) : "-";
+        var lastOut = m.lastOutput ? escapeHtml(m.lastOutput.slice(0, 80)) : "-";
+        return '<div style="padding:4px 6px;border-bottom:1px solid var(--border);font-size:11px">' +
+          '<div style="display:flex;align-items:center;gap:6px">' +
+            '<span style="color:' + stateColor + ';font-weight:bold">[' + m.state.toUpperCase() + ']</span>' +
+            '<span style="color:var(--green)">' + escapeHtml(m.name) + '</span>' +
+            '<span style="margin-left:auto;color:var(--dim)">' + elapsed + '</span>' +
+          '</div>' +
+          '<div style="color:var(--dim);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escapeAttr(m.lastOutput || "") + '">' + lastOut + '</div>' +
+          (m.issueId ? '<div style="color:var(--cyan-dim);font-size:10px;margin-top:1px">' + escapeHtml(m.issueId) + ' | checks: ' + m.checkCount + '</div>' : '') +
+        '</div>';
+      }).join("");
+    }
+    function fmtDur(ms) {
+      var s = Math.floor(ms / 1000);
+      var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+      if (h >= 24) return Math.floor(h / 24) + "d " + (h % 24) + "h";
+      if (h > 0) return h + "h " + m + "m";
+      return m + "m";
+    }
+
     // ---- Init ----
     async function loadInitial() {
       try {
-        const [statsRes, projectsRes, chatRes] = await Promise.all([
+        const [statsRes, projectsRes, chatRes, logsRes, stagesRes] = await Promise.all([
           fetch("/api/stats"),
           fetch("/api/projects"),
           fetch("/api/chat/history"),
+          fetch("/api/logs"),
+          fetch("/api/stages"),
         ]);
         const stats = await statsRes.json();
         updateStats(stats);
@@ -877,6 +1288,14 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 
         const history = await chatRes.json();
         for (const msg of history) appendChatMsg(msg.role, msg.text, null, msg.ts);
+
+        // 로그 복원
+        const logs = await logsRes.json();
+        for (const ev of logs) addLogLine(ev.data);
+
+        // 파이프라인/태스크 이벤트 복원
+        const stages = await stagesRes.json();
+        for (const ev of stages) handleEvent(ev);
       } catch(e) {
         console.error("Init failed:", e);
       }
@@ -899,8 +1318,47 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       } catch {}
     }, 30000);
 
-    loadInitial();
-    connectSSE();
+    // ---- Mobile Tab Navigation ----
+    function switchTab(idx) {
+      const cols = document.querySelectorAll(".main-grid > .col");
+      const tabs = document.querySelectorAll(".tab-bar .tab");
+      cols.forEach((c, i) => c.classList.toggle("mob-active", i === idx));
+      tabs.forEach((t, i) => t.classList.toggle("active", i === idx));
+    }
+    document.querySelector(".tab-bar").addEventListener("click", e => {
+      const tab = e.target.closest(".tab");
+      if (!tab) return;
+      switchTab(parseInt(tab.dataset.tab, 10));
+    });
+    // Activate first tab on load
+    switchTab(0);
+
+    // Knowledge graph data fetcher
+    async function fetchKnowledgeData() {
+      try {
+        const res = await fetch("/api/knowledge");
+        if (res.ok) {
+          const data = await res.json();
+          for (const item of data) {
+            knowledgeCache[item.slug] = item;
+            // Also cache by last segment for name-based lookup
+            const parts = item.slug.split("-");
+            knowledgeCache[parts[parts.length - 1]] = item;
+          }
+          renderProjects();
+        }
+      } catch {}
+    }
+
+    loadInitial().then(function() { connectSSE(true); });
+    fetchSvcStatus();
+    fetchKnowledgeData();
+    fetchMonitors();
+    setInterval(fetchSvcStatus, 15000);
+    setInterval(fetchKnowledgeData, 60000);
+    setInterval(fetchMonitors, 60000);
+    // Refresh pipeline elapsed times every 10s
+    setInterval(() => { if (stageRows.length) renderStages(); }, 10000);
   </script>
 </body>
 </html>`;
