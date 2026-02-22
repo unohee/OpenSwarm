@@ -121,9 +121,229 @@ export async function handleResume(msg: Message, sessionName: string): Promise<v
 /**
  * !issues [session] - Linear 이슈 목록
  */
-export async function handleIssues(msg: Message, _sessionName?: string): Promise<void> {
-  // TODO: Linear 이슈 조회 구현
-  await msg.reply(t('discord.issues.notImplemented'));
+export async function handleIssues(msg: Message, sessionName?: string): Promise<void> {
+  try {
+    // 세션명 검증
+    if (sessionName) {
+      const status = getAgentStatus?.(sessionName);
+      if (!status || status.length === 0) {
+        await msg.reply(t('discord.errors.sessionNotFound', { name: sessionName }));
+        return;
+      }
+    }
+
+    const agentLabel = sessionName || undefined;
+    const issues = await linear.getMyIssues(agentLabel ? { agentLabel, slim: true } : { slim: true });
+
+    if (issues.length === 0) {
+      await msg.reply(t('discord.issues.noIssues'));
+      return;
+    }
+
+    // 우선순위 이모지 매핑 (Linear: 0=None, 1=Urgent, 2=High, 3=Normal, 4=Low)
+    const priorityEmoji = {
+      0: '⚪',
+      1: '🔴',
+      2: '🟠',
+      3: '🟡',
+      4: '🟢',
+    };
+
+    // 상태 색상 매핑
+    const stateColor = {
+      'Todo': 0x808080,
+      'In Progress': 0x3498db,
+      'In Review': 0x9b59b6,
+      'Done': 0x2ecc71,
+      'Backlog': 0x95a5a6,
+    };
+
+    // 페이지네이션 (최대 10개 per embed)
+    const ITEMS_PER_PAGE = 10;
+    const totalPages = Math.ceil(issues.length / ITEMS_PER_PAGE);
+
+    const embeds: EmbedBuilder[] = [];
+
+    for (let page = 0; page < totalPages; page++) {
+      const startIdx = page * ITEMS_PER_PAGE;
+      const endIdx = Math.min(startIdx + ITEMS_PER_PAGE, issues.length);
+      const pageIssues = issues.slice(startIdx, endIdx);
+
+      const embed = new EmbedBuilder()
+        .setTitle(sessionName
+          ? t('discord.issues.sessionIssues', { session: sessionName })
+          : t('discord.issues.myIssues')
+        )
+        .setColor(stateColor[pageIssues[0]?.state as keyof typeof stateColor] ?? 0x3498db)
+        .setTimestamp();
+
+      if (totalPages > 1) {
+        embed.setFooter({ text: t('discord.issues.page', { current: page + 1, total: totalPages }) });
+      }
+
+      const fields = pageIssues.map((issue) => {
+        const priority = priorityEmoji[issue.priority as keyof typeof priorityEmoji] ?? '⚪';
+        const stateEmoji = {
+          'Todo': '📝',
+          'In Progress': '⚙️',
+          'In Review': '👀',
+          'Done': '✅',
+          'Backlog': '📦',
+        }[issue.state] ?? '📋';
+
+        let value = `${priority} **${issue.identifier}**: ${issue.title}\n`;
+        value += `${stateEmoji} ${issue.state}`;
+
+        if (issue.project) {
+          value += ` · ${issue.project.name}`;
+        }
+
+        if (issue.labels && issue.labels.length > 0) {
+          value += `\n🏷️ ${issue.labels.join(', ')}`;
+        }
+
+        return {
+          name: `\u200b`,
+          value,
+          inline: false,
+        };
+      });
+
+      embed.addFields(...fields);
+      embeds.push(embed);
+    }
+
+    // Embed 전송 (모두 한 번에 또는 나누어 전송)
+    if (embeds.length === 1) {
+      await msg.reply({ embeds });
+    } else {
+      // 첫 번째는 reply, 나머지는 메시지로 전송
+      await msg.reply({ embeds: [embeds[0]] });
+
+      // 추가 embeds 전송 (페이징)
+      for (let i = 1; i < embeds.length; i++) {
+        const channel = msg.channel as any;
+        if (channel?.send) {
+          await channel.send({ embeds: [embeds[i]] });
+        }
+      }
+    }
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    await msg.reply(t('discord.issues.fetchError', { error: errorMsg }));
+  }
+}
+
+/**
+ * !issue <ID> - Linear 이슈 상세 조회
+ */
+export async function handleIssue(msg: Message, issueId: string): Promise<void> {
+  try {
+    if (!issueId) {
+      await msg.reply(t('discord.issues.usage'));
+      return;
+    }
+
+    const issue = await linear.getIssue(issueId);
+
+    if (!issue) {
+      await msg.reply(t('discord.issue.notFound', { id: issueId }));
+      return;
+    }
+
+    // 우선순위 라벨
+    const priorityLabel = {
+      0: 'None',
+      1: 'Urgent',
+      2: 'High',
+      3: 'Normal',
+      4: 'Low',
+    };
+
+    // 상태 색상 매핑
+    const stateColor = {
+      'Todo': 0x808080,
+      'In Progress': 0x3498db,
+      'In Review': 0x9b59b6,
+      'Done': 0x2ecc71,
+      'Backlog': 0x95a5a6,
+    };
+
+    const embed = new EmbedBuilder()
+      .setTitle(`${issue.identifier}: ${issue.title}`)
+      .setColor(stateColor[issue.state as keyof typeof stateColor] ?? 0x3498db)
+      .setTimestamp();
+
+    // 설명
+    if (issue.description) {
+      const desc = issue.description.length > 1024
+        ? issue.description.slice(0, 1021) + '...'
+        : issue.description;
+      embed.addFields({
+        name: '📝 설명',
+        value: desc,
+        inline: false,
+      });
+    }
+
+    // 상태, 우선순위, 프로젝트
+    const stateEmoji = {
+      'Todo': '📝',
+      'In Progress': '⚙️',
+      'In Review': '👀',
+      'Done': '✅',
+      'Backlog': '📦',
+    }[issue.state] ?? '📋';
+
+    let infoValue = `${stateEmoji} ${t('discord.issue.stateLabel', { state: issue.state })}`;
+    infoValue += `\n⭐ ${t('discord.issues.priorityLabel', { priority: priorityLabel[issue.priority as keyof typeof priorityLabel] ?? 'Unknown' })}`;
+
+    if (issue.project) {
+      infoValue += `\n📦 ${t('discord.issues.projectLabel', { project: issue.project.name })}`;
+    }
+
+    if (issue.labels && issue.labels.length > 0) {
+      infoValue += `\n🏷️ ${t('discord.issues.labelsLabel', { labels: issue.labels.join(', ') })}`;
+    }
+
+    embed.addFields({
+      name: '📊 상세 정보',
+      value: infoValue,
+      inline: false,
+    });
+
+    // 댓글 표시
+    if (issue.comments && issue.comments.length > 0) {
+      const commentSummary = issue.comments.slice(0, 3).map((comment, idx) => {
+        const preview = comment.body.length > 100
+          ? comment.body.slice(0, 97) + '...'
+          : comment.body;
+        const createdAt = new Date(comment.createdAt).toLocaleDateString(getDateLocale());
+        return `${idx + 1}. ${preview}\n   _${createdAt}_`;
+      }).join('\n\n');
+
+      const commentValue = issue.comments.length > 3
+        ? `${commentSummary}\n\n_+${issue.comments.length - 3}개 더..._`
+        : commentSummary;
+
+      embed.addFields({
+        name: `💬 ${t('discord.issues.commentsCount', { count: issue.comments.length })}`,
+        value: commentValue,
+        inline: false,
+      });
+    } else {
+      embed.addFields({
+        name: '💬 댓글',
+        value: t('discord.issue.noComments'),
+        inline: false,
+      });
+    }
+
+    await msg.reply({ embeds: [embed] });
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    await msg.reply(t('discord.issue.fetchError', { error: errorMsg }));
+  }
 }
 
 /**
@@ -614,7 +834,7 @@ export async function handleAuto(msg: Message, args: string[]): Promise<void> {
       // Linear fetcher 등록
       autonomous.setLinearFetcher(async (): Promise<TaskItem[]> => {
         try {
-          const issues = await linear.getMyIssues();
+          const issues = await linear.getMyIssues({ slim: true, timeoutMs: 30000 });
           return issues.map((issue: any) => linearIssueToTask({
             id: issue.id,
             identifier: issue.identifier,

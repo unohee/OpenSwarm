@@ -304,6 +304,7 @@ import {
   handlePause,
   handleResume,
   handleIssues,
+  handleIssue,
   handleLog,
   handleCI,
   handleNotifications,
@@ -361,6 +362,10 @@ async function handleMessage(msg: Message): Promise<void> {
 
       case 'issues':
         await handleIssues(msg, args[0]);
+        break;
+
+      case 'issue':
+        await handleIssue(msg, args[0]);
         break;
 
       case 'log':
