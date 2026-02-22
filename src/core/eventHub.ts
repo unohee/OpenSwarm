@@ -6,6 +6,7 @@
 import { EventEmitter } from 'node:events';
 import type { ServerResponse } from 'node:http';
 import type { CostInfo } from '../support/costTracker.js';
+import type { MonitorState } from './types.js';
 
 // ============================================
 // Types
@@ -24,13 +25,17 @@ export type HubEvent =
   | { type: 'task:queued'; data: { taskId: string; title: string; projectPath: string; issueIdentifier?: string } }
   | { type: 'task:started'; data: { taskId: string; title: string; issueIdentifier?: string } }
   | { type: 'task:completed'; data: { taskId: string; success: boolean; duration: number } }
-  | { type: 'pipeline:stage'; data: { taskId: string; stage: string; status: 'start' | 'complete' | 'fail' } }
+  | { type: 'pipeline:stage'; data: { taskId: string; stage: string; status: 'start' | 'complete' | 'fail'; model?: string; inputTokens?: number; outputTokens?: number; costUsd?: number } }
   | { type: 'pipeline:iteration'; data: { taskId: string; iteration: number } }
+  | { type: 'pipeline:escalation'; data: { taskId: string; iteration: number; fromModel?: string; toModel: string } }
   | { type: 'log'; data: { taskId: string; stage: string; line: string } }
   | { type: 'project:toggled'; data: { projectPath: string; enabled: boolean } }
   | { type: 'task:cost'; data: { taskId: string; cost: CostInfo } }
   | { type: 'chat:user'; data: { text: string; ts: number } }
   | { type: 'chat:agent'; data: { text: string; ts: number } }
+  | { type: 'knowledge:updated'; data: { projectSlug: string; nodeCount: number; edgeCount: number } }
+  | { type: 'monitor:checked'; data: { id: string; name: string; state: MonitorState; output?: string; checkCount: number } }
+  | { type: 'monitor:stateChange'; data: { id: string; name: string; from: MonitorState; to: MonitorState; issueId?: string } }
   | { type: 'heartbeat' };
 
 // ============================================
@@ -47,6 +52,15 @@ const sseClients = new Set<ServerResponse>();
 const EVENT_REPLAY_MAX = 500;
 const LOG_REPLAY_MAX = 50;
 const replayBuffer: HubEvent[] = [];
+
+// Per-type buffers for REST snapshot endpoints (dashboard refresh)
+const LOG_BUFFER_MAX = 300;
+const STAGE_BUFFER_MAX = 200;
+const CHAT_BUFFER_MAX = 100;
+
+const logBuffer: HubEvent[] = [];
+const stageBuffer: HubEvent[] = [];
+const chatBuffer: HubEvent[] = [];
 
 function pushReplay(event: HubEvent): void {
   if (event.type === 'log') {
@@ -76,6 +90,30 @@ export function broadcastEvent(event: HubEvent): void {
   if (event.type !== 'heartbeat') {
     pushReplay(event);
   }
+  // Per-type buffers for REST snapshot
+  switch (event.type) {
+    case 'log':
+      logBuffer.push(event);
+      if (logBuffer.length > LOG_BUFFER_MAX) logBuffer.shift();
+      break;
+    case 'pipeline:stage':
+    case 'pipeline:iteration':
+    case 'pipeline:escalation':
+    case 'task:queued':
+    case 'task:started':
+    case 'task:completed':
+    case 'task:cost':
+    case 'monitor:checked':
+    case 'monitor:stateChange':
+      stageBuffer.push(event);
+      if (stageBuffer.length > STAGE_BUFFER_MAX) stageBuffer.shift();
+      break;
+    case 'chat:user':
+    case 'chat:agent':
+      chatBuffer.push(event);
+      if (chatBuffer.length > CHAT_BUFFER_MAX) chatBuffer.shift();
+      break;
+  }
   const data = `data: ${JSON.stringify(event)}\n\n`;
   for (const res of sseClients) {
     try {
@@ -86,9 +124,9 @@ export function broadcastEvent(event: HubEvent): void {
   }
 }
 
-export function addSSEClient(res: ServerResponse): () => void {
+export function addSSEClient(res: ServerResponse, skipReplay = false): () => void {
   // Replay buffered events to new client so they see current state
-  if (replayBuffer.length > 0) {
+  if (!skipReplay && replayBuffer.length > 0) {
     try {
       for (const event of replayBuffer) {
         res.write(`data: ${JSON.stringify(event)}\n\n`);
@@ -105,4 +143,16 @@ export function addSSEClient(res: ServerResponse): () => void {
 
 export function getActiveSSECount(): number {
   return sseClients.size;
+}
+
+export function getLogBuffer(): HubEvent[] {
+  return logBuffer;
+}
+
+export function getStageBuffer(): HubEvent[] {
+  return stageBuffer;
+}
+
+export function getChatBuffer(): HubEvent[] {
+  return chatBuffer;
 }

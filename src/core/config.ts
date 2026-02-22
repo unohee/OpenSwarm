@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { z } from 'zod';
 import YAML from 'yaml';
-import type { SwarmConfig, AgentSession } from './types.js';
+import type { SwarmConfig, AgentSession, LongRunningMonitorConfig } from './types.js';
 import { setTimeWindowConfig, DEFAULT_TIME_WINDOW } from '../support/timeWindow.js';
 
 // ============================================
@@ -95,22 +95,30 @@ const RoleConfigSchema = z.object({
   model: z.string(),
   /** Timeout (ms), 0 = unlimited */
   timeoutMs: z.number().min(0).default(0),
+  /** Model to escalate to on repeated failure */
+  escalateModel: z.string().optional(),
+  /** Escalate after this iteration number (default: 3) */
+  escalateAfterIteration: z.number().min(1).optional(),
 });
 
 /** Default roles configuration schema */
 const DefaultRolesConfigSchema = z.object({
   worker: RoleConfigSchema.default({
     enabled: true,
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-haiku-4-5-20251001',
     timeoutMs: 0,
+    escalateModel: 'claude-sonnet-4-20250514',
+    escalateAfterIteration: 3,
   }),
   reviewer: RoleConfigSchema.default({
     enabled: true,
-    model: 'claude-3-5-haiku-20241022',
+    model: 'claude-haiku-4-5-20251001',
     timeoutMs: 0,
   }),
   tester: RoleConfigSchema.optional(),
   documenter: RoleConfigSchema.optional(),
+  auditor: RoleConfigSchema.optional(),
+  'skill-documenter': RoleConfigSchema.optional(),
 }).optional();
 
 /** Per-project role override schema */
@@ -119,6 +127,8 @@ const ProjectRolesOverrideSchema = z.object({
   reviewer: RoleConfigSchema.partial().optional(),
   tester: RoleConfigSchema.partial().optional(),
   documenter: RoleConfigSchema.partial().optional(),
+  auditor: RoleConfigSchema.partial().optional(),
+  'skill-documenter': RoleConfigSchema.partial().optional(),
 }).optional();
 
 /** Per-project agent configuration schema */
@@ -170,6 +180,25 @@ const AutonomousConfigSchema = z.object({
   decomposition: DecompositionConfigSchema,
 }).optional();
 
+// Long-Running Monitor schemas
+const CompletionCheckSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('exit-code'), successExitCode: z.number().optional() }),
+  z.object({ type: z.literal('output-regex'), successPattern: z.string(), failurePattern: z.string().optional() }),
+  z.object({ type: z.literal('http-status'), expectedStatus: z.number().optional() }),
+]);
+
+const LongRunningMonitorConfigSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  checkCommand: z.string().min(1),
+  completionCheck: CompletionCheckSchema,
+  issueId: z.string().optional(),
+  checkInterval: z.number().min(1).default(1),
+  maxDurationHours: z.number().min(1).default(48),
+  notify: z.boolean().default(true),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
+
 const PRProcessorConfigSchema = z.object({
   enabled: z.boolean().default(false),
   schedule: z.string().default('*/15 * * * *'),
@@ -186,6 +215,7 @@ const RawConfigSchema = z.object({
   pairMode: PairModeConfigSchema,
   autonomous: AutonomousConfigSchema,
   prProcessor: PRProcessorConfigSchema,
+  monitors: z.array(LongRunningMonitorConfigSchema).optional(),
   agents: z.array(AgentSessionSchema).min(1, 'At least one agent is required'),
   defaultHeartbeatInterval: z.number().positive().default(DEFAULT_HEARTBEAT_INTERVAL),
 });
@@ -345,6 +375,7 @@ function transformConfig(raw: RawConfig): SwarmConfig {
       cooldownHours: raw.prProcessor.cooldownHours,
       maxIterations: raw.prProcessor.maxIterations,
     } : undefined,
+    monitors: raw.monitors as LongRunningMonitorConfig[] | undefined,
   };
 }
 

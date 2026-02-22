@@ -14,6 +14,7 @@ import * as scheduler from '../automation/scheduler.js';
 import * as web from '../support/web.js';
 import * as autonomous from '../automation/autonomousRunner.js';
 import { PRProcessor } from '../automation/prProcessor.js';
+import { initMonitors } from '../automation/longRunningMonitor.js';
 import { initLocale, t } from '../locale/index.js';
 
 let state: ServiceState = {
@@ -115,7 +116,7 @@ export async function startService(config: SwarmConfig): Promise<void> {
 
     // Register Linear fetcher
     autonomous.setLinearFetcher(async () => {
-      const issues = await linear.getMyIssues();
+      const issues = await linear.getMyIssues({ slim: true, timeoutMs: 30000 });
       const { linearIssueToTask } = await import('../orchestration/decisionEngine.js');
       return issues.map((issue: any) => linearIssueToTask({
         id: issue.id,
@@ -182,6 +183,14 @@ export async function startService(config: SwarmConfig): Promise<void> {
     });
     prProcessor.start();
     console.log(`[Service] PR Processor started (schedule: ${config.prProcessor.schedule}, repos: ${githubRepos.length})`);
+  }
+
+  // Initialize long-running monitors
+  if (config.monitors?.length) {
+    initMonitors(config.monitors);
+    console.log(`[Service] Long-running monitors initialized (${config.monitors.length} from config)`);
+  } else {
+    initMonitors(); // 영속 파일에서만 복원
   }
 
   // Startup notification
@@ -295,7 +304,7 @@ async function checkGitHubCI(): Promise<void> {
 
         console.log(`[GitHub] CI recovered: ${repo} (after ${duration})`);
         await discord.reportEvent({
-          type: 'ci_recovered' as any,
+          type: 'ci_recovered',
           session: 'github',
           message: t('service.events.ciRecovered', { repo, duration }),
           timestamp: Date.now(),
