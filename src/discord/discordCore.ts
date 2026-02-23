@@ -21,27 +21,27 @@ import { extractCostFromJson, formatCost } from '../support/costTracker.js';
 import * as memory from '../memory/index.js';
 import { t, getPrompts, getDateLocale } from '../locale/index.js';
 
-// 핸들러 모듈 (라우팅용)
+// Handler module (for routing)
 import { handlePair } from './discordPair.js';
 
 export let client: Client | null = null;
 export let reportChannelId: string = '';
 
-// 허용된 유저 ID (환경변수에서 로드)
+// Allowed user IDs (loaded from environment variables)
 const ALLOWED_USER_IDS = process.env.DISCORD_ALLOWED_USERS?.split(',').map(id => id.trim()) || [];
 
 // ============================================
 // OpenClaw-style History Management
 // ============================================
 
-// 채널별 히스토리 맵 (메모리 캐시)
+// Per-channel history map (in-memory cache)
 export const channelHistoryMap = new Map<string, HistoryEntry[]>();
 
-// 히스토리 설정 (OpenClaw 기본값 참고)
-const HISTORY_LIMIT = 30;  // 최근 30개 메시지 (OpenClaw 기본 50개)
-const MAX_HISTORY_CHANNELS = 100;  // 최대 채널 수 (LRU eviction)
+// History settings (based on OpenClaw defaults)
+const HISTORY_LIMIT = 30;  // Last 30 messages (OpenClaw default: 50)
+const MAX_HISTORY_CHANNELS = 100;  // Max channel count (LRU eviction)
 
-// 히스토리 엔트리 타입
+// History entry type
 export interface HistoryEntry {
   sender: string;
   senderId: string;
@@ -51,12 +51,12 @@ export interface HistoryEntry {
   messageId?: string;
 }
 
-// 컨텍스트 마커 (OpenClaw 스타일)
+// Context markers (OpenClaw style)
 const HISTORY_CONTEXT_MARKER = '[Chat messages since your last reply - for context]';
 const CURRENT_MESSAGE_MARKER = '[Current message]';
 
 /**
- * LRU 방식으로 오래된 채널 히스토리 정리
+ * Evict old channel history entries using LRU
  */
 function evictOldHistoryChannels(): void {
   if (channelHistoryMap.size <= MAX_HISTORY_CHANNELS) return;
@@ -70,18 +70,18 @@ function evictOldHistoryChannels(): void {
 }
 
 /**
- * 히스토리 엔트리 추가
+ * Append history entry
  */
 export function appendHistoryEntry(channelId: string, entry: HistoryEntry): void {
   const history = channelHistoryMap.get(channelId) ?? [];
   history.push(entry);
 
-  // 최대 개수 유지
+  // Maintain max count
   while (history.length > HISTORY_LIMIT) {
     history.shift();
   }
 
-  // LRU: 기존 키 삭제 후 재삽입 (순서 갱신)
+  // LRU: delete existing key and re-insert (refresh order)
   if (channelHistoryMap.has(channelId)) {
     channelHistoryMap.delete(channelId);
   }
@@ -91,7 +91,7 @@ export function appendHistoryEntry(channelId: string, entry: HistoryEntry): void
 }
 
 /**
- * 마지막 히스토리 엔트리에 응답 추가
+ * Add response to the last history entry
  */
 export function updateLastHistoryResponse(channelId: string, response: string): void {
   const history = channelHistoryMap.get(channelId);
@@ -101,7 +101,7 @@ export function updateLastHistoryResponse(channelId: string, response: string): 
 }
 
 /**
- * 히스토리 엔트리 포맷 (OpenClaw envelope 스타일)
+ * Format history entry (OpenClaw envelope style)
  */
 function formatHistoryEntry(entry: HistoryEntry): string {
   const time = new Date(entry.timestamp).toLocaleTimeString(getDateLocale(), {
@@ -112,7 +112,7 @@ function formatHistoryEntry(entry: HistoryEntry): string {
   let formatted = `[${time}] ${entry.sender}: ${entry.body}`;
 
   if (entry.response) {
-    // 응답도 전체 포함 (잘림 없음)
+    // Include full response (no truncation)
     formatted += `\n[${time}] VEGA: ${entry.response}`;
   }
 
@@ -120,7 +120,7 @@ function formatHistoryEntry(entry: HistoryEntry): string {
 }
 
 /**
- * 채널 히스토리를 컨텍스트로 빌드 (OpenClaw 스타일)
+ * Build channel history as context (OpenClaw style)
  */
 export function buildHistoryContext(channelId: string, currentMessage: string): string {
   const history = channelHistoryMap.get(channelId) ?? [];
@@ -129,7 +129,7 @@ export function buildHistoryContext(channelId: string, currentMessage: string): 
     return currentMessage;
   }
 
-  // 마지막 엔트리 제외 (현재 메시지와 중복 방지)
+  // Exclude last entry (prevent duplication with current message)
   const pastEntries = history.slice(0, -1);
 
   if (pastEntries.length === 0) {
@@ -147,22 +147,22 @@ export function buildHistoryContext(channelId: string, currentMessage: string): 
 
 import * as projectMapper from '../support/projectMapper.js';
 
-// 프로젝트 스캔 기본 경로
+// Default project scan paths
 const PROJECT_BASE_PATHS = ['~/dev', '~/dev/tools', '~/projects'];
 
-// 프로젝트명 패턴 (Linear 이슈 ID, 프로젝트명 등)
+// Project name patterns (Linear issue IDs, project names, etc.)
 const PROJECT_PATTERNS = [
-  // Linear 이슈 ID에서 프로젝트 추출 (예: INT-123, STONKS-456)
+  // Extract project from Linear issue ID (e.g., INT-123, STONKS-456)
   /\b([A-Z]{2,10})-\d+\b/g,
-  // 명시적 프로젝트 언급
+  // Explicit project mentions
   /\b(STONKS|VELA|PyKIS|pykis|pykiwoom|HIVE|OpenSwarm)\b/gi,
-  // "~~ 프로젝트" 패턴
+  // "~~ project" pattern (Korean)
   /(\w+)\s*프로젝트/gi,
 ];
 
-// 이슈 접두사 → 프로젝트명 매핑 (Linear 이슈 ID 기반)
+// Issue prefix → project name mapping (based on Linear issue IDs)
 const ISSUE_PREFIX_MAP: Record<string, string> = {
-  'INT': 'OpenSwarm',  // HIVE 프로젝트
+  'INT': 'OpenSwarm',  // HIVE project
   'STONKS': 'STONKS',
   'VELA': 'VELA',
   'PYKIS': 'pykis',
@@ -171,7 +171,7 @@ const ISSUE_PREFIX_MAP: Record<string, string> = {
 };
 
 /**
- * 메시지에서 프로젝트 힌트 추출
+ * Extract project hints from message
  */
 export function extractProjectHints(message: string): string[] {
   const hints: Set<string> = new Set();
@@ -188,16 +188,16 @@ export function extractProjectHints(message: string): string[] {
 }
 
 /**
- * 프로젝트 힌트로 로컬 경로 찾기
+ * Resolve local path from project hints
  */
 export async function resolveProjectPath(hints: string[]): Promise<string | null> {
   if (hints.length === 0) return null;
 
-  // 로컬 프로젝트 스캔
+  // Scan local projects
   const localProjects = await projectMapper.scanLocalProjects(PROJECT_BASE_PATHS);
 
   for (const hint of hints) {
-    // 1. 이슈 접두사 매핑 확인
+    // 1. Check issue prefix mapping
     const mappedName = ISSUE_PREFIX_MAP[hint];
     if (mappedName) {
       const match = projectMapper.findBestMatch(mappedName, localProjects);
@@ -207,7 +207,7 @@ export async function resolveProjectPath(hints: string[]): Promise<string | null
       }
     }
 
-    // 2. 직접 매칭 시도
+    // 2. Try direct matching
     const match = projectMapper.findBestMatch(hint, localProjects);
     if (match && match.confidence >= 0.6) {
       console.log(`[ProjectContext] Resolved: ${hint} → ${match.project.path}`);
@@ -223,7 +223,7 @@ export function getVegaSystemPrompt(): string {
   return getPrompts().vegaSystem;
 }
 
-// 대화 내역 타입
+// Chat history type
 export interface ChatEntry {
   timestamp: string;
   user: string;
@@ -232,13 +232,13 @@ export interface ChatEntry {
   response: string;
 }
 
-// 콜백 함수들 (service에서 설정)
+// Callback functions (set from service)
 export let onPauseAgent: ((name: string) => void) | null = null;
 export let onResumeAgent: ((name: string) => void) | null = null;
 export let getAgentStatus: ((name?: string) => AgentStatus[]) | null = null;
 export let getGithubRepos: (() => string[]) | null = null;
 
-// Pair 모드 설정
+// Pair mode configuration
 export let pairModeConfig: {
   webhookUrl?: string;
   maxAttempts?: number;
@@ -247,7 +247,7 @@ export let pairModeConfig: {
 } | null = null;
 
 /**
- * 페어 모드 설정
+ * Set pair mode configuration
  */
 export function setPairModeConfig(config: {
   webhookUrl?: string;
@@ -259,7 +259,7 @@ export function setPairModeConfig(config: {
 }
 
 /**
- * 콜백 함수 설정
+ * Set callback functions
  */
 export function setCallbacks(callbacks: {
   onPause: (name: string) => void;
@@ -274,7 +274,7 @@ export function setCallbacks(callbacks: {
 }
 
 /**
- * Discord 봇 초기화 및 시작
+ * Initialize and start Discord bot
  */
 export async function initDiscord(token: string, channelId: string): Promise<void> {
   reportChannelId = channelId;
@@ -296,7 +296,7 @@ export async function initDiscord(token: string, channelId: string): Promise<voi
   await client.login(token);
 }
 
-// 핸들러 함수들 import (지연 로드 방지를 위해 함수 내에서 사용)
+// Handler function imports (used within functions to prevent lazy load issues)
 import {
   handleStatus,
   handleList,
@@ -321,12 +321,12 @@ import {
 } from './discordHandlers.js';
 
 /**
- * 메시지 핸들러
+ * Message handler
  */
 async function handleMessage(msg: Message): Promise<void> {
   if (msg.author.bot) return;
 
-  // 허용된 유저의 일반 메시지에 응답 (! 명령어 제외)
+  // Respond to regular messages from allowed users (excluding ! commands)
   if (ALLOWED_USER_IDS.length > 0 &&
       ALLOWED_USER_IDS.includes(msg.author.id) &&
       !msg.content.startsWith('!')) {
@@ -440,14 +440,14 @@ async function handleMessage(msg: Message): Promise<void> {
 }
 
 /**
- * !help - 도움말
+ * !help - Show help
  */
 async function handleHelp(msg: Message): Promise<void> {
   await msg.reply(t('discord.help'));
 }
 
 /**
- * 이벤트를 Discord로 보고
+ * Report event to Discord
  */
 export async function reportEvent(event: SwarmEvent): Promise<void> {
   if (!client) return;
@@ -488,7 +488,7 @@ export async function reportEvent(event: SwarmEvent): Promise<void> {
 }
 
 /**
- * 시간 포맷팅 (상대 시간)
+ * Format time (relative)
  */
 export function formatTimeAgo(timestamp: number): string {
   const diff = Date.now() - timestamp;
@@ -501,7 +501,7 @@ export function formatTimeAgo(timestamp: number): string {
 }
 
 /**
- * Discord 봇 종료
+ * Stop Discord bot
  */
 export async function stopDiscord(): Promise<void> {
   if (client) {
@@ -511,7 +511,7 @@ export async function stopDiscord(): Promise<void> {
 }
 
 /**
- * Discord 기본 채널에 메시지 전송 (외부에서 호출용)
+ * Send message to default Discord channel (for external callers)
  */
 export async function sendToChannel(content: string | { embeds: EmbedBuilder[] }): Promise<void> {
   if (!client || !reportChannelId) return;
@@ -520,7 +520,7 @@ export async function sendToChannel(content: string | { embeds: EmbedBuilder[] }
     const channel = await client.channels.fetch(reportChannelId) as TextChannel;
     if (!channel) return;
 
-    // 문자열이면 Discord 4000자 제한 준수 (분할 전송)
+    // If string, respect Discord 4000 char limit (split send)
     if (typeof content === 'string' && content.length > 3900) {
       const chunks = splitForDiscord(content, 3900);
       for (const chunk of chunks) {
@@ -556,7 +556,7 @@ function splitForDiscord(text: string, maxLen: number): string[] {
 }
 
 /**
- * Discord 스레드에 메시지 전송 (외부에서 호출용)
+ * Send message to Discord thread (for external callers)
  */
 export async function sendToThread(threadId: string, content: string | EmbedBuilder): Promise<void> {
   if (!client) return;
@@ -576,14 +576,14 @@ export async function sendToThread(threadId: string, content: string | EmbedBuil
 }
 
 // ============================================
-// VEGA 대화 기능
+// VEGA Chat Feature
 // ============================================
 
-// 대화 내역 저장 경로
+// Chat history storage path
 const CHAT_HISTORY_FILE = '/tmp/openswarm-chat-history.json';
 
 /**
- * 일반 대화 처리 (OpenClaw-style history management)
+ * Handle general chat (OpenClaw-style history management)
  */
 export async function handleChat(msg: Message): Promise<void> {
   const content = msg.content.trim();
@@ -594,14 +594,14 @@ export async function handleChat(msg: Message): Promise<void> {
   const channel = msg.channel as TextChannel;
   const channelId = msg.channel.id;
 
-  // typing 표시 (8초마다 갱신)
+  // Show typing indicator (refresh every 8 seconds)
   let typingInterval: NodeJS.Timeout | null = null;
   if ('sendTyping' in channel) {
     channel.sendTyping();
     typingInterval = setInterval(() => channel.sendTyping(), 8000);
   }
 
-  // 현재 메시지를 히스토리에 추가 (응답은 나중에 업데이트)
+  // Add current message to history (response updated later)
   appendHistoryEntry(channelId, {
     sender: msg.author.username,
     senderId: msg.author.id,
@@ -611,7 +611,7 @@ export async function handleChat(msg: Message): Promise<void> {
   });
 
   try {
-    // 0. 프로젝트 경로 감지 (메시지 + 히스토리에서 힌트 추출)
+    // 0. Detect project path (extract hints from message + history)
     const historyMessages = channelHistoryMap.get(channelId) ?? [];
     const allMessages = historyMessages.map(h => h.body).join(' ') + ' ' + content;
     const projectHints = extractProjectHints(allMessages);
@@ -621,11 +621,11 @@ export async function handleChat(msg: Message): Promise<void> {
       console.log(`[VEGA] Project detected: ${projectPath}`);
     }
 
-    // 1. 채널 히스토리 컨텍스트 구성
+    // 1. Build channel history context
     const currentMessageFormatted = `[${new Date().toLocaleTimeString(getDateLocale(), { hour: '2-digit', minute: '2-digit' })}] ${msg.author.username}: ${content}`;
     const historyContext = buildHistoryContext(channelId, currentMessageFormatted);
 
-    // 2. 시맨틱 검색 (장기 기억)
+    // 2. Semantic search (long-term memory)
     const memories = await memory.searchMemory(content, {
       limit: 5,
       minSimilarity: 0.4,
@@ -633,14 +633,14 @@ export async function handleChat(msg: Message): Promise<void> {
     });
     const memoryContext = memory.formatMemoryContext(memories);
 
-    // 3. 프롬프트 구성
+    // 3. Build prompt
     let prompt = getVegaSystemPrompt();
 
     if (projectPath) {
       prompt += `\n\n## ${t('discord.chatContext')}\n- **${t('discord.projectContext', { path: projectPath })}**`;
     }
 
-    prompt += `\n\n## 대화 컨텍스트\n${historyContext}`;
+    prompt += `\n\n## Chat Context\n${historyContext}`;
 
     if (memoryContext) {
       prompt += `\n\n${memoryContext}`;
@@ -648,7 +648,7 @@ export async function handleChat(msg: Message): Promise<void> {
 
     console.log(`[VEGA] History context: ${channelHistoryMap.get(channelId)?.length ?? 0} messages`);
 
-    // Claude CLI 실행
+    // Run Claude CLI
     const { result: response, toolCalls } = await runClaude(prompt, { cwd: projectPath || undefined });
 
     if (typingInterval) clearInterval(typingInterval);
@@ -684,11 +684,11 @@ export async function handleChat(msg: Message): Promise<void> {
   }
 }
 
-// 현재 실행 중인 VEGA Claude 프로세스
+// Currently running VEGA Claude process
 let currentVegaProcess: ReturnType<typeof spawn> | null = null;
 
 /**
- * Claude CLI 실행
+ * Run Claude CLI
  */
 async function runClaude(
   prompt: string,
@@ -741,7 +741,7 @@ async function runClaude(
   });
 }
 
-// 파괴적 명령 패턴
+// Destructive command patterns
 const DESTRUCTIVE_PATTERNS = [
   /\brm\s+(-[rf]+\s+)*.*(-[rf]+|--recursive|--force)/i,
   /\bgit\s+(reset\s+--hard|clean\s+-[fd])/i,
@@ -752,7 +752,7 @@ const DESTRUCTIVE_PATTERNS = [
 ];
 
 /**
- * Claude JSON 출력 파싱
+ * Parse Claude JSON output
  */
 function parseClaudeJson(output: string): { result: string; toolCalls: string[] } {
   const toolCalls: string[] = [];
@@ -808,7 +808,7 @@ function parseClaudeJson(output: string): { result: string; toolCalls: string[] 
 }
 
 /**
- * 메시지 분할
+ * Split message
  */
 function splitMessage(text: string, maxLen: number): string[] {
   if (text.length <= maxLen) return [text];
@@ -838,7 +838,7 @@ function splitMessage(text: string, maxLen: number): string[] {
 }
 
 /**
- * 대화 내역 저장
+ * Save chat history
  */
 async function saveChatHistory(entry: ChatEntry): Promise<void> {
   try {
@@ -847,7 +847,7 @@ async function saveChatHistory(entry: ChatEntry): Promise<void> {
       const data = await fs.readFile(CHAT_HISTORY_FILE, 'utf-8');
       history = JSON.parse(data);
     } catch {
-      // 파일이 없으면 빈 배열
+      // Empty array if file doesn't exist
     }
 
     history.push(entry);
@@ -863,7 +863,7 @@ async function saveChatHistory(entry: ChatEntry): Promise<void> {
 }
 
 /**
- * 대화 내역 조회 (웹 API용)
+ * Get chat history (for web API)
  */
 export async function getChatHistory(): Promise<ChatEntry[]> {
   try {

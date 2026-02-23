@@ -262,7 +262,7 @@ export function cancelSession(sessionId: string): boolean {
   }
 
   updateSessionStatus(sessionId, 'cancelled');
-  addMessage(sessionId, 'system', '세션이 취소되었습니다.');
+  addMessage(sessionId, 'system', 'Session has been cancelled.');
   return true;
 }
 
@@ -313,17 +313,17 @@ function formatWorkerMessage(result: WorkerResult): string {
   const lines: string[] = [];
 
   if (result.success) {
-    lines.push(`**요약:** ${result.summary}`);
+    lines.push(`**Summary:** ${result.summary}`);
   } else {
-    lines.push(`**실패:** ${result.error || result.summary}`);
+    lines.push(`**Failed:** ${result.error || result.summary}`);
   }
 
   if (result.filesChanged.length > 0) {
-    lines.push(`**변경 파일:** ${result.filesChanged.join(', ')}`);
+    lines.push(`**Changed Files:** ${result.filesChanged.join(', ')}`);
   }
 
   if (result.commands.length > 0) {
-    lines.push(`**실행 명령:** \`${result.commands.slice(0, 3).join('`, `')}\`${result.commands.length > 3 ? ` 외 ${result.commands.length - 3}개` : ''}`);
+    lines.push(`**Commands:** \`${result.commands.slice(0, 3).join('`, `')}\`${result.commands.length > 3 ? ` +${result.commands.length - 3} more` : ''}`);
   }
 
   return lines.join('\n');
@@ -340,15 +340,15 @@ function formatReviewerMessage(result: ReviewResult): string {
   }[result.decision];
 
   const lines: string[] = [];
-  lines.push(`**결정:** ${decisionEmoji} ${result.decision.toUpperCase()}`);
-  lines.push(`**피드백:** ${result.feedback}`);
+  lines.push(`**Decision:** ${decisionEmoji} ${result.decision.toUpperCase()}`);
+  lines.push(`**Feedback:** ${result.feedback}`);
 
   if (result.issues && result.issues.length > 0) {
-    lines.push(`**문제점:**\n${result.issues.map(i => `  - ${i}`).join('\n')}`);
+    lines.push(`**Issues:**\n${result.issues.map(i => `  - ${i}`).join('\n')}`);
   }
 
   if (result.suggestions && result.suggestions.length > 0) {
-    lines.push(`**제안:**\n${result.suggestions.map(s => `  - ${s}`).join('\n')}`);
+    lines.push(`**Suggestions:**\n${result.suggestions.map(s => `  - ${s}`).join('\n')}`);
   }
 
   return lines.join('\n');
@@ -370,14 +370,14 @@ export function formatSessionSummary(session: PairSession): string {
   }[session.status];
 
   const duration = session.finishedAt
-    ? `${Math.round((session.finishedAt - session.startedAt) / 1000)}초`
-    : `${Math.round((Date.now() - session.startedAt) / 1000)}초`;
+    ? `${Math.round((session.finishedAt - session.startedAt) / 1000)}s`
+    : `${Math.round((Date.now() - session.startedAt) / 1000)}s`;
 
   return [
     `${statusEmoji} **${session.taskTitle}**`,
     `ID: \`${session.id}\` | Task: \`${session.taskId}\``,
-    `상태: ${session.status} | 시도: ${session.worker.attempts}/${session.worker.maxAttempts}`,
-    `소요: ${duration}`,
+    `Status: ${session.status} | Attempts: ${session.worker.attempts}/${session.worker.maxAttempts}`,
+    `Duration: ${duration}`,
   ].join('\n');
 }
 
@@ -386,7 +386,7 @@ export function formatSessionSummary(session: PairSession): string {
  */
 export function formatDiscussion(session: PairSession): string {
   if (session.messages.length === 0) {
-    return '(토론 내역 없음)';
+    return '(No discussion history)';
   }
 
   return session.messages

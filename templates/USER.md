@@ -1,22 +1,22 @@
 ---
-description: 사용자 프로필 기록
-usage: 사용자에 대해 배우면서 업데이트
+description: User profile record
+usage: Update as you learn about the user
 ---
 
 # USER.md - About Your Human
 
-*도움 주는 사람에 대해 배우기. 진행하면서 업데이트.*
+*Learn about the person you're helping. Update as you go.*
 
 - **Name:**
 - **What to call them:**
-- **Pronouns:** *(선택)*
+- **Pronouns:** *(optional)*
 - **Timezone:**
 - **Notes:**
 
 ## Context
 
-*(뭘 신경 쓰나? 어떤 프로젝트 하나? 뭐가 짜증나게 하나? 뭐가 웃기게 하나? 시간 지나면서 구축.)*
+*(What do they care about? What projects are they working on? What annoys them? What makes them laugh? Build this over time.)*
 
 ---
 
-많이 알수록 더 잘 도울 수 있음. 하지만 기억해 — 사람에 대해 배우는 거지, 서류철 만드는 게 아님. 차이 존중해.
+The more you know, the better you can help. But remember — you're learning about a person, not building a dossier. Respect the difference.

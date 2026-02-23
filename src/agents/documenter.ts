@@ -67,49 +67,49 @@ function buildDocumenterPrompt(options: DocumenterOptions): string {
 ${workerReport}
 
 ## Instructions
-1. 변경된 코드에 대한 문서화를 수행하라
-2. CHANGELOG.md가 있으면 새 엔트리 추가
-3. 새 함수/클래스에 JSDoc/docstring 추가
-4. README 업데이트가 필요하면 수행
-5. API 문서가 있으면 업데이트
+1. Document the changed code
+2. Add a new entry to CHANGELOG.md if it exists
+3. Add JSDoc/docstring to new functions/classes
+4. Update README if needed
+5. Update API docs if they exist
 
 ## Documentation Rules
-- 기존 문서 스타일을 따르라
-- 변경 내용을 명확하게 기술하라
-- 코드 예제를 포함하라 (필요시)
-- 불필요한 문서는 추가하지 마라
+- Follow the existing documentation style
+- Describe changes clearly
+- Include code examples (when necessary)
+- Do not add unnecessary documentation
 
-## Output Format (IMPORTANT - 반드시 이 형식으로 마지막에 출력)
-문서화 완료 후 반드시 다음 JSON 형식으로 결과를 출력하라:
+## Output Format (IMPORTANT - must output in this format at the end)
+After documentation is complete, output the result in the following JSON format:
 
 \`\`\`json
 {
   "success": true,
   "updatedFiles": ["CHANGELOG.md", "src/module.ts"],
-  "changelogEntry": "- feat: 새로운 기능 추가",
+  "changelogEntry": "- feat: Add new feature",
   "apiDocsUpdated": false,
-  "summary": "문서화 요약 (1-2문장)"
+  "summary": "Documentation summary (1-2 sentences)"
 }
 \`\`\`
 
-문서화할 내용이 없는 경우:
+When there is nothing to document:
 \`\`\`json
 {
   "success": true,
   "updatedFiles": [],
   "apiDocsUpdated": false,
-  "summary": "문서화가 필요하지 않음 (사소한 변경)"
+  "summary": "No documentation needed (minor change)"
 }
 \`\`\`
 
-실패 시:
+On failure:
 \`\`\`json
 {
   "success": false,
   "updatedFiles": [],
   "apiDocsUpdated": false,
-  "summary": "문서화 실패",
-  "error": "상세 에러 메시지"
+  "summary": "Documentation failed",
+  "error": "Detailed error message"
 }
 \`\`\`
 `;
@@ -141,7 +141,7 @@ export async function runDocumenter(options: DocumenterOptions): Promise<Documen
       success: false,
       updatedFiles: [],
       apiDocsUpdated: false,
-      summary: 'Documenter 실행 실패',
+      summary: 'Documenter execution failed',
       error: error instanceof Error ? error.message : String(error),
     };
   } finally {
@@ -223,7 +223,7 @@ function parseDocumenterOutput(output: string): DocumenterResult {
       console.log(`[Documenter] Cost: ${formatCost(costInfo)}`);
     }
 
-    // NDJSON에서 result 항목 추출
+    // Extract result entry from NDJSON
     let resultText = '';
     for (const line of output.split('\n')) {
       try {
@@ -302,7 +302,7 @@ function normalizeResult(parsed: any): DocumenterResult {
     updatedFiles: Array.isArray(parsed.updatedFiles) ? parsed.updatedFiles : [],
     changelogEntry: parsed.changelogEntry,
     apiDocsUpdated: Boolean(parsed.apiDocsUpdated),
-    summary: parsed.summary || '(요약 없음)',
+    summary: parsed.summary || '(no summary)',
     error: parsed.error,
   };
 }
@@ -334,7 +334,7 @@ function extractFromText(text: string): DocumenterResult {
 
   // Extract changelog entry
   let changelogEntry: string | undefined;
-  const changelogMatch = text.match(/(?:changelog|변경\s*로그)[\s:]*([^\n]+)/i);
+  const changelogMatch = text.match(/(?:changelog|change\s*log)[\s:]*([^\n]+)/i);
   if (changelogMatch) {
     changelogEntry = changelogMatch[1].trim();
   }
@@ -354,7 +354,7 @@ function extractFromText(text: string): DocumenterResult {
  */
 function extractSummary(text: string): string {
   const lines = text.split('\n').filter((l) => l.trim().length > 10);
-  if (lines.length === 0) return '(요약 없음)';
+  if (lines.length === 0) return '(no summary)';
 
   const summary = lines[0].trim();
   return summary.length > 200 ? summary.slice(0, 200) + '...' : summary;
@@ -388,14 +388,14 @@ export function formatDocReport(result: DocumenterResult): string {
   const statusEmoji = result.success ? '📝' : '❌';
   const lines: string[] = [];
 
-  lines.push(`${statusEmoji} **Documenter 결과: ${result.success ? '완료' : '실패'}**`);
+  lines.push(`${statusEmoji} **Documenter Result: ${result.success ? 'Complete' : 'Failed'}**`);
   lines.push('');
-  lines.push(`**요약:** ${result.summary}`);
+  lines.push(`**Summary:** ${result.summary}`);
 
   if (result.updatedFiles.length > 0) {
-    lines.push(`**업데이트된 파일:** ${result.updatedFiles.join(', ')}`);
+    lines.push(`**Updated Files:** ${result.updatedFiles.join(', ')}`);
   } else {
-    lines.push('**업데이트된 파일:** (없음)');
+    lines.push('**Updated Files:** (none)');
   }
 
   if (result.changelogEntry) {
@@ -403,11 +403,11 @@ export function formatDocReport(result: DocumenterResult): string {
   }
 
   if (result.apiDocsUpdated) {
-    lines.push('**API 문서:** ✅ 업데이트됨');
+    lines.push('**API Docs:** Updated');
   }
 
   if (result.error) {
-    lines.push(`**에러:** ${result.error}`);
+    lines.push(`**Error:** ${result.error}`);
   }
 
   return lines.join('\n');

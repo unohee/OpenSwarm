@@ -203,7 +203,7 @@ export class AutonomousRunner {
         }
       }
 
-      // Linear 프로젝트 Status Update + Overview 갱신 (non-blocking)
+      // Linear project Status Update + Overview refresh (non-blocking)
       if (task.linearProject) {
         updateProjectAfterTask(task.linearProject.id, task.linearProject.name, {
           title: task.title,
@@ -262,7 +262,7 @@ export class AutonomousRunner {
         }
       }
 
-      // Linear 프로젝트 Status Update + Overview 갱신 (non-blocking)
+      // Linear project Status Update + Overview refresh (non-blocking)
       if (task.linearProject) {
         updateProjectAfterTask(task.linearProject.id, task.linearProject.name, {
           title: task.title,
@@ -292,8 +292,8 @@ export class AutonomousRunner {
     let recovered = 0;
     const filtered = tasks.filter(task => {
       const id = task.issueId || task.id;
-      // Todo 상태인 이슈가 completed/failed 목록에 있으면 복원
-      // (사용자 또는 시스템이 의도적으로 Todo로 되돌린 것이므로 재시도)
+      // Recover issues in Todo state from completed/failed list
+      // (user or system intentionally moved back to Todo, so retry)
       if (task.linearState === 'Todo' && (this.completedTaskIds.has(id) || (this.failedTaskCounts.get(id) ?? 0) >= AutonomousRunner.MAX_RETRY_COUNT)) {
         this.completedTaskIds.delete(id);
         this.failedTaskCounts.delete(id);
@@ -385,7 +385,7 @@ export class AutonomousRunner {
 
     await this.engine.init();
 
-    // worktree 모드: 시작 시 dangling worktrees 정리
+    // worktree mode: clean up dangling worktrees at startup
     if (this.config.worktreeMode) {
       for (const projectPath of this.config.allowedProjects) {
         const resolvedPath = projectPath.replace('~', process.env.HOME || '');
@@ -452,7 +452,7 @@ export class AutonomousRunner {
     }
   }
 
-  /** 대시보드 LIVE LOG에 시스템 메시지 전송 */
+  /** Send system message to dashboard LIVE LOG */
   private syslog(line: string): void {
     broadcastEvent({ type: 'log', data: { taskId: 'system', stage: 'heartbeat', line } });
   }
@@ -465,10 +465,10 @@ export class AutonomousRunner {
     this.syslog('▶ Heartbeat started');
 
     try {
-      // 0. Knowledge graph refresh (비동기, 실패해도 서비스 중단 안 함)
+      // 0. Knowledge graph refresh (async, service continues even on failure)
       this.refreshKnowledgeGraphs();
 
-      // 0.5 Long-running monitor 패시브 체크 (time window 이전)
+      // 0.5 Long-running monitor passive check (before time window)
       const active = getActiveMonitors().filter(m => m.state === 'pending' || m.state === 'running');
       if (active.length > 0) {
         const checked = await checkAllMonitors().catch(() => 0);

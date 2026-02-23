@@ -1,25 +1,25 @@
 ---
-description: 시작 시 실행 체크리스트
-usage: 서비스 시작 시 자동 실행할 짧은 지시
+description: Startup execution checklist
+usage: Short instructions to run automatically at service startup
 ---
 
 # BOOT.md
 
-서비스 시작 시 실행할 짧고 명시적인 지시 추가.
+Add short, explicit instructions to execute at service startup.
 
 ## Example
 
 ```markdown
 # Boot Checklist
 
-1. git pull로 최신 코드 동기화
-2. npm install로 의존성 확인
-3. 환경 변수 로드 확인
-4. 서비스 상태 Discord에 보고
+1. Sync latest code with git pull
+2. Verify dependencies with npm install
+3. Confirm environment variables are loaded
+4. Report service status to Discord
 ```
 
 ## Rules
 
-- 짧게 유지 (토큰 절약)
-- 메시지 보내야 하면 message tool 사용 후 NO_REPLY로 답
-- 외부 액션은 승인된 것만
+- Keep it short (save tokens)
+- If you need to send a message, use the message tool then reply with NO_REPLY
+- Only approved external actions

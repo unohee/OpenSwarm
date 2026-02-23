@@ -427,12 +427,12 @@ export async function logWorkStart(
   sessionName: string
 ): Promise<void> {
   const timestamp = new Date().toISOString();
-  const body = `🤖 **[${sessionName}] 작업 시작**
+  const body = `🤖 **[${sessionName}] Work Started**
 
-시간: ${timestamp}
+Time: ${timestamp}
 
 ---
-_자동 생성됨_`;
+_Auto-generated_`;
 
   await addComment(issueId, body);
   await updateIssueState(issueId, 'In Progress');
@@ -447,11 +447,11 @@ export async function logProgress(
   progress: string
 ): Promise<void> {
   const timestamp = new Date().toISOString();
-  const body = `🤖 **[${sessionName}] 진행 상황**
+  const body = `🤖 **[${sessionName}] Progress Update**
 
 ${progress}
 
-시간: ${timestamp}`;
+Time: ${timestamp}`;
 
   await addComment(issueId, body);
 }
@@ -465,11 +465,11 @@ export async function logWorkComplete(
   summary?: string
 ): Promise<void> {
   const timestamp = new Date().toISOString();
-  const body = `🤖 **[${sessionName}] ✅ 작업 완료**
+  const body = `🤖 **[${sessionName}] ✅ Work Complete**
 
 ${summary ?? ''}
 
-시간: ${timestamp}`;
+Time: ${timestamp}`;
 
   await addComment(issueId, body);
   await updateIssueState(issueId, 'Done');
@@ -484,13 +484,13 @@ export async function logBlocked(
   reason: string
 ): Promise<void> {
   const timestamp = new Date().toISOString();
-  const body = `🤖 **[${sessionName}] ⚠️ 막힘**
+  const body = `🤖 **[${sessionName}] ⚠️ Blocked**
 
-이유: ${reason}
+Reason: ${reason}
 
-사용자 개입 필요
+User intervention required
 
-시간: ${timestamp}`;
+Time: ${timestamp}`;
 
   await addComment(issueId, body);
   // Use 'Todo' instead of 'Blocked' (Blocked state may not exist in team workflow)
@@ -510,16 +510,16 @@ export async function logPairStart(
   projectPath: string
 ): Promise<void> {
   const timestamp = new Date().toLocaleString(getDateLocale());
-  const body = `👥 **[Pair Session] 작업 시작**
+  const body = `👥 **[Pair Session] Work Started**
 
 🆔 Session: \`${sessionId}\`
 📁 Project: \`${projectPath}\`
-⏰ 시간: ${timestamp}
+⏰ Time: ${timestamp}
 
-Worker/Reviewer 페어 모드로 작업을 시작합니다.
+Starting work in Worker/Reviewer pair mode.
 
 ---
-_자동 생성됨_`;
+_Auto-generated_`;
 
   await addComment(issueId, body);
   await updateIssueState(issueId, 'In Progress');
@@ -534,13 +534,13 @@ export async function logPairReview(
   attempt: number
 ): Promise<void> {
   const timestamp = new Date().toLocaleString(getDateLocale());
-  const body = `🔍 **[Pair Session] 리뷰 중**
+  const body = `🔍 **[Pair Session] Reviewing**
 
 🆔 Session: \`${sessionId}\`
-🔢 시도: ${attempt}회차
-⏰ 시간: ${timestamp}
+🔢 Attempt: #${attempt}
+⏰ Time: ${timestamp}
 
-Reviewer가 Worker의 작업을 검토 중입니다.`;
+Reviewer is reviewing Worker's output.`;
 
   await addComment(issueId, body);
   await updateIssueState(issueId, 'In Review');
@@ -558,19 +558,19 @@ export async function logPairRevision(
   const timestamp = new Date().toLocaleString(getDateLocale());
   const issueList = issues.length > 0
     ? issues.map((i, idx) => `${idx + 1}. ${i}`).join('\n')
-    : '(없음)';
+    : '(none)';
 
-  const body = `🔄 **[Pair Session] 수정 요청**
+  const body = `🔄 **[Pair Session] Revision Requested**
 
 🆔 Session: \`${sessionId}\`
-⏰ 시간: ${timestamp}
+⏰ Time: ${timestamp}
 
-**피드백:** ${feedback}
+**Feedback:** ${feedback}
 
-**문제점:**
+**Issues:**
 ${issueList}
 
-Worker가 수정 작업을 진행합니다.`;
+Worker will proceed with revisions.`;
 
   await addComment(issueId, body);
   await updateIssueState(issueId, 'In Progress');
@@ -590,28 +590,28 @@ export async function logPairComplete(
 ): Promise<void> {
   const timestamp = new Date().toLocaleString(getDateLocale());
   const durationStr = stats.duration < 60
-    ? `${stats.duration}초`
-    : `${Math.floor(stats.duration / 60)}분 ${stats.duration % 60}초`;
+    ? `${stats.duration}s`
+    : `${Math.floor(stats.duration / 60)}m ${stats.duration % 60}s`;
 
   const filesStr = stats.filesChanged.length > 0
     ? stats.filesChanged.slice(0, 10).map(f => `- \`${f}\``).join('\n')
-    : '(없음)';
+    : '(none)';
 
-  const body = `✅ **[Pair Session] 작업 완료**
+  const body = `✅ **[Pair Session] Work Complete**
 
 🆔 Session: \`${sessionId}\`
-⏰ 완료 시간: ${timestamp}
+⏰ Completed: ${timestamp}
 
-**📊 통계:**
-- 시도 횟수: ${stats.attempts}회
-- 소요 시간: ${durationStr}
-- 변경 파일: ${stats.filesChanged.length}개
+**📊 Stats:**
+- Attempts: ${stats.attempts}
+- Duration: ${durationStr}
+- Files changed: ${stats.filesChanged.length}
 
-**변경된 파일:**
+**Changed files:**
 ${filesStr}
 
 ---
-_Worker/Reviewer 페어 리뷰 승인됨_`;
+_Worker/Reviewer pair review approved_`;
 
   await addComment(issueId, body);
   await updateIssueState(issueId, 'Done');
@@ -628,23 +628,23 @@ export async function logPairFailed(
 ): Promise<void> {
   const timestamp = new Date().toLocaleString(getDateLocale());
   const reasonText = {
-    rejected: '❌ Reviewer가 작업을 거부했습니다',
-    max_attempts: '⚠️ 최대 시도 횟수를 초과했습니다',
-    error: '💥 오류가 발생했습니다',
+    rejected: '❌ Reviewer rejected the work',
+    max_attempts: '⚠️ Maximum retry attempts exceeded',
+    error: '💥 An error occurred',
   }[reason];
 
-  const body = `❌ **[Pair Session] 작업 실패**
+  const body = `❌ **[Pair Session] Work Failed**
 
 🆔 Session: \`${sessionId}\`
-⏰ 시간: ${timestamp}
+⏰ Time: ${timestamp}
 
-**사유:** ${reasonText}
+**Reason:** ${reasonText}
 
-**상세:**
+**Details:**
 ${details}
 
 ---
-_수동 개입이 필요합니다_`;
+_Manual intervention required_`;
 
   await addComment(issueId, body);
   // Don't change state on failure; let the user decide
@@ -664,7 +664,7 @@ export async function createIssue(
   // Check daily limit (unless bypassLimit is set)
   if (!options?.bypassLimit && dailyIssueCount >= DAILY_ISSUE_LIMIT) {
     return {
-      error: `일일 이슈 생성 한도(${DAILY_ISSUE_LIMIT}개) 도달. 내일 다시 시도하세요.`,
+      error: `Daily issue creation limit (${DAILY_ISSUE_LIMIT}) reached. Please try again tomorrow.`,
     };
   }
 
@@ -785,19 +785,19 @@ export async function markAsDecomposed(
   totalMinutes: number
 ): Promise<void> {
   const timestamp = new Date().toLocaleString(getDateLocale());
-  const body = `📋 **[Planner] 작업 분해 완료**
+  const body = `📋 **[Planner] Task Decomposition Complete**
 
-⏰ 시간: ${timestamp}
+⏰ Time: ${timestamp}
 
-**분해 결과:**
-- Sub-issues 생성: ${subIssueCount}개
-- 총 예상 시간: ${totalMinutes}분
+**Decomposition result:**
+- Sub-issues created: ${subIssueCount}
+- Total estimated time: ${totalMinutes}min
 
-이 이슈는 sub-issues로 분해되었습니다.
-각 sub-issue가 완료되면 자동으로 이 이슈도 완료 처리됩니다.
+This issue has been decomposed into sub-issues.
+Once all sub-issues are completed, this issue will be marked as done automatically.
 
 ---
-_Planner 에이전트에 의해 자동 분해됨_`;
+_Auto-decomposed by Planner agent_`;
 
   await addComment(issueId, body);
 
@@ -845,9 +845,9 @@ export async function proposeWork(
 
   // Check daily limit
   if (dailyIssueCount >= DAILY_ISSUE_LIMIT) {
-    console.log(`[${sessionName}] 일일 이슈 생성 한도 도달 (${dailyIssueCount}/${DAILY_ISSUE_LIMIT})`);
+    console.log(`[${sessionName}] Daily issue creation limit reached (${dailyIssueCount}/${DAILY_ISSUE_LIMIT})`);
     return {
-      error: `일일 이슈 생성 한도(${DAILY_ISSUE_LIMIT}개) 도달. 제안을 내일로 미루세요.`,
+      error: `Daily issue creation limit (${DAILY_ISSUE_LIMIT}) reached. Please defer the proposal to tomorrow.`,
     };
   }
 
@@ -870,24 +870,24 @@ export async function proposeWork(
   if (sessionLabel) labelIds.push(sessionLabel.id);
 
   // Compose description
-  const description = `## 🤖 에이전트 제안
+  const description = `## 🤖 Agent Proposal
 
-**제안자:** ${sessionName}
-**생성 시간:** ${new Date().toISOString()}
+**Proposed by:** ${sessionName}
+**Created at:** ${new Date().toISOString()}
 
 ---
 
-### 제안 이유
+### Rationale
 ${rationale}
 
-${suggestedApproach ? `### 제안 접근법\n${suggestedApproach}` : ''}
+${suggestedApproach ? `### Suggested Approach\n${suggestedApproach}` : ''}
 
 ---
-_이 이슈는 에이전트가 자동으로 생성했습니다. 검토 후 우선순위를 조정하거나 삭제해주세요._`;
+_This issue was auto-created by an agent. Please review and adjust priority or delete as needed._`;
 
   const issuePayload = await linear.createIssue({
     teamId,
-    title: `[제안] ${title}`,
+    title: `[Proposal] ${title}`,
     description,
     labelIds,
     stateId: backlogState?.id,

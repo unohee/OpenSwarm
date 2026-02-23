@@ -1,31 +1,31 @@
 ---
-description: GitHub 이슈 분석 (버그/기능 요청)
+description: GitHub issue analysis (bugs/feature requests)
 trigger: /is <issue_url_or_number>
 ---
 
 # GitHub Issue Analysis
 
-이슈 분석: $ARGUMENTS
+Analyzing issue: $ARGUMENTS
 
 ## Process
 
-각 이슈에 대해:
+For each issue:
 
-1. **이슈 전체 읽기**
-   - 본문, 모든 코멘트, 링크된 이슈/PR 포함
+1. **Read the entire issue**
+   - Including body, all comments, linked issues/PRs
 
-2. **버그인 경우:**
-   - 이슈에 적힌 원인 분석은 무시 (대부분 틀림)
-   - 관련 코드 파일 전체 읽기 (truncation 금지)
-   - 코드 경로 추적하여 실제 원인 파악
-   - 수정 방안 제안
+2. **If it's a bug:**
+   - Ignore the cause analysis written in the issue (usually wrong)
+   - Read all relevant code files completely (no truncation)
+   - Trace the code path to identify the actual cause
+   - Suggest a fix
 
-3. **기능 요청인 경우:**
-   - 관련 코드 파일 전체 읽기
-   - 가장 간결한 구현 방법 제안
-   - 영향받는 파일 목록과 필요한 변경 사항 정리
+3. **If it's a feature request:**
+   - Read all relevant code files completely
+   - Suggest the most concise implementation approach
+   - List affected files and required changes
 
 ## Rules
 
-- 명시적 요청 없이 구현하지 않음
-- 분석과 제안만 수행
+- Do not implement without explicit request
+- Perform analysis and suggestions only

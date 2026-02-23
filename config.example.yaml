@@ -1,11 +1,11 @@
 # OpenSwarm Configuration
-# 환경변수는 ${VAR_NAME} 또는 ${VAR_NAME:-default} 형식으로 사용
-# 이 파일을 config.yaml로 복사하여 사용하세요
+# Environment variables can be used in ${VAR_NAME} or ${VAR_NAME:-default} format
+# Copy this file to config.yaml to use
 
 discord:
   token: ${DISCORD_TOKEN}
   channelId: ${DISCORD_CHANNEL_ID}
-  webhookUrl: ${DISCORD_WEBHOOK_URL:-}  # 선택적
+  webhookUrl: ${DISCORD_WEBHOOK_URL:-}  # Optional
 
 linear:
   apiKey: ${LINEAR_API_KEY}
@@ -13,50 +13,50 @@ linear:
 
 github:
   repos:
-    - unohee/OpenSwarm  # owner/repo 형식
-  checkInterval: 300000  # 5분 (ms)
+    - unohee/OpenSwarm  # owner/repo format
+  checkInterval: 300000  # 5 minutes (ms)
 
-# 에이전트 목록
+# Agent list
 agents:
   - name: main
     projectPath: ~/dev/OpenSwarm
-    heartbeatInterval: 1800000  # 30분 (ms)
-    linearLabel: main  # Linear 이슈 필터용 라벨
+    heartbeatInterval: 1800000  # 30 minutes (ms)
+    linearLabel: main  # Label for Linear issue filtering
     enabled: true
     paused: false
 
-# 기본 heartbeat 간격 (ms)
-defaultHeartbeatInterval: 1800000  # 30분
+# Default heartbeat interval (ms)
+defaultHeartbeatInterval: 1800000  # 30 minutes
 
-# 자율 실행 모드 설정
+# Autonomous execution mode settings
 autonomous:
   enabled: true
   pairMode: true
-  schedule: "*/15 * * * *"  # 15분마다
+  schedule: "*/15 * * * *"  # Every 15 minutes
   maxAttempts: 3
-  maxConcurrentTasks: 4  # 동시 실행 태스크 수
+  maxConcurrentTasks: 4  # Number of concurrent tasks
 
   allowedProjects:
     - ~/dev/OpenSwarm
 
-  # 작업 분해 설정 (Planner Agent)
+  # Task decomposition settings (Planner Agent)
   decomposition:
-    enabled: true                    # 분해 활성화
-    thresholdMinutes: 30             # 이 시간 초과 예상 시 분해
-    plannerModel: claude-sonnet-4-20250514  # Planner 모델
+    enabled: true                    # Enable decomposition
+    thresholdMinutes: 30             # Decompose if estimated time exceeds this
+    plannerModel: claude-sonnet-4-20250514  # Planner model
 
-  # 역할별 설정
+  # Per-role settings
   defaultRoles:
     worker:
       enabled: true
-      model: claude-haiku-4-5-20251001        # 기본: Haiku (저비용)
-      escalateModel: claude-sonnet-4-20250514  # 실패 시: Sonnet
-      escalateAfterIteration: 3                # 3번째 이터레이션부터 에스컬레이션
-      timeoutMs: 1800000  # 30분
+      model: claude-haiku-4-5-20251001        # Default: Haiku (low cost)
+      escalateModel: claude-sonnet-4-20250514  # On failure: Sonnet
+      escalateAfterIteration: 3                # Escalate from 3rd iteration
+      timeoutMs: 1800000  # 30 minutes
     reviewer:
       enabled: true
       model: claude-haiku-4-5-20251001
-      timeoutMs: 600000   # 10분
+      timeoutMs: 600000   # 10 minutes
     tester:
       enabled: false
     documenter:
@@ -64,29 +64,29 @@ autonomous:
     auditor:
       enabled: false
       model: claude-haiku-4-5-20251001
-      timeoutMs: 300000   # 5분
+      timeoutMs: 300000   # 5 minutes
     skill-documenter:
       enabled: false
       model: claude-haiku-4-5-20251001
-      timeoutMs: 120000   # 2분
+      timeoutMs: 120000   # 2 minutes
 
-# 장기 작업 모니터링 (RunPod 학습, 배치 처리 등)
+# Long-running task monitoring (RunPod training, batch processing, etc.)
 # monitors:
 #   - id: runpod-training
-#     name: "LSTM 모델 학습"
+#     name: "LSTM model training"
 #     issueId: INT-456
 #     checkCommand: 'ssh runpod "tail -1 /workspace/train.log"'
 #     completionCheck:
 #       type: output-regex
 #       successPattern: "Training finished"
 #       failurePattern: "Error|FAILED"
-#     checkInterval: 2         # 2 heartbeat마다
+#     checkInterval: 2         # Every 2 heartbeats
 #     maxDurationHours: 24
 #     notify: true
 
 # PR Auto-Improvement
 prProcessor:
   enabled: true
-  schedule: "*/15 * * * *"    # 15분마다 체크
-  cooldownHours: 6            # 처리 후 6시간 대기
-  maxIterations: 3            # Worker-Reviewer 최대 3회 반복
+  schedule: "*/15 * * * *"    # Check every 15 minutes
+  cooldownHours: 6            # Wait 6 hours after processing
+  maxIterations: 3            # Max 3 Worker-Reviewer iterations

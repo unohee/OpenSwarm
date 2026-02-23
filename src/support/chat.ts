@@ -304,14 +304,14 @@ async function handleCommand(
     case '?':
       console.log(`
 ${BOLD}Commands:${RESET}
-  ${CYAN}/clear${RESET}          대화 초기화
-  ${CYAN}/save [name]${RESET}    세션 저장
-  ${CYAN}/load [name]${RESET}    세션 목록/로드
-  ${CYAN}/model [id]${RESET}     모델 변경 (sonnet/haiku/opus)
-  ${CYAN}/info${RESET}           세션 정보
-  ${CYAN}/exit${RESET}           종료 (Ctrl+D)
+  ${CYAN}/clear${RESET}          Clear conversation
+  ${CYAN}/save [name]${RESET}    Save session
+  ${CYAN}/load [name]${RESET}    List/load sessions
+  ${CYAN}/model [id]${RESET}     Change model (sonnet/haiku/opus)
+  ${CYAN}/info${RESET}           Session info
+  ${CYAN}/exit${RESET}           Exit (Ctrl+D)
 
-${BOLD}Multiline:${RESET}  ${CYAN}"""${RESET} 시작 → ${CYAN}"""${RESET} 종료
+${BOLD}Multiline:${RESET}  ${CYAN}"""${RESET} start → ${CYAN}"""${RESET} end
 `);
       return 'handled';
 

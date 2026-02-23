@@ -405,20 +405,20 @@ export async function applyEditBlock(
  * Format description for Worker prompts
  */
 export const SEARCH_REPLACE_PROMPT = `
-## 코드 편집 형식 (SEARCH/REPLACE)
+## Code Edit Format (SEARCH/REPLACE)
 
-모든 코드 변경은 다음 형식을 사용하라:
+Use the following format for all code changes:
 
-파일경로
-\`\`\`언어
+filepath
+\`\`\`language
 <<<<<<< SEARCH
-기존 코드 (파일에서 정확히 복사)
+existing code (copied exactly from file)
 =======
-새 코드
+new code
 >>>>>>> REPLACE
 \`\`\`
 
-예시:
+Example:
 src/utils.ts
 \`\`\`typescript
 <<<<<<< SEARCH
@@ -432,8 +432,8 @@ function newName() {
 >>>>>>> REPLACE
 \`\`\`
 
-규칙:
-- SEARCH 부분은 파일의 기존 코드와 정확히 일치해야 함
-- 여러 파일을 수정할 때는 각각 별도의 블록으로 작성
-- 새 파일 생성 시 SEARCH 부분을 비워둠
+Rules:
+- SEARCH section must exactly match existing code in the file
+- When modifying multiple files, use separate blocks for each
+- Leave SEARCH section empty when creating a new file
 `;

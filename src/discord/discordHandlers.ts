@@ -28,7 +28,7 @@ import {
 import { t, getDateLocale } from '../locale/index.js';
 
 /**
- * !status [session] - 상태 확인
+ * !status [session] - Check status
  */
 export async function handleStatus(msg: Message, sessionName?: string): Promise<void> {
   if (!getAgentStatus) {
@@ -75,21 +75,21 @@ export async function handleStatus(msg: Message, sessionName?: string): Promise<
 }
 
 /**
- * !list - (deprecated) tmux 세션 목록 → 대시보드 안내
+ * !list - (deprecated) tmux session list -> dashboard redirect
  */
 export async function handleList(msg: Message): Promise<void> {
   await msg.reply('Use web dashboard at /dashboard for session management. tmux mode has been removed.');
 }
 
 /**
- * !run <session> "<task>" - (deprecated) tmux 작업 실행 → !dev 안내
+ * !run <session> "<task>" - (deprecated) tmux task execution -> !dev redirect
  */
 export async function handleRun(msg: Message, _args: string[]): Promise<void> {
   await msg.reply('tmux mode has been removed. Use `!dev <repo> "<task>"` instead.');
 }
 
 /**
- * !pause <session> - 자율 작업 중지
+ * !pause <session> - Pause autonomous work
  */
 export async function handlePause(msg: Message, sessionName: string): Promise<void> {
   if (!sessionName) {
@@ -104,7 +104,7 @@ export async function handlePause(msg: Message, sessionName: string): Promise<vo
 }
 
 /**
- * !resume <session> - 자율 작업 재개
+ * !resume <session> - Resume autonomous work
  */
 export async function handleResume(msg: Message, sessionName: string): Promise<void> {
   if (!sessionName) {
@@ -119,11 +119,11 @@ export async function handleResume(msg: Message, sessionName: string): Promise<v
 }
 
 /**
- * !issues [session] - Linear 이슈 목록
+ * !issues [session] - List Linear issues
  */
 export async function handleIssues(msg: Message, sessionName?: string): Promise<void> {
   try {
-    // 세션명 검증
+    // Validate session name
     if (sessionName) {
       const status = getAgentStatus?.(sessionName);
       if (!status || status.length === 0) {
@@ -140,7 +140,7 @@ export async function handleIssues(msg: Message, sessionName?: string): Promise<
       return;
     }
 
-    // 우선순위 이모지 매핑 (Linear: 0=None, 1=Urgent, 2=High, 3=Normal, 4=Low)
+    // Priority emoji mapping (Linear: 0=None, 1=Urgent, 2=High, 3=Normal, 4=Low)
     const priorityEmoji = {
       0: '⚪',
       1: '🔴',
@@ -149,7 +149,7 @@ export async function handleIssues(msg: Message, sessionName?: string): Promise<
       4: '🟢',
     };
 
-    // 상태 색상 매핑
+    // State color mapping
     const stateColor = {
       'Todo': 0x808080,
       'In Progress': 0x3498db,
@@ -158,7 +158,7 @@ export async function handleIssues(msg: Message, sessionName?: string): Promise<
       'Backlog': 0x95a5a6,
     };
 
-    // 페이지네이션 (최대 10개 per embed)
+    // Pagination (max 10 per embed)
     const ITEMS_PER_PAGE = 10;
     const totalPages = Math.ceil(issues.length / ITEMS_PER_PAGE);
 
@@ -213,14 +213,14 @@ export async function handleIssues(msg: Message, sessionName?: string): Promise<
       embeds.push(embed);
     }
 
-    // Embed 전송 (모두 한 번에 또는 나누어 전송)
+    // Send embeds (all at once or split)
     if (embeds.length === 1) {
       await msg.reply({ embeds });
     } else {
-      // 첫 번째는 reply, 나머지는 메시지로 전송
+      // First one as reply, rest as messages
       await msg.reply({ embeds: [embeds[0]] });
 
-      // 추가 embeds 전송 (페이징)
+      // Send additional embeds (paging)
       for (let i = 1; i < embeds.length; i++) {
         const channel = msg.channel as any;
         if (channel?.send) {
@@ -235,7 +235,7 @@ export async function handleIssues(msg: Message, sessionName?: string): Promise<
 }
 
 /**
- * !issue <ID> - Linear 이슈 상세 조회
+ * !issue <ID> - View Linear issue details
  */
 export async function handleIssue(msg: Message, issueId: string): Promise<void> {
   try {
@@ -251,7 +251,7 @@ export async function handleIssue(msg: Message, issueId: string): Promise<void> 
       return;
     }
 
-    // 우선순위 라벨
+    // Priority labels
     const priorityLabel = {
       0: 'None',
       1: 'Urgent',
@@ -260,7 +260,7 @@ export async function handleIssue(msg: Message, issueId: string): Promise<void> 
       4: 'Low',
     };
 
-    // 상태 색상 매핑
+    // State color mapping
     const stateColor = {
       'Todo': 0x808080,
       'In Progress': 0x3498db,
@@ -274,19 +274,19 @@ export async function handleIssue(msg: Message, issueId: string): Promise<void> 
       .setColor(stateColor[issue.state as keyof typeof stateColor] ?? 0x3498db)
       .setTimestamp();
 
-    // 설명
+    // Description
     if (issue.description) {
       const desc = issue.description.length > 1024
         ? issue.description.slice(0, 1021) + '...'
         : issue.description;
       embed.addFields({
-        name: '📝 설명',
+        name: '📝 Description',
         value: desc,
         inline: false,
       });
     }
 
-    // 상태, 우선순위, 프로젝트
+    // State, priority, project
     const stateEmoji = {
       'Todo': '📝',
       'In Progress': '⚙️',
@@ -307,12 +307,12 @@ export async function handleIssue(msg: Message, issueId: string): Promise<void> 
     }
 
     embed.addFields({
-      name: '📊 상세 정보',
+      name: '📊 Details',
       value: infoValue,
       inline: false,
     });
 
-    // 댓글 표시
+    // Show comments
     if (issue.comments && issue.comments.length > 0) {
       const commentSummary = issue.comments.slice(0, 3).map((comment, idx) => {
         const preview = comment.body.length > 100
@@ -323,7 +323,7 @@ export async function handleIssue(msg: Message, issueId: string): Promise<void> 
       }).join('\n\n');
 
       const commentValue = issue.comments.length > 3
-        ? `${commentSummary}\n\n_+${issue.comments.length - 3}개 더..._`
+        ? `${commentSummary}\n\n_+${issue.comments.length - 3} more..._`
         : commentSummary;
 
       embed.addFields({
@@ -333,7 +333,7 @@ export async function handleIssue(msg: Message, issueId: string): Promise<void> 
       });
     } else {
       embed.addFields({
-        name: '💬 댓글',
+        name: '💬 Comments',
         value: t('discord.issue.noComments'),
         inline: false,
       });
@@ -347,14 +347,14 @@ export async function handleIssue(msg: Message, issueId: string): Promise<void> 
 }
 
 /**
- * !log <session> [lines] - (deprecated) tmux 로그 → 대시보드 안내
+ * !log <session> [lines] - (deprecated) tmux logs -> dashboard redirect
  */
 export async function handleLog(msg: Message, _sessionName: string, _lines: number): Promise<void> {
   await msg.reply('tmux mode has been removed. Use web dashboard at /dashboard for logs.');
 }
 
 /**
- * !ci - GitHub CI 상태 확인
+ * !ci - Check GitHub CI status
  */
 export async function handleCI(msg: Message): Promise<void> {
   const repos = getGithubRepos?.() ?? [];
@@ -370,7 +370,7 @@ export async function handleCI(msg: Message): Promise<void> {
 }
 
 /**
- * !notifications - GitHub 알림 확인
+ * !notifications - Check GitHub notifications
  */
 export async function handleNotifications(msg: Message): Promise<void> {
   await msg.reply(`🔍 ${t('discord.notifications.checking')}`);
@@ -379,16 +379,16 @@ export async function handleNotifications(msg: Message): Promise<void> {
 }
 
 /**
- * !dev <repo> "<task>" - 특정 저장소에서 개발 작업 실행
+ * !dev <repo> "<task>" - Run dev task in a specific repository
  */
 export async function handleDev(msg: Message, args: string[]): Promise<void> {
-  // !dev list - 알려진 저장소 목록 (repos로 리다이렉트)
+  // !dev list - Known repo list (redirects to repos)
   if (args[0] === 'list') {
     await handleRepos(msg);
     return;
   }
 
-  // !dev scan - ~/dev 스캔
+  // !dev scan - Scan ~/dev
   if (args[0] === 'scan') {
     const repos = dev.scanDevRepos();
     if (repos.length === 0) {
@@ -399,7 +399,7 @@ export async function handleDev(msg: Message, args: string[]): Promise<void> {
     return;
   }
 
-  // !dev <repo> "<task>" 파싱
+  // !dev <repo> "<task>" parsing
   const repo = args[0];
   const taskMatch = msg.content.match(/!dev \S+ "(.+)"/s);
   const task = taskMatch?.[1];
@@ -409,27 +409,27 @@ export async function handleDev(msg: Message, args: string[]): Promise<void> {
     return;
   }
 
-  // 경로 확인
+  // Verify path
   const resolvedPath = dev.resolveRepoPath(repo);
   if (!resolvedPath) {
     await msg.reply(t('discord.errors.repoNotFound', { repo }));
     return;
   }
 
-  // 작업 시작 알림
+  // Task start notification
   await msg.reply(`🚀 ${t('discord.dev.taskStarting', { repo, path: resolvedPath, task: task.slice(0, 100) + (task.length > 100 ? '...' : '') })}`);
 
-  // 진행 상황 수집용
+  // For collecting progress updates
   let progressChunks: string[] = [];
   let _lastProgressMsg: Message | null = null;
   let progressTimer: NodeJS.Timeout | null = null;
 
-  // 작업 실행
+  // Execute task
   const result = await dev.runDevTask(
     repo,
     task,
     msg.author.username,
-    // onProgress: 10초마다 중간 진행 상황 알림
+    // onProgress: intermediate progress notification every 10 seconds
     (chunk) => {
       progressChunks.push(chunk);
 
@@ -439,33 +439,33 @@ export async function handleDev(msg: Message, args: string[]): Promise<void> {
           if (combined.trim()) {
             try {
               _lastProgressMsg = await msg.reply(`${t('discord.dev.inProgress', { repo })}\n\`\`\`\n${combined}\n\`\`\``);
-            } catch { /* 무시 */ }
+            } catch { /* ignore */ }
           }
           progressChunks = [];
           progressTimer = null;
         }, 10000);
       }
     },
-    // onComplete: 완료 시 결과 전송
+    // onComplete: send result on completion
     async (output, exitCode) => {
       if (progressTimer) {
         clearTimeout(progressTimer);
       }
 
-      // 결과 분할 전송 (Discord 2000자 제한)
+      // Split result for sending (Discord 2000 char limit)
       const MAX_LEN = 1800;
       const truncated = output.length > MAX_LEN * 3
-        ? `...(${output.length - MAX_LEN * 3}자 생략)\n\n${output.slice(-MAX_LEN * 3)}`
+        ? `...(${output.length - MAX_LEN * 3} chars omitted)\n\n${output.slice(-MAX_LEN * 3)}`
         : output;
 
       const statusEmoji = exitCode === 0 ? '✅' : '⚠️';
       const header = `${statusEmoji} ${t('discord.dev.completed', { repo, exitCode: exitCode ?? 'unknown' })}`;
 
-      // 결과가 짧으면 한 번에
+      // If result is short, send at once
       if (truncated.length <= MAX_LEN) {
         await msg.reply(`${header}\n\`\`\`\n${truncated || t('discord.dev.noOutput')}\n\`\`\``);
       } else {
-        // 결과가 길면 분할
+        // If result is long, split
         await msg.reply(header);
 
         const chunks = [];
@@ -490,7 +490,7 @@ export async function handleDev(msg: Message, args: string[]): Promise<void> {
 }
 
 /**
- * !repos - 알려진 저장소 목록
+ * !repos - List known repositories
  */
 export async function handleRepos(msg: Message): Promise<void> {
   const repos = dev.listKnownRepos();
@@ -529,7 +529,7 @@ export async function handleRepos(msg: Message): Promise<void> {
 }
 
 /**
- * !tasks - 실행 중인 dev 작업 목록
+ * !tasks - List running dev tasks
  */
 export async function handleTasks(msg: Message): Promise<void> {
   const tasks = dev.getActiveTasks();
@@ -558,7 +558,7 @@ export async function handleTasks(msg: Message): Promise<void> {
 }
 
 /**
- * !cancel <taskId> - 작업 취소
+ * !cancel <taskId> - Cancel task
  */
 export async function handleCancel(msg: Message, taskId: string): Promise<void> {
   if (!taskId) {
@@ -576,7 +576,7 @@ export async function handleCancel(msg: Message, taskId: string): Promise<void> 
 }
 
 /**
- * !limits - 에이전트 일일 제한 현황
+ * !limits - Agent daily limit status
  */
 export async function handleLimits(msg: Message): Promise<void> {
   const remaining = linear.getRemainingDailyIssues();
@@ -602,12 +602,12 @@ export async function handleLimits(msg: Message): Promise<void> {
 }
 
 /**
- * !schedule - 스케줄 관리
+ * !schedule - Schedule management
  */
 export async function handleSchedule(msg: Message, args: string[]): Promise<void> {
   const subCommand = args[0];
 
-  // !schedule list 또는 !schedule (목록)
+  // !schedule list or !schedule (list)
   if (!subCommand || subCommand === 'list') {
     const schedules = await scheduler.listSchedules();
     const formatted = scheduler.formatScheduleList(schedules);
@@ -622,7 +622,7 @@ export async function handleSchedule(msg: Message, args: string[]): Promise<void
     return;
   }
 
-  // !schedule run <name> - 즉시 실행
+  // !schedule run <name> - Run immediately
   if (subCommand === 'run') {
     const name = args[1];
     if (!name) {
@@ -639,7 +639,7 @@ export async function handleSchedule(msg: Message, args: string[]): Promise<void
     return;
   }
 
-  // !schedule toggle <name> - 활성화/비활성화
+  // !schedule toggle <name> - Enable/disable
   if (subCommand === 'toggle') {
     const name = args[1];
     if (!name) {
@@ -696,17 +696,17 @@ export async function handleSchedule(msg: Message, args: string[]): Promise<void
     return;
   }
 
-  // 알 수 없는 서브 명령
+  // Unknown subcommand
   await msg.reply(t('discord.schedule.helpText'));
 }
 
 /**
- * !codex - 세션 기록 관리
+ * !codex - Session record management
  */
 export async function handleCodex(msg: Message, args: string[]): Promise<void> {
   const subCommand = args[0];
 
-  // !codex 또는 !codex list - 최근 세션 목록
+  // !codex or !codex list - Recent session list
   if (!subCommand || subCommand === 'list') {
     const recent = await codex.getRecentSessions(10);
 
@@ -726,7 +726,7 @@ export async function handleCodex(msg: Message, args: string[]): Promise<void> {
     return;
   }
 
-  // !codex save "<title>" [tags...] - 현재 세션 저장
+  // !codex save "<title>" [tags...] - Save current session
   if (subCommand === 'save') {
     const titleMatch = msg.content.match(/!codex save "(.+?)"/);
     const title = titleMatch?.[1];
@@ -736,15 +736,15 @@ export async function handleCodex(msg: Message, args: string[]): Promise<void> {
       return;
     }
 
-    // 태그 추출 (제목 뒤의 단어들)
+    // Extract tags (words after the title)
     const afterTitle = msg.content.slice(msg.content.indexOf('"', msg.content.indexOf('"') + 1) + 1).trim();
     const tags = afterTitle.split(/\s+/).filter(t => t.length > 0);
 
-    // 세션 저장 요청 메시지
+    // Session save request message
     await msg.reply(t('discord.codex.saving', { title, tags: tags.length > 0 ? tags.map(tag => `\`${tag}\``).join(' ') : t('discord.codex.noTags') }));
 
-    // 실제 저장은 Claude가 작업 완료 후 호출해야 함
-    // 여기서는 빈 세션으로 저장 (나중에 업데이트 가능)
+    // Actual save should be called after Claude completes work
+    // Here we save an empty session (can be updated later)
     try {
       const { summaryPath } = await codex.quickSave({
         title,
@@ -759,13 +759,13 @@ export async function handleCodex(msg: Message, args: string[]): Promise<void> {
     return;
   }
 
-  // !codex path - 경로 확인
+  // !codex path - Check path
   if (subCommand === 'path') {
     await msg.reply(`📁 ${t('discord.codex.pathLabel', { path: codex.getCodexPath() })}`);
     return;
   }
 
-  // 알 수 없는 서브 명령
+  // Unknown subcommand
   await msg.reply(t('discord.codex.helpText'));
 }
 
@@ -774,12 +774,12 @@ export async function handleCodex(msg: Message, args: string[]): Promise<void> {
 // ============================================
 
 /**
- * !auto - 자율 실행 모드 관리
+ * !auto - Autonomous execution mode management
  */
 export async function handleAuto(msg: Message, args: string[]): Promise<void> {
   const subCommand = args[0];
 
-  // !auto status 또는 !auto - 상태 확인
+  // !auto status or !auto - Check status
   if (!subCommand || subCommand === 'status') {
     try {
       const runner = autonomous.getRunner();
@@ -810,18 +810,18 @@ export async function handleAuto(msg: Message, args: string[]): Promise<void> {
     return;
   }
 
-  // !auto start [schedule] [--pair] - 시작
+  // !auto start [schedule] [--pair] - Start
   if (subCommand === 'start') {
-    // --pair 옵션 체크
+    // Check --pair option
     const hasPairFlag = args.includes('--pair') || args.includes('pair');
     const scheduleArg = args.find(a => a !== 'start' && a !== '--pair' && a !== 'pair');
-    const schedule = scheduleArg || '*/30 * * * *'; // 기본: 30분마다
+    const schedule = scheduleArg || '*/30 * * * *'; // Default: every 30 minutes
 
     const startingMsg = hasPairFlag ? t('discord.auto.startingPair') : t('discord.auto.startingSolo');
     await msg.reply(`🚀 ${startingMsg}\nSchedule: \`${schedule}\``);
 
     try {
-      // Discord reporter 등록
+      // Register Discord reporter
       autonomous.setDiscordReporter(async (content) => {
         const channel = msg.channel as TextChannel;
         if (typeof content === 'string') {
@@ -831,7 +831,7 @@ export async function handleAuto(msg: Message, args: string[]): Promise<void> {
         }
       });
 
-      // Linear fetcher 등록
+      // Register Linear fetcher
       autonomous.setLinearFetcher(async (): Promise<TaskItem[]> => {
         try {
           const issues = await linear.getMyIssues({ slim: true, timeoutMs: 30000 });
@@ -850,13 +850,13 @@ export async function handleAuto(msg: Message, args: string[]): Promise<void> {
         }
       });
 
-      // Runner 시작
+      // Start runner
       console.log(`[Auto] Starting with pairMode: ${hasPairFlag}`);
       await autonomous.startAutonomous({
         linearTeamId: process.env.LINEAR_TEAM_ID || '',
         allowedProjects: ['~/dev/OpenSwarm', '~/dev/tools/pykis', '~/dev'],
         heartbeatSchedule: schedule,
-        autoExecute: true, // 자동 실행 (승인 불필요)
+        autoExecute: true, // Auto-execute (no approval needed)
         maxConsecutiveTasks: 3,
         cooldownSeconds: 300,
         dryRun: false,
@@ -874,14 +874,14 @@ export async function handleAuto(msg: Message, args: string[]): Promise<void> {
     return;
   }
 
-  // !auto stop - 중지
+  // !auto stop - Stop
   if (subCommand === 'stop') {
     autonomous.stopAutonomous();
     await msg.reply(`⏹️ ${t('discord.auto.stopped')}`);
     return;
   }
 
-  // !auto run - 즉시 heartbeat 실행
+  // !auto run - Run heartbeat immediately
   if (subCommand === 'run') {
     try {
       const runner = autonomous.getRunner();
@@ -893,19 +893,19 @@ export async function handleAuto(msg: Message, args: string[]): Promise<void> {
     return;
   }
 
-  // !auto approve on/off - 자동 승인 토글
+  // !auto approve on/off - Toggle auto-approval
   if (subCommand === 'approve' && (args[1] === 'on' || args[1] === 'off')) {
     const autoApprove = args[1] === 'on';
-    await msg.reply(`${autoApprove ? '⚠️ 자동 실행' : '✅ 수동 승인'} 모드로 변경하려면 재시작이 필요합니다.`);
+    await msg.reply(`Restart required to switch to ${autoApprove ? '⚠️ auto-execute' : '✅ manual approval'} mode.`);
     return;
   }
 
-  // 도움말
+  // Help
   await msg.reply(t('discord.auto.helpText'));
 }
 
 /**
- * !approve - 대기 중인 작업 승인
+ * !approve - Approve pending task
  */
 export async function handleApprove(msg: Message): Promise<void> {
   try {
@@ -923,7 +923,7 @@ export async function handleApprove(msg: Message): Promise<void> {
 }
 
 /**
- * !reject - 대기 중인 작업 거부
+ * !reject - Reject pending task
  */
 export async function handleReject(msg: Message): Promise<void> {
   try {

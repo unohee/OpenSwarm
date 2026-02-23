@@ -1,41 +1,41 @@
-# OpenSwarm Heartbeat 체크리스트
+# OpenSwarm Heartbeat Checklist
 
-## 🔍 시스템 상태 점검
+## System Status Check
 
-- [ ] **Git 상태 확인**: 변경사항, 커밋 대기 파일 점검
-- [ ] **빌드 상태**: TypeScript 컴파일 에러 확인 (`npm run build`)
-- [ ] **테스트 실행**: 주요 테스트 통과 여부 확인 (`npm test`)
-- [ ] **린팅**: 코드 스타일 검사 (`npm run lint`)
+- [ ] **Check Git status**: Inspect changes and files pending commit
+- [ ] **Build status**: Check for TypeScript compilation errors (`npm run build`)
+- [ ] **Run tests**: Verify main tests pass (`npm test`)
+- [ ] **Linting**: Run code style checks (`npm run lint`)
 
-## 📋 Linear 이슈 관리
+## Linear Issue Management
 
-- [ ] **Todo/InProgress 이슈 확인**: 진행중인 작업 점검
-- [ ] **이슈 상태 업데이트**: 완료된 작업은 Done으로 이동
-- [ ] **새 이슈 검토**: 우선순위가 높은 새 작업 식별
+- [ ] **Check Todo/InProgress issues**: Review tasks in progress
+- [ ] **Update issue status**: Move completed tasks to Done
+- [ ] **Review new issues**: Identify high-priority new tasks
 
-## 🚀 진행사항 보고
+## Progress Report
 
-완료된 작업이나 중요한 발견사항이 있으면 다음 형식으로 보고:
+When there are completed tasks or important findings, report in the following format:
 
-**DONE**: [완료 작업 요약]
-**PROGRESS**: [진행중인 작업 상태]
-**BLOCKED**: [막힌 작업과 원인]
+**DONE**: [Summary of completed work]
+**PROGRESS**: [Status of in-progress work]
+**BLOCKED**: [Blocked tasks and reasons]
 
-## ⚡ 자율 작업 가이드
+## Autonomous Work Guide
 
-1. **즉시 수정 가능한 작업 우선**: 타입 에러, 린팅 에러, 간단한 버그
-2. **테스트 커버리지 향상**: 누락된 테스트 케이스 추가
-3. **문서화**: README, 주석, 타입 정의 개선
-4. **코드 품질**: 리팩토링, 성능 최적화
-5. **의존성 관리**: 취약점 패치, 버전 업데이트
+1. **Prioritize immediately fixable tasks**: Type errors, linting errors, simple bugs
+2. **Improve test coverage**: Add missing test cases
+3. **Documentation**: Improve README, comments, type definitions
+4. **Code quality**: Refactoring, performance optimization
+5. **Dependency management**: Vulnerability patches, version updates
 
-## 📊 성과 지표
+## Performance Metrics
 
-- **이슈 완료율**: 이번 주 완료/전체 이슈
-- **빌드 안정성**: 최근 빌드 성공률
-- **테스트 커버리지**: 현재 커버리지 수준
-- **코드 품질**: ESLint 에러/경고 수
+- **Issue completion rate**: Completed/total issues this week
+- **Build stability**: Recent build success rate
+- **Test coverage**: Current coverage level
+- **Code quality**: ESLint error/warning count
 
 ---
 
-**참고**: 이 체크리스트는 자율 에이전트의 작업 가이드입니다. 작업 완료 시 Linear에 진행사항을 업데이트하세요.
+**Note**: This checklist is a work guide for the autonomous agent. Update progress in Linear upon task completion.

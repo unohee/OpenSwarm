@@ -1,6 +1,6 @@
 // ============================================
 // OpenSwarm - Auditor Agent
-// /audit 스킬 기반 BS 탐지 에이전트
+// /audit skill-based BS detection agent
 // ============================================
 
 import { spawn } from 'node:child_process';
@@ -55,15 +55,15 @@ function buildAuditorPrompt(options: AuditorOptions): string {
 
   return `/audit
 
-## 작업 컨텍스트
+## Task Context
 - **Task:** ${options.taskTitle}
 - **Description:** ${options.taskDescription}
 
 ## Worker's Changes
 ${workerReport}
 
-위 작업에서 변경된 파일을 중심으로 감사를 수행하라.
-감사 완료 후 반드시 다음 JSON 형식으로 결과를 출력하라:
+Perform an audit focusing on the files changed in the above task.
+After the audit is complete, output the result in the following JSON format:
 
 \`\`\`json
 {
@@ -73,11 +73,11 @@ ${workerReport}
   "warningCount": 3,
   "minorCount": 5,
   "issues": ["src/foo.ts:42 - unused import"],
-  "summary": "BS 지수 2.1/5.0, CRITICAL 이슈 없음"
+  "summary": "BS score 2.1/5.0, no CRITICAL issues"
 }
 \`\`\`
 
-실패 시:
+On failure:
 \`\`\`json
 {
   "success": false,
@@ -85,8 +85,8 @@ ${workerReport}
   "criticalCount": 3,
   "warningCount": 5,
   "minorCount": 2,
-  "issues": ["CRITICAL: src/bar.ts:10 - 하드코딩된 시크릿"],
-  "summary": "BS 지수 7.5/5.0 - CRITICAL 이슈 발견"
+  "issues": ["CRITICAL: src/bar.ts:10 - hardcoded secret"],
+  "summary": "BS score 7.5/5.0 - CRITICAL issues found"
 }
 \`\`\`
 `;
@@ -112,7 +112,7 @@ export async function runAuditor(options: AuditorOptions): Promise<AuditorResult
       warningCount: 0,
       minorCount: 0,
       issues: [],
-      summary: 'Auditor 실행 실패',
+      summary: 'Auditor execution failed',
       error: error instanceof Error ? error.message : String(error),
     };
   } finally {
@@ -188,7 +188,7 @@ function parseAuditorOutput(output: string): AuditorResult {
       console.log(`[Auditor] Cost: ${formatCost(costInfo)}`);
     }
 
-    // NDJSON에서 result 항목 추출
+    // Extract result entry from NDJSON
     let resultText = '';
     for (const line of output.split('\n')) {
       try {
@@ -261,7 +261,7 @@ function normalizeResult(parsed: any): AuditorResult {
     warningCount: typeof parsed.warningCount === 'number' ? parsed.warningCount : 0,
     minorCount: typeof parsed.minorCount === 'number' ? parsed.minorCount : 0,
     issues: Array.isArray(parsed.issues) ? parsed.issues : [],
-    summary: parsed.summary || '(요약 없음)',
+    summary: parsed.summary || '(no summary)',
     error: parsed.error,
   };
 }
@@ -270,14 +270,14 @@ function extractFromText(text: string): AuditorResult {
   const hasError = /error|fail|exception|critical/i.test(text);
   const hasSuccess = /success|pass|clean|no issues/i.test(text);
 
-  // BS score 추출
+  // Extract BS score
   let bsScore: number | undefined;
-  const bsMatch = text.match(/(?:bs|bullshit)\s*(?:지수|score|index)[:\s]*(\d+(?:\.\d+)?)/i);
+  const bsMatch = text.match(/(?:bs|bullshit)\s*(?:score|index)[:\s]*(\d+(?:\.\d+)?)/i);
   if (bsMatch) {
     bsScore = parseFloat(bsMatch[1]);
   }
 
-  // 이슈 추출
+  // Extract issues
   const issues: string[] = [];
   const issuePattern = /(?:CRITICAL|WARNING|MINOR|issue)[:\s]+([^\n]+)/gi;
   const issueMatches = text.matchAll(issuePattern);
@@ -301,7 +301,7 @@ function extractFromText(text: string): AuditorResult {
 
 function extractSummary(text: string): string {
   const lines = text.split('\n').filter((l) => l.trim().length > 10);
-  if (lines.length === 0) return '(요약 없음)';
+  if (lines.length === 0) return '(no summary)';
   const summary = lines[0].trim();
   return summary.length > 200 ? summary.slice(0, 200) + '...' : summary;
 }
@@ -322,29 +322,29 @@ export function formatAuditReport(result: AuditorResult): string {
   const statusEmoji = result.success ? '🔍' : '🚨';
   const lines: string[] = [];
 
-  lines.push(`${statusEmoji} **Auditor 결과: ${result.success ? 'PASS' : 'FAIL'}**`);
+  lines.push(`${statusEmoji} **Auditor Result: ${result.success ? 'PASS' : 'FAIL'}**`);
   lines.push('');
 
   if (result.bsScore !== undefined) {
-    lines.push(`**BS 지수:** ${result.bsScore.toFixed(1)}/5.0`);
+    lines.push(`**BS Score:** ${result.bsScore.toFixed(1)}/5.0`);
   }
 
   lines.push(`**Critical:** ${result.criticalCount} | **Warning:** ${result.warningCount} | **Minor:** ${result.minorCount}`);
-  lines.push(`**요약:** ${result.summary}`);
+  lines.push(`**Summary:** ${result.summary}`);
 
   if (result.issues.length > 0) {
     lines.push('');
-    lines.push('**발견된 이슈:**');
+    lines.push('**Issues Found:**');
     for (const issue of result.issues.slice(0, 5)) {
       lines.push(`  - ${issue}`);
     }
     if (result.issues.length > 5) {
-      lines.push(`  - ... 외 ${result.issues.length - 5}개`);
+      lines.push(`  - ... +${result.issues.length - 5} more`);
     }
   }
 
   if (result.error) {
-    lines.push(`**에러:** ${result.error}`);
+    lines.push(`**Error:** ${result.error}`);
   }
 
   return lines.join('\n');

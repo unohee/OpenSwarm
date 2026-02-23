@@ -1,6 +1,6 @@
 // ============================================
 // OpenSwarm - Long-Running Task Monitor
-// 외부 장기 작업(RunPod 학습, 배치 처리 등) 상태 추적
+// Track external long-running tasks (RunPod training, batch processing, etc.)
 // ============================================
 
 import { execFile } from 'node:child_process';
@@ -20,7 +20,7 @@ import { broadcastEvent } from '../core/eventHub.js';
 // ============================================
 
 const PERSIST_FILE = join(homedir(), '.claude', 'openswarm-monitors.json');
-const CHECK_TIMEOUT_MS = 30_000; // 개별 체크 명령어 타임아웃 30초
+const CHECK_TIMEOUT_MS = 30_000; // Individual check command timeout: 30 seconds
 
 // ============================================
 // State
@@ -42,7 +42,7 @@ function loadFromDisk(): void {
     if (!existsSync(PERSIST_FILE)) return;
     const data = JSON.parse(readFileSync(PERSIST_FILE, 'utf-8')) as PersistedData;
     for (const m of data.monitors) {
-      // pending/running만 복원 (completed/failed/timeout은 이미 종료)
+      // Only restore pending/running (completed/failed/timeout are already finished)
       if (m.state === 'pending' || m.state === 'running') {
         monitors.set(m.id, m);
       }
@@ -103,7 +103,7 @@ function evaluateResult(
   switch (check.type) {
     case 'exit-code': {
       const successCode = check.successExitCode ?? 0;
-      // exit 0(또는 successExitCode) = still running, 그 외 = completed
+      // exit 0 (or successExitCode) = still running, otherwise = completed
       return exitCode === successCode ? 'running' : 'completed';
     }
 
@@ -119,7 +119,7 @@ function evaluateResult(
 
     case 'http-status': {
       const expected = check.expectedStatus ?? 200;
-      // stdout에서 HTTP 상태 코드 추출 시도
+      // Attempt to extract HTTP status code from stdout
       const statusMatch = stdout.match(/(\d{3})/);
       if (exitCode === 0 && statusMatch && Number(statusMatch[1]) === expected) {
         return 'completed';
@@ -160,13 +160,13 @@ function handleStateTransition(
 // ============================================
 
 /**
- * 서비스 시작 시 config + 영속 파일에서 모니터 로드
+ * Load monitors from config + persisted file at service startup
  */
 export function initMonitors(configs?: LongRunningMonitorConfig[]): void {
-  // 영속 파일에서 먼저 복원
+  // Restore from persisted file first
   loadFromDisk();
 
-  // config.yaml에 정의된 모니터 등록 (이미 존재하면 스킵)
+  // Register monitors defined in config.yaml (skip if already exists)
   if (configs) {
     for (const cfg of configs) {
       if (!monitors.has(cfg.id)) {
@@ -179,7 +179,7 @@ export function initMonitors(configs?: LongRunningMonitorConfig[]): void {
 }
 
 /**
- * 모니터 등록
+ * Register a monitor
  */
 export function registerMonitor(config: LongRunningMonitorConfig): LongRunningMonitor {
   const monitor: LongRunningMonitor = {
@@ -206,7 +206,7 @@ export function registerMonitor(config: LongRunningMonitorConfig): LongRunningMo
 }
 
 /**
- * 모니터 제거
+ * Unregister a monitor
  */
 export function unregisterMonitor(id: string): boolean {
   const deleted = monitors.delete(id);
@@ -218,7 +218,7 @@ export function unregisterMonitor(id: string): boolean {
 }
 
 /**
- * 모든 활성 모니터 체크 (heartbeat에서 호출)
+ * Check all active monitors (called from heartbeat)
  */
 export async function checkAllMonitors(): Promise<number> {
   const active = Array.from(monitors.values()).filter(
@@ -232,12 +232,12 @@ export async function checkAllMonitors(): Promise<number> {
   for (const monitor of active) {
     monitor.heartbeatsSinceRegister++;
 
-    // checkInterval에 따른 스킵
+    // Skip based on checkInterval
     if (monitor.heartbeatsSinceRegister % monitor.checkInterval! !== 0) {
       continue;
     }
 
-    // 타임아웃 체크
+    // Timeout check
     const elapsedHours = (Date.now() - monitor.registeredAt) / (1000 * 60 * 60);
     if (elapsedHours > monitor.maxDurationHours!) {
       const prevState = monitor.state;
@@ -252,12 +252,12 @@ export async function checkAllMonitors(): Promise<number> {
 
       monitor.lastCheckedAt = Date.now();
       monitor.checkCount++;
-      monitor.lastOutput = result.stdout.slice(0, 1000); // 최대 1KB
+      monitor.lastOutput = result.stdout.slice(0, 1000); // max 1KB
       monitor.lastExitCode = result.exitCode;
 
       const newState = evaluateResult(monitor.completionCheck, result.exitCode, result.stdout);
 
-      // pending → running 자동 전이 (첫 체크 시)
+      // Auto-transition pending → running (on first check)
       if (monitor.state === 'pending' && newState === 'running') {
         monitor.state = 'running';
       } else if (newState === 'completed' || newState === 'failed') {
@@ -291,14 +291,14 @@ export async function checkAllMonitors(): Promise<number> {
 }
 
 /**
- * 활성 모니터 목록
+ * Get list of active monitors
  */
 export function getActiveMonitors(): LongRunningMonitor[] {
   return Array.from(monitors.values());
 }
 
 /**
- * 특정 모니터 조회
+ * Get a specific monitor by ID
  */
 export function getMonitor(id: string): LongRunningMonitor | undefined {
   return monitors.get(id);

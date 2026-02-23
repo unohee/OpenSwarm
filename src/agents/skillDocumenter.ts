@@ -1,6 +1,6 @@
 // ============================================
 // OpenSwarm - Skill Documenter Agent
-// /documents 스킬 기반 문서 자동 업데이트 에이전트
+// /documents skill-based automatic documentation update agent
 // ============================================
 
 import { spawn } from 'node:child_process';
@@ -51,40 +51,40 @@ function buildSkillDocumenterPrompt(options: SkillDocumenterOptions): string {
 
   return `/documents
 
-## 작업 컨텍스트
+## Task Context
 - **Task:** ${options.taskTitle}
 - **Description:** ${options.taskDescription}
 
 ## Worker's Changes
 ${workerReport}
 
-위 작업에서 변경된 내용을 반영하여 프로젝트 문서를 업데이트하라.
-문서 업데이트 완료 후 반드시 다음 JSON 형식으로 결과를 출력하라:
+Update the project documentation to reflect the changes from the above task.
+After the documentation update is complete, output the result in the following JSON format:
 
 \`\`\`json
 {
   "success": true,
   "updatedFiles": ["CLAUDE.md", "docs/architecture.md"],
-  "summary": "아키텍처 문서에 새 모듈 설명 추가"
+  "summary": "Added new module description to architecture docs"
 }
 \`\`\`
 
-업데이트할 내용이 없는 경우:
+When there is nothing to update:
 \`\`\`json
 {
   "success": true,
   "updatedFiles": [],
-  "summary": "문서 업데이트 불필요 (사소한 변경)"
+  "summary": "No documentation update needed (minor change)"
 }
 \`\`\`
 
-실패 시:
+On failure:
 \`\`\`json
 {
   "success": false,
   "updatedFiles": [],
-  "summary": "문서 업데이트 실패",
-  "error": "상세 에러 메시지"
+  "summary": "Documentation update failed",
+  "error": "Detailed error message"
 }
 \`\`\`
 `;
@@ -107,7 +107,7 @@ export async function runSkillDocumenter(options: SkillDocumenterOptions): Promi
     return {
       success: false,
       updatedFiles: [],
-      summary: 'Skill Documenter 실행 실패',
+      summary: 'Skill Documenter execution failed',
       error: error instanceof Error ? error.message : String(error),
     };
   } finally {
@@ -183,7 +183,7 @@ function parseSkillDocumenterOutput(output: string): SkillDocumenterResult {
       console.log(`[SkillDocumenter] Cost: ${formatCost(costInfo)}`);
     }
 
-    // NDJSON에서 result 항목 추출
+    // Extract result entry from NDJSON
     let resultText = '';
     for (const line of output.split('\n')) {
       try {
@@ -251,7 +251,7 @@ function normalizeResult(parsed: any): SkillDocumenterResult {
   return {
     success: Boolean(parsed.success),
     updatedFiles: Array.isArray(parsed.updatedFiles) ? parsed.updatedFiles : [],
-    summary: parsed.summary || '(요약 없음)',
+    summary: parsed.summary || '(no summary)',
     error: parsed.error,
   };
 }
@@ -286,7 +286,7 @@ function extractFromText(text: string): SkillDocumenterResult {
 
 function extractSummary(text: string): string {
   const lines = text.split('\n').filter((l) => l.trim().length > 10);
-  if (lines.length === 0) return '(요약 없음)';
+  if (lines.length === 0) return '(no summary)';
   const summary = lines[0].trim();
   return summary.length > 200 ? summary.slice(0, 200) + '...' : summary;
 }
@@ -307,18 +307,18 @@ export function formatSkillDocReport(result: SkillDocumenterResult): string {
   const statusEmoji = result.success ? '📄' : '❌';
   const lines: string[] = [];
 
-  lines.push(`${statusEmoji} **Skill Documenter 결과: ${result.success ? '완료' : '실패'}**`);
+  lines.push(`${statusEmoji} **Skill Documenter Result: ${result.success ? 'Complete' : 'Failed'}**`);
   lines.push('');
-  lines.push(`**요약:** ${result.summary}`);
+  lines.push(`**Summary:** ${result.summary}`);
 
   if (result.updatedFiles.length > 0) {
-    lines.push(`**업데이트된 파일:** ${result.updatedFiles.join(', ')}`);
+    lines.push(`**Updated Files:** ${result.updatedFiles.join(', ')}`);
   } else {
-    lines.push('**업데이트된 파일:** (없음)');
+    lines.push('**Updated Files:** (none)');
   }
 
   if (result.error) {
-    lines.push(`**에러:** ${result.error}`);
+    lines.push(`**Error:** ${result.error}`);
   }
 
   return lines.join('\n');

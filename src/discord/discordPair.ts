@@ -25,39 +25,39 @@ import {
 import { t, getDateLocale } from '../locale/index.js';
 
 /**
- * !pair 명령어 핸들러
+ * !pair command handler
  */
 export async function handlePair(msg: Message, args: string[]): Promise<void> {
   const subCommand = args[0];
 
-  // !pair 또는 !pair status - 현재 상태
+  // !pair or !pair status - Current status
   if (!subCommand || subCommand === 'status') {
     await handlePairStatus(msg);
     return;
   }
 
-  // !pair start [taskId] - 페어 세션 시작
+  // !pair start [taskId] - Start pair session
   if (subCommand === 'start') {
     const taskId = args[1];
     await handlePairStart(msg, taskId);
     return;
   }
 
-  // !pair stop [sessionId] - 페어 세션 중지
+  // !pair stop [sessionId] - Stop pair session
   if (subCommand === 'stop') {
     const sessionId = args[1];
     await handlePairStop(msg, sessionId);
     return;
   }
 
-  // !pair history [n] - 히스토리 조회
+  // !pair history [n] - View history
   if (subCommand === 'history') {
     const limit = parseInt(args[1]) || 5;
     await handlePairHistory(msg, limit);
     return;
   }
 
-  // !pair run <taskId> <project> - 직접 페어 실행
+  // !pair run <taskId> <project> - Direct pair execution
   if (subCommand === 'run') {
     const taskId = args[1];
     const project = args[2] || '~/dev';
@@ -65,18 +65,18 @@ export async function handlePair(msg: Message, args: string[]): Promise<void> {
     return;
   }
 
-  // !pair stats - 통계 조회
+  // !pair stats - View statistics
   if (subCommand === 'stats') {
     await handlePairStats(msg);
     return;
   }
 
-  // 도움말
+  // Help
   await msg.reply(t('discord.pair.helpText'));
 }
 
 /**
- * !pair stats - 통계 조회
+ * !pair stats - View statistics
  */
 async function handlePairStats(msg: Message): Promise<void> {
   try {
@@ -88,10 +88,10 @@ async function handlePairStats(msg: Message): Promise<void> {
       .setColor(0x5865F2)
       .setTimestamp();
 
-    // 전체 요약
+    // Overall summary
     embed.addFields(
       {
-        name: '📈 전체 통계',
+        name: '📈 Overall Stats',
         value: [
           t('discord.pair.stats.totalSessions', { n: summary.totalSessions }),
           t('discord.pair.stats.successRate', { n: summary.successRate }),
@@ -100,7 +100,7 @@ async function handlePairStats(msg: Message): Promise<void> {
         inline: true,
       },
       {
-        name: '📋 결과 분포',
+        name: '📋 Result Distribution',
         value: [
           `✅ ${t('discord.pair.stats.approved', { n: summary.approved })}`,
           `❌ ${t('discord.pair.stats.rejected', { n: summary.rejected })}`,
@@ -110,7 +110,7 @@ async function handlePairStats(msg: Message): Promise<void> {
         inline: true,
       },
       {
-        name: '⏱️ 평균 지표',
+        name: '⏱️ Average Metrics',
         value: [
           t('discord.pair.stats.avgAttempts', { n: summary.avgAttempts }),
           t('discord.pair.stats.avgDuration', { duration: formatDuration(summary.avgDurationMs) }),
@@ -120,11 +120,11 @@ async function handlePairStats(msg: Message): Promise<void> {
       }
     );
 
-    // 일별 통계
+    // Daily statistics
     if (daily.length > 0) {
       const dailyLines = daily.map(d => {
         const rate = d.sessions > 0 ? Math.round((d.approved / d.sessions) * 100) : 0;
-        return `**${d.date}**: ${d.sessions}개 (✅${d.approved} ❌${d.rejected} 💥${d.failed}) ${rate}%`;
+        return `**${d.date}**: ${d.sessions} sessions (✅${d.approved} ❌${d.rejected} 💥${d.failed}) ${rate}%`;
       });
 
       embed.addFields({
@@ -141,7 +141,7 @@ async function handlePairStats(msg: Message): Promise<void> {
 }
 
 /**
- * 시간 포맷팅 (ms → 읽기 쉬운 형식)
+ * Format duration (ms -> human-readable)
  */
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
@@ -151,7 +151,7 @@ function formatDuration(ms: number): string {
 }
 
 /**
- * !pair status - 현재 페어 세션 상태
+ * !pair status - Current pair session status
  */
 async function handlePairStatus(msg: Message): Promise<void> {
   const sessions = agentPair.getActiveSessions();
@@ -178,14 +178,14 @@ async function handlePairStatus(msg: Message): Promise<void> {
 }
 
 /**
- * !pair start [taskId] - 페어 세션 시작
+ * !pair start [taskId] - Start pair session
  */
 async function handlePairStart(msg: Message, taskId?: string): Promise<void> {
-  // Linear에서 작업 가져오기
+  // Fetch task from Linear
   let task: any = null;
 
   if (taskId) {
-    // 특정 이슈 조회
+    // Look up specific issue
     try {
       task = await linear.getIssue(taskId);
     } catch {
@@ -193,7 +193,7 @@ async function handlePairStart(msg: Message, taskId?: string): Promise<void> {
       return;
     }
   } else {
-    // 첫 번째 대기 중 이슈 선택
+    // Select first pending issue
     try {
       const issues = await linear.getMyIssues({ slim: true, timeoutMs: 30000 });
       if (issues.length === 0) {
@@ -207,7 +207,7 @@ async function handlePairStart(msg: Message, taskId?: string): Promise<void> {
     }
   }
 
-  // 프로젝트 경로 결정
+  // Determine project path
   const projectPath = task.project?.name
     ? dev.resolveRepoPath(task.project.name) || '~/dev'
     : '~/dev';
@@ -221,7 +221,7 @@ async function handlePairStart(msg: Message, taskId?: string): Promise<void> {
 }
 
 /**
- * !pair run <taskId> [project] - 직접 페어 실행
+ * !pair run <taskId> [project] - Direct pair execution
  */
 async function handlePairRun(msg: Message, taskId: string, project: string): Promise<void> {
   if (!taskId) {
@@ -229,10 +229,10 @@ async function handlePairRun(msg: Message, taskId: string, project: string): Pro
     return;
   }
 
-  // 프로젝트 경로 확인
+  // Verify project path
   const projectPath = dev.resolveRepoPath(project) || project;
 
-  // Linear에서 이슈 정보 가져오기
+  // Fetch issue info from Linear
   let taskTitle = taskId;
   let taskDescription = '';
 
@@ -243,7 +243,7 @@ async function handlePairRun(msg: Message, taskId: string, project: string): Pro
       taskDescription = issue.description || '';
     }
   } catch {
-    // Linear 조회 실패해도 계속 진행 (taskId를 제목으로 사용)
+    // Continue even if Linear lookup fails (use taskId as title)
   }
 
   await startPairSession(msg, {
@@ -255,7 +255,7 @@ async function handlePairRun(msg: Message, taskId: string, project: string): Pro
 }
 
 /**
- * 페어 세션 시작 및 실행
+ * Start and run pair session
  */
 async function startPairSession(
   msg: Message,
@@ -263,22 +263,22 @@ async function startPairSession(
 ): Promise<void> {
   const channel = msg.channel as TextChannel;
 
-  // pairModeConfig에서 기본값 적용
+  // Apply defaults from pairModeConfig
   const sessionOptions: agentPair.CreatePairSessionOptions = {
     ...options,
     webhookUrl: options.webhookUrl ?? pairModeConfig?.webhookUrl,
     maxAttempts: options.maxAttempts ?? pairModeConfig?.maxAttempts,
   };
 
-  // 1. 세션 생성
+  // 1. Create session
   const session = agentPair.createPairSession(sessionOptions);
 
-  // 2. Discord 스레드 생성
+  // 2. Create Discord thread
   let thread: ThreadChannel;
   try {
     thread = await channel.threads.create({
       name: `[${session.id}] ${options.taskTitle.slice(0, 50)}`,
-      autoArchiveDuration: 1440, // 24시간
+      autoArchiveDuration: 1440, // 24 hours
       type: ChannelType.PublicThread,
     });
 
@@ -289,7 +289,7 @@ async function startPairSession(
     return;
   }
 
-  // 3. 시작 메시지
+  // 3. Start message
   const startEmbed = new EmbedBuilder()
     .setTitle(`📋 ${t('discord.pair.taskStartTitle', { title: options.taskTitle.slice(0, 80) })}`)
     .setColor(0x00AE86)
@@ -303,45 +303,45 @@ async function startPairSession(
   await thread.send({ embeds: [startEmbed] });
   agentPair.addMessage(session.id, 'system', t('discord.pair.sessionStartMsg'));
 
-  // 4. Worker/Reviewer 루프 시작 (비동기)
+  // 4. Start Worker/Reviewer loop (async)
   runPairLoop(session.id, thread).catch((err) => {
     console.error('[Pair] Loop error:', err);
     thread.send(`❌ ${t('discord.pair.loopError', { error: err instanceof Error ? err.message : String(err) })}`);
     agentPair.updateSessionStatus(session.id, 'failed');
   });
 
-  // 5. 메인 채널에 알림
+  // 5. Notify main channel
   await msg.reply(`👥 ${t('discord.pair.sessionStarted', { thread: String(thread) })}`);
 }
 
 /**
- * Worker/Reviewer 루프 실행
+ * Run Worker/Reviewer loop
  */
 async function runPairLoop(sessionId: string, thread: ThreadChannel): Promise<void> {
   let session = agentPair.getPairSession(sessionId);
   if (!session) return;
 
-  // Linear에 페어 세션 시작 기록
+  // Log pair session start in Linear
   try {
     await linear.logPairStart(session.taskId, sessionId, session.projectPath);
   } catch (err) {
     console.error('[Pair] Linear logPairStart failed:', err);
   }
 
-  // 마지막 Worker 결과 저장 (통계용)
+  // Save last Worker result (for statistics)
   let lastWorkerResult: agentPair.WorkerResult | null = null;
 
   while (agentPair.canRetry(sessionId)) {
     session = agentPair.getPairSession(sessionId);
     if (!session) break;
 
-    // 취소 체크
+    // Check for cancellation
     if (session.status === 'cancelled') {
       await thread.send(`🚫 ${t('discord.pair.sessionCancelled')}`);
       return;
     }
 
-    // === Worker 실행 ===
+    // === Worker Execution ===
     agentPair.updateSessionStatus(sessionId, 'working');
     await thread.send(t('discord.pair.workerStarting', { attempt: session.worker.attempts + 1, max: session.worker.maxAttempts }));
 
@@ -354,7 +354,7 @@ async function runPairLoop(sessionId: string, thread: ThreadChannel): Promise<vo
       taskDescription: session.taskDescription,
       projectPath: session.projectPath,
       previousFeedback,
-      timeoutMs: 300000, // 5분
+      timeoutMs: 300000, // 5 minutes
       issueIdentifier: session.taskId,
     });
 
@@ -365,13 +365,13 @@ async function runPairLoop(sessionId: string, thread: ThreadChannel): Promise<vo
       projectPath: session.projectPath,
     }));
 
-    // Worker 실패 시 재시도 또는 종료
+    // On Worker failure, retry or exit
     if (!workerResult.success) {
       if (!agentPair.canRetry(sessionId)) {
         agentPair.updateSessionStatus(sessionId, 'failed');
         await thread.send(t('discord.pair.maxAttemptsExceeded'));
 
-        // Linear에 실패 기록
+        // Log failure in Linear
         try {
           await linear.logPairFailed(session.taskId, sessionId, 'max_attempts',
             `Worker failed after max attempts (${session.worker.maxAttempts}) exceeded`);
@@ -379,18 +379,18 @@ async function runPairLoop(sessionId: string, thread: ThreadChannel): Promise<vo
           console.error('[Pair] Linear logPairFailed failed:', err);
         }
 
-        // 최종 요약 전송
+        // Send final summary
         await sendFinalSummary(thread, session, 'failed');
         return;
       }
       continue;
     }
 
-    // === Reviewer 실행 ===
+    // === Reviewer Execution ===
     agentPair.updateSessionStatus(sessionId, 'reviewing');
     await thread.send(t('discord.pair.reviewerStarting'));
 
-    // Linear에 리뷰 시작 기록
+    // Log review start in Linear
     try {
       await linear.logPairReview(session.taskId, sessionId, session.worker.attempts);
     } catch (err) {
@@ -402,18 +402,18 @@ async function runPairLoop(sessionId: string, thread: ThreadChannel): Promise<vo
       taskDescription: session.taskDescription,
       workerResult,
       projectPath: session.projectPath,
-      timeoutMs: 180000, // 3분
+      timeoutMs: 180000, // 3 minutes
     });
 
     agentPair.saveReviewerResult(sessionId, reviewResult);
     await thread.send(reviewer.formatReviewFeedback(reviewResult));
 
-    // === 결정 처리 ===
+    // === Decision Processing ===
     if (reviewResult.decision === 'approve') {
       agentPair.updateSessionStatus(sessionId, 'approved');
       await thread.send(t('discord.pair.workApproved'));
 
-      // Linear에 완료 기록
+      // Log completion in Linear
       try {
         const duration = Math.round((Date.now() - session.startedAt) / 1000);
         await linear.logPairComplete(session.taskId, sessionId, {
@@ -425,7 +425,7 @@ async function runPairLoop(sessionId: string, thread: ThreadChannel): Promise<vo
         console.error('[Pair] Linear logPairComplete failed:', err);
       }
 
-      // 최종 요약 전송
+      // Send final summary
       await sendFinalSummary(thread, session, 'approved');
       return;
     }
@@ -434,7 +434,7 @@ async function runPairLoop(sessionId: string, thread: ThreadChannel): Promise<vo
       agentPair.updateSessionStatus(sessionId, 'rejected');
       await thread.send(t('discord.pair.workRejected'));
 
-      // Linear에 거부 기록
+      // Log rejection in Linear
       try {
         await linear.logPairFailed(session.taskId, sessionId, 'rejected',
           `Feedback: ${reviewResult.feedback}\nIssues: ${reviewResult.issues?.join(', ') || 'none'}`);
@@ -442,12 +442,12 @@ async function runPairLoop(sessionId: string, thread: ThreadChannel): Promise<vo
         console.error('[Pair] Linear logPairFailed failed:', err);
       }
 
-      // 최종 요약 전송
+      // Send final summary
       await sendFinalSummary(thread, session, 'rejected');
       return;
     }
 
-    // revise: 다음 루프에서 Worker가 수정
+    // revise: Worker will fix in next loop iteration
     if (!agentPair.canRetry(sessionId)) {
       agentPair.updateSessionStatus(sessionId, 'failed');
       await thread.send(t('discord.pair.maxAttemptsEnd'));
@@ -463,7 +463,7 @@ async function runPairLoop(sessionId: string, thread: ThreadChannel): Promise<vo
       return;
     }
 
-    // Linear에 수정 요청 기록
+    // Log revision request in Linear
     try {
       await linear.logPairRevision(session.taskId, sessionId,
         reviewResult.feedback, reviewResult.issues || []);
@@ -475,7 +475,7 @@ async function runPairLoop(sessionId: string, thread: ThreadChannel): Promise<vo
     await thread.send(t('discord.pair.revisionNeeded'));
   }
 
-  // 최대 시도 초과
+  // Max attempts exceeded
   session = agentPair.getPairSession(sessionId);
   if (session) {
     agentPair.updateSessionStatus(sessionId, 'failed');
@@ -493,7 +493,7 @@ async function runPairLoop(sessionId: string, thread: ThreadChannel): Promise<vo
 }
 
 /**
- * 최종 요약 Embed 전송
+ * Send final summary Embed
  */
 async function sendFinalSummary(
   thread: ThreadChannel,
@@ -507,7 +507,7 @@ async function sendFinalSummary(
     ? t('common.duration.seconds', { n: duration })
     : `${Math.floor(duration / 60)}m ${duration % 60}s`;
 
-  // 메트릭 기록
+  // Record metrics
   try {
     await pairMetrics.recordSession({
       sessionId: session.id,
@@ -525,7 +525,7 @@ async function sendFinalSummary(
     console.error('[Pair] Metrics recording failed:', err);
   }
 
-  // Webhook 알림
+  // Webhook notification
   if (session.webhookUrl && pairWebhook.isValidWebhookUrl(session.webhookUrl)) {
     try {
       const webhookFn = {
@@ -544,7 +544,7 @@ async function sendFinalSummary(
     }
   }
 
-  // 결과별 색상 및 이모지
+  // Color and emoji by result
   const config = {
     approved: { color: 0x00FF00, emoji: '✅', title: t('discord.pair.summary.completed') },
     rejected: { color: 0xFF0000, emoji: '❌', title: t('discord.pair.summary.rejected') },
@@ -552,16 +552,16 @@ async function sendFinalSummary(
     cancelled: { color: 0x808080, emoji: '🚫', title: t('discord.pair.summary.cancelled') },
   }[result];
 
-  // 변경된 파일 목록
+  // Changed files list
   const filesChanged = session.worker.result?.filesChanged || [];
   const filesStr = filesChanged.length > 0
     ? filesChanged.slice(0, 10).map(f => `\`${f}\``).join(', ')
     : t('discord.pair.summary.noFiles');
 
-  // 실행된 명령어 (미사용이지만 향후 확장용)
+  // Executed commands (unused but for future expansion)
   const _commands = session.worker.result?.commands || [];
 
-  // Embed 생성
+  // Create Embed
   const embed = new EmbedBuilder()
     .setTitle(`${config.emoji} ${config.title}: ${session.taskTitle.slice(0, 60)}`)
     .setColor(config.color)
@@ -576,7 +576,7 @@ async function sendFinalSummary(
     .setFooter({ text: `Session: ${session.id} | Task: ${session.taskId}` })
     .setTimestamp();
 
-  // Reviewer 피드백이 있으면 추가
+  // Add reviewer feedback if available
   if (session.reviewer.feedback) {
     const feedback = session.reviewer.feedback;
     const feedbackStr = [
@@ -588,13 +588,13 @@ async function sendFinalSummary(
 
   await thread.send({ embeds: [embed] });
 
-  // 토론 요약 (메시지가 있으면)
+  // Discussion summary (if messages exist)
   if (session.messages.length > 0) {
     const discussionSummary = formatDiscussionSummary(session);
     if (discussionSummary.length <= 2000) {
       await thread.send(`📜 ${t('discord.pair.summary.discussionSummary', { count: session.messages.length })}\n${discussionSummary}`);
     } else {
-      // 너무 길면 분할
+      // Split if too long
       await thread.send(`📜 ${t('discord.pair.summary.discussionSummary', { count: session.messages.length })}`);
       await thread.send(`\`\`\`\n${discussionSummary.slice(0, 1900)}\n...\n\`\`\``);
     }
@@ -602,7 +602,7 @@ async function sendFinalSummary(
 }
 
 /**
- * 토론 요약 포맷
+ * Format discussion summary
  */
 function formatDiscussionSummary(session: agentPair.PairSession): string {
   return session.messages.map((msg, _idx) => {
@@ -617,7 +617,7 @@ function formatDiscussionSummary(session: agentPair.PairSession): string {
 }
 
 /**
- * !pair stop [sessionId] - 페어 세션 중지
+ * !pair stop [sessionId] - Stop pair session
  */
 async function handlePairStop(msg: Message, sessionId?: string): Promise<void> {
   const sessions = agentPair.getActiveSessions();
@@ -627,7 +627,7 @@ async function handlePairStop(msg: Message, sessionId?: string): Promise<void> {
     return;
   }
 
-  // sessionId 지정 안 하면 가장 최근 세션
+  // If sessionId not specified, use most recent session
   const targetId = sessionId || sessions[0].id;
   const success = agentPair.cancelSession(targetId);
 
@@ -639,7 +639,7 @@ async function handlePairStop(msg: Message, sessionId?: string): Promise<void> {
 }
 
 /**
- * !pair history [n] - 히스토리 조회
+ * !pair history [n] - View history
  */
 async function handlePairHistory(msg: Message, limit: number): Promise<void> {
   const history = agentPair.getSessionHistory(limit);

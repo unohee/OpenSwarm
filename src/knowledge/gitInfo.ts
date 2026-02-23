@@ -1,6 +1,6 @@
 // ============================================
 // OpenSwarm - Git Info for Knowledge Graph
-// Git log 기반 churn score, 최근 변경, 기여자 추적
+// Git log based churn score, recent changes, contributor tracking
 // ============================================
 
 import { spawn } from 'node:child_process';
@@ -8,7 +8,7 @@ import type { KnowledgeGraph } from './graph.js';
 import type { GitInfo } from './types.js';
 
 // ============================================
-// Git Command Runner (gitTracker.ts와 동일 패턴)
+// Git Command Runner (same pattern as gitTracker.ts)
 // ============================================
 
 function runGitCommand(cwd: string, args: string[], timeoutMs: number = 10_000): Promise<string> {
@@ -49,7 +49,7 @@ interface FileChurn {
 }
 
 /**
- * 최근 30일간 파일별 커밋 수 계산
+ * Calculate per-file commit count over the last 30 days
  */
 async function getFileChurns(projectPath: string, sinceDays: number = 30): Promise<Map<string, FileChurn>> {
   const churns = new Map<string, FileChurn>();
@@ -69,13 +69,13 @@ async function getFileChurns(projectPath: string, sinceDays: number = 30): Promi
       const trimmed = line.trim();
       if (!trimmed) continue;
 
-      // 숫자면 커밋 타임스탬프
+      // If numeric, it's a commit timestamp
       if (/^\d+$/.test(trimmed)) {
-        currentTimestamp = parseInt(trimmed, 10) * 1000; // ms로 변환
+        currentTimestamp = parseInt(trimmed, 10) * 1000; // Convert to ms
         continue;
       }
 
-      // 파일 경로
+      // File path
       const existing = churns.get(trimmed);
       if (existing) {
         existing.commitCount++;
@@ -98,7 +98,7 @@ async function getFileChurns(projectPath: string, sinceDays: number = 30): Promi
 }
 
 /**
- * 그래프의 모든 모듈에 Git 정보 추가
+ * Enrich all modules in the graph with Git info
  */
 export async function enrichWithGitInfo(
   graph: KnowledgeGraph,
@@ -109,7 +109,7 @@ export async function enrichWithGitInfo(
 
   if (churns.size === 0) return;
 
-  // churn score 정규화를 위한 최대값
+  // Maximum value for churn score normalization
   const maxCommits = Math.max(...Array.from(churns.values()).map(c => c.commitCount), 1);
 
   const modules = [
@@ -127,7 +127,7 @@ export async function enrichWithGitInfo(
       };
       mod.gitInfo = gitInfo;
     } else {
-      // Git 기록에 없는 파일 (30일 내 변경 없음)
+      // File not in git history (no changes in 30 days)
       mod.gitInfo = {
         lastCommitDate: 0,
         commitCount30d: 0,
@@ -140,7 +140,7 @@ export async function enrichWithGitInfo(
 }
 
 /**
- * 최근 변경된 파일 목록 (증분 업데이트 트리거용)
+ * List of recently changed files (for incremental update trigger)
  */
 export async function getRecentlyChangedFiles(
   projectPath: string,

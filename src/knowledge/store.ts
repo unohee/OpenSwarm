@@ -1,6 +1,6 @@
 // ============================================
 // OpenSwarm - Knowledge Graph Store
-// JSON 영속화 (load/save/list)
+// JSON persistence (load/save/list)
 // ============================================
 
 import { readFile, writeFile, mkdir, readdir } from 'node:fs/promises';
@@ -21,7 +21,7 @@ const STORE_DIR = join(homedir(), '.openswarm', 'knowledge-graph');
 // ============================================
 
 /**
- * 그래프를 JSON 파일로 저장
+ * Save graph to JSON file
  */
 export async function saveGraph(graph: KnowledgeGraph): Promise<void> {
   await mkdir(STORE_DIR, { recursive: true });
@@ -32,7 +32,7 @@ export async function saveGraph(graph: KnowledgeGraph): Promise<void> {
 }
 
 /**
- * JSON 파일에서 그래프 로드
+ * Load graph from JSON file
  */
 export async function loadGraph(projectSlug: string): Promise<KnowledgeGraph | null> {
   const filePath = join(STORE_DIR, `${projectSlug}.json`);
@@ -51,7 +51,7 @@ export async function loadGraph(projectSlug: string): Promise<KnowledgeGraph | n
 }
 
 /**
- * 저장된 모든 프로젝트 슬러그 목록
+ * List all saved project slugs
  */
 export async function listGraphs(): Promise<string[]> {
   try {
@@ -66,7 +66,7 @@ export async function listGraphs(): Promise<string[]> {
 }
 
 /**
- * 그래프 삭제
+ * Delete graph
  */
 export async function deleteGraph(projectSlug: string): Promise<void> {
   const filePath = join(STORE_DIR, `${projectSlug}.json`);
@@ -75,12 +75,12 @@ export async function deleteGraph(projectSlug: string): Promise<void> {
     await unlink(filePath);
     console.log(`[KnowledgeStore] Deleted graph: ${projectSlug}`);
   } catch {
-    // 이미 없으면 무시
+    // Ignore if already deleted
   }
 }
 
 /**
- * 그래프 요약 정보 로드 (전체 deserialize 없이)
+ * Load graph summary info (without full deserialization)
  */
 export async function loadGraphSummary(projectSlug: string): Promise<SerializedGraph | null> {
   const filePath = join(STORE_DIR, `${projectSlug}.json`);

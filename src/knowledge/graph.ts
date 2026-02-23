@@ -13,9 +13,9 @@ export class KnowledgeGraph {
   private nodes = new Map<string, GraphNode>();
   private edges: GraphEdge[] = [];
 
-  // 인접 리스트: nodeId → outgoing edges
+  // Adjacency list: nodeId → outgoing edges
   private adjacency = new Map<string, GraphEdge[]>();
-  // 역방향 인접 리스트: nodeId → incoming edges
+  // Reverse adjacency list: nodeId → incoming edges
   private reverseAdjacency = new Map<string, GraphEdge[]>();
 
   readonly projectSlug: string;
@@ -51,11 +51,11 @@ export class KnowledgeGraph {
 
   removeNode(id: string): void {
     this.nodes.delete(id);
-    // 관련 엣지 제거
+    // Remove related edges
     this.edges = this.edges.filter(e => e.source !== id && e.target !== id);
     this.adjacency.delete(id);
     this.reverseAdjacency.delete(id);
-    // 다른 노드의 인접 리스트에서도 제거 (역순 반복으로 전체 제거)
+    // Also remove from other nodes' adjacency lists
     for (const [key, edges] of this.adjacency) {
       const filtered = edges.filter(e => e.target !== id);
       if (filtered.length !== edges.length) this.adjacency.set(key, filtered);
@@ -79,7 +79,7 @@ export class KnowledgeGraph {
   // ============================================
 
   addEdge(edge: GraphEdge): void {
-    // 중복 방지
+    // Prevent duplicates
     const exists = this.edges.some(
       e => e.source === edge.source && e.target === edge.target && e.type === edge.type
     );
@@ -100,24 +100,24 @@ export class KnowledgeGraph {
     return this.edges;
   }
 
-  /** 특정 노드의 outgoing 엣지 중 지정 타입만 제거 (adjacency 동기화 포함) */
+  /** Remove only specified edge types from a node's outgoing edges (with adjacency sync) */
   removeOutgoingEdges(nodeId: string, types: EdgeType[]): void {
     const typeSet = new Set<string>(types);
 
-    // 제거 대상 수집
+    // Collect removal targets
     const toRemove = this.edges.filter(e => e.source === nodeId && typeSet.has(e.type));
     if (toRemove.length === 0) return;
 
-    // 메인 엣지 배열에서 제거
+    // Remove from main edge array
     this.edges = this.edges.filter(e => !(e.source === nodeId && typeSet.has(e.type)));
 
-    // adjacency 맵 동기화
+    // Sync adjacency map
     const outEdges = this.adjacency.get(nodeId);
     if (outEdges) {
       this.adjacency.set(nodeId, outEdges.filter(e => !typeSet.has(e.type)));
     }
 
-    // reverseAdjacency 맵 동기화: 제거된 엣지의 타겟에서 incoming 엣지 제거
+    // Sync reverseAdjacency map: remove incoming edges from removed edges' targets
     for (const edge of toRemove) {
       const inEdges = this.reverseAdjacency.get(edge.target);
       if (inEdges) {
@@ -133,7 +133,7 @@ export class KnowledgeGraph {
   // Traversal Queries
   // ============================================
 
-  /** 특정 노드가 포함하는 자식 노드들 (contains 엣지) */
+  /** Child nodes contained by a specific node (contains edges) */
   getChildren(nodeId: string): GraphNode[] {
     const outEdges = this.adjacency.get(nodeId) ?? [];
     return outEdges
@@ -142,7 +142,7 @@ export class KnowledgeGraph {
       .filter((n): n is GraphNode => n !== undefined);
   }
 
-  /** 특정 모듈이 import하는 모듈들 */
+  /** Modules imported by a specific module */
   getImports(nodeId: string): GraphNode[] {
     const outEdges = this.adjacency.get(nodeId) ?? [];
     return outEdges
@@ -151,7 +151,7 @@ export class KnowledgeGraph {
       .filter((n): n is GraphNode => n !== undefined);
   }
 
-  /** 특정 모듈을 import하는 모듈들 (역방향) */
+  /** Modules that import a specific module (reverse direction) */
   getDependents(nodeId: string): GraphNode[] {
     const inEdges = this.reverseAdjacency.get(nodeId) ?? [];
     return inEdges
@@ -160,7 +160,7 @@ export class KnowledgeGraph {
       .filter((n): n is GraphNode => n !== undefined);
   }
 
-  /** 특정 모듈의 테스트 파일들 */
+  /** Test files for a specific module */
   getTests(nodeId: string): GraphNode[] {
     const inEdges = this.reverseAdjacency.get(nodeId) ?? [];
     return inEdges
@@ -169,7 +169,7 @@ export class KnowledgeGraph {
       .filter((n): n is GraphNode => n !== undefined);
   }
 
-  /** 특정 테스트 파일이 테스트하는 모듈 */
+  /** Modules tested by a specific test file */
   getTestedModules(testNodeId: string): GraphNode[] {
     const outEdges = this.adjacency.get(testNodeId) ?? [];
     return outEdges
@@ -178,7 +178,7 @@ export class KnowledgeGraph {
       .filter((n): n is GraphNode => n !== undefined);
   }
 
-  /** 특정 엣지 타입으로 연결된 노드들 */
+  /** Nodes connected by a specific edge type */
   getConnected(nodeId: string, edgeType: EdgeType, direction: 'outgoing' | 'incoming' = 'outgoing'): GraphNode[] {
     const edgeList = direction === 'outgoing'
       ? (this.adjacency.get(nodeId) ?? [])
@@ -190,7 +190,7 @@ export class KnowledgeGraph {
       .filter((n): n is GraphNode => n !== undefined);
   }
 
-  /** 전이적 의존성 탐색 (BFS) */
+  /** Transitive dependency traversal (BFS) */
   getTransitiveDependents(nodeId: string, maxDepth: number = 5): GraphNode[] {
     const visited = new Set<string>();
     const result: GraphNode[] = [];
@@ -217,7 +217,7 @@ export class KnowledgeGraph {
   // Analysis Queries
   // ============================================
 
-  /** 모듈 이름 또는 경로 부분으로 검색 */
+  /** Search by module name or path segment */
   findModules(query: string): GraphNode[] {
     const lower = query.toLowerCase();
     return this.getAllNodes().filter(n =>
@@ -226,19 +226,19 @@ export class KnowledgeGraph {
     );
   }
 
-  /** 프로젝트 요약 생성 */
+  /** Build project summary */
   buildSummary(): ProjectSummary {
     const modules = this.getNodesByType('module');
     const testFiles = this.getNodesByType('test_file');
 
-    // Hot modules: churn score 기준 상위 5개
+    // Hot modules: top 5 by churn score
     const hotModules = modules
       .filter(m => m.gitInfo?.churnScore !== undefined)
       .sort((a, b) => (b.gitInfo?.churnScore ?? 0) - (a.gitInfo?.churnScore ?? 0))
       .slice(0, 5)
       .map(m => m.id);
 
-    // Untested modules: 테스트 엣지가 없는 모듈
+    // Untested modules: modules with no test edges
     const testedModuleIds = new Set(
       this.edges
         .filter(e => e.type === 'tests')
@@ -248,7 +248,7 @@ export class KnowledgeGraph {
       .filter(m => !testedModuleIds.has(m.id))
       .map(m => m.id);
 
-    // 평균 churn score
+    // Average churn score
     const churnScores = modules
       .map(m => m.gitInfo?.churnScore ?? 0)
       .filter(s => s > 0);

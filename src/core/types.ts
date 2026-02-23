@@ -119,7 +119,7 @@ export type SwarmConfig = {
   autonomous?: AutonomousStartupConfig;
   /** PR auto-improvement config */
   prProcessor?: PRProcessorConfig;
-  /** 장기 작업 모니터 설정 */
+  /** Long-running task monitor configuration */
   monitors?: LongRunningMonitorConfig[];
 };
 
@@ -272,34 +272,34 @@ export type DecompositionConfig = {
 // Long-Running Monitor Types
 // ============================================
 
-/** 완료 판정 전략 */
+/** Completion check strategy */
 export type CompletionCheck =
   | { type: 'exit-code'; successExitCode?: number }
   | { type: 'output-regex'; successPattern: string; failurePattern?: string }
   | { type: 'http-status'; expectedStatus?: number };
 
-/** 모니터 설정 (config.yaml 또는 API 등록) */
+/** Monitor configuration (registered via config.yaml or API) */
 export type LongRunningMonitorConfig = {
   id: string;
   name: string;
-  /** 상태 확인용 bash 명령어 */
+  /** Bash command for status check */
   checkCommand: string;
   completionCheck: CompletionCheck;
-  /** Linear 이슈 ID (상태 변경 시 코멘트) */
+  /** Linear issue ID (comments on state change) */
   issueId?: string;
-  /** N번째 heartbeat마다 체크 (기본 1 = 매번) */
+  /** Check every Nth heartbeat (default 1 = every time) */
   checkInterval?: number;
-  /** 타임아웃 시간 (기본 48) */
+  /** Timeout duration in hours (default 48) */
   maxDurationHours?: number;
-  /** Discord 알림 (기본 true) */
+  /** Discord notification (default true) */
   notify?: boolean;
   metadata?: Record<string, unknown>;
 };
 
-/** 모니터 런타임 상태 */
+/** Monitor runtime state */
 export type MonitorState = 'pending' | 'running' | 'completed' | 'failed' | 'timeout';
 
-/** 런타임 모니터 (설정 + 상태) */
+/** Runtime monitor (config + state) */
 export type LongRunningMonitor = LongRunningMonitorConfig & {
   state: MonitorState;
   registeredAt: number;
@@ -335,6 +335,6 @@ export type AutonomousStartupConfig = {
   projectAgents?: ProjectAgentConfig[];
   /** Task decomposition config (Planner Agent) */
   decomposition?: DecompositionConfig;
-  /** Git worktree mode: 이슈마다 독립 worktree에서 작업 후 PR 자동 생성 */
+  /** Git worktree mode: work in independent worktree per issue and auto-create PR */
   worktreeMode?: boolean;
 };

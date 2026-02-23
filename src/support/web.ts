@@ -297,14 +297,14 @@ export async function startWebServer(port: number = 3847): Promise<void> {
 
         broadcastEvent({ type: 'chat:user', data: { text: message, ts: Date.now() } });
 
-        // Build context-aware prompt (이전 대화 포함)
+        // Build context-aware prompt (including previous conversation)
         const stats    = runnerRef?.getStats();
         const projects = runnerRef?.getProjectsInfo() ?? [];
         const enabled  = projects.filter(p => p.enabled).length;
         const state    = runnerRef?.getState();
         const uptimeSec = state?.startedAt ? Math.floor((Date.now() - state.startedAt) / 1000) : 0;
 
-        // chatBuffer에서 최근 10개 대화 이력 포맷 (현재 메시지 제외)
+        // Format last 10 conversation entries from chatBuffer (excluding current message)
         const chatBuf = getChatBuffer()
           .filter((ev): ev is Extract<typeof ev, { type: 'chat:user' | 'chat:agent' }> =>
             ev.type === 'chat:user' || ev.type === 'chat:agent'
@@ -344,7 +344,7 @@ export async function startWebServer(port: number = 3847): Promise<void> {
           return;
         }
 
-        // stdin으로 프롬프트 전달 (특수문자 안전)
+        // Pass prompt via stdin (safe for special characters)
         const response = await new Promise<string>((resolve) => {
           const proc = spawn(
             'claude',
@@ -368,7 +368,7 @@ export async function startWebServer(port: number = 3847): Promise<void> {
                 if (event.type === 'result' && event.result) {
                   resultText = event.result;
                 }
-                // assistant 메시지에서 text 블록 수집 (result가 비어있을 때 fallback용)
+                // Collect text blocks from assistant messages (fallback when result is empty)
                 if (event.type === 'assistant' && event.message?.content) {
                   for (const block of event.message.content) {
                     if (block.type === 'text' && block.text?.trim()) {
@@ -378,7 +378,7 @@ export async function startWebServer(port: number = 3847): Promise<void> {
                 }
               } catch { /* ignore */ }
             }
-            // result가 있으면 사용, 없으면 assistant text 결합, 둘 다 없으면 에러 메시지
+            // Use result if available, otherwise combine assistant text, fallback to error message
             resolve(resultText.trim() || assistantTexts.join('\n\n') || '[No response]');
           });
           proc.on('error', (e: Error) => resolve(`[Error: ${e.message}]`));

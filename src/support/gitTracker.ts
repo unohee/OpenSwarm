@@ -157,7 +157,7 @@ export async function isGitRepo(projectPath: string): Promise<boolean> {
 }
 
 /**
- * Dirty 상태 확인 (uncommitted changes)
+ * Check dirty state (uncommitted changes)
  */
 export async function isDirty(projectPath: string): Promise<boolean> {
   try {

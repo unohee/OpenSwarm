@@ -75,7 +75,7 @@ export interface PipelineResult {
     projectPath?: string;
     taskTitle?: string;
   };
-  /** PR URL (worktree mode에서 자동 생성된 PR) */
+  /** PR URL (auto-created PR in worktree mode) */
   prUrl?: string;
   /** Total cost across all stages */
   totalCost?: CostInfo;
@@ -198,14 +198,14 @@ export class PairPipeline extends EventEmitter {
       if (this.hasStage('auditor') && context.workerResult?.success) {
         const auditorResult = await this.runStage('auditor', context);
         stages.push(auditorResult);
-        // Auditor 실패는 전체 성공에 영향 없음
+        // Auditor failure does not affect overall success
       }
 
       // Skill Documenter (post-success, non-blocking)
       if (this.hasStage('skill-documenter') && context.workerResult?.success) {
         const sdResult = await this.runStage('skill-documenter', context);
         stages.push(sdResult);
-        // Skill Documenter 실패는 전체 성공에 영향 없음
+        // Skill Documenter failure does not affect overall success
       }
 
       // Success
@@ -773,18 +773,18 @@ export function formatPipelineResult(result: PipelineResult): string {
     lines.push('');
   }
 
-  lines.push(`${statusEmoji} **파이프라인 ${result.finalStatus.toUpperCase()}**`);
+  lines.push(`${statusEmoji} **Pipeline ${result.finalStatus.toUpperCase()}**`);
   lines.push('');
-  lines.push(`**세션:** \`${result.sessionId}\``);
+  lines.push(`**Session:** \`${result.sessionId}\``);
   lines.push(`**Iterations:** ${result.iterations}`);
-  lines.push(`**소요 시간:** ${(result.totalDuration / 1000).toFixed(1)}s`);
+  lines.push(`**Duration:** ${(result.totalDuration / 1000).toFixed(1)}s`);
 
   if (result.totalCost) {
     lines.push(`**Cost:** $${result.totalCost.costUsd.toFixed(4)} (${formatCost(result.totalCost)})`);
   }
 
   lines.push('');
-  lines.push('**스테이지:**');
+  lines.push('**Stages:**');
   for (const stage of result.stages) {
     const emoji = stage.success ? '✅' : '❌';
     const duration = (stage.duration / 1000).toFixed(1);

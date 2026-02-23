@@ -1,41 +1,41 @@
-# Cron Jobs (스케줄러)
+# Cron Jobs (Scheduler)
 
-> **Cron vs Heartbeat?** [CRON_VS_HEARTBEAT.md](./CRON_VS_HEARTBEAT.md) 참조
+> **Cron vs Heartbeat?** See [CRON_VS_HEARTBEAT.md](./CRON_VS_HEARTBEAT.md)
 
-Cron은 내장 스케줄러. job을 저장하고, 적절한 시간에 에이전트를 깨우고, 선택적으로 출력을 채팅으로 전달.
+Cron is the built-in scheduler. It stores jobs, wakes up agents at the appropriate time, and optionally delivers output to chat.
 
-_"매일 아침 실행"_ 또는 _"20분 후 에이전트 깨우기"_ 원하면 cron이 메커니즘.
+_If you want "run every morning"_ or _"wake the agent in 20 minutes"_, cron is the mechanism.
 
 ## TL;DR
 
-- Cron은 **서비스 내부**에서 실행 (모델 내부 아님)
-- Job은 재시작해도 스케줄 유지되도록 저장
-- 두 가지 실행 스타일:
-  - **Main session**: 시스템 이벤트 큐잉, 다음 heartbeat에 실행
-  - **Isolated**: 전용 에이전트 턴 실행, 선택적으로 출력 전달
-- Wakeup이 일급: "지금 깨우기" vs "다음 heartbeat"
+- Cron runs **inside the service** (not inside the model)
+- Jobs are persisted to survive restarts
+- Two execution styles:
+  - **Main session**: Queues system events, executed at next heartbeat
+  - **Isolated**: Runs a dedicated agent turn, optionally delivers output
+- Wakeup is first-class: "wake now" vs "next heartbeat"
 
 ## Quick Start
 
 ```typescript
-// 원샷 리마인더
+// One-shot reminder
 await cronService.addJob({
   name: "Reminder",
   schedule: { kind: "at", atMs: Date.now() + 20 * 60 * 1000 },
   sessionTarget: "main",
   wakeMode: "now",
-  payload: { kind: "systemEvent", text: "체크할 것: 문서 드래프트" },
+  payload: { kind: "systemEvent", text: "Check: document draft" },
   deleteAfterRun: true,
 });
 
-// 반복 isolated job
+// Recurring isolated job
 await cronService.addJob({
   name: "Morning brief",
   schedule: { kind: "cron", expr: "0 7 * * *", tz: "Asia/Seoul" },
   sessionTarget: "isolated",
   payload: {
     kind: "agentTurn",
-    message: "오버나이트 업데이트 요약해줘.",
+    message: "Summarize overnight updates.",
     deliver: true,
     channel: "discord",
   },
@@ -46,112 +46,112 @@ await cronService.addJob({
 
 ### Schedules
 
-세 가지 스케줄 종류:
+Three schedule kinds:
 
-- `at`: 원샷 타임스탬프 (epoch ms). ISO 8601 받아서 UTC로 변환.
-- `every`: 고정 간격 (ms).
-- `cron`: 5-필드 cron 표현식 + 선택적 IANA 타임존.
+- `at`: One-shot timestamp (epoch ms). Accepts ISO 8601, converts to UTC.
+- `every`: Fixed interval (ms).
+- `cron`: 5-field cron expression + optional IANA timezone.
 
 ```typescript
-// 예시
+// Examples
 { kind: "at", atMs: 1738262400000 }
-{ kind: "every", everyMs: 3600000 }  // 1시간마다
-{ kind: "cron", expr: "0 7 * * *", tz: "Asia/Seoul" }  // 매일 7시
+{ kind: "every", everyMs: 3600000 }  // Every hour
+{ kind: "cron", expr: "0 7 * * *", tz: "Asia/Seoul" }  // Daily at 7 AM
 ```
 
 ### Main vs Isolated Execution
 
 #### Main session jobs (system events)
 
-메인 job은 시스템 이벤트를 큐잉하고 선택적으로 heartbeat runner 깨움.
-`payload.kind = "systemEvent"` 사용 필수.
+Main jobs queue system events and optionally wake the heartbeat runner.
+Must use `payload.kind = "systemEvent"`.
 
-- `wakeMode: "next-heartbeat"` (기본): 다음 예정된 heartbeat 대기
-- `wakeMode: "now"`: 즉시 heartbeat 실행 트리거
+- `wakeMode: "next-heartbeat"` (default): Waits for the next scheduled heartbeat
+- `wakeMode: "now"`: Triggers immediate heartbeat execution
 
-정상 heartbeat 프롬프트 + 메인 세션 컨텍스트 원할 때 최적.
+Best when you want the normal heartbeat prompt + main session context.
 
 #### Isolated jobs (dedicated cron sessions)
 
-Isolated job은 `cron:<jobId>` 세션에서 전용 에이전트 턴 실행.
+Isolated jobs run a dedicated agent turn in a `cron:<jobId>` session.
 
-주요 동작:
-- 프롬프트에 `[cron:<jobId> <job name>]` 접두사로 추적 가능
-- 각 실행은 **새 세션 id** 시작 (이전 대화 이월 없음)
-- 메인 세션에 요약 게시 (`Cron` 접두사, 설정 가능)
-- `wakeMode: "now"`면 요약 게시 후 즉시 heartbeat 트리거
-- `payload.deliver: true`면 출력이 채널로 전달; 아니면 내부 유지
+Key behaviors:
+- Prompt is prefixed with `[cron:<jobId> <job name>]` for tracking
+- Each execution starts a **new session id** (no carryover from previous conversations)
+- Posts a summary to the main session (prefixed with `Cron`, configurable)
+- If `wakeMode: "now"`, triggers immediate heartbeat after posting the summary
+- If `payload.deliver: true`, output is delivered to the channel; otherwise kept internal
 
-메인 채팅 히스토리 스팸 안 하는 노이즈, 빈번, "백그라운드 잡"에 isolated job 사용.
+Use isolated jobs for noisy, frequent, "background jobs" that shouldn't spam the main chat history.
 
 ### Payload Shapes
 
-두 가지 payload 종류:
+Two payload kinds:
 
 ```typescript
-// Main session용
-{ kind: "systemEvent", text: "다음 heartbeat: 캘린더 체크." }
+// For main session
+{ kind: "systemEvent", text: "Next heartbeat: check calendar." }
 
-// Isolated session용
+// For isolated session
 {
   kind: "agentTurn",
-  message: "오늘 받은편지함 + 캘린더 요약.",
-  model: "opus",  // 선택: 모델 오버라이드
-  thinking: "high",  // 선택: thinking 레벨
+  message: "Summarize today's inbox + calendar.",
+  model: "opus",  // Optional: model override
+  thinking: "high",  // Optional: thinking level
   deliver: true,
   channel: "discord",
   to: "channel:1234567890",
 }
 ```
 
-### Delivery (채널 + 타겟)
+### Delivery (channel + target)
 
-Isolated job은 출력을 채널로 전달 가능:
+Isolated jobs can deliver output to a channel:
 
 - `channel`: `discord` / `slack` / `telegram` / `whatsapp` / `last`
-- `to`: 채널별 수신자 타겟
+- `to`: Per-channel recipient target
 
 ```typescript
-// Discord 예시
+// Discord example
 { channel: "discord", to: "channel:1398253695174709319" }
 
-// Telegram 토픽 예시
+// Telegram topic example
 { channel: "telegram", to: "-1001234567890:topic:123" }
 ```
 
 ## Decision Flowchart
 
 ```
-태스크가 정확한 시간에 실행되어야 하나?
-  YES -> cron 사용
-  NO  -> 계속...
+Does the task need to run at a precise time?
+  YES -> Use cron
+  NO  -> Continue...
 
-태스크가 메인 세션과 격리 필요한가?
-  YES -> cron (isolated) 사용
-  NO  -> 계속...
+Does the task need isolation from the main session?
+  YES -> Use cron (isolated)
+  NO  -> Continue...
 
-이 태스크를 다른 주기적 체크와 배치 가능한가?
-  YES -> heartbeat 사용 (HEARTBEAT.md에 추가)
-  NO  -> cron 사용
+Can this task be batched with other periodic checks?
+  YES -> Use heartbeat (add to HEARTBEAT.md)
+  NO  -> Use cron
 
-원샷 리마인더인가?
-  YES -> cron with --at 사용
-  NO  -> 계속...
+Is this a one-shot reminder?
+  YES -> Use cron with --at
+  NO  -> Continue...
 
-다른 모델이나 thinking 레벨 필요한가?
-  YES -> cron (isolated) with model/thinking 사용
-  NO  -> heartbeat 사용
+Need a different model or thinking level?
+  YES -> Use cron (isolated) with model/thinking
+  NO  -> Use heartbeat
 ```
 
 ## Cost Considerations
 
-| 메커니즘 | 비용 프로필 |
-|---------|------------|
-| Heartbeat | N분마다 한 턴; HEARTBEAT.md 크기에 비례 |
-| Cron (main) | 다음 heartbeat에 이벤트 추가 (isolated 턴 없음) |
-| Cron (isolated) | job당 전체 에이전트 턴; 저렴한 모델 사용 가능 |
+| Mechanism | Cost Profile |
+|-----------|-------------|
+| Heartbeat | One turn every N minutes; proportional to HEARTBEAT.md size |
+| Cron (main) | Adds event to next heartbeat (no isolated turn) |
+| Cron (isolated) | Full agent turn per job; can use cheaper models |
 
-**팁**:
-- `HEARTBEAT.md`를 작게 유지해서 토큰 오버헤드 최소화
-- 여러 cron job 대신 비슷한 체크를 heartbeat에 배치
-- 루틴 태스크에 저렴한 모델로 isolated cron 사용
+**Tips**:
+- Keep `HEARTBEAT.md` small to minimize token overhead
+- Batch similar checks in heartbeat instead of multiple cron jobs
+- Use isolated cron with cheaper models for routine tasks

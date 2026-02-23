@@ -1,6 +1,6 @@
 // ============================================
 // OpenSwarm - Pair Mode Integration Tests
-// Worker/Reviewer 페어 전체 플로우 테스트
+// Worker/Reviewer pair full flow tests
 // ============================================
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -14,22 +14,22 @@ import * as pairWebhook from '../agents/pairWebhook.js';
 
 describe('Pair Mode Integration Tests', () => {
   beforeEach(() => {
-    // 각 테스트 전 세션 초기화
+    // Initialize sessions before each test
     agentPair.clearAllSessions();
   });
 
   afterEach(async () => {
-    // 메트릭 초기화
+    // Reset metrics
     await pairMetrics.resetMetrics();
   });
 
   // ============================================
-  // 세션 생성 및 상태 전이 테스트
+  // Session creation and state transition tests
   // ============================================
 
   describe('Session Lifecycle', () => {
     it('should create session and transition through states', () => {
-      // 1. 세션 생성
+      // 1. Create session
       const session = agentPair.createPairSession({
         taskId: 'TEST-123',
         taskTitle: 'Test Task',
@@ -42,12 +42,12 @@ describe('Pair Mode Integration Tests', () => {
       expect(session.worker.attempts).toBe(0);
       expect(session.worker.maxAttempts).toBe(3);
 
-      // 2. Worker 작업 시작
+      // 2. Start Worker task
       agentPair.updateSessionStatus(session.id, 'working');
       const updated1 = agentPair.getPairSession(session.id);
       expect(updated1?.status).toBe('working');
 
-      // 3. Worker 결과 저장
+      // 3. Save Worker result
       const workerResult: agentPair.WorkerResult = {
         success: true,
         summary: 'Added new feature',
@@ -61,12 +61,12 @@ describe('Pair Mode Integration Tests', () => {
       expect(updated2?.worker.attempts).toBe(1);
       expect(updated2?.worker.result).toEqual(workerResult);
 
-      // 4. 리뷰 상태로 전환
+      // 4. Transition to review state
       agentPair.updateSessionStatus(session.id, 'reviewing');
       const updated3 = agentPair.getPairSession(session.id);
       expect(updated3?.status).toBe('reviewing');
 
-      // 5. 승인
+      // 5. Approve
       const reviewResult: agentPair.ReviewResult = {
         decision: 'approve',
         feedback: 'Looks good!',
@@ -74,7 +74,7 @@ describe('Pair Mode Integration Tests', () => {
       agentPair.saveReviewerResult(session.id, reviewResult);
       const updated4 = agentPair.updateSessionStatus(session.id, 'approved');
 
-      // 승인 후 세션은 아카이브됨 (active sessions에서 제거)
+      // After approval, session is archived (removed from active sessions)
       expect(updated4?.status).toBe('approved');
       expect(updated4?.reviewer.feedback?.decision).toBe('approve');
     });
@@ -88,7 +88,7 @@ describe('Pair Mode Integration Tests', () => {
         maxAttempts: 3,
       });
 
-      // 첫 번째 시도
+      // First attempt
       agentPair.updateSessionStatus(session.id, 'working');
       agentPair.saveWorkerResult(session.id, {
         success: true,
@@ -98,7 +98,7 @@ describe('Pair Mode Integration Tests', () => {
         output: '',
       });
 
-      // 수정 요청
+      // Revision request
       agentPair.updateSessionStatus(session.id, 'reviewing');
       agentPair.saveReviewerResult(session.id, {
         decision: 'revise',
@@ -111,7 +111,7 @@ describe('Pair Mode Integration Tests', () => {
       expect(updated?.status).toBe('revising');
       expect(agentPair.canRetry(session.id)).toBe(true);
 
-      // 두 번째 시도
+      // Second attempt
       agentPair.updateSessionStatus(session.id, 'working');
       agentPair.saveWorkerResult(session.id, {
         success: true,
@@ -124,7 +124,7 @@ describe('Pair Mode Integration Tests', () => {
       updated = agentPair.getPairSession(session.id);
       expect(updated?.worker.attempts).toBe(2);
 
-      // 승인
+      // Approve
       agentPair.updateSessionStatus(session.id, 'reviewing');
       agentPair.saveReviewerResult(session.id, {
         decision: 'approve',
@@ -132,7 +132,7 @@ describe('Pair Mode Integration Tests', () => {
       });
       const approved = agentPair.updateSessionStatus(session.id, 'approved');
 
-      // 승인 후 세션은 아카이브됨
+      // After approval, session is archived
       expect(approved?.status).toBe('approved');
     });
 
@@ -145,7 +145,7 @@ describe('Pair Mode Integration Tests', () => {
         maxAttempts: 2,
       });
 
-      // 첫 번째 시도
+      // First attempt
       agentPair.updateSessionStatus(session.id, 'working');
       agentPair.saveWorkerResult(session.id, {
         success: true,
@@ -160,7 +160,7 @@ describe('Pair Mode Integration Tests', () => {
       });
       expect(agentPair.canRetry(session.id)).toBe(true);
 
-      // 두 번째 시도
+      // Second attempt
       agentPair.updateSessionStatus(session.id, 'revising');
       agentPair.updateSessionStatus(session.id, 'working');
       agentPair.saveWorkerResult(session.id, {
@@ -171,13 +171,13 @@ describe('Pair Mode Integration Tests', () => {
         output: '',
       });
 
-      // 더 이상 재시도 불가
+      // No more retries available
       expect(agentPair.canRetry(session.id)).toBe(false);
     });
   });
 
   // ============================================
-  // 메시지 기록 테스트
+  // Message logging tests
   // ============================================
 
   describe('Message Logging', () => {
@@ -189,7 +189,7 @@ describe('Pair Mode Integration Tests', () => {
         projectPath: '/tmp/test',
       });
 
-      // 메시지 추가
+      // Add messages
       agentPair.addMessage(session.id, 'worker', 'Starting work on feature...');
       agentPair.addMessage(session.id, 'worker', 'Completed implementation.');
       agentPair.addMessage(session.id, 'reviewer', 'Reviewing changes...');
@@ -228,12 +228,12 @@ describe('Pair Mode Integration Tests', () => {
   });
 
   // ============================================
-  // 메트릭 기록 테스트
+  // Metrics recording tests
   // ============================================
 
   describe('Metrics Recording', () => {
     it('should record session metrics', async () => {
-      // 세션 기록
+      // Record session
       await pairMetrics.recordSession({
         sessionId: 'test-1',
         taskId: 'TEST-200',
@@ -260,7 +260,7 @@ describe('Pair Mode Integration Tests', () => {
         finishedAt: Date.now(),
       });
 
-      // 요약 조회
+      // Get summary
       const summary = await pairMetrics.getSummary();
       expect(summary.totalSessions).toBe(2);
       expect(summary.approved).toBe(1);
@@ -269,7 +269,7 @@ describe('Pair Mode Integration Tests', () => {
     });
 
     it('should calculate first attempt success rate', async () => {
-      // 첫 시도 성공
+      // First attempt success
       await pairMetrics.recordSession({
         sessionId: 'test-3',
         taskId: 'TEST-210',
@@ -283,7 +283,7 @@ describe('Pair Mode Integration Tests', () => {
         finishedAt: Date.now(),
       });
 
-      // 두 번째 시도 성공
+      // Second attempt success
       await pairMetrics.recordSession({
         sessionId: 'test-4',
         taskId: 'TEST-211',
@@ -327,7 +327,7 @@ describe('Pair Mode Integration Tests', () => {
   });
 
   // ============================================
-  // Webhook 페이로드 테스트
+  // Webhook payload tests
   // ============================================
 
   describe('Webhook Payload', () => {
@@ -342,12 +342,12 @@ describe('Pair Mode Integration Tests', () => {
   });
 
   // ============================================
-  // 동시 세션 테스트
+  // Concurrent session tests
   // ============================================
 
   describe('Concurrent Sessions', () => {
     it('should handle multiple sessions', () => {
-      // 3개 세션 동시 생성
+      // Create 3 sessions simultaneously
       const session1 = agentPair.createPairSession({
         taskId: 'TEST-300',
         taskTitle: 'Task 1',
@@ -367,33 +367,33 @@ describe('Pair Mode Integration Tests', () => {
         projectPath: '/tmp/test3',
       });
 
-      // 활성 세션 확인
+      // Verify active sessions
       const active = agentPair.getActiveSessions();
       expect(active.length).toBe(3);
 
-      // 각각 다른 상태로 전환
+      // Transition each to different states
       agentPair.updateSessionStatus(session1.id, 'working');
       agentPair.updateSessionStatus(session2.id, 'reviewing');
       const cancelled = agentPair.cancelSession(session3.id);
 
-      // 상태 확인
+      // Verify states
       expect(agentPair.getPairSession(session1.id)?.status).toBe('working');
       expect(agentPair.getPairSession(session2.id)?.status).toBe('reviewing');
-      // 취소된 세션은 아카이브됨 (active sessions에서 제거)
+      // Cancelled session is archived (removed from active sessions)
       expect(cancelled).toBe(true);
 
-      // 취소된 세션은 활성 목록에서 제외
+      // Cancelled sessions are excluded from active list
       const activeAfter = agentPair.getActiveSessions();
       expect(activeAfter.length).toBe(2);
 
-      // 히스토리에서 취소된 세션 확인
+      // Verify cancelled session in history
       const history = agentPair.getSessionHistory(1);
       expect(history[0]?.status).toBe('cancelled');
     });
   });
 
   // ============================================
-  // 에러 케이스 테스트
+  // Error case tests
   // ============================================
 
   describe('Error Cases', () => {
@@ -401,7 +401,7 @@ describe('Pair Mode Integration Tests', () => {
       const result = agentPair.getPairSession('non-existent-id');
       expect(result).toBeUndefined();
 
-      // 존재하지 않는 세션 업데이트 시도
+      // Attempt to update non-existent session
       const updated = agentPair.updateSessionStatus('non-existent-id', 'working');
       expect(updated).toBeUndefined();
     });
@@ -420,18 +420,18 @@ describe('Pair Mode Integration Tests', () => {
         finishedAt: Date.now(),
       };
 
-      // 같은 세션 2번 기록 시도
+      // Attempt to record same session twice
       await pairMetrics.recordSession(record);
       await pairMetrics.recordSession(record);
 
       const summary = await pairMetrics.getSummary();
-      // 중복 방지로 1개만 기록되어야 함
+      // Only 1 should be recorded due to deduplication
       expect(summary.totalSessions).toBe(1);
     });
   });
 
   // ============================================
-  // 포맷팅 테스트
+  // Formatting tests
   // ============================================
 
   describe('Formatting', () => {
@@ -443,7 +443,7 @@ describe('Pair Mode Integration Tests', () => {
         result: 'approved',
         attempts: 1,
         maxAttempts: 3,
-        durationMs: 90000, // 1.5분
+        durationMs: 90000, // 1.5 min
         filesChanged: 2,
         startedAt: Date.now() - 90000,
         finishedAt: Date.now(),
@@ -480,7 +480,7 @@ describe('Pair Mode Integration Tests', () => {
 });
 
 // ============================================
-// 유틸리티 함수 테스트
+// Utility function tests
 // ============================================
 
 describe('Utility Functions', () => {
@@ -498,10 +498,10 @@ describe('Utility Functions', () => {
 
     const startTime = session.startedAt;
 
-    // 인위적으로 종료 시간 설정
+    // Artificially set end time
     const endSession = agentPair.getPairSession(session.id);
     if (endSession) {
-      endSession.finishedAt = startTime + 120000; // 2분
+      endSession.finishedAt = startTime + 120000; // 2 min
       const duration = endSession.finishedAt - endSession.startedAt;
       expect(duration).toBe(120000);
     }

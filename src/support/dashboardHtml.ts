@@ -1,6 +1,6 @@
 // Auto-generated: Dashboard HTML template for VEGA Supervisor
 const DASHBOARD_HTML = `<!DOCTYPE html>
-<html lang="ko">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -692,7 +692,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 
     async function svcAction(action) {
       const label = action === "stop" ? "STOP" : "RESTART";
-      if (!confirm("서비스를 " + label + " 하시겠습니까?")) return;
+      if (!confirm("Are you sure you want to " + label + " the service?")) return;
       const btnId = action === "stop" ? "svc-stop-btn" : "svc-restart-btn";
       const btn = document.getElementById(btnId);
       btn.disabled = true;
@@ -1003,9 +1003,9 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           const obj = JSON.parse(trimmed);
           if (obj.needsDecomposition === false) {
             const r = obj.reason ? obj.reason.slice(0, 120) : "";
-            raw = "\\u2713 \\uBD84\\uD574 \\uBD88\\uD544\\uC694 (" + (obj.totalEstimatedMinutes || "?") + "\\uBD84) " + r;
+            raw = "\\u2713 No decomposition needed (" + (obj.totalEstimatedMinutes || "?") + "min) " + r;
           } else if (obj.needsDecomposition === true && obj.subTasks) {
-            raw = "\\uD83D\\uDD00 " + obj.subTasks.length + "\\uAC1C \\uC11C\\uBE0C\\uD0DC\\uC2A4\\uD06C\\uB85C \\uBD84\\uD574 (\\uCD1D " + (obj.totalEstimatedMinutes || "?") + "\\uBD84)";
+            raw = "\\uD83D\\uDD00 Decomposed into " + obj.subTasks.length + " sub-tasks (total " + (obj.totalEstimatedMinutes || "?") + "min)";
           } else if (obj.success !== undefined) {
             raw = (obj.success ? "\\u2713 " : "\\u2717 ") + (obj.summary || obj.error || JSON.stringify(obj).slice(0, 120));
           }
@@ -1047,7 +1047,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           ? info.issueIdentifier
           : (l.taskId === "system" ? "SYS" : (l.taskId || "").slice(0, 8));
         const { cls, icon } = classifyLog(l.line);
-        // spacer/separator는 최소 렌더링
+        // spacer/separator use minimal rendering
         if (cls === "log-spacer") return "<div class=\\"log-line log-spacer\\"></div>";
         if (cls === "log-separator") return "<div class=\\"log-line log-separator\\"><span class=\\"ltext\\">───────────────────</span></div>";
         const time = fmtLogTime(l._ts);
@@ -1289,11 +1289,11 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         const history = await chatRes.json();
         for (const msg of history) appendChatMsg(msg.role, msg.text, null, msg.ts);
 
-        // 로그 복원
+        // Restore logs
         const logs = await logsRes.json();
         for (const ev of logs) addLogLine(ev.data);
 
-        // 파이프라인/태스크 이벤트 복원
+        // Restore pipeline/task events
         const stages = await stagesRes.json();
         for (const ev of stages) handleEvent(ev);
       } catch(e) {

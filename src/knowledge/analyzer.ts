@@ -1,6 +1,6 @@
 // ============================================
 // OpenSwarm - Knowledge Graph Analyzer
-// 이슈 영향 분석, 모듈 헬스, 리뷰 포커스
+// Issue impact analysis, module health, review focus
 // ============================================
 
 import type { KnowledgeGraph } from './graph.js';
@@ -11,7 +11,7 @@ import type { ImpactAnalysis, ProjectSummary } from './types.js';
 // ============================================
 
 /**
- * 이슈 텍스트를 분석하여 영향받는 모듈 식별
+ * Analyze issue text to identify affected modules
  */
 export function analyzeIssueImpact(
   graph: KnowledgeGraph,
@@ -20,29 +20,29 @@ export function analyzeIssueImpact(
 ): ImpactAnalysis {
   const text = `${issueTitle} ${issueDescription ?? ''}`.toLowerCase();
 
-  // 1단계: 이슈 텍스트에서 직접 참조된 모듈 찾기
+  // Step 1: Find modules directly referenced in issue text
   const directModules: string[] = [];
   const allModules = graph.getNodesByType('module');
 
   for (const mod of allModules) {
-    // 파일명, 경로 일부, 모듈명으로 매칭
-    const name = mod.name.replace(/\.[^.]+$/, ''); // 확장자 제거
+    // Match by filename, path segment, or module name
+    const name = mod.name.replace(/\.[^.]+$/, ''); // Remove extension
     const pathParts = mod.path.split('/');
 
-    // 파일명 매칭 (e.g., "decisionEngine" → decisionEngine.ts)
+    // Filename matching (e.g., "decisionEngine" → decisionEngine.ts)
     if (text.includes(name.toLowerCase())) {
       directModules.push(mod.id);
       continue;
     }
 
-    // camelCase → 단어 분리 매칭 (e.g., "decision engine" → decisionEngine.ts)
+    // camelCase → word-split matching (e.g., "decision engine" → decisionEngine.ts)
     const words = name.replace(/([A-Z])/g, ' $1').toLowerCase().trim();
     if (words.includes(' ') && text.includes(words)) {
       directModules.push(mod.id);
       continue;
     }
 
-    // 디렉토리/파일 경로 매칭 (e.g., "orchestration/taskParser")
+    // Directory/file path matching (e.g., "orchestration/taskParser")
     if (pathParts.length >= 2) {
       const pathRef = pathParts.slice(-2).join('/').toLowerCase().replace(/\.[^.]+$/, '');
       if (text.includes(pathRef)) {
@@ -51,7 +51,7 @@ export function analyzeIssueImpact(
     }
   }
 
-  // 2단계: 직접 모듈을 import하는 의존 모듈 찾기
+  // Step 2: Find modules that import the direct modules
   const dependentModules = new Set<string>();
   for (const modId of directModules) {
     const deps = graph.getDependents(modId);
@@ -62,7 +62,7 @@ export function analyzeIssueImpact(
     }
   }
 
-  // 3단계: 관련 테스트 파일 찾기
+  // Step 3: Find related test files
   const testFiles = new Set<string>();
   const allAffected = [...directModules, ...dependentModules];
   for (const modId of allAffected) {
@@ -72,7 +72,7 @@ export function analyzeIssueImpact(
     }
   }
 
-  // 4단계: 영향 범위 추정
+  // Step 4: Estimate impact scope
   const totalAffected = directModules.length + dependentModules.size;
   let estimatedScope: 'small' | 'medium' | 'large';
   if (totalAffected <= 2) estimatedScope = 'small';
@@ -94,15 +94,15 @@ export function analyzeIssueImpact(
 export interface ModuleHealth {
   moduleId: string;
   hasTests: boolean;
-  dependentCount: number;     // 이 모듈에 의존하는 모듈 수
-  importCount: number;        // 이 모듈이 import하는 수
-  churnScore: number;         // 최근 변경 빈도
+  dependentCount: number;     // Number of modules that depend on this module
+  importCount: number;        // Number of imports this module makes
+  churnScore: number;         // Recent change frequency
   loc: number;
   risk: 'low' | 'medium' | 'high';
 }
 
 /**
- * 개별 모듈의 헬스 점검
+ * Health check for an individual module
  */
 export function getModuleHealth(graph: KnowledgeGraph, moduleId: string): ModuleHealth | null {
   const mod = graph.getNode(moduleId);
@@ -118,16 +118,16 @@ export function getModuleHealth(graph: KnowledgeGraph, moduleId: string): Module
   const churnScore = mod.gitInfo?.churnScore ?? 0;
   const loc = mod.metrics?.loc ?? 0;
 
-  // 위험도 평가
+  // Risk assessment
   let risk: 'low' | 'medium' | 'high' = 'low';
 
-  // 고변경 + 테스트 없음 → high
+  // High churn + no tests → high
   if (churnScore > 0.5 && !hasTests) risk = 'high';
-  // 많은 의존성 + 테스트 없음 → high
+  // Many dependents + no tests → high
   else if (dependentCount >= 5 && !hasTests) risk = 'high';
-  // 고변경 또는 많은 의존성 → medium
+  // High churn or many dependents → medium
   else if (churnScore > 0.3 || dependentCount >= 3) risk = 'medium';
-  // 테스트 없는 큰 파일 → medium
+  // Large file without tests → medium
   else if (!hasTests && loc > 200) risk = 'medium';
 
   return {
@@ -146,13 +146,13 @@ export function getModuleHealth(graph: KnowledgeGraph, moduleId: string): Module
 // ============================================
 
 export interface ReviewFocus {
-  criticalModules: string[];   // 리뷰 집중 필요한 모듈
-  suggestedTests: string[];    // 반드시 실행해야 할 테스트
-  reasons: string[];           // 리뷰 포인트
+  criticalModules: string[];   // Modules requiring focused review
+  suggestedTests: string[];    // Tests that must be run
+  reasons: string[];           // Review points
 }
 
 /**
- * 변경 파일 기반 리뷰 포커스 제안
+ * Suggest review focus based on changed files
  */
 export function suggestReviewFocus(
   graph: KnowledgeGraph,
@@ -166,28 +166,28 @@ export function suggestReviewFocus(
     const mod = graph.getNode(file);
     if (!mod) continue;
 
-    // 의존하는 모듈이 많은 파일 → 리뷰 집중
+    // Files with many dependents → focus review
     const dependents = graph.getDependents(file);
     if (dependents.length >= 3) {
       criticalModules.push(file);
-      reasons.push(`${mod.name}: ${dependents.length}개 모듈이 의존 — 변경 영향 넓음`);
+      reasons.push(`${mod.name}: ${dependents.length} modules depend on this — wide impact`);
     }
 
-    // 고빈도 변경 파일 → 주의
+    // Frequently changed files → attention needed
     if (mod.gitInfo && mod.gitInfo.churnScore > 0.5) {
       if (!criticalModules.includes(file)) criticalModules.push(file);
-      reasons.push(`${mod.name}: 최근 변경 빈번 (churn=${mod.gitInfo.churnScore})`);
+      reasons.push(`${mod.name}: frequent recent changes (churn=${mod.gitInfo.churnScore})`);
     }
 
-    // 관련 테스트 수집
+    // Collect related tests
     const tests = graph.getTests(file);
     for (const t of tests) {
       suggestedTests.add(t.id);
     }
 
-    // 테스트 없는 변경 파일 경고
+    // Warning for changed files without tests
     if (tests.length === 0 && mod.type === 'module') {
-      reasons.push(`${mod.name}: 테스트 없음 — 수동 검증 필요`);
+      reasons.push(`${mod.name}: no tests — manual verification required`);
     }
   }
 
@@ -199,7 +199,7 @@ export function suggestReviewFocus(
 }
 
 /**
- * 프로젝트 전체 헬스 요약
+ * Overall project health summary
  */
 export function getProjectHealth(graph: KnowledgeGraph): {
   summary: ProjectSummary;
@@ -216,7 +216,7 @@ export function getProjectHealth(graph: KnowledgeGraph): {
     }
   }
 
-  // risk 순으로 정렬 (high → medium)
+  // Sort by risk level (high → medium)
   riskModules.sort((a, b) => {
     const order = { high: 0, medium: 1, low: 2 };
     return order[a.risk] - order[b.risk];

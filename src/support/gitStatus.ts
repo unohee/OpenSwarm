@@ -57,7 +57,7 @@ function gh(args: string[]): Promise<string> {
 
 async function fetchGitStatus(projectPath: string): Promise<GitStatus | null> {
   const branch = await git(projectPath, ['branch', '--show-current']);
-  if (!branch) return null; // git repo가 아니거나 에러
+  if (!branch) return null; // not a git repo or error
 
   const porcelain = await git(projectPath, ['status', '--porcelain']);
   const lines = porcelain ? porcelain.split('\n').filter(Boolean) : [];
@@ -82,7 +82,7 @@ async function fetchGitStatus(projectPath: string): Promise<GitStatus | null> {
 }
 
 async function fetchOpenPRs(projectPath: string): Promise<PRSummary[]> {
-  // origin remote URL에서 owner/repo 추출
+  // Extract owner/repo from origin remote URL
   const remoteUrl = await git(projectPath, ['remote', 'get-url', 'origin']);
   if (!remoteUrl) return [];
 
@@ -136,7 +136,7 @@ export function startGitStatusPoller(
 ): NodeJS.Timeout {
   return setInterval(async () => {
     const paths = getPaths();
-    // 백그라운드 갱신 — 에러 무시
+    // Background refresh — ignore errors
     await Promise.allSettled(paths.map((p) => getProjectGitInfo(p)));
   }, intervalMs);
 }

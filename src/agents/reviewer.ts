@@ -179,7 +179,7 @@ function parseReviewerOutput(output: string): ReviewResult {
       console.log(`[Reviewer] Cost: ${formatCost(costInfo)}`);
     }
 
-    // NDJSON에서 result 항목 추출
+    // Extract result entry from NDJSON
     let resultText = '';
     for (const line of output.split('\n')) {
       try {
@@ -283,20 +283,20 @@ function extractFromText(text: string): ReviewResult {
   let decision: ReviewDecision = 'revise';
   const lowerText = text.toLowerCase();
 
-  if (lowerText.includes('approve') || lowerText.includes('승인') || lowerText.includes('lgtm')) {
+  if (lowerText.includes('approve') || lowerText.includes('lgtm')) {
     decision = 'approve';
-  } else if (lowerText.includes('reject') || lowerText.includes('거부') || lowerText.includes('불가')) {
+  } else if (lowerText.includes('reject')) {
     decision = 'reject';
-  } else if (lowerText.includes('revise') || lowerText.includes('수정') || lowerText.includes('개선')) {
+  } else if (lowerText.includes('revise') || lowerText.includes('improve')) {
     decision = 'revise';
   }
 
   // Extract issues
   const issues: string[] = [];
   const issuePatterns = [
-    /(?:issue|problem|문제|오류):\s*(.+)/gi,
-    /(?:missing|누락):\s*(.+)/gi,
-    /- (?:fix|수정|해결):\s*(.+)/gi,
+    /(?:issue|problem|error):\s*(.+)/gi,
+    /(?:missing):\s*(.+)/gi,
+    /- (?:fix|resolve):\s*(.+)/gi,
   ];
 
   for (const pattern of issuePatterns) {
@@ -311,9 +311,9 @@ function extractFromText(text: string): ReviewResult {
   // Extract suggestions
   const suggestions: string[] = [];
   const suggestionPatterns = [
-    /(?:suggest|recommend|제안|추천):\s*(.+)/gi,
-    /(?:consider|고려):\s*(.+)/gi,
-    /(?:should|해야):\s*(.+)/gi,
+    /(?:suggest|recommend):\s*(.+)/gi,
+    /(?:consider):\s*(.+)/gi,
+    /(?:should):\s*(.+)/gi,
   ];
 
   for (const pattern of suggestionPatterns) {

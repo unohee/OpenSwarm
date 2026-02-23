@@ -107,7 +107,7 @@ export interface DecisionEngineConfig {
   /** Cooldown between tasks (seconds) */
   cooldownSeconds: number;
 
-  /** Dry run 모드 */
+  /** Dry run mode */
   dryRun: boolean;
 }
 

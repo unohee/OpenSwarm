@@ -15,10 +15,10 @@ export interface LocaleMessages {
       hoursAgo: string;     // {{n}} hours ago
     };
     duration: {
-      seconds: string;      // {{n}}s / {{n}}초
-      minutes: string;      // {{n}}min / {{n}}분
-      hours: string;        // {{n}}h / {{n}}시간
-      days: string;         // {{n}}d / {{n}}일
+      seconds: string;      // {{n}}s
+      minutes: string;      // {{n}}min
+      hours: string;        // {{n}}h
+      days: string;         // {{n}}d
     };
     fallback: {
       noSummary: string;

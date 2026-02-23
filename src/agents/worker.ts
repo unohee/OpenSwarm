@@ -192,13 +192,13 @@ async function runClaudeCli(
  */
 function parseWorkerOutput(output: string): WorkerResult {
   try {
-    // Extract cost info (NDJSON 형태)
+    // Extract cost info (NDJSON format)
     const costInfo = extractCostFromStreamJson(output);
     if (costInfo) {
       console.log(`[Worker] Cost: ${formatCost(costInfo)}`);
     }
 
-    // NDJSON에서 result 항목 추출
+    // Extract result entry from NDJSON
     const resultText = extractResultFromStreamJson(output);
     if (!resultText) {
       const result = extractFromText(output);
@@ -261,7 +261,7 @@ function extractResultJson(text: string): WorkerResult | null {
     const parsed = JSON.parse(jsonMatch[1]);
     return {
       success: Boolean(parsed.success),
-      summary: parsed.summary || '(요약 없음)',
+      summary: parsed.summary || '(no summary)',
       filesChanged: Array.isArray(parsed.filesChanged) ? parsed.filesChanged : [],
       commands: Array.isArray(parsed.commands) ? parsed.commands : [],
       output: text,

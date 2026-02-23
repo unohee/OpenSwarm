@@ -1,6 +1,6 @@
 // ============================================
 // OpenSwarm - Knowledge Graph Types
-// 코드 구조 인식 그래프 타입 정의
+// Code structure awareness graph type definitions
 // ============================================
 
 import { z } from 'zod';
@@ -37,7 +37,7 @@ export type ModuleMetrics = z.infer<typeof ModuleMetricsSchema>;
 export const GitInfoSchema = z.object({
   lastCommitDate: z.number(),
   commitCount30d: z.number(),
-  churnScore: z.number(), // 0-1, 변경 빈도 정규화
+  churnScore: z.number(), // 0-1, normalized change frequency
 });
 export type GitInfo = z.infer<typeof GitInfoSchema>;
 
@@ -46,10 +46,10 @@ export type GitInfo = z.infer<typeof GitInfoSchema>;
 // ============================================
 
 export const GraphNodeSchema = z.object({
-  id: z.string(),           // 상대 경로 기반 고유 ID (e.g., "src/core/service.ts")
+  id: z.string(),           // Unique ID based on relative path (e.g., "src/core/service.ts")
   type: NodeTypeSchema,
-  name: z.string(),          // 파일명 또는 디렉토리명
-  path: z.string(),          // 프로젝트 루트 기준 상대 경로
+  name: z.string(),          // Filename or directory name
+  path: z.string(),          // Relative path from project root
   metrics: ModuleMetricsSchema.optional(),
   gitInfo: GitInfoSchema.optional(),
 });
@@ -60,8 +60,8 @@ export type GraphNode = z.infer<typeof GraphNodeSchema>;
 // ============================================
 
 export const GraphEdgeSchema = z.object({
-  source: z.string(),       // 소스 노드 ID
-  target: z.string(),       // 타겟 노드 ID
+  source: z.string(),       // Source node ID
+  target: z.string(),       // Target node ID
   type: EdgeTypeSchema,
   metadata: z.record(z.string(), z.unknown()).optional(),
 });
@@ -74,8 +74,8 @@ export type GraphEdge = z.infer<typeof GraphEdgeSchema>;
 export const ProjectSummarySchema = z.object({
   totalModules: z.number(),
   totalTestFiles: z.number(),
-  hotModules: z.array(z.string()),         // 최근 30일 가장 많이 변경된 모듈 Top5
-  untestedModules: z.array(z.string()),    // 테스트 없는 모듈
+  hotModules: z.array(z.string()),         // Top 5 most changed modules in last 30 days
+  untestedModules: z.array(z.string()),    // Modules without tests
   avgChurnScore: z.number(),
 });
 export type ProjectSummary = z.infer<typeof ProjectSummarySchema>;
@@ -85,15 +85,15 @@ export type ProjectSummary = z.infer<typeof ProjectSummarySchema>;
 // ============================================
 
 export const ImpactAnalysisSchema = z.object({
-  directModules: z.array(z.string()),      // 이슈 텍스트에서 참조된 모듈
-  dependentModules: z.array(z.string()),   // direct를 import하는 모듈들
-  testFiles: z.array(z.string()),          // 실행해야 할 테스트
+  directModules: z.array(z.string()),      // Modules referenced in issue text
+  dependentModules: z.array(z.string()),   // Modules that import direct modules
+  testFiles: z.array(z.string()),          // Tests that should be run
   estimatedScope: z.enum(['small', 'medium', 'large']),
 });
 export type ImpactAnalysis = z.infer<typeof ImpactAnalysisSchema>;
 
 // ============================================
-// Serialized Graph (JSON 영속화)
+// Serialized Graph (JSON persistence)
 // ============================================
 
 export const SerializedGraphSchema = z.object({

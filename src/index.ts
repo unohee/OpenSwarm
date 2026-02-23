@@ -3,7 +3,7 @@
 // OpenSwarm - Entry Point
 // ============================================
 
-// IPv6 ETIMEDOUT 방지: 외부 API(Linear SDK 등)에서 IPv6 우선 시도 → 타임아웃 문제 해결
+// Prevent IPv6 ETIMEDOUT: external APIs (Linear SDK etc.) try IPv6 first → causes timeout
 import dns from 'node:dns';
 dns.setDefaultResultOrder('ipv4first');
 

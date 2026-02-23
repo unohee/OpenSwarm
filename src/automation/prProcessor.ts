@@ -300,7 +300,7 @@ export class PRProcessor {
         await reportEvent({
           type: 'pr_improved',
           session: 'pr-processor',
-          message: `**${pr.repo}#${pr.number}** "${pr.title}" CI 수정 완료\n${summary}`,
+          message: `**${pr.repo}#${pr.number}** "${pr.title}" CI fix completed\n${summary}`,
           timestamp: Date.now(),
           url: pr.url,
         });
@@ -329,7 +329,7 @@ export class PRProcessor {
         await reportEvent({
           type: 'pr_failed',
           session: 'pr-processor',
-          message: `**${pr.repo}#${pr.number}** "${pr.title}" 자동 수정 실패\n${reason}`,
+          message: `**${pr.repo}#${pr.number}** "${pr.title}" auto-fix failed\n${reason}`,
           timestamp: Date.now(),
           url: pr.url,
         });

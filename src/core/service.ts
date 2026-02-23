@@ -190,7 +190,7 @@ export async function startService(config: SwarmConfig): Promise<void> {
     initMonitors(config.monitors);
     console.log(`[Service] Long-running monitors initialized (${config.monitors.length} from config)`);
   } else {
-    initMonitors(); // 영속 파일에서만 복원
+    initMonitors(); // Restore only from persisted files
   }
 
   // Startup notification

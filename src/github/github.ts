@@ -190,15 +190,15 @@ export async function summarizeCIFailures(repos: string[]): Promise<string> {
   const failures = await getAllFailedRuns(repos, 3);
 
   if (failures.length === 0) {
-    return '✅ 모든 CI 통과';
+    return '✅ All CI checks passed';
   }
 
   const summary = failures.map((f) => {
     const time = new Date(f.createdAt).toLocaleString(getDateLocale());
-    return `❌ **${f.repo}** - ${f.name}\n   브랜치: ${f.branch}\n   시간: ${time}`;
+    return `❌ **${f.repo}** - ${f.name}\n   Branch: ${f.branch}\n   Time: ${time}`;
   });
 
-  return `**CI 실패 ${failures.length}건:**\n\n${summary.join('\n\n')}`;
+  return `**${failures.length} CI failure(s):**\n\n${summary.join('\n\n')}`;
 }
 
 /**
@@ -208,7 +208,7 @@ export async function summarizeNotifications(): Promise<string> {
   const notifications = await getNotifications(10);
 
   if (notifications.length === 0) {
-    return '📭 새 알림 없음';
+    return '📭 No new notifications';
   }
 
   const byReason: Record<string, number> = {};
@@ -225,7 +225,7 @@ export async function summarizeNotifications(): Promise<string> {
     return `${emoji} [${n.repo}] ${n.title}`;
   });
 
-  return `**GitHub 알림 ${notifications.length}건** (${breakdown})\n\n${recent.join('\n')}`;
+  return `**${notifications.length} GitHub notification(s)** (${breakdown})\n\n${recent.join('\n')}`;
 }
 
 // ============================================

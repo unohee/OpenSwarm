@@ -499,27 +499,24 @@ export function parseScheduleFromNaturalLanguage(
   }
 
   // Extract interval
-  const intervalMatch = text.match(/(\d+)\s*(분|시간|일|min|hour|h|m|d)/i);
+  const intervalMatch = text.match(/(\d+)\s*(min|hour|h|m|d)/i);
   if (intervalMatch) {
     const [, num, unit] = intervalMatch;
     const unitMap: Record<string, string> = {
-      분: 'm',
       min: 'm',
       m: 'm',
-      시간: 'h',
       hour: 'h',
       h: 'h',
-      일: 'd',
       d: 'd',
     };
     result.schedule = `${num}${unitMap[unit.toLowerCase()] || 'm'}`;
   }
 
   // Daily/weekly etc.
-  if (text.includes('매일') || text.includes('daily')) {
+  if (text.includes('daily')) {
     result.schedule = '0 9 * * *';
   }
-  if (text.includes('매주') || text.includes('weekly')) {
+  if (text.includes('weekly')) {
     result.schedule = '0 9 * * 1';
   }
 

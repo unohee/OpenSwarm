@@ -1,17 +1,17 @@
 // ============================================
 // OpenSwarm - Linear Project Updater
-// 프로젝트 Status Update + Overview 자동 갱신
+// Project Status Update + Overview auto-refresh
 // ============================================
 
 import { LinearClient } from '@linear/sdk';
 import { getPipelineHistory, type PipelineHistoryEntry } from '../automation/runnerState.js';
 import { getDateLocale } from '../locale/index.js';
 
-// Debounce: 프로젝트당 60초 이내 중복 호출 방지
+// Debounce: prevent duplicate calls within 60 seconds per project
 const lastUpdateTime = new Map<string, number>();
 const DEBOUNCE_MS = 60_000;
 
-// LinearClient는 linear.ts에서 초기화됨. 여기서는 별도로 받아야 함.
+// LinearClient is initialized in linear.ts. Must be set separately here.
 let client: LinearClient | null = null;
 
 export function setLinearClient(c: LinearClient): void {
@@ -32,7 +32,7 @@ export interface CompletedTaskInfo {
 }
 
 /**
- * 태스크 완료 후 Linear 프로젝트 Status Update + Overview 갱신
+ * Update Linear project Status + Overview after task completion
  */
 export async function updateProjectAfterTask(
   projectId: string,
@@ -49,7 +49,7 @@ export async function updateProjectAfterTask(
 }
 
 // ============================================
-// B-1. Status Update 생성
+// B-1. Create Status Update
 // ============================================
 
 async function postStatusUpdate(
@@ -60,7 +60,7 @@ async function postStatusUpdate(
   const linear = getClient();
   const today = new Date().toLocaleDateString(getDateLocale(), { year: 'numeric', month: '2-digit', day: '2-digit' });
 
-  // 오늘 기록 필터링
+  // Filter today's records
   const todayStr = new Date().toISOString().slice(0, 10);
   const history = getPipelineHistory(100);
   const todayEntries = history.filter(e =>
@@ -71,7 +71,7 @@ async function postStatusUpdate(
   const failed = todayEntries.filter(e => !e.success);
   const totalCost = todayEntries.reduce((sum, e) => sum + (e.cost?.costUsd ?? 0), 0);
 
-  // 최근 5건 요약
+  // Summarize recent 5 entries
   const recentLines = todayEntries.slice(0, 5).map(e => {
     const id = e.issueIdentifier || e.taskTitle.slice(0, 20);
     const icon = e.success ? '\u2713' : '\u2717';
@@ -93,7 +93,7 @@ ${recentLines || '(none)'}
 | Total Cost | $${totalCost.toFixed(2)} |
 `;
 
-  // health 판단
+  // Determine health
   let health: string = 'onTrack';
   if (failed.length > completed.length) health = 'offTrack';
   else if (failed.length > 0) health = 'atRisk';
@@ -111,7 +111,7 @@ ${recentLines || '(none)'}
 }
 
 // ============================================
-// B-2. Project Overview 갱신
+// B-2. Project Overview refresh
 // ============================================
 
 const AUTOMATION_SECTION_MARKER = '## Automation Status';
@@ -123,7 +123,7 @@ async function refreshProjectOverview(projectId: string): Promise<void> {
     const project = await linear.project(projectId);
     if (!project) return;
 
-    // 이슈 통계: 이 프로젝트의 이슈 상태별 카운트
+    // Issue stats: count issues by state for this project
     const issues = await project.issues({ first: 250 });
     const stateCounts = new Map<string, number>();
     for (const issue of issues.nodes) {
@@ -131,7 +131,7 @@ async function refreshProjectOverview(projectId: string): Promise<void> {
       stateCounts.set(state, (stateCounts.get(state) ?? 0) + 1);
     }
 
-    // 최근 5건 파이프라인 히스토리
+    // Recent 5 pipeline history entries
     const history = getPipelineHistory(50);
     const projectHistory = history.filter(e => e.projectName === project.name).slice(0, 5);
     const recentStr = projectHistory.map(e => {
@@ -155,16 +155,16 @@ ${stateRows}
 **Recent 5**: ${recentStr}
 `;
 
-    // 기존 description에서 자동화 섹션 교체 또는 append
+    // Replace automation section in existing description, or append
     const currentDesc = project.description ?? '';
     const markerIdx = currentDesc.indexOf(AUTOMATION_SECTION_MARKER);
 
     let newDesc: string;
     if (markerIdx >= 0) {
-      // 기존 섹션 교체 (마커부터 끝까지)
+      // Replace existing section (from marker to end)
       newDesc = currentDesc.slice(0, markerIdx) + section;
     } else {
-      // 기존 description 끝에 추가
+      // Append to end of existing description
       newDesc = currentDesc + '\n\n' + section;
     }
 

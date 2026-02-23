@@ -277,21 +277,21 @@ export function formatMemoryContext(memories: MemorySearchResult[]): string {
     const items = grouped.constraint.map(m =>
       `- ⚠️ **${m.content.slice(0, 100)}** (importance: ${(m.importance * 100).toFixed(0)}%, stability: ${m.stability})`
     ).join('\n');
-    sections.push(`### 🚫 제약조건 (CRITICAL)\n${items}`);
+    sections.push(`### 🚫 Constraints (CRITICAL)\n${items}`);
   }
 
   if (grouped.user_model.length > 0) {
     const items = grouped.user_model.map(m =>
       `- **${m.content.slice(0, 100)}** (confidence: ${(m.confidence * 100).toFixed(0)}%)`
     ).join('\n');
-    sections.push(`### 👤 사용자 성향\n${items}`);
+    sections.push(`### 👤 User Preferences\n${items}`);
   }
 
   if (grouped.strategy.length > 0) {
     const items = grouped.strategy.map(m =>
-      `- **${m.content.slice(0, 100)}** (검증됨: ${m.stability === 'high' ? '✓' : '△'})`
+      `- **${m.content.slice(0, 100)}** (verified: ${m.stability === 'high' ? '✓' : '△'})`
     ).join('\n');
-    sections.push(`### 🎯 검증된 전략\n${items}`);
+    sections.push(`### 🎯 Verified Strategies\n${items}`);
   }
 
   if (grouped.belief.length > 0) {
@@ -305,48 +305,48 @@ export function formatMemoryContext(memories: MemorySearchResult[]): string {
     const items = grouped.system_pattern.map(m =>
       `- **${m.content.slice(0, 100)}**`
     ).join('\n');
-    sections.push(`### 🏗️ 시스템 패턴\n${items}`);
+    sections.push(`### 🏗️ System Patterns\n${items}`);
   }
 
   // Legacy Types
   if (grouped.decision.length > 0) {
     const items = grouped.decision.map(m =>
-      `- **${m.title}** (${formatDate(m.createdAt)}, 신뢰도: ${(m.trust * 100).toFixed(0)}%)\n  ${m.content.slice(0, 150)}...`
+      `- **${m.title}** (${formatDate(m.createdAt)}, trust: ${(m.trust * 100).toFixed(0)}%)\n  ${m.content.slice(0, 150)}...`
     ).join('\n');
-    sections.push(`### 📋 관련 설계 결정 (참고용)\n${items}`);
+    sections.push(`### 📋 Related Design Decisions (reference)\n${items}`);
   }
 
   if (grouped.fact.length > 0) {
     const items = grouped.fact.map(m =>
       `- **${m.title}**: ${m.content.slice(0, 100)}${m.content.length > 100 ? '...' : ''}`
     ).join('\n');
-    sections.push(`### 📌 관련 팩트 (참고용)\n${items}`);
+    sections.push(`### 📌 Related Facts (reference)\n${items}`);
   }
 
   if (grouped.repomap.length > 0) {
     const items = grouped.repomap.map(m =>
       `- **${m.repo}**: ${m.title}`
     ).join('\n');
-    sections.push(`### 🗂️ 저장소 구조 (참고용)\n${items}`);
+    sections.push(`### 🗂️ Repository Structure (reference)\n${items}`);
   }
 
   if (grouped.journal.length > 0) {
     const items = grouped.journal.map(m =>
-      `- [${formatDate(m.createdAt)}] **${m.title}** (신선도: ${(m.freshness * 100).toFixed(0)}%)`
+      `- [${formatDate(m.createdAt)}] **${m.title}** (freshness: ${(m.freshness * 100).toFixed(0)}%)`
     ).join('\n');
-    sections.push(`### 📝 최근 작업 기록 (참고용)\n${items}`);
+    sections.push(`### 📝 Recent Work Log (reference)\n${items}`);
   }
 
   if (sections.length === 0) return '';
 
-  return `## 🧠 Cognitive Memory (PRD v2.0)\n\n${sections.join('\n\n')}\n\n---\n⚠️ 위 정보는 참고용입니다. 현재 상황과 다를 수 있으니 필요시 직접 확인하세요.`;
+  return `## 🧠 Cognitive Memory (PRD v2.0)\n\n${sections.join('\n\n')}\n\n---\n⚠️ The above information is for reference only. It may differ from the current state; verify directly if needed.`;
 }
 
 /**
  * Format date
  */
 function formatDate(timestamp: number): string {
-  return new Date(timestamp).toLocaleDateString('ko-KR', {
+  return new Date(timestamp).toLocaleDateString('en-US', {
     month: 'short',
     day: 'numeric',
   });

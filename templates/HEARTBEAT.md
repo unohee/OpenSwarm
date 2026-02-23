@@ -1,86 +1,86 @@
 # HEARTBEAT.md
 
-> 이 파일은 OpenSwarm 에이전트가 자율 작업 시 따르는 체크리스트입니다.
-> 각 프로젝트 루트에 복사해서 사용하세요.
+> This file is the checklist that OpenSwarm agents follow during autonomous work.
+> Copy it to the root of each project to use.
 
-## 자율 개발 흐름
+## Autonomous Development Flow
 
-### 1. Linear 이슈 확인 (최우선)
+### 1. Check Linear Issues (Top Priority)
 
 ```
-Linear에서 나에게 할당된 In Progress 이슈 확인
-→ 있으면: 이슈 description + comments 읽고 이어서 작업
-→ 없으면: Backlog에서 가장 높은 우선순위 이슈 픽업
-→ 이슈 없으면: 유지보수 체크 (빌드/테스트)만 수행
+Check In Progress issues assigned to me in Linear
+→ If found: Read issue description + comments and continue work
+→ If none: Pick up the highest priority issue from Backlog
+→ If no issues: Perform maintenance checks only (build/tests)
 ```
 
-### 2. 빌드 상태 확인
+### 2. Check Build Status
 
 ```bash
-pnpm build  # 또는 프로젝트에 맞는 빌드 명령
+pnpm build  # or the appropriate build command for the project
 ```
 
-- 실패 시 → 에러 수정 → 재빌드
-- 성공 시 → 다음 단계
+- On failure → Fix errors → Rebuild
+- On success → Proceed to next step
 
-### 3. 테스트 실행
+### 3. Run Tests
 
 ```bash
-pnpm test  # 또는 프로젝트에 맞는 테스트 명령
+pnpm test  # or the appropriate test command for the project
 ```
 
-- 실패 시 → 테스트 수정 → 재실행
-- 성공 시 → 다음 단계
+- On failure → Fix tests → Re-run
+- On success → Proceed to next step
 
-### 4. 이슈 작업 진행
+### 4. Work on Issues
 
-- 이슈 description 확인
-- 이전 코멘트 (컨텍스트) 확인
-- 구현/수정 진행
-- 30분 이상 작업 시 → Linear 코멘트로 진행상황 업데이트
+- Check issue description
+- Review previous comments (context)
+- Proceed with implementation/fixes
+- If working for more than 30 minutes → Update progress via Linear comment
 
-### 5. 완료/막힘 처리
+### 5. Completion/Blocked Handling
 
-**완료 시:**
-- 변경사항 git commit
-- "DONE: <요약>" 출력
-- (OpenSwarm이 자동으로 Linear 이슈 완료 처리)
+**On completion:**
+- Git commit the changes
+- Output "DONE: <summary>"
+- (OpenSwarm automatically marks the Linear issue as done)
 
-**막힘 시:**
-- "BLOCKED: <이유>" 출력
-- (OpenSwarm이 자동으로 Linear에 Blocked 처리 + Discord 알림)
+**When blocked:**
+- Output "BLOCKED: <reason>"
+- (OpenSwarm automatically marks the Linear issue as Blocked + sends Discord notification)
 
-### 6. Git 정리
+### 6. Git Cleanup
 
-- 의미 있는 변경사항 → 커밋
-- 커밋 메시지: Conventional Commits 형식
-- **git push는 하지 않음** (사용자 승인 필요)
+- Meaningful changes → commit
+- Commit messages: Conventional Commits format
+- **Do not git push** (requires user approval)
 
 ---
 
-## 보고 형식
+## Report Format
 
-OpenSwarm이 자동 파싱하는 키워드:
+Keywords automatically parsed by OpenSwarm:
 
 ```
-DONE: <완료 요약>        → 이슈 완료 처리
-BLOCKED: <막힌 이유>     → 이슈 Blocked 처리 + 알림
+DONE: <completion summary>     → Marks issue as done
+BLOCKED: <reason for blocking> → Marks issue as Blocked + notification
 ```
 
 ---
 
-## 금지 사항
+## Prohibited Actions
 
-- ❌ 사용자 승인 없이 git push 금지
-- ❌ package.json 의존성 추가 금지 (TODO에 기록만)
-- ❌ 파괴적 리팩토링 금지
-- ❌ 30분 이상 한 작업에 매몰 금지 (막히면 BLOCKED 선언)
+- Do not git push without user approval
+- Do not add package.json dependencies (record in TODO only)
+- No destructive refactoring
+- Do not get stuck on a single task for more than 30 minutes (declare BLOCKED if stuck)
 
 ---
 
-## 자율 판단 기준
+## Autonomous Decision Criteria
 
-1. **우선순위**: 빌드 에러 > 테스트 실패 > Linear 이슈 > 코드 정리
-2. **시간 제한**: 한 작업에 30분 이상 소요 시 진행상황 기록 후 다음으로
-3. **막힘 판단**: 3번 이상 같은 에러 반복 시 BLOCKED 선언
-4. **커밋 단위**: 기능/버그픽스별로 작은 단위로 커밋
+1. **Priority**: Build errors > Test failures > Linear issues > Code cleanup
+2. **Time limit**: If a task takes more than 30 minutes, record progress and move on
+3. **Blocked determination**: Declare BLOCKED after repeating the same error 3+ times
+4. **Commit granularity**: Commit in small units per feature/bugfix

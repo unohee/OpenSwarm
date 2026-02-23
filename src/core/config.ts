@@ -421,10 +421,10 @@ export function loadConfig(customPath?: string): SwarmConfig {
   // 6. Apply time window config
   if (config.timeWindow) {
     setTimeWindowConfig(config.timeWindow);
-    console.log(`[Config] TimeWindow 설정 로드됨 (enabled: ${config.timeWindow.enabled})`);
+    console.log(`[Config] TimeWindow config loaded (enabled: ${config.timeWindow.enabled})`);
   } else {
     setTimeWindowConfig(DEFAULT_TIME_WINDOW);
-    console.log(`[Config] TimeWindow 기본 설정 사용`);
+    console.log(`[Config] Using default TimeWindow config`);
   }
 
   return config;
@@ -478,12 +478,12 @@ export function createAgentSession(
  */
 export function generateSampleConfig(): string {
   return `# OpenSwarm Configuration
-# 환경변수는 \${VAR_NAME} 또는 \${VAR_NAME:-default} 형식으로 사용
+# Environment variables use \${VAR_NAME} or \${VAR_NAME:-default} format
 
 discord:
   token: \${DISCORD_TOKEN}
   channelId: \${DISCORD_CHANNEL_ID}
-  webhookUrl: \${DISCORD_WEBHOOK_URL:-}  # 선택적
+  webhookUrl: \${DISCORD_WEBHOOK_URL:-}  # optional
 
 linear:
   apiKey: \${LINEAR_API_KEY}
@@ -493,14 +493,14 @@ github:
   repos:
     - owner/repo1
     - owner/repo2
-  checkInterval: 300000  # 5분 (ms)
+  checkInterval: 300000  # 5 min (ms)
 
-# 에이전트 목록
+# Agent list
 agents:
   - name: main
     projectPath: ~/dev/my-project
-    heartbeatInterval: 1800000  # 30분 (ms)
-    linearLabel: main  # Linear 이슈 필터용 라벨
+    heartbeatInterval: 1800000  # 30 min (ms)
+    linearLabel: main  # Label for Linear issue filtering
     enabled: true
     paused: false
 
@@ -509,16 +509,16 @@ agents:
     linearLabel: backend
     enabled: true
 
-# 기본 heartbeat 간격 (ms)
+# Default heartbeat interval (ms)
 defaultHeartbeatInterval: 1800000
 
-# Worker/Reviewer 페어 모드 설정
+# Worker/Reviewer pair mode configuration
 pairMode:
-  enabled: false              # 페어 모드 활성화
-  maxAttempts: 3              # Worker 최대 시도 횟수
-  workerTimeoutMs: 300000     # Worker 타임아웃 (5분)
-  reviewerTimeoutMs: 180000   # Reviewer 타임아웃 (3분)
-  webhookUrl: \${PAIR_WEBHOOK_URL:-}  # 완료/실패 알림 (선택)
-  autoLinearUpdate: true      # Linear 상태 자동 업데이트
+  enabled: false              # Enable pair mode
+  maxAttempts: 3              # Worker max attempts
+  workerTimeoutMs: 300000     # Worker timeout (5 min)
+  reviewerTimeoutMs: 180000   # Reviewer timeout (3 min)
+  webhookUrl: \${PAIR_WEBHOOK_URL:-}  # Completion/failure notification (optional)
+  autoLinearUpdate: true      # Auto Linear status update
 `;
 }

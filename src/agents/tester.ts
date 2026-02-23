@@ -69,19 +69,19 @@ function buildTesterPrompt(options: TesterOptions): string {
 ${workerReport}
 
 ## Instructions
-1. 변경된 파일들에 대한 테스트를 실행하라
-2. 기존 테스트가 모두 통과하는지 확인하라
-3. 새로운 기능에 대한 테스트가 필요하면 제안하라
-4. 테스트 커버리지가 있다면 보고하라
+1. Run tests for the changed files
+2. Verify that all existing tests pass
+3. Suggest new tests if needed for new functionality
+4. Report test coverage if available
 
 ## Test Execution Steps
-1. 프로젝트 테스트 명령 확인 (package.json, pytest.ini 등)
-2. 관련 테스트 파일 실행
-3. 실패한 테스트가 있으면 분석
-4. 테스트 추가 필요 여부 판단
+1. Check the project's test command (package.json, pytest.ini, etc.)
+2. Run relevant test files
+3. Analyze any failed tests
+4. Determine if additional tests are needed
 
-## Output Format (IMPORTANT - 반드시 이 형식으로 마지막에 출력)
-테스트 완료 후 반드시 다음 JSON 형식으로 결과를 출력하라:
+## Output Format (IMPORTANT - must output in this format at the end)
+After testing is complete, output the result in the following JSON format:
 
 \`\`\`json
 {
@@ -90,11 +90,11 @@ ${workerReport}
   "testsFailed": 0,
   "coverage": 85.5,
   "failedTests": [],
-  "suggestions": ["추가 테스트 제안 (있다면)"]
+  "suggestions": ["Additional test suggestions (if any)"]
 }
 \`\`\`
 
-실패 시:
+On failure:
 \`\`\`json
 {
   "success": false,
@@ -102,8 +102,8 @@ ${workerReport}
   "testsFailed": 2,
   "coverage": 75.0,
   "failedTests": ["test_feature.py::test_case1", "test_feature.py::test_case2"],
-  "suggestions": ["실패 원인 분석", "수정 제안"],
-  "error": "상세 에러 메시지"
+  "suggestions": ["Failure cause analysis", "Fix suggestions"],
+  "error": "Detailed error message"
 }
 \`\`\`
 `;
@@ -217,7 +217,7 @@ function parseTesterOutput(output: string): TesterResult {
       console.log(`[Tester] Cost: ${formatCost(costInfo)}`);
     }
 
-    // NDJSON에서 result 항목 추출
+    // Extract result entry from NDJSON
     let resultText = '';
     for (const line of output.split('\n')) {
       try {
@@ -378,35 +378,35 @@ export function formatTestReport(result: TesterResult): string {
   const statusEmoji = result.success ? '✅' : '❌';
   const lines: string[] = [];
 
-  lines.push(`${statusEmoji} **Tester 결과: ${result.success ? 'PASS' : 'FAIL'}**`);
+  lines.push(`${statusEmoji} **Tester Result: ${result.success ? 'PASS' : 'FAIL'}**`);
   lines.push('');
-  lines.push(`**통과:** ${result.testsPassed} | **실패:** ${result.testsFailed}`);
+  lines.push(`**Passed:** ${result.testsPassed} | **Failed:** ${result.testsFailed}`);
 
   if (result.coverage !== undefined) {
-    lines.push(`**커버리지:** ${result.coverage.toFixed(1)}%`);
+    lines.push(`**Coverage:** ${result.coverage.toFixed(1)}%`);
   }
 
   if (result.failedTests && result.failedTests.length > 0) {
     lines.push('');
-    lines.push('**실패한 테스트:**');
+    lines.push('**Failed Tests:**');
     for (const test of result.failedTests.slice(0, 5)) {
       lines.push(`  • \`${test}\``);
     }
     if (result.failedTests.length > 5) {
-      lines.push(`  • ... 외 ${result.failedTests.length - 5}개`);
+      lines.push(`  • ... +${result.failedTests.length - 5} more`);
     }
   }
 
   if (result.suggestions && result.suggestions.length > 0) {
     lines.push('');
-    lines.push('**제안:**');
+    lines.push('**Suggestions:**');
     for (const suggestion of result.suggestions.slice(0, 3)) {
       lines.push(`  • ${suggestion}`);
     }
   }
 
   if (result.error) {
-    lines.push(`**에러:** ${result.error}`);
+    lines.push(`**Error:** ${result.error}`);
   }
 
   return lines.join('\n');
@@ -420,11 +420,11 @@ export function buildTestFixPrompt(result: TesterResult): string {
 
   lines.push('## Test Failures');
   lines.push('');
-  lines.push(`**통과:** ${result.testsPassed} | **실패:** ${result.testsFailed}`);
+  lines.push(`**Passed:** ${result.testsPassed} | **Failed:** ${result.testsFailed}`);
 
   if (result.failedTests && result.failedTests.length > 0) {
     lines.push('');
-    lines.push('### 실패한 테스트:');
+    lines.push('### Failed Tests:');
     for (let i = 0; i < result.failedTests.length; i++) {
       lines.push(`${i + 1}. \`${result.failedTests[i]}\``);
     }
@@ -432,14 +432,14 @@ export function buildTestFixPrompt(result: TesterResult): string {
 
   if (result.suggestions && result.suggestions.length > 0) {
     lines.push('');
-    lines.push('### 수정 제안:');
+    lines.push('### Fix Suggestions:');
     for (let i = 0; i < result.suggestions.length; i++) {
       lines.push(`${i + 1}. ${result.suggestions[i]}`);
     }
   }
 
   lines.push('');
-  lines.push('위 테스트 실패를 수정하라.');
+  lines.push('Fix the above test failures.');
 
   return lines.join('\n');
 }

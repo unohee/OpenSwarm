@@ -1,5 +1,5 @@
 ---
-description: PR 랜딩 (리뷰 + merge 워크플로)
+description: PR landing (review + merge workflow)
 trigger: /land <pr_number_or_url>
 ---
 
@@ -9,54 +9,54 @@ PR: $ARGUMENTS
 
 ## Goal
 
-PR 리뷰 후 merge까지 완료.
+Review the PR and complete the merge.
 
 ## Process
 
-### Phase 1: Review (PR_REVIEW.md와 동일)
+### Phase 1: Review (same as PR_REVIEW.md)
 
-1-8단계 리뷰 수행 후 READY 판정 시 Phase 2 진행.
+Perform review steps 1-8, then proceed to Phase 2 if READY.
 
 ### Phase 2: Land
 
-1. **main에서 임시 브랜치 생성**
+1. **Create temporary branch from main**
    ```sh
    git checkout main
    git pull
    git checkout -b land-pr-<number>
    ```
 
-2. **PR 브랜치 가져오기**
-   - 깔끔한 커밋 히스토리면 **rebase** 선호
-   - 복잡하면 **squash merge**
+2. **Fetch the PR branch**
+   - If clean commit history, prefer **rebase**
+   - If complex, use **squash merge**
    ```sh
    gh pr checkout <PR>
-   git rebase main  # 또는 squash
+   git rebase main  # or squash
    ```
 
-3. **필요한 수정 적용**
-   - 리뷰에서 발견한 이슈 수정
-   - 테스트 실행 확인
+3. **Apply necessary fixes**
+   - Fix issues found during review
+   - Verify tests pass
 
-4. **Changelog 추가**
-   - PR 번호 포함
-   - 외부 contributor면 감사 표시
+4. **Add changelog entry**
+   - Include PR number
+   - Credit external contributors
    ```
    - Fix something ([#123](url) by [@user](url))
    ```
 
-5. **전체 게이트 실행**
+5. **Run all gates**
    ```sh
    npm run build && npm run lint && npm run test
    ```
 
-6. **커밋**
-   - squash 시 원 author를 co-contributor로
+6. **Commit**
+   - On squash, add original author as co-contributor
    ```
    Co-Authored-By: User <user@email.com>
    ```
 
-7. **main으로 merge**
+7. **Merge into main**
    ```sh
    git checkout main
    git merge land-pr-<number>
@@ -64,12 +64,12 @@ PR 리뷰 후 merge까지 완료.
    git push
    ```
 
-8. **PR 코멘트 남기기**
-   - 무엇을 했는지 설명
-   - commit SHA 포함
+8. **Leave a PR comment**
+   - Explain what was done
+   - Include commit SHA
 
 ## Rules
 
-- READY 판정 전에는 merge 금지
-- contributor가 git graph에 남아야 함
-- 작업 완료 후 반드시 main 브랜치로 복귀
+- No merge before READY determination
+- Contributors must remain in the git graph
+- Always return to main branch after completion

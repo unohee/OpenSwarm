@@ -33,7 +33,7 @@ const DEFAULT_THRESHOLDS: StuckThresholds = {
 };
 
 /**
- * Stuck Detection 메인 클래스
+ * Stuck Detection main class
  */
 export class StuckDetector {
   private history: HistoryEntry[] = [];
@@ -56,7 +56,7 @@ export class StuckDetector {
   }
 
   /**
-   * Stuck 상태 체크
+   * Check for stuck state
    */
   check(): StuckResult {
     if (this.history.length < 2) {

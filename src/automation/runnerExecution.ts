@@ -97,7 +97,7 @@ export interface ExecutionContext {
   decompositionThresholdMinutes?: number;
   getRolesForProject: (projectPath: string) => DefaultRolesConfig | undefined;
   reportToDiscord: (message: string | EmbedBuilder) => Promise<void>;
-  /** Git worktree mode: 이슈마다 독립 worktree에서 작업 후 PR 자동 생성 */
+  /** Git worktree mode: work in an isolated worktree per issue, auto-create PR */
   worktreeMode?: boolean;
 }
 
@@ -346,7 +346,7 @@ export async function executePipeline(
   }
 
   // ============================================
-  // Git Worktree: 이슈별 독립 브랜치에서 작업
+  // Git Worktree: work in an isolated branch per issue
   // ============================================
   let worktreeInfo: WorktreeInfo | null = null;
   let actualPath = projectPath;
@@ -370,7 +370,7 @@ export async function executePipeline(
   }
 
   try {
-    const roles = ctx.getRolesForProject(projectPath); // 원본 경로로 설정 조회
+    const roles = ctx.getRolesForProject(projectPath); // look up config using original path
     const pipeline = createPipelineFromConfig(roles, ctx.pairMaxAttempts ?? 3);
 
     pipeline.on('stage:start', ({ stage }) => {
@@ -422,10 +422,10 @@ export async function executePipeline(
       }
     }
 
-    // worktree 경로에서 파이프라인 실행
+    // Run pipeline in worktree path
     const result = await pipeline.run(task, actualPath);
 
-    // PR 생성 (worktree 모드 + 성공 + Reviewer 승인)
+    // Create PR (worktree mode + success + reviewer approved)
     if (worktreeInfo && result.success && result.finalStatus !== 'rejected') {
       try {
         const prUrl = await commitAndCreatePR(
@@ -450,7 +450,7 @@ export async function executePipeline(
 
     return result;
   } finally {
-    // 성공/실패 무관하게 worktree 정리
+    // Clean up worktree regardless of success/failure
     if (worktreeInfo) {
       await removeWorktree(worktreeInfo).catch((err) =>
         console.warn('[Worktree] Cleanup failed:', err)

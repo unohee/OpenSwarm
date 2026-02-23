@@ -1,6 +1,6 @@
 /**
- * 실패한 Beliefs 삭제 스크립트
- * 대상: "서비스 end-to-end 테스트 및 버그 수정" failed 항목
+ * Script to delete failed Beliefs
+ * Target: failed entries from "service end-to-end test and bug fix"
  */
 import { connect } from '@lancedb/lancedb';
 import { resolve } from 'path';
@@ -24,13 +24,13 @@ async function deleteFailedBeliefs() {
 
   const table = await db.openTable(tableName);
 
-  // 삭제 전 확인
+  // Verify before deletion
   const beforeCount = await table.countRows();
   console.log(`[Delete] Total records before: ${beforeCount}`);
 
-  // LanceDB delete 사용 - SQL where 조건
-  // content에 특정 문자열 포함된 belief 타입 삭제
-  const deleteFilter = `type = 'belief' AND content LIKE '%서비스 end-to-end 테스트 및 버그 수정%' AND content LIKE '%failed%'`;
+  // Use LanceDB delete with SQL where condition
+  // Delete belief type records containing specific string in content
+  const deleteFilter = `type = 'belief' AND content LIKE '%service end-to-end test and bug fix%' AND content LIKE '%failed%'`;
 
   console.log('[Delete] Applying filter:', deleteFilter);
 

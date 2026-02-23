@@ -77,43 +77,43 @@ const TYPE_PATTERNS: { type: TaskType; patterns: RegExp[] }[] = [
   {
     type: 'bug_fix',
     patterns: [
-      /버그|bug|fix|수정|오류|에러|error|crash|깨짐|안됨|실패/i,
+      /bug|fix|error|crash|broken|not working|failure/i,
     ],
   },
   {
     type: 'feature',
     patterns: [
-      /기능|feature|추가|구현|implement|add|새로운|new/i,
+      /feature|add|implement|new/i,
     ],
   },
   {
     type: 'refactor',
     patterns: [
-      /리팩|refactor|개선|improve|정리|clean|optimize|최적화/i,
+      /refactor|improve|clean|optimize/i,
     ],
   },
   {
     type: 'docs',
     patterns: [
-      /문서|docs|documentation|readme|주석|comment/i,
+      /docs|documentation|readme|comment/i,
     ],
   },
   {
     type: 'test',
     patterns: [
-      /테스트|test|coverage|검증|validate/i,
+      /test|coverage|validate/i,
     ],
   },
   {
     type: 'ci_cd',
     patterns: [
-      /ci|cd|pipeline|배포|deploy|빌드|build|github action/i,
+      /ci|cd|pipeline|deploy|build|github action/i,
     ],
   },
   {
     type: 'investigation',
     patterns: [
-      /조사|investigate|분석|analyze|research|확인|check|왜/i,
+      /investigate|analyze|research|check|why/i,
     ],
   },
 ];
@@ -165,14 +165,14 @@ function analyzeComplexity(title: string, description: string): {
 
   // Keyword-based adjustment
   const complexityIndicators = [
-    { pattern: /여러|multiple|다수|많은/i, add: 1 },
-    { pattern: /전체|all|모든|entire/i, add: 2 },
-    { pattern: /마이그레이션|migration|이전/i, add: 2, risk: '데이터 마이그레이션 위험' },
-    { pattern: /데이터베이스|database|db|스키마/i, add: 1, risk: 'DB 변경 필요' },
-    { pattern: /api|인터페이스|interface/i, add: 1, risk: 'API 변경으로 인한 호환성' },
-    { pattern: /보안|security|인증|auth/i, add: 1, risk: '보안 관련 변경' },
-    { pattern: /성능|performance|속도/i, add: 1 },
-    { pattern: /테스트|test/i, add: 1 },
+    { pattern: /multiple|many|several/i, add: 1 },
+    { pattern: /all|entire|every/i, add: 2 },
+    { pattern: /migration|migrate/i, add: 2, risk: 'Data migration risk' },
+    { pattern: /database|db|schema/i, add: 1, risk: 'Database change required' },
+    { pattern: /api|interface/i, add: 1, risk: 'API change compatibility risk' },
+    { pattern: /security|auth/i, add: 1, risk: 'Security-related change' },
+    { pattern: /performance|speed/i, add: 1 },
+    { pattern: /test/i, add: 1 },
   ];
 
   for (const { pattern, add, risk } of complexityIndicators) {
@@ -190,7 +190,7 @@ function analyzeComplexity(title: string, description: string): {
 }
 
 /**
- * Knowledge graph 기반 복잡도 보정
+ * Adjust complexity based on knowledge graph data
  */
 function adjustComplexityWithGraph(
   base: ReturnType<typeof analyzeComplexity>,
@@ -201,21 +201,21 @@ function adjustComplexityWithGraph(
 
   const result = { ...base, risks: [...base.risks] };
 
-  // impact scope에 따른 보정
+  // Adjust based on impact scope
   if (impactScope === 'large') {
     result.estimatedSteps += 2;
-    result.risks.push('Knowledge graph: 영향 범위 넓음 (large scope)');
+    result.risks.push('Knowledge graph: wide impact range (large scope)');
   } else if (impactScope === 'medium') {
     result.estimatedSteps += 1;
   }
 
-  // 영향받는 모듈 수에 따른 보정
+  // Adjust based on number of affected modules
   if (affectedModuleCount && affectedModuleCount > 5) {
     result.estimatedSteps += 1;
-    result.risks.push(`Knowledge graph: ${affectedModuleCount}개 모듈 영향`);
+    result.risks.push(`Knowledge graph: ${affectedModuleCount} modules affected`);
   }
 
-  // 재평가
+  // Re-evaluate
   if (result.estimatedSteps >= 6) result.complexity = 'complex';
   else if (result.estimatedSteps >= 4) result.complexity = 'medium';
 
@@ -234,9 +234,9 @@ const SUBTASK_TEMPLATES: Record<TaskType, Subtask[]> = {
     {
       id: 'analyze',
       order: 1,
-      title: '버그 분석',
-      description: '버그 원인 파악 및 재현',
-      prompt: '버그를 분석하고 원인을 파악해줘. 재현 방법과 영향 범위도 확인.',
+      title: 'Bug analysis',
+      description: 'Identify root cause and reproduce the bug',
+      prompt: 'Analyze the bug and identify the root cause. Also verify reproduction steps and impact scope.',
       dependsOn: [],
       type: 'analysis',
       optional: false,
@@ -244,9 +244,9 @@ const SUBTASK_TEMPLATES: Record<TaskType, Subtask[]> = {
     {
       id: 'fix',
       order: 2,
-      title: '버그 수정',
-      description: '버그 수정 코드 작성',
-      prompt: '분석 결과를 바탕으로 버그를 수정해줘. 최소한의 변경으로.',
+      title: 'Bug fix',
+      description: 'Write code to fix the bug',
+      prompt: 'Fix the bug based on the analysis. Make minimal changes.',
       dependsOn: ['analyze'],
       type: 'implementation',
       optional: false,
@@ -254,9 +254,9 @@ const SUBTASK_TEMPLATES: Record<TaskType, Subtask[]> = {
     {
       id: 'test',
       order: 3,
-      title: '테스트',
-      description: '수정 검증 및 회귀 테스트',
-      prompt: '수정사항 테스트하고 기존 기능에 영향 없는지 확인해줘.',
+      title: 'Test',
+      description: 'Verify fix and run regression tests',
+      prompt: 'Test the fix and verify no existing functionality is affected.',
       dependsOn: ['fix'],
       type: 'test',
       optional: false,
@@ -267,9 +267,9 @@ const SUBTASK_TEMPLATES: Record<TaskType, Subtask[]> = {
     {
       id: 'design',
       order: 1,
-      title: '설계 검토',
-      description: '기능 설계 및 구현 방향 결정',
-      prompt: '기능 요구사항을 분석하고 구현 방향을 설계해줘. 기존 코드와의 통합 방법도.',
+      title: 'Design review',
+      description: 'Design the feature and decide implementation approach',
+      prompt: 'Analyze feature requirements and design the implementation approach. Include integration strategy with existing code.',
       dependsOn: [],
       type: 'analysis',
       optional: false,
@@ -277,9 +277,9 @@ const SUBTASK_TEMPLATES: Record<TaskType, Subtask[]> = {
     {
       id: 'implement',
       order: 2,
-      title: '구현',
-      description: '기능 구현',
-      prompt: '설계대로 기능을 구현해줘.',
+      title: 'Implementation',
+      description: 'Implement the feature',
+      prompt: 'Implement the feature according to the design.',
       dependsOn: ['design'],
       type: 'implementation',
       optional: false,
@@ -287,9 +287,9 @@ const SUBTASK_TEMPLATES: Record<TaskType, Subtask[]> = {
     {
       id: 'test',
       order: 3,
-      title: '테스트 작성',
-      description: '기능 테스트 코드 작성',
-      prompt: '구현한 기능에 대한 테스트를 작성해줘.',
+      title: 'Write tests',
+      description: 'Write test code for the feature',
+      prompt: 'Write tests for the implemented feature.',
       dependsOn: ['implement'],
       type: 'test',
       optional: false,
@@ -297,9 +297,9 @@ const SUBTASK_TEMPLATES: Record<TaskType, Subtask[]> = {
     {
       id: 'docs',
       order: 4,
-      title: '문서 업데이트',
-      description: '관련 문서 업데이트',
-      prompt: '새 기능에 대한 문서를 업데이트해줘. 필요한 경우에만.',
+      title: 'Update documentation',
+      description: 'Update related documentation',
+      prompt: 'Update documentation for the new feature. Only if necessary.',
       dependsOn: ['implement'],
       type: 'documentation',
       optional: true,
@@ -310,9 +310,9 @@ const SUBTASK_TEMPLATES: Record<TaskType, Subtask[]> = {
     {
       id: 'analyze',
       order: 1,
-      title: '현재 코드 분석',
-      description: '리팩토링 대상 코드 분석',
-      prompt: '리팩토링 대상 코드를 분석하고 개선점을 파악해줘.',
+      title: 'Analyze current code',
+      description: 'Analyze the code targeted for refactoring',
+      prompt: 'Analyze the target code and identify areas for improvement.',
       dependsOn: [],
       type: 'analysis',
       optional: false,
@@ -320,9 +320,9 @@ const SUBTASK_TEMPLATES: Record<TaskType, Subtask[]> = {
     {
       id: 'refactor',
       order: 2,
-      title: '리팩토링',
-      description: '코드 개선',
-      prompt: '분석 결과를 바탕으로 리팩토링해줘. 기능 변경 없이 구조만 개선.',
+      title: 'Refactor',
+      description: 'Improve code structure',
+      prompt: 'Refactor based on the analysis. Improve structure only without changing functionality.',
       dependsOn: ['analyze'],
       type: 'implementation',
       optional: false,
@@ -330,9 +330,9 @@ const SUBTASK_TEMPLATES: Record<TaskType, Subtask[]> = {
     {
       id: 'verify',
       order: 3,
-      title: '검증',
-      description: '기존 동작 유지 확인',
-      prompt: '리팩토링 후 기존 동작이 유지되는지 확인해줘.',
+      title: 'Verify',
+      description: 'Confirm existing behavior is preserved',
+      prompt: 'Verify that existing behavior is preserved after refactoring.',
       dependsOn: ['refactor'],
       type: 'test',
       optional: false,
@@ -343,9 +343,9 @@ const SUBTASK_TEMPLATES: Record<TaskType, Subtask[]> = {
     {
       id: 'review',
       order: 1,
-      title: '현재 문서 검토',
-      description: '기존 문서 상태 파악',
-      prompt: '현재 문서 상태를 검토하고 업데이트가 필요한 부분을 파악해줘.',
+      title: 'Review current documentation',
+      description: 'Assess the current state of documentation',
+      prompt: 'Review the current documentation and identify areas that need updates.',
       dependsOn: [],
       type: 'analysis',
       optional: false,
@@ -353,9 +353,9 @@ const SUBTASK_TEMPLATES: Record<TaskType, Subtask[]> = {
     {
       id: 'update',
       order: 2,
-      title: '문서 업데이트',
-      description: '문서 작성/수정',
-      prompt: '파악한 내용을 바탕으로 문서를 업데이트해줘.',
+      title: 'Update documentation',
+      description: 'Write/edit documentation',
+      prompt: 'Update the documentation based on the findings.',
       dependsOn: ['review'],
       type: 'documentation',
       optional: false,
@@ -366,9 +366,9 @@ const SUBTASK_TEMPLATES: Record<TaskType, Subtask[]> = {
     {
       id: 'analyze',
       order: 1,
-      title: '테스트 범위 분석',
-      description: '테스트가 필요한 부분 파악',
-      prompt: '테스트 커버리지를 분석하고 추가가 필요한 부분을 파악해줘.',
+      title: 'Analyze test coverage',
+      description: 'Identify areas that need testing',
+      prompt: 'Analyze test coverage and identify areas that need additional tests.',
       dependsOn: [],
       type: 'analysis',
       optional: false,
@@ -376,9 +376,9 @@ const SUBTASK_TEMPLATES: Record<TaskType, Subtask[]> = {
     {
       id: 'write',
       order: 2,
-      title: '테스트 작성',
-      description: '테스트 코드 작성',
-      prompt: '분석 결과를 바탕으로 테스트를 작성해줘.',
+      title: 'Write tests',
+      description: 'Write test code',
+      prompt: 'Write tests based on the analysis.',
       dependsOn: ['analyze'],
       type: 'test',
       optional: false,
@@ -386,9 +386,9 @@ const SUBTASK_TEMPLATES: Record<TaskType, Subtask[]> = {
     {
       id: 'run',
       order: 3,
-      title: '테스트 실행',
-      description: '전체 테스트 실행 및 결과 확인',
-      prompt: '작성한 테스트를 포함해 전체 테스트를 실행하고 결과를 확인해줘.',
+      title: 'Run tests',
+      description: 'Run all tests and verify results',
+      prompt: 'Run all tests including the newly written ones and verify the results.',
       dependsOn: ['write'],
       type: 'test',
       optional: false,
@@ -399,9 +399,9 @@ const SUBTASK_TEMPLATES: Record<TaskType, Subtask[]> = {
     {
       id: 'analyze',
       order: 1,
-      title: '현재 CI/CD 분석',
-      description: '현재 설정 파악',
-      prompt: '현재 CI/CD 설정을 분석하고 변경이 필요한 부분을 파악해줘.',
+      title: 'Analyze current CI/CD',
+      description: 'Assess current configuration',
+      prompt: 'Analyze the current CI/CD configuration and identify areas that need changes.',
       dependsOn: [],
       type: 'analysis',
       optional: false,
@@ -409,9 +409,9 @@ const SUBTASK_TEMPLATES: Record<TaskType, Subtask[]> = {
     {
       id: 'implement',
       order: 2,
-      title: 'CI/CD 수정',
-      description: '설정 변경',
-      prompt: '분석 결과를 바탕으로 CI/CD 설정을 수정해줘.',
+      title: 'Modify CI/CD',
+      description: 'Update configuration',
+      prompt: 'Modify the CI/CD configuration based on the analysis.',
       dependsOn: ['analyze'],
       type: 'implementation',
       optional: false,
@@ -419,9 +419,9 @@ const SUBTASK_TEMPLATES: Record<TaskType, Subtask[]> = {
     {
       id: 'test',
       order: 3,
-      title: '파이프라인 테스트',
-      description: '변경된 파이프라인 테스트',
-      prompt: '변경된 CI/CD 파이프라인이 정상 동작하는지 확인해줘.',
+      title: 'Test pipeline',
+      description: 'Test the modified pipeline',
+      prompt: 'Verify that the modified CI/CD pipeline works correctly.',
       dependsOn: ['implement'],
       type: 'test',
       optional: false,
@@ -432,9 +432,9 @@ const SUBTASK_TEMPLATES: Record<TaskType, Subtask[]> = {
     {
       id: 'gather',
       order: 1,
-      title: '정보 수집',
-      description: '관련 정보 수집',
-      prompt: '조사에 필요한 정보를 수집해줘. 코드, 로그, 문서 등.',
+      title: 'Gather information',
+      description: 'Collect relevant information',
+      prompt: 'Gather information needed for the investigation. Code, logs, documentation, etc.',
       dependsOn: [],
       type: 'analysis',
       optional: false,
@@ -442,9 +442,9 @@ const SUBTASK_TEMPLATES: Record<TaskType, Subtask[]> = {
     {
       id: 'analyze',
       order: 2,
-      title: '분석',
-      description: '수집한 정보 분석',
-      prompt: '수집한 정보를 분석하고 결론을 도출해줘.',
+      title: 'Analyze',
+      description: 'Analyze collected information',
+      prompt: 'Analyze the collected information and draw conclusions.',
       dependsOn: ['gather'],
       type: 'analysis',
       optional: false,
@@ -452,9 +452,9 @@ const SUBTASK_TEMPLATES: Record<TaskType, Subtask[]> = {
     {
       id: 'report',
       order: 3,
-      title: '결과 보고',
-      description: '분석 결과 정리',
-      prompt: '분석 결과를 정리해서 보고해줘.',
+      title: 'Report findings',
+      description: 'Compile analysis results',
+      prompt: 'Compile and report the analysis results.',
       dependsOn: ['analyze'],
       type: 'documentation',
       optional: false,
@@ -465,9 +465,9 @@ const SUBTASK_TEMPLATES: Record<TaskType, Subtask[]> = {
     {
       id: 'understand',
       order: 1,
-      title: '요구사항 파악',
-      description: '정확한 요구사항 이해',
-      prompt: '이슈 내용을 분석하고 정확히 무엇을 해야 하는지 파악해줘.',
+      title: 'Understand requirements',
+      description: 'Understand exact requirements',
+      prompt: 'Analyze the issue content and determine exactly what needs to be done.',
       dependsOn: [],
       type: 'analysis',
       optional: false,
@@ -475,9 +475,9 @@ const SUBTASK_TEMPLATES: Record<TaskType, Subtask[]> = {
     {
       id: 'plan',
       order: 2,
-      title: '작업 계획',
-      description: '실행 계획 수립',
-      prompt: '파악한 내용을 바탕으로 작업 계획을 세워줘.',
+      title: 'Plan work',
+      description: 'Create execution plan',
+      prompt: 'Create a work plan based on the findings.',
       dependsOn: ['understand'],
       type: 'analysis',
       optional: false,
@@ -485,9 +485,9 @@ const SUBTASK_TEMPLATES: Record<TaskType, Subtask[]> = {
     {
       id: 'execute',
       order: 3,
-      title: '실행',
-      description: '계획대로 실행',
-      prompt: '계획대로 작업을 실행해줘.',
+      title: 'Execute',
+      description: 'Execute according to plan',
+      prompt: 'Execute the work according to the plan.',
       dependsOn: ['plan'],
       type: 'implementation',
       optional: false,
@@ -515,16 +515,16 @@ function generateSubtasks(
 
     // Add context
     const contextualPrompt = `
-## 원본 이슈
-**제목:** ${title}
-**설명:** ${description}
+## Original Issue
+**Title:** ${title}
+**Description:** ${description}
 
-## 현재 단계: ${template.title}
+## Current Step: ${template.title}
 ${template.prompt}
 
-## 지침
-- 범위를 벗어나는 추가 작업 금지
-- 완료 후 변경 내용 보고
+## Guidelines
+- Do not perform work outside the defined scope
+- Report changes after completion
 `.trim();
 
     subtasks.push({
@@ -653,20 +653,20 @@ export async function loadParsedTask(issueId: string): Promise<ParsedTask | null
 export function formatParsedTaskSummary(parsed: ParsedTask): string {
   const parts: string[] = [];
 
-  parts.push('## 🤖 자동 분석 결과');
+  parts.push('## Auto Analysis Result');
   parts.push('');
-  parts.push(`**타입:** ${parsed.analysis.type}`);
-  parts.push(`**복잡도:** ${parsed.analysis.complexity}`);
-  parts.push(`**예상 단계:** ${parsed.analysis.estimatedSteps}`);
+  parts.push(`**Type:** ${parsed.analysis.type}`);
+  parts.push(`**Complexity:** ${parsed.analysis.complexity}`);
+  parts.push(`**Estimated Steps:** ${parsed.analysis.estimatedSteps}`);
   parts.push('');
 
   if (parsed.analysis.risks.length > 0) {
-    parts.push('### ⚠️ 주의사항');
+    parts.push('### Warnings');
     parts.push(parsed.analysis.risks.map(r => `- ${r}`).join('\n'));
     parts.push('');
   }
 
-  parts.push('### 📋 실행 계획');
+  parts.push('### Execution Plan');
   for (const st of parsed.subtasks) {
     const deps = st.dependsOn.length > 0 ? ` (← ${st.dependsOn.join(', ')})` : '';
     parts.push(`${st.order}. **${st.title}**${deps}`);
@@ -676,7 +676,7 @@ export function formatParsedTaskSummary(parsed: ParsedTask): string {
 
   if (parsed.analysis.requiresHumanReview) {
     parts.push('---');
-    parts.push('⚠️ **복잡한 작업입니다. 실행 전 검토를 권장합니다.**');
+    parts.push('**Complex task. Review before execution is recommended.**');
   }
 
   parts.push('');

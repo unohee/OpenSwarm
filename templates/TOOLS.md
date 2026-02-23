@@ -1,30 +1,30 @@
 ---
-description: 로컬 도구/환경 설정 노트
-usage: 에이전트별 환경 고유 정보 기록
+description: Local tools/environment setup notes
+usage: Record environment-specific information per agent
 ---
 
 # TOOLS.md - Local Notes
 
-스킬은 도구가 _어떻게_ 작동하는지 정의. 이 파일은 _네_ 구체적인 것 — 네 셋업에 고유한 것들.
+Skills define _how_ tools work. This file is for _your_ specifics — things unique to your setup.
 
 ## What Goes Here
 
-이런 것들:
+Things like:
 
-- 카메라 이름과 위치
-- SSH 호스트와 별칭
-- TTS 선호 음성
-- 스피커/방 이름
-- 디바이스 별명
-- 환경 특화 모든 것
+- Camera names and locations
+- SSH hosts and aliases
+- TTS preferred voice
+- Speaker/room names
+- Device nicknames
+- Anything environment-specific
 
 ## Examples
 
 ```markdown
 ### Cameras
 
-- living-room → 메인 공간, 180° 광각
-- front-door → 입구, 모션 트리거
+- living-room → Main space, 180° wide angle
+- front-door → Entrance, motion triggered
 
 ### SSH
 
@@ -33,20 +33,20 @@ usage: 에이전트별 환경 고유 정보 기록
 
 ### TTS
 
-- 선호 음성: "Nova" (따뜻함, 약간 British)
-- 기본 스피커: Kitchen HomePod
+- Preferred voice: "Nova" (warm, slightly British)
+- Default speaker: Kitchen HomePod
 
 ### MCP Servers
 
-- pykis-local: 한국투자증권 API
-- pykiwoom: 키움증권 API
-- playwright: 브라우저 자동화
+- pykis-local: Korea Investment & Securities API
+- pykiwoom: Kiwoom Securities API
+- playwright: Browser automation
 ```
 
 ## Why Separate?
 
-스킬은 공유됨. 네 셋업은 네 것. 분리해두면 네 노트 잃지 않고 스킬 업데이트 가능, 인프라 새지 않고 스킬 공유 가능.
+Skills are shared. Your setup is yours. Keeping them separate means you can update skills without losing your notes, and share skills without leaking your infrastructure.
 
 ---
 
-일 하는 데 도움 되는 거 추가해. 네 치트시트.
+Add whatever helps you do your job. It's your cheat sheet.

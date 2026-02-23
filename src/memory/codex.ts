@@ -58,20 +58,20 @@ export async function initCodex(): Promise<void> {
   try {
     await fs.access(indexPath);
   } catch {
-    const initialIndex = `# Codex - 세션 기록
+    const initialIndex = `# Codex - Session Records
 
-> 자동 생성된 작업 기록 아카이브
+> Auto-generated work record archive
 
-## 최근 세션
+## Recent Sessions
 
-_아직 기록된 세션이 없습니다._
+_No sessions recorded yet._
 
-## 태그별 분류
+## By Tags
 
-## 저장소별 분류
+## By Repository
 
 ---
-_마지막 업데이트: ${new Date().toISOString()}_
+_Last updated: ${new Date().toISOString()}_
 `;
     await fs.writeFile(indexPath, initialIndex, 'utf-8');
     console.log('[Codex] Initialized index.md');
@@ -112,10 +112,10 @@ function slugify(text: string): string {
 function formatDuration(startMs: number, endMs: number): string {
   const diffMs = endMs - startMs;
   const minutes = Math.floor(diffMs / 60000);
-  if (minutes < 60) return `${minutes}분`;
+  if (minutes < 60) return `${minutes}min`;
   const hours = Math.floor(minutes / 60);
   const remainingMins = minutes % 60;
-  return `${hours}시간 ${remainingMins}분`;
+  return `${hours}h ${remainingMins}min`;
 }
 
 /**
@@ -139,7 +139,7 @@ function resultEmoji(result: CodexSession['result']): string {
  */
 function generateSummary(session: CodexSession, detailPath: string): string {
   const date = new Date(session.startedAt);
-  const dateStr = date.toLocaleDateString('ko-KR', {
+  const dateStr = date.toLocaleDateString('en-US', {
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
@@ -149,37 +149,37 @@ function generateSummary(session: CodexSession, detailPath: string): string {
 
   const duration = session.endedAt
     ? formatDuration(session.startedAt, session.endedAt)
-    : '진행 중';
+    : 'ongoing';
 
   const relativeDetailPath = join('..', '.sessions', basename(detailPath));
 
   let md = `# ${session.title}
-> ${dateStr} | 소요: ~${duration} | [상세 기록](${relativeDetailPath})
+> ${dateStr} | Duration: ~${duration} | [Detail Record](${relativeDetailPath})
 
 `;
 
   if (session.repo) {
-    md += `**저장소**: \`${session.repo}\`\n\n`;
+    md += `**Repository**: \`${session.repo}\`\n\n`;
   }
 
   if (session.tags.length > 0) {
-    md += `**태그**: ${session.tags.map(t => `\`${t}\``).join(' ')}\n\n`;
+    md += `**Tags**: ${session.tags.map(t => `\`${t}\``).join(' ')}\n\n`;
   }
 
   if (session.problem) {
-    md += `## 문제\n${session.problem}\n\n`;
+    md += `## Problem\n${session.problem}\n\n`;
   }
 
   if (session.solution) {
-    md += `## 해결\n${session.solution}\n\n`;
+    md += `## Solution\n${session.solution}\n\n`;
   }
 
   if (session.filesChanged.length > 0) {
-    md += `## 변경 파일\n`;
+    md += `## Changed Files\n`;
     md += session.filesChanged.map(f => `\`${f}\``).join(' ') + '\n\n';
   }
 
-  md += `## 결과\n${resultEmoji(session.result)} ${session.result === 'success' ? '성공' : session.result === 'partial' ? '부분 완료' : session.result === 'failed' ? '실패' : '진행 중'}\n`;
+  md += `## Result\n${resultEmoji(session.result)} ${session.result === 'success' ? 'Success' : session.result === 'partial' ? 'Partial' : session.result === 'failed' ? 'Failed' : 'Ongoing'}\n`;
 
   return md;
 }
@@ -189,7 +189,7 @@ function generateSummary(session: CodexSession, detailPath: string): string {
  */
 function generateDetail(session: CodexSession, rawLog?: string): string {
   const date = new Date(session.startedAt);
-  const dateStr = date.toLocaleDateString('ko-KR', {
+  const dateStr = date.toLocaleDateString('en-US', {
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
@@ -198,28 +198,28 @@ function generateDetail(session: CodexSession, rawLog?: string): string {
     second: '2-digit',
   });
 
-  let md = `# ${session.title} - 상세 기록
-> 시작: ${dateStr}
-> 종료: ${session.endedAt ? new Date(session.endedAt).toLocaleString(getDateLocale()) : '진행 중'}
+  let md = `# ${session.title} - Detail Record
+> Start: ${dateStr}
+> End: ${session.endedAt ? new Date(session.endedAt).toLocaleString(getDateLocale()) : 'ongoing'}
 
-## 세션 정보
+## Session Info
 - **ID**: ${session.id}
-- **저장소**: ${session.repo || 'N/A'}
-- **태그**: ${session.tags.join(', ') || 'N/A'}
-- **결과**: ${resultEmoji(session.result)} ${session.result}
+- **Repository**: ${session.repo || 'N/A'}
+- **Tags**: ${session.tags.join(', ') || 'N/A'}
+- **Result**: ${resultEmoji(session.result)} ${session.result}
 
 `;
 
   if (session.problem) {
-    md += `## 문제 상세\n${session.problem}\n\n`;
+    md += `## Problem Details\n${session.problem}\n\n`;
   }
 
   if (session.solution) {
-    md += `## 해결 상세\n${session.solution}\n\n`;
+    md += `## Solution Details\n${session.solution}\n\n`;
   }
 
   if (session.filesChanged.length > 0) {
-    md += `## 변경된 파일\n`;
+    md += `## Changed Files\n`;
     for (const f of session.filesChanged) {
       md += `- \`${f}\`\n`;
     }
@@ -227,11 +227,11 @@ function generateDetail(session: CodexSession, rawLog?: string): string {
   }
 
   if (session.commands.length > 0) {
-    md += `## 실행된 명령\n`;
-    md += '| 시간 | 도구 | 설명 | 결과 |\n';
-    md += '|------|------|------|------|\n';
+    md += `## Executed Commands\n`;
+    md += '| Time | Tool | Description | Result |\n';
+    md += '|------|------|-------------|--------|\n';
     for (const cmd of session.commands) {
-      const time = new Date(cmd.timestamp).toLocaleTimeString('ko-KR', {
+      const time = new Date(cmd.timestamp).toLocaleTimeString('en-US', {
         hour: '2-digit',
         minute: '2-digit',
         second: '2-digit',
@@ -242,7 +242,7 @@ function generateDetail(session: CodexSession, rawLog?: string): string {
   }
 
   if (rawLog) {
-    md += `## 원본 로그\n\`\`\`\n${rawLog}\n\`\`\`\n`;
+    md += `## Raw Log\n\`\`\`\n${rawLog}\n\`\`\`\n`;
   }
 
   return md;
@@ -297,7 +297,7 @@ async function updateIndex(session: CodexSession, summaryPath: string): Promise<
 
   const relativePath = summaryPath.replace(CODEX_DIR + '/', '');
   const date = new Date(session.startedAt);
-  const dateStr = date.toLocaleDateString('ko-KR', {
+  const dateStr = date.toLocaleDateString('en-US', {
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',
@@ -307,7 +307,7 @@ async function updateIndex(session: CodexSession, summaryPath: string): Promise<
   const newEntry = `- ${resultEmoji(session.result)} [${session.title}](${relativePath}) - ${dateStr}${session.repo ? ` \`${session.repo}\`` : ''}`;
 
   // Update the "recent sessions" section
-  const recentHeader = '## 최근 세션';
+  const recentHeader = '## Recent Sessions';
   const recentIdx = content.indexOf(recentHeader);
   if (recentIdx !== -1) {
     const nextSectionIdx = content.indexOf('\n## ', recentIdx + recentHeader.length);
@@ -330,8 +330,8 @@ async function updateIndex(session: CodexSession, summaryPath: string): Promise<
 
   // Update last-updated timestamp
   content = content.replace(
-    /_마지막 업데이트:.*_/,
-    `_마지막 업데이트: ${new Date().toISOString()}_`
+    /_Last updated:.*_/,
+    `_Last updated: ${new Date().toISOString()}_`
   );
 
   await fs.writeFile(indexPath, content, 'utf-8');

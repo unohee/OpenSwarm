@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import * as agentPair from '../agents/agentPair.js';
 
-// 각 테스트 전 세션 초기화
+// Initialize sessions before each test
 beforeEach(() => {
   agentPair.clearAllSessions();
 });

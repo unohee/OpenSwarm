@@ -106,11 +106,11 @@ function humanizePlannerOutput(text: string): string {
     if (typeof obj === 'object' && obj !== null && 'needsDecomposition' in obj) {
       if (!obj.needsDecomposition) {
         const reason = obj.reason ? `: ${obj.reason.slice(0, 120)}` : '';
-        return `✓ 분해 불필요 (예상 ${obj.totalEstimatedMinutes || '?'}분)${reason}`;
+        return `✓ No decomposition needed (est. ${obj.totalEstimatedMinutes || '?'}min)${reason}`;
       }
       const tasks = (obj.subTasks || []) as Array<{ title?: string; estimatedMinutes?: number }>;
-      const taskList = tasks.map((t, i) => `  ${i + 1}. ${t.title || '?'} (~${t.estimatedMinutes || '?'}분)`).join('\n');
-      return `🔀 ${tasks.length}개 서브태스크로 분해 (총 ${obj.totalEstimatedMinutes || '?'}분)\n${taskList}`;
+      const taskList = tasks.map((t, i) => `  ${i + 1}. ${t.title || '?'} (~${t.estimatedMinutes || '?'}min)`).join('\n');
+      return `🔀 Decomposed into ${tasks.length} sub-tasks (total ${obj.totalEstimatedMinutes || '?'}min)\n${taskList}`;
     }
   } catch {
     // Not JSON — return as-is
@@ -311,8 +311,8 @@ function parseDirectJson(text: string, startIdx: number, originalTitle: string):
 function extractFromText(text: string, originalTitle: string): PlannerResult {
   // Determined that decomposition is not needed
   if (text.toLowerCase().includes('no decomposition') ||
-      text.includes('분해 불필요') ||
-      text.includes('단일 작업')) {
+      text.includes('no decomposition needed') ||
+      text.includes('single task')) {
     return {
       success: true,
       originalIssue: originalTitle,
@@ -372,19 +372,19 @@ export function estimateTaskDuration(task: TaskItem): number {
   let estimate = 30; // Default 30 min
 
   // Complexity increasing factors
-  if (combined.includes('최적화') || combined.includes('optimization')) estimate += 30;
-  if (combined.includes('리팩토링') || combined.includes('refactor')) estimate += 20;
-  if (combined.includes('테스트') || combined.includes('test')) estimate += 15;
-  if (combined.includes('마이그레이션') || combined.includes('migration')) estimate += 40;
-  if (combined.includes('전체') || combined.includes('모든') || combined.includes('all')) estimate += 30;
-  if (combined.includes('ci/cd') || combined.includes('파이프라인')) estimate += 25;
-  if (combined.includes('프론트엔드') && combined.includes('백엔드')) estimate += 40;
+  if (combined.includes('optimization') || combined.includes('optimize')) estimate += 30;
+  if (combined.includes('refactor') || combined.includes('refactoring')) estimate += 20;
+  if (combined.includes('test') || combined.includes('testing')) estimate += 15;
+  if (combined.includes('migration') || combined.includes('migrate')) estimate += 40;
+  if (combined.includes('all') || combined.includes('entire') || combined.includes('every')) estimate += 30;
+  if (combined.includes('ci/cd') || combined.includes('pipeline')) estimate += 25;
+  if (combined.includes('frontend') && combined.includes('backend')) estimate += 40;
   if (combined.includes('playwright') || combined.includes('e2e')) estimate += 30;
 
   // Complexity decreasing factors
-  if (combined.includes('버그') || combined.includes('bug') || combined.includes('fix')) estimate -= 10;
-  if (combined.includes('문서') || combined.includes('docs')) estimate -= 15;
-  if (combined.includes('간단') || combined.includes('simple')) estimate -= 15;
+  if (combined.includes('bug') || combined.includes('fix') || combined.includes('bugfix')) estimate -= 10;
+  if (combined.includes('docs') || combined.includes('documentation')) estimate -= 15;
+  if (combined.includes('simple') || combined.includes('trivial')) estimate -= 15;
 
   return Math.max(10, estimate);
 }

@@ -1,6 +1,6 @@
 // ============================================
 // OpenSwarm - Project Scanner
-// 디렉토리 워킹 + TS/Python import 파싱 + 테스트 파일 매핑
+// Directory walking + TS/Python import parsing + test file mapping
 // ============================================
 
 import { readdir, readFile, stat } from 'node:fs/promises';
@@ -31,7 +31,7 @@ const TEST_PATTERNS = [
   /\.test\.py$/,
 ];
 
-const MAX_FILE_SIZE = 512 * 1024; // 512KB — 거대한 생성 파일 건너뛰기
+const MAX_FILE_SIZE = 512 * 1024; // 512KB — skip large generated files
 const MAX_DEPTH = 15;
 const SCAN_TIMEOUT_MS = 30_000;
 
@@ -58,7 +58,7 @@ export interface ScanOptions {
 }
 
 /**
- * 프로젝트 전체 스캔 → KnowledgeGraph 생성
+ * Full project scan → create KnowledgeGraph
  */
 export async function scanProject(
   projectPath: string,
@@ -70,7 +70,7 @@ export async function scanProject(
   const timeoutMs = options.timeoutMs ?? SCAN_TIMEOUT_MS;
   const startTime = Date.now();
 
-  // 프로젝트 루트 노드
+  // Project root node
   graph.addNode({
     id: '.',
     type: 'project',
@@ -78,10 +78,10 @@ export async function scanProject(
     path: '.',
   });
 
-  // Phase 1: 디렉토리 워킹 — 노드 수집
+  // Phase 1: Directory walking — collect nodes
   await walkDirectory(graph, projectPath, projectPath, '.', 0, maxDepth, startTime, timeoutMs);
 
-  // Phase 2: Import 파싱 — 엣지 생성
+  // Phase 2: Import parsing — create edges
   const modules = [...graph.getNodesByType('module'), ...graph.getNodesByType('test_file')];
   for (const mod of modules) {
     if (Date.now() - startTime > timeoutMs) {
@@ -91,7 +91,7 @@ export async function scanProject(
     await parseImports(graph, projectPath, mod);
   }
 
-  // Phase 3: 테스트↔모듈 매핑
+  // Phase 3: Test ↔ module mapping
   mapTestsToModules(graph);
 
   graph.scannedAt = Date.now();
@@ -99,7 +99,7 @@ export async function scanProject(
 }
 
 /**
- * 증분 업데이트: 변경된 파일만 재스캔
+ * Incremental update: re-scan only changed files
  */
 export async function incrementalUpdate(
   graph: KnowledgeGraph,
@@ -110,30 +110,30 @@ export async function incrementalUpdate(
     const relPath = file.startsWith('/') ? relative(projectPath, file) : file;
     const ext = extname(relPath);
 
-    // 소스 파일이 아니면 무시
+    // Skip non-source files
     if (!SOURCE_EXTENSIONS.has(ext)) continue;
 
-    // 기존 노드가 있으면 엣지만 재파싱
+    // If node exists, re-parse edges only
     if (graph.hasNode(relPath)) {
-      // 기존 import/depends_on 엣지 제거 (adjacency 동기화 포함)
+      // Remove existing import/depends_on edges (with adjacency sync)
       graph.removeOutgoingEdges(relPath, ['imports', 'depends_on']);
       const node = graph.getNode(relPath)!;
 
-      // 메트릭 재계산
+      // Recalculate metrics
       try {
         const fullPath = join(projectPath, relPath);
         const content = await readFile(fullPath, 'utf-8');
         const metrics = computeMetrics(content, detectLanguage(ext));
         node.metrics = metrics;
       } catch {
-        // 파일 삭제된 경우
+        // File was deleted
         graph.removeNode(relPath);
         continue;
       }
 
       await parseImports(graph, projectPath, node);
     } else {
-      // 새 파일: 노드 추가
+      // New file: add node
       try {
         const fullPath = join(projectPath, relPath);
         const content = await readFile(fullPath, 'utf-8');
@@ -149,7 +149,7 @@ export async function incrementalUpdate(
         };
         graph.addNode(node);
 
-        // 부모 디렉토리와 contains 엣지
+        // Contains edge with parent directory
         const parentDir = dirname(relPath);
         if (graph.hasNode(parentDir) || parentDir === '.') {
           graph.addEdge({ source: parentDir === '.' ? '.' : parentDir, target: relPath, type: 'contains' });
@@ -157,12 +157,12 @@ export async function incrementalUpdate(
 
         await parseImports(graph, projectPath, node);
       } catch {
-        // 파일 읽기 실패 — 무시
+        // File read failed — skip
       }
     }
   }
 
-  // 테스트 매핑 재실행
+  // Re-run test mapping
   mapTestsToModules(graph);
   graph.scannedAt = Date.now();
 }
@@ -191,7 +191,7 @@ async function walkDirectory(
   try {
     entries = await readdir(currentPath, { withFileTypes: true });
   } catch {
-    return; // 접근 불가 디렉토리
+    return; // Inaccessible directory
   }
 
   for (const entry of entries) {
@@ -214,7 +214,7 @@ async function walkDirectory(
       const ext = extname(entry.name);
       if (!SOURCE_EXTENSIONS.has(ext)) continue;
 
-      // 파일 크기 체크
+      // File size check
       try {
         const fileStat = await stat(entryPath);
         if (fileStat.size > MAX_FILE_SIZE) continue;
@@ -293,10 +293,10 @@ async function parseImports(
 
   for (const { raw, isRelative } of importPaths) {
     if (isRelative) {
-      // 상대 경로 resolve
+      // Resolve relative path
       const base = resolveRelativeImport(node.path, raw, language);
       if (base) {
-        // 확장자 후보들로 매칭 시도
+        // Try matching with extension candidates
         const candidates = language === 'typescript'
           ? [base + '.ts', base + '.tsx', base + '.js', base + '.jsx', base + '/index.ts', base + '/index.tsx', base + '/index.js']
           : [base + '.py', base + '/__init__.py'];
@@ -306,7 +306,7 @@ async function parseImports(
         }
       }
     } else {
-      // 외부 패키지: depends_on 엣지 (가상 노드 불필요, 메타데이터로 기록)
+      // External package: depends_on edge (no virtual node needed, recorded as metadata)
       graph.addEdge({
         source: node.id,
         target: `pkg:${raw.split('/')[0]}`,
@@ -318,7 +318,7 @@ async function parseImports(
 }
 
 /**
- * 상대 import 경로를 프로젝트 내 노드 ID로 resolve
+ * Resolve relative import path to in-project node ID
  */
 function resolveRelativeImport(
   fromPath: string,
@@ -328,12 +328,12 @@ function resolveRelativeImport(
   const dir = dirname(fromPath);
 
   if (language === 'typescript') {
-    // .js/.ts 확장자 제거 후 시도
+    // Remove .js/.ts extension and try
     const cleaned = importPath.replace(/\.[jt]sx?$/, '');
     const base = join(dir, cleaned).replace(/\\/g, '/').replace(/^\.\//, '');
 
-    // 후보 목록 반환 — 호출부에서 graph.hasNode()로 확인
-    // 가장 일반적인 패턴부터 반환
+    // Return candidate list — caller checks with graph.hasNode()
+    // Most common patterns first
     return base;
   }
 
@@ -353,7 +353,7 @@ function mapTestsToModules(graph: KnowledgeGraph): void {
   const testFiles = graph.getNodesByType('test_file');
 
   for (const testNode of testFiles) {
-    // 이미 import 엣지로 연결된 모듈들에 tests 엣지 추가
+    // Add tests edges to modules already connected via import edges
     const imports = graph.getImports(testNode.id);
     for (const imported of imports) {
       if (imported.type === 'module') {
@@ -361,7 +361,7 @@ function mapTestsToModules(graph: KnowledgeGraph): void {
       }
     }
 
-    // 네이밍 컨벤션 기반 매핑: foo.test.ts → foo.ts
+    // Naming convention based mapping: foo.test.ts → foo.ts
     const possibleSource = guessSourceFromTestName(testNode.name, testNode.path);
     if (possibleSource && graph.hasNode(possibleSource)) {
       graph.addEdge({ source: testNode.id, target: possibleSource, type: 'tests' });
@@ -381,14 +381,14 @@ function guessSourceFromTestName(testName: string, testPath: string): string | n
 
   if (!stripped || stripped === testName) return null;
 
-  // 같은 디렉토리에서 찾기
+  // Look in same directory
   const ext = extname(testName).replace(/^\.test|\.spec/, '');
   const candidates = [
     `${dir}/${stripped}.ts`,
     `${dir}/${stripped}.tsx`,
     `${dir}/${stripped}.js`,
     `${dir}/${stripped}.py`,
-    // src/ 디렉토리에서 찾기 (tests/ 폴더 → src/ 매핑)
+    // Look in src/ directory (tests/ folder → src/ mapping)
     `${dir.replace(/\/?tests?\/?/, '/').replace(/\/?__tests__\/?/, '/')}${stripped}.ts`,
   ];
 
@@ -424,7 +424,7 @@ function computeMetrics(content: string, language: Language): ModuleMetrics {
   } else if (language === 'python') {
     for (const line of lines) {
       if (/^(from|import)\s/.test(line.trim())) importCount++;
-      // Python은 모든 top-level이 사실상 export
+      // In Python, all top-level definitions are effectively exports
       if (/^(def |class |[A-Z_]+ =)/.test(line.trim())) exportCount++;
     }
   }
