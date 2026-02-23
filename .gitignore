@@ -8,6 +8,18 @@ dist/
 config.json
 config.yaml
 config.yml
+config/config.yaml
+config-docker.yaml
+
+# Personal / internal docs
+user.md
+VEGA_SYSTEM_PROMPT.md
+memory-system-suggestions.md
+BUGFIX_REPORT.md
+
+# Claude Code local settings
+.claude/settings.json
+.claude/mcp.json
 
 # Logs
 *.log

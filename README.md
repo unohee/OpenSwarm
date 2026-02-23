@@ -1,103 +1,286 @@
-# OpenSwarm 🤖
+# OpenSwarm
 
-> Autonomous Claude Code agents orchestrator with Discord control and Linear memory
+> Autonomous AI agent orchestrator powered by Claude Code CLI
 
-여러 Claude Code 인스턴스를 자율적으로 운영하고, Discord로 모니터링/제어하며, Linear를 장기 메모리로 활용하는 오케스트레이터.
+OpenSwarm orchestrates multiple Claude Code instances as autonomous agents. It picks up Linear issues, runs Worker/Reviewer pair pipelines to produce code changes, reports progress to Discord, and retains long-term memory via LanceDB vector embeddings.
 
-## 개념
+## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                         Linear                               │
-│              (장기 메모리 - 이슈 + 코멘트)                    │
-└─────────────────────────────────────────────────────────────┘
-                          ↑ ↓
-┌─────────────────────────────────────────────────────────────┐
-│                    OpenSwarm                                   │
-│  ┌─────────┐    ┌──────────┐    ┌──────────────┐           │
-│  │  Timer  │───→│  Linear  │←──→│   Discord    │           │
-│  │(heartbeat)   │   SDK    │    │   Bot        │           │
-│  └─────────┘    └──────────┘    └──────────────┘           │
-│       │                               ↑                      │
-│       ↓                               │                      │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │              tmux send-keys                          │   │
-│  └─────────────────────────────────────────────────────┘   │
-│       │              │              │                        │
-│       ↓              ↓              ↓                        │
-│  ┌─────────┐   ┌─────────┐   ┌─────────┐                   │
-│  │project-a│   │project-b│   │project-c│                   │
-│  │ claude  │   │ claude  │   │ claude  │                   │
-│  └─────────┘   └─────────┘   └─────────┘                   │
-└─────────────────────────────────────────────────────────────┘
+                         ┌──────────────────────────┐
+                         │       Linear API          │
+                         │   (issues, state, memory) │
+                         └─────────────┬────────────┘
+                                       │
+                 ┌─────────────────────┼─────────────────────┐
+                 │                     │                     │
+                 v                     v                     v
+  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐
+  │ AutonomousRunner │  │  DecisionEngine  │  │  TaskScheduler   │
+  │ (heartbeat loop) │─>│  (scope guard)   │─>│  (queue + slots) │
+  └────────┬─────────┘  └──────────────────┘  └────────┬─────────┘
+           │                                            │
+           v                                            v
+  ┌──────────────────────────────────────────────────────────────┐
+  │                      PairPipeline                            │
+  │  ┌────────┐   ┌──────────┐   ┌────────┐   ┌─────────────┐  │
+  │  │ Worker │──>│ Reviewer │──>│ Tester │──>│ Documenter  │  │
+  │  │ (CLI)  │<──│  (CLI)   │   │ (CLI)  │   │   (CLI)     │  │
+  │  └────────┘   └──────────┘   └────────┘   └─────────────┘  │
+  │       ↕ StuckDetector                                        │
+  └──────────────────────────────────────────────────────────────┘
+           │                     │                     │
+           v                     v                     v
+  ┌──────────────┐  ┌──────────────────┐  ┌──────────────────┐
+  │  Discord Bot │  │  Memory (LanceDB │  │  Knowledge Graph │
+  │  (commands)  │  │  + Xenova E5)    │  │  (code analysis) │
+  └──────────────┘  └──────────────────┘  └──────────────────┘
 ```
 
-## 설치
+## Features
+
+- **Autonomous Pipeline** - Cron-driven heartbeat fetches Linear issues, runs Worker/Reviewer pair loops, and updates issue state automatically
+- **Worker/Reviewer Pairs** - Multi-iteration code generation with automated review, testing, and documentation stages
+- **Decision Engine** - Scope validation, rate limiting, priority-based task selection, and workflow mapping
+- **Cognitive Memory** - LanceDB vector store with Xenova/multilingual-e5-base embeddings for long-term recall across sessions
+- **Knowledge Graph** - Static code analysis, dependency mapping, and impact analysis for smarter task execution
+- **Discord Control** - Full command interface for monitoring, task dispatch, scheduling, and pair session management
+- **Dynamic Scheduling** - Cron-based job scheduler with Discord management commands
+- **PR Auto-Improvement** - Monitors open PRs and iteratively improves them via pair pipeline
+- **Long-Running Monitors** - Track external processes (training jobs, batch tasks) and report completion
+- **Web Dashboard** - Real-time status dashboard on port 3847
+- **i18n** - English and Korean locale support
+
+## Prerequisites
+
+- **Node.js** >= 22
+- **Claude Code CLI** installed and authenticated (`claude -p`)
+- **Discord Bot** token with message content intent
+- **Linear** API key and team ID
+- **GitHub CLI** (`gh`) for CI monitoring (optional)
+
+## Installation
 
 ```bash
-cd ~/dev/OpenSwarm
-pnpm install
+git clone https://github.com/unohee/OpenSwarm.git
+cd OpenSwarm
+npm install
 ```
 
-## 설정
+## Configuration
 
 ```bash
-# config.json 생성
-cp config.example.json config.json
-# 편집하여 토큰/ID 입력
-
-# 또는 환경 변수
-export DISCORD_TOKEN="..."
-export DISCORD_CHANNEL_ID="..."
-export LINEAR_API_KEY="..."
-export LINEAR_TEAM_ID="..."
+cp config.example.yaml config.yaml
 ```
 
-## 실행
+Create a `.env` file with required secrets:
 
 ```bash
-# 개발 모드
-pnpm dev
-
-# 프로덕션
-pnpm build && pnpm start
-
-# 백그라운드 실행
-nohup pnpm start > swarm.log 2>&1 &
+DISCORD_TOKEN=your-discord-bot-token
+DISCORD_CHANNEL_ID=your-channel-id
+LINEAR_API_KEY=your-linear-api-key
+LINEAR_TEAM_ID=your-linear-team-id
 ```
 
-## 각 프로젝트 설정
+`config.yaml` supports environment variable substitution (`${VAR}` or `${VAR:-default}`) and is validated with Zod schemas.
 
-각 프로젝트 루트에 `HEARTBEAT.md` 추가:
+### Key Configuration Sections
+
+| Section | Description |
+|---------|-------------|
+| `discord` | Bot token, channel ID, webhook URL |
+| `linear` | API key, team ID |
+| `github` | Repos list for CI monitoring |
+| `agents` | Agent definitions (name, projectPath, heartbeat interval) |
+| `autonomous` | Schedule, pair mode, role models, decomposition settings |
+| `prProcessor` | PR auto-improvement schedule and limits |
+
+### Agent Roles
+
+Each pipeline stage can be configured independently:
+
+```yaml
+autonomous:
+  defaultRoles:
+    worker:
+      model: claude-haiku-4-5-20251001
+      escalateModel: claude-sonnet-4-20250514
+      escalateAfterIteration: 3
+      timeoutMs: 1800000
+    reviewer:
+      model: claude-haiku-4-5-20251001
+      timeoutMs: 600000
+    tester:
+      enabled: false
+    documenter:
+      enabled: false
+    auditor:
+      enabled: false
+```
+
+## Usage
 
 ```bash
-cp templates/HEARTBEAT.md ~/dev/your-project/
+# Development
+npm run dev
+
+# Production
+npm run build
+npm start
+
+# Background
+nohup npm start > openswarm.log 2>&1 &
+
+# Docker
+docker compose up -d
 ```
 
-## Discord 명령어
+## Project Structure
 
-| 명령어 | 설명 |
-|--------|------|
-| `!status [session]` | 에이전트 상태 확인 |
-| `!list` | 활성 tmux 세션 목록 |
-| `!run <session> "<task>"` | 특정 작업 실행 |
-| `!pause <session>` | 자율 작업 일시 중지 |
-| `!resume <session>` | 자율 작업 재개 |
-| `!issues [session]` | Linear 이슈 목록 |
-| `!log <session> [lines]` | 최근 출력 확인 |
-| `!help` | 도움말 |
+```
+src/
+├── index.ts                 # Entry point
+├── core/                    # Config, service lifecycle, types, event hub
+├── agents/                  # Worker, reviewer, tester, documenter, auditor
+│   ├── pairPipeline.ts      # Worker → Reviewer → Tester → Documenter pipeline
+│   ├── agentBus.ts          # Inter-agent message bus
+│   └── cliStreamParser.ts   # Claude CLI output parser
+├── orchestration/           # Decision engine, task parser, scheduler, workflow
+├── automation/              # Autonomous runner, cron scheduler, PR processor
+│   ├── longRunningMonitor.ts# External process monitoring
+│   └── runnerState.ts       # Persistent pipeline state
+├── memory/                  # LanceDB + Xenova embeddings cognitive memory
+├── knowledge/               # Code knowledge graph (scanner, analyzer, graph)
+├── discord/                 # Bot core, command handlers, pair session UI
+├── linear/                  # Linear SDK wrapper, project updater
+├── github/                  # GitHub CLI wrapper for CI monitoring
+├── support/                 # Web dashboard, planner, rollback, git tools
+├── locale/                  # i18n (en/ko) with prompt templates
+└── __tests__/               # Vitest test suite
+```
 
-## Linear 활용
+## Discord Commands
 
-- **Backlog**: 할 일 목록 (에이전트가 자동으로 픽업)
-- **In Progress**: 현재 작업 중 (에이전트당 1개)
-- **Blocked**: 막힌 작업 (사용자 개입 필요)
-- **Done**: 완료된 작업 (히스토리)
+### Task Dispatch
+| Command | Description |
+|---------|-------------|
+| `!dev <repo> "<task>"` | Run a dev task on a repository |
+| `!dev list` | List known repositories |
+| `!tasks` | List running tasks |
+| `!cancel <taskId>` | Cancel a running task |
 
-이슈 코멘트 = 장기 메모리:
-- 에이전트가 진행상황 자동 기록
-- 다음 세션에서 코멘트 읽고 컨텍스트 복원
+### Agent Management
+| Command | Description |
+|---------|-------------|
+| `!status` | Agent and system status |
+| `!pause <session>` | Pause autonomous work |
+| `!resume <session>` | Resume autonomous work |
+| `!log <session> [lines]` | View recent output |
 
-## 라이선스
+### Linear Integration
+| Command | Description |
+|---------|-------------|
+| `!issues` | List Linear issues |
+| `!issue <id>` | View issue details |
+| `!limits` | Agent daily execution limits |
+
+### Autonomous Execution
+| Command | Description |
+|---------|-------------|
+| `!auto` | Execution status |
+| `!auto start [cron] [--pair]` | Start autonomous mode |
+| `!auto stop` | Stop autonomous mode |
+| `!auto run` | Trigger immediate heartbeat |
+| `!approve` / `!reject` | Approve or reject pending task |
+
+### Worker/Reviewer Pair
+| Command | Description |
+|---------|-------------|
+| `!pair` | Pair session status |
+| `!pair start [taskId]` | Start a pair session |
+| `!pair run <taskId> [project]` | Direct pair run |
+| `!pair stop [sessionId]` | Stop a pair session |
+| `!pair history [n]` | View session history |
+| `!pair stats` | View pair statistics |
+
+### Scheduling
+| Command | Description |
+|---------|-------------|
+| `!schedule` | List all schedules |
+| `!schedule run <name>` | Run a schedule immediately |
+| `!schedule toggle <name>` | Enable/disable a schedule |
+| `!schedule add <name> <path> <interval> "<prompt>"` | Add a schedule |
+| `!schedule remove <name>` | Remove a schedule |
+
+### Other
+| Command | Description |
+|---------|-------------|
+| `!ci` | GitHub CI failure status |
+| `!codex` | Recent session records |
+| `!memory search "<query>"` | Search cognitive memory |
+| `!help` | Full command reference |
+
+## How It Works
+
+### Issue Processing Flow
+
+```
+Linear (Todo/In Progress)
+  → Fetch assigned issues
+  → DecisionEngine filters & prioritizes
+  → Resolve project path via projectMapper
+  → PairPipeline.run()
+    → Worker generates code (Claude CLI)
+    → Reviewer evaluates (APPROVE/REVISE/REJECT)
+    → Loop up to N iterations
+    → Optional: Tester → Documenter stages
+  → Update Linear issue state (Done/Blocked)
+  → Report to Discord
+  → Save to cognitive memory
+```
+
+### Memory System
+
+Hybrid retrieval scoring: `0.55 * similarity + 0.20 * importance + 0.15 * recency + 0.10 * frequency`
+
+Memory types: `belief`, `strategy`, `user_model`, `system_pattern`, `constraint`
+
+Background cognition: decay, consolidation, contradiction detection, and distillation (noise filtering).
+
+## Tech Stack
+
+| Category | Technology |
+|----------|-----------|
+| Runtime | Node.js 22+ (ESM) |
+| Language | TypeScript (strict mode) |
+| Build | tsc |
+| Agent Execution | Claude Code CLI (`claude -p`) via `child_process.spawn` |
+| Task Management | Linear SDK (`@linear/sdk`) |
+| Communication | Discord.js 14 |
+| Vector DB | LanceDB + Apache Arrow |
+| Embeddings | Xenova/transformers (multilingual-e5-base, 768D) |
+| Scheduling | Croner |
+| Config | YAML + Zod validation |
+| Linting | oxlint |
+| Testing | Vitest |
+
+## State & Data
+
+| Path | Description |
+|------|-------------|
+| `~/.openswarm/` | State directory (memory, codex, metrics, workflows, etc.) |
+| `~/.claude/openswarm-*.json` | Pipeline history and task state |
+| `config.yaml` | Main configuration |
+| `dist/` | Compiled output |
+
+## Docker
+
+```bash
+docker compose up -d
+```
+
+The Docker setup includes volume mounts for `~/.openswarm/` state persistence and `.env` for secrets.
+
+## License
 
 MIT
