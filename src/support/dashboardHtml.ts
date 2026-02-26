@@ -238,6 +238,25 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     .prio-4 { background: var(--dim); }
     .issue-id { color: var(--cyan); font-size: 9px; min-width: 50px; }
     .issue-title { flex: 1; color: var(--white); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .issue-row.issue-backlog { opacity: 0.45; }
+
+    /* ===== PROCESS ROW ===== */
+    .proc-row {
+      display: flex; align-items: center; gap: 6px;
+      padding: 4px 6px; border-bottom: 1px solid var(--border2);
+      font-size: 11px;
+    }
+    .proc-pid { color: var(--cyan); font-size: 10px; min-width: 42px; font-variant-numeric: tabular-nums; }
+    .proc-stage { color: var(--green); min-width: 56px; font-weight: bold; text-transform: uppercase; font-size: 10px; }
+    .proc-model { color: var(--dim); font-size: 9px; min-width: 56px; }
+    .proc-dur { color: var(--amber); font-size: 9px; min-width: 42px; text-align: right; font-variant-numeric: tabular-nums; }
+    .proc-activity { font-size: 10px; min-width: 16px; text-align: center; }
+    .proc-kill {
+      font-family: inherit; font-size: 9px; padding: 1px 5px;
+      background: transparent; border: 1px solid #551111; color: var(--red);
+      cursor: pointer; margin-left: auto;
+    }
+    .proc-kill:hover { background: #220000; border-color: var(--red); }
 
     /* ===== PIPELINE ===== */
     .stage-row {
@@ -256,6 +275,20 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     .smodel { color: var(--dim); font-size: 9px; flex-shrink: 0; min-width: 56px; text-align: right; }
     .stokens { color: var(--amber); font-size: 9px; flex-shrink: 0; min-width: 80px; text-align: right; white-space: nowrap; }
     .sstatus { margin-left: auto; font-size: 9px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.06em; flex-shrink: 0; }
+
+    /* ===== LOG TAB BAR ===== */
+    .log-tab-bar {
+      display: flex; gap: 0; border-bottom: 1px solid #1a2a1a;
+      padding: 0 4px; overflow-x: auto; flex-shrink: 0;
+    }
+    .log-tab {
+      background: transparent; border: none; border-bottom: 2px solid transparent;
+      color: var(--dim); font-family: inherit; font-size: 10px;
+      padding: 4px 8px; cursor: pointer; white-space: nowrap;
+      text-transform: uppercase; letter-spacing: .05em;
+    }
+    .log-tab:hover { color: var(--green-mid); }
+    .log-tab.active { color: var(--green); border-bottom-color: var(--green); }
 
     /* ===== LOG ===== */
     .log-area { font-size: 11px; line-height: 1.5; padding: 4px 0; }
@@ -347,6 +380,12 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     .repo-item-name { color: var(--green); font-weight: bold; }
     .repo-item-path { color: var(--dim); font-size: 10px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .repo-item-badge { font-size: 9px; padding: 1px 5px; border: 1px solid var(--green-lo); color: var(--green-mid); flex-shrink: 0; }
+
+    .scan-path-row { display: flex; align-items: center; gap: 6px; padding: 3px 0; font-size: 11px; }
+    .scan-path-row .path { color: var(--dim); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .scan-path-badge { font-size: 9px; padding: 1px 5px; border: 1px solid #333; color: #556655; flex-shrink: 0; }
+    .scan-path-remove { background: transparent; border: none; color: #553333; cursor: pointer; font-size: 12px; padding: 0 2px; flex-shrink: 0; }
+    .scan-path-remove:hover { color: var(--red); }
 
     /* ===== TAB BAR (hidden on desktop) ===== */
     .tab-bar { display: none; }
@@ -509,13 +548,13 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           <div class="empty">loading...</div>
         </div>
       </div>
-      <div class="panel" id="monitor-panel" style="display:none">
+      <div class="panel" id="monitor-panel">
         <div class="panel-hdr">
-          <span class="panel-hdr-title">MONITORS</span>
+          <span class="panel-hdr-title">MONITORS & PROCESSES</span>
           <span class="panel-hdr-badge" id="monitor-count"></span>
         </div>
         <div class="panel-body" id="monitor-list">
-          <div class="empty">no monitors</div>
+          <div class="empty">no monitors or processes</div>
         </div>
       </div>
     </div>
@@ -533,6 +572,16 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
             oninput="filterRepos(this.value)" onkeydown="if(event.key==='Escape')closeRepoPicker()">
         </div>
         <div id="repo-picker-list" style="overflow-y:auto;flex:1;padding:4px 0"></div>
+        <div id="scan-paths-section" style="border-top:1px solid #1a2a1a;padding:8px 12px">
+          <div style="color:#00aa00;font-size:10px;text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px">SCAN PATHS</div>
+          <div id="scan-paths-list"></div>
+          <div style="display:flex;gap:4px;margin-top:6px">
+            <input id="scan-path-input" type="text" placeholder="/path/to/scan"
+              style="flex:1;background:transparent;border:1px solid #1a2a1a;outline:none;font-family:inherit;font-size:11px;color:#00ff41;padding:3px 6px;caret-color:#00ff41"
+              onkeydown="if(event.key==='Enter')addScanPath()">
+            <button class="btn" style="font-size:9px;padding:1px 6px" onclick="addScanPath()">+ ADD</button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -552,6 +601,9 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           <span class="panel-hdr-title">LIVE LOG</span>
           <span class="panel-hdr-badge" id="log-count"></span>
         </div>
+        <div class="log-tab-bar" id="log-tab-bar">
+          <button class="log-tab active" data-task="all" onclick="selectLogTab(null)">ALL</button>
+        </div>
         <div class="panel-body log-area" id="log-list">
           <div class="empty">no log output</div>
         </div>
@@ -560,6 +612,18 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 
     <!-- RIGHT: CHAT -->
     <div class="col">
+      <!-- PR PROCESSOR -->
+      <div class="panel" style="flex: 0 0 auto;">
+        <div class="panel-hdr">
+          <span class="panel-hdr-title">PR PROCESSOR</span>
+          <span class="panel-hdr-badge" id="pr-proc-badge"></span>
+        </div>
+        <div class="panel-body" style="font-size: 11px; line-height: 1.5;">
+          <div id="pr-proc-body" style="color: var(--dim);">Loading...</div>
+        </div>
+      </div>
+
+      <!-- AGENT CHAT -->
       <div class="panel-hdr">
         <span class="panel-hdr-title">AGENT CHAT</span>
         <span class="panel-hdr-badge" id="chat-status"></span>
@@ -588,6 +652,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     let expandedProjects = new Set();
     let knowledgeCache = {};
     let logLines = [];
+    let selectedLogTaskId = null;  // null = ALL, string = specific taskId
     let stageRows = [];
     let chatBusy = false;
     let totalCostUsd = 0;
@@ -653,11 +718,24 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         case "monitor:stateChange":
           fetchMonitors();
           break;
+        case "process:spawn":
+          fetchProcesses();
+          addLogLine({ taskId: ev.data.taskId || "system", stage: ev.data.stage || "spawn", line: "Process spawned PID=" + ev.data.pid + " stage=" + ev.data.stage + (ev.data.model ? " model=" + ev.data.model : "") });
+          break;
+        case "process:exit":
+          fetchProcesses();
+          addLogLine({ taskId: "system", stage: "exit", line: "Process exited PID=" + ev.data.pid + " code=" + ev.data.exitCode + " duration=" + (ev.data.durationMs / 1000).toFixed(1) + "s" });
+          break;
         case "heartbeat": {
           const btn = document.getElementById("hb-btn");
           btn.disabled = false; btn.textContent = "▶ HEARTBEAT";
           break;
         }
+        case "pr_processor_start":
+        case "pr_processor_end":
+        case "pr_processor_pr":
+          fetchPRProcessorStatus();
+          break;
       }
     }
 
@@ -687,6 +765,54 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         const el = document.getElementById("svc-status");
         el.textContent = "unknown";
         el.className = "svc-status inactive";
+      }
+    }
+
+    // ---- PR Processor Status ----
+    async function fetchPRProcessorStatus() {
+      try {
+        const res = await fetch("/api/pr-processor-status");
+        const data = await res.json();
+        const body = document.getElementById("pr-proc-body");
+        const badge = document.getElementById("pr-proc-badge");
+
+        if (!data) {
+          body.innerHTML = '<div style="color: var(--dim);">Not configured</div>';
+          badge.textContent = "OFF";
+          badge.style.color = "var(--dim)";
+          return;
+        }
+
+        const status = data.processing ? "RUNNING" : "IDLE";
+        badge.textContent = status;
+        badge.style.color = data.processing ? "var(--green)" : "var(--cyan)";
+
+        const formatTime = (ts) => {
+          if (!ts) return "N/A";
+          const d = new Date(ts);
+          return d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+        };
+
+        let html = '<div style="display: flex; flex-direction: column; gap: 6px;">';
+        html += '<div><span style="color: var(--dim);">Schedule:</span> <span style="color: var(--text);">' + (data.schedule || "N/A") + '</span></div>';
+        html += '<div><span style="color: var(--dim);">Repos:</span> <span style="color: var(--text);">' + (data.repos?.length || 0) + '</span></div>';
+
+        if (data.currentPR) {
+          html += '<div><span style="color: var(--amber);">Processing:</span> <span style="color: var(--text); font-family: monospace; font-size: 10px;">' + data.currentPR + '</span></div>';
+        }
+
+        html += '<div><span style="color: var(--dim);">Last run:</span> <span style="color: var(--text);">' + formatTime(data.lastRun) + '</span></div>';
+        html += '<div><span style="color: var(--dim);">Next run:</span> <span style="color: var(--text);">' + formatTime(data.nextRun) + '</span></div>';
+
+        if (data.conflictResolverEnabled) {
+          html += '<div style="color: var(--green); font-size: 10px; margin-top: 4px;">✓ Conflict Resolver: ON</div>';
+        }
+
+        html += '</div>';
+        body.innerHTML = html;
+      } catch (e) {
+        const body = document.getElementById("pr-proc-body");
+        body.innerHTML = '<div style="color: var(--red);">Error: ' + e.message + '</div>';
       }
     }
 
@@ -723,11 +849,20 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     function updateProjectTask(projectPath, taskId, title, priority, status) {
       const p = projects.find(x => x.path === projectPath);
       if (!p) return;
+
+      // Get issueIdentifier from taskTitleMap
+      const taskInfo = taskTitleMap.get(taskId);
+      const issueIdentifier = taskInfo?.issueIdentifier;
+
       if (status === "running") {
         p.queued = p.queued.filter(t => t.id !== taskId);
-        if (!p.running.find(t => t.id === taskId)) p.running.push({ id: taskId, title, priority });
+        if (!p.running.find(t => t.id === taskId)) {
+          p.running.push({ id: taskId, title, priority, issueIdentifier });
+        }
       } else {
-        if (!p.queued.find(t => t.id === taskId)) p.queued.push({ id: taskId, title, priority });
+        if (!p.queued.find(t => t.id === taskId)) {
+          p.queued.push({ id: taskId, title, priority, issueIdentifier });
+        }
       }
       renderProjects();
     }
@@ -771,6 +906,21 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         const checked  = p.enabled ? "checked" : "";
         const dCls     = p.enabled ? "" : " disabled";
         const eCls     = expanded  ? " expanded" : "";
+        // PRs always visible (not gated by expand)
+        let prsHtml = "";
+        if (p.prs && p.prs.length) {
+          prsHtml = "<div class=\\"proj-issues\\">" +
+            "<div class=\\"issue-sec-label\\">open PRs (" + p.prs.length + ")</div>" +
+            p.prs.map(function(pr) {
+              return "<div class=\\"pr-row\\">" +
+                "<span class=\\"pr-num\\">#" + pr.number + "</span>" +
+                "<span class=\\"pr-branch\\" title=\\"" + escapeAttr(pr.branch) + "\\">" + escapeHtml(pr.branch) + "</span>" +
+                "<span class=\\"pr-title\\" title=\\"" + escapeAttr(pr.title) + "\\">" + escapeHtml(pr.title) + "</span>" +
+                "<span class=\\"pr-age\\">" + fmtAge(pr.updatedAt) + "</span>" +
+              "</div>";
+            }).join("") +
+          "</div>";
+        }
         let issuesHtml = "";
         if (expanded) {
           const secs = [];
@@ -782,23 +932,31 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
             "<div class=\\"issue-sec-label\\">queued</div>" +
             p.queued.map(t => issueRow(t, "idot-que")).join("")
           );
-          if (p.pending.length) secs.push(
-            "<div class=\\"issue-sec-label\\">linear (" + p.pending.length + ")</div>" +
-            p.pending.map(t => issueRow(t, "idot-pnd")).join("")
-          );
-          // Open PRs
-          if (p.prs && p.prs.length) {
-            secs.push(
-              "<div class=\\"issue-sec-label\\">open PRs (" + p.prs.length + ")</div>" +
-              p.prs.map(function(pr) {
-                return "<div class=\\"pr-row\\">" +
-                  "<span class=\\"pr-num\\">#" + pr.number + "</span>" +
-                  "<span class=\\"pr-branch\\" title=\\"" + escapeAttr(pr.branch) + "\\">" + escapeHtml(pr.branch) + "</span>" +
-                  "<span class=\\"pr-title\\" title=\\"" + escapeAttr(pr.title) + "\\">" + escapeHtml(pr.title) + "</span>" +
-                  "<span class=\\"pr-age\\">" + fmtAge(pr.updatedAt) + "</span>" +
-                "</div>";
-              }).join("")
-            );
+          if (p.pending.length) {
+            var stateOrder = ["In Review", "In Progress", "Todo", "Backlog"];
+            var byState = {};
+            for (var ti = 0; ti < p.pending.length; ti++) {
+              var st = p.pending[ti].linearState || "Todo";
+              if (!byState[st]) byState[st] = [];
+              byState[st].push(p.pending[ti]);
+            }
+            for (var si = 0; si < stateOrder.length; si++) {
+              var sn = stateOrder[si];
+              if (!byState[sn] || !byState[sn].length) continue;
+              secs.push(
+                "<div class=\\"issue-sec-label\\">" + sn.toLowerCase() + " (" + byState[sn].length + ")</div>" +
+                byState[sn].map(t => issueRow(t, "idot-pnd")).join("")
+              );
+            }
+            var otherKeys = Object.keys(byState);
+            for (var oi = 0; oi < otherKeys.length; oi++) {
+              if (stateOrder.indexOf(otherKeys[oi]) === -1) {
+                secs.push(
+                  "<div class=\\"issue-sec-label\\">" + otherKeys[oi].toLowerCase() + " (" + byState[otherKeys[oi]].length + ")</div>" +
+                  byState[otherKeys[oi]].map(t => issueRow(t, "idot-pnd")).join("")
+                );
+              }
+            }
           }
           if (!secs.length) secs.push("<div class=\\"empty\\" style=\\"padding:4px\\">no issues</div>");
           // Knowledge graph health info (if cached)
@@ -847,6 +1005,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
               "</label>" +
             "</div>" +
           "</div>" +
+          prsHtml +
           issuesHtml +
           "</div>"
         );
@@ -855,12 +1014,17 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 
     function issueRow(t, dotClass) {
       const prio = t.priority || 3;
+      const extraCls = t.linearState === "Backlog" ? " issue-backlog" : "";
+      const moveBtn = t.linearState === "Backlog" && t.linearId
+        ? "<button class=\\"move-to-todo-btn\\" data-issue-id=\\"" + escapeAttr(t.linearId) + "\\" onclick=\\"handleMoveToTodo(this)\\">→ Todo</button>"
+        : "";
       return (
-        "<div class=\\"issue-row\\">" +
+        "<div class=\\"issue-row" + extraCls + "\\">" +
         "<span class=\\"idot " + dotClass + "\\"></span>" +
         "<span class=\\"prio prio-" + Math.min(4, prio) + "\\"></span>" +
         (t.issueIdentifier ? "<span class=\\"issue-id\\">" + escapeHtml(t.issueIdentifier) + "</span>" : "") +
         "<span class=\\"issue-title\\" title=\\"" + escapeAttr(t.title) + "\\">" + escapeHtml(t.title) + "</span>" +
+        moveBtn +
         "</div>"
       );
     }
@@ -892,6 +1056,35 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         projects = await res.json();
         renderProjects();
       } catch(e) { el.disabled = false; }
+    }
+    async function handleMoveToTodo(el) {
+      const issueId = el.getAttribute("data-issue-id");
+      if (!issueId) return;
+
+      const originalText = el.textContent;
+      el.disabled = true;
+      el.textContent = "Moving...";
+
+      try {
+        const response = await fetch("/api/issue/move-to-todo", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ issueId }),
+        });
+
+        if (!response.ok) {
+          throw new Error("Failed to move issue");
+        }
+
+        // Refresh projects to show updated state
+        const res = await fetch("/api/projects");
+        projects = await res.json();
+        renderProjects();
+      } catch(e) {
+        el.disabled = false;
+        el.textContent = originalText;
+        alert("Failed to move issue to Todo: " + e.message);
+      }
     }
 
     // ---- Pipeline Stages ----
@@ -966,11 +1159,41 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       el.scrollTop = 0;
     }
 
+    // ---- Log Tab ----
+    function selectLogTab(taskId) {
+      selectedLogTaskId = taskId;
+      document.querySelectorAll('.log-tab').forEach(t =>
+        t.classList.toggle('active', t.dataset.task === (taskId ?? 'all'))
+      );
+      renderLog();
+    }
+
+    function updateLogTabs() {
+      const bar = document.getElementById('log-tab-bar');
+      const taskIds = [...new Set(logLines.map(l => l.taskId).filter(id => id && id !== 'system'))];
+      // Sort by most recent start time
+      taskIds.sort((a, b) => (taskStartMap.get(b) || 0) - (taskStartMap.get(a) || 0));
+
+      let html = '<button class="log-tab' + (selectedLogTaskId === null ? ' active' : '')
+        + '" data-task="all" onclick="selectLogTab(null)">ALL</button>';
+
+      for (const tid of taskIds) {
+        const info = taskTitleMap.get(tid);
+        const label = info?.issueIdentifier || tid.slice(0, 8);
+        const isActive = selectedLogTaskId === tid;
+        html += '<button class="log-tab' + (isActive ? ' active' : '')
+          + '" data-task="' + tid + '" onclick="selectLogTab(\\'' + tid + '\\')">'
+          + escapeHtml(label) + '</button>';
+      }
+      bar.innerHTML = html;
+    }
+
     // ---- Log ----
     function addLogLine(data) {
       data._ts = Date.now();
       logLines.push(data);
       if (logLines.length > MAX_LOG) logLines = logLines.slice(-MAX_LOG);
+      updateLogTabs();
       renderLog();
     }
 
@@ -1038,10 +1261,17 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     function renderLog() {
       const el = document.getElementById("log-list");
       const cnt = document.getElementById("log-count");
-      if (!logLines.length) { el.innerHTML = "<div class=\\"empty\\">no log output</div>"; if (cnt) cnt.textContent = ""; return; }
-      if (cnt) cnt.textContent = logLines.length + "/" + MAX_LOG;
+      const filtered = selectedLogTaskId === null
+        ? logLines
+        : logLines.filter(l => l.taskId === selectedLogTaskId);
+      if (!filtered.length) {
+        el.innerHTML = "<div class=\\"empty\\">" + (selectedLogTaskId ? "no logs for this task" : "no log output") + "</div>";
+        if (cnt) cnt.textContent = selectedLogTaskId ? filtered.length + "/" + logLines.length : "";
+        return;
+      }
+      if (cnt) cnt.textContent = (selectedLogTaskId ? filtered.length + "/" : "") + logLines.length + "/" + MAX_LOG;
       const atBottom = el.scrollHeight - el.scrollTop <= el.clientHeight + 50;
-      el.innerHTML = logLines.map(l => {
+      el.innerHTML = filtered.map(l => {
         const info = l.taskId ? taskTitleMap.get(l.taskId) : null;
         const tag = info?.issueIdentifier
           ? info.issueIdentifier
@@ -1166,6 +1396,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       document.getElementById("repo-search").focus();
 
       try {
+        fetchScanPaths();
         const res = await fetch("/api/local-projects");
         allLocalProjects = await res.json();
         filterRepos("");
@@ -1230,6 +1461,78 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       el.style.opacity = "1";
     }
 
+    // ---- Scan Paths ----
+    async function fetchScanPaths() {
+      try {
+        const res = await fetch("/api/scan-paths");
+        if (res.ok) {
+          const data = await res.json();
+          renderScanPaths(data);
+        }
+      } catch(e) {
+        console.error("fetchScanPaths error:", e);
+      }
+    }
+
+    function renderScanPaths(data) {
+      const list = document.getElementById("scan-paths-list");
+      if (!list) return;
+      const rows = [];
+      for (const p of (data.configPaths || [])) {
+        rows.push(
+          "<div class=\\"scan-path-row\\">" +
+            "<span class=\\"path\\">" + escapeHtml(p) + "</span>" +
+            "<span class=\\"scan-path-badge\\">config</span>" +
+          "</div>"
+        );
+      }
+      for (const p of (data.customPaths || [])) {
+        rows.push(
+          "<div class=\\"scan-path-row\\">" +
+            "<span class=\\"path\\">" + escapeHtml(p) + "</span>" +
+            "<button class=\\"scan-path-remove\\" onclick=\\"removeScanPath('" + escapeAttr(p) + "')\\">✕</button>" +
+          "</div>"
+        );
+      }
+      list.innerHTML = rows.length > 0 ? rows.join("") : "<div style=\\"color:#334433;font-size:10px\\">no scan paths configured</div>";
+    }
+
+    async function addScanPath() {
+      const input = document.getElementById("scan-path-input");
+      const path = input.value.trim();
+      if (!path) return;
+      input.value = "";
+      try {
+        await fetch("/api/scan-paths", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path }),
+        });
+        await fetchScanPaths();
+        // Refresh project list in picker
+        const res = await fetch("/api/local-projects");
+        allLocalProjects = await res.json();
+        filterRepos(document.getElementById("repo-search").value);
+      } catch(e) {
+        console.error("addScanPath error:", e);
+      }
+    }
+
+    async function removeScanPath(path) {
+      try {
+        await fetch("/api/scan-paths/" + encodeURIComponent(path), {
+          method: "DELETE",
+        });
+        await fetchScanPaths();
+        // Refresh project list in picker
+        const res = await fetch("/api/local-projects");
+        allLocalProjects = await res.json();
+        filterRepos(document.getElementById("repo-search").value);
+      } catch(e) {
+        console.error("removeScanPath error:", e);
+      }
+    }
+
     // ---- Monitors ----
     var monitorsData = [];
     async function fetchMonitors() {
@@ -1239,27 +1542,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       } catch {}
     }
     function renderMonitors() {
-      const panel = document.getElementById("monitor-panel");
-      const el = document.getElementById("monitor-list");
-      const countEl = document.getElementById("monitor-count");
-      if (!monitorsData.length) { panel.style.display = "none"; return; }
-      panel.style.display = "";
-      const active = monitorsData.filter(m => m.state === "pending" || m.state === "running");
-      countEl.textContent = active.length + "/" + monitorsData.length;
-      el.innerHTML = monitorsData.map(function(m) {
-        var stateColor = m.state === "running" ? "var(--green)" : m.state === "completed" ? "var(--cyan)" : m.state === "failed" || m.state === "timeout" ? "var(--red)" : "var(--dim)";
-        var elapsed = m.registeredAt ? fmtDur(Date.now() - m.registeredAt) : "-";
-        var lastOut = m.lastOutput ? escapeHtml(m.lastOutput.slice(0, 80)) : "-";
-        return '<div style="padding:4px 6px;border-bottom:1px solid var(--border);font-size:11px">' +
-          '<div style="display:flex;align-items:center;gap:6px">' +
-            '<span style="color:' + stateColor + ';font-weight:bold">[' + m.state.toUpperCase() + ']</span>' +
-            '<span style="color:var(--green)">' + escapeHtml(m.name) + '</span>' +
-            '<span style="margin-left:auto;color:var(--dim)">' + elapsed + '</span>' +
-          '</div>' +
-          '<div style="color:var(--dim);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escapeAttr(m.lastOutput || "") + '">' + lastOut + '</div>' +
-          (m.issueId ? '<div style="color:var(--cyan-dim);font-size:10px;margin-top:1px">' + escapeHtml(m.issueId) + ' | checks: ' + m.checkCount + '</div>' : '') +
-        '</div>';
-      }).join("");
+      renderMonitorsAndProcesses();
     }
     function fmtDur(ms) {
       var s = Math.floor(ms / 1000);
@@ -1267,6 +1550,87 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       if (h >= 24) return Math.floor(h / 24) + "d " + (h % 24) + "h";
       if (h > 0) return h + "h " + m + "m";
       return m + "m";
+    }
+
+    // ---- Processes ----
+    var processesData = [];
+    async function fetchProcesses() {
+      try {
+        const res = await fetch("/api/processes");
+        if (res.ok) { processesData = await res.json(); renderMonitorsAndProcesses(); }
+      } catch {}
+    }
+    async function killProcess(pid) {
+      if (!confirm("Kill process PID " + pid + "?")) return;
+      try {
+        await fetch("/api/processes/" + pid, { method: "DELETE" });
+        processesData = processesData.filter(p => p.pid !== pid);
+        renderMonitorsAndProcesses();
+      } catch(e) {
+        addLogLine({ taskId: "system", stage: "error", line: "Kill failed: " + e.message });
+      }
+    }
+    function procActivityIcon(lastActivityAt) {
+      var ago = (Date.now() - lastActivityAt) / 1000;
+      if (ago < 10) return "\\u26A1";
+      if (ago < 60) return "\\u23F8";
+      return "\\u2757";
+    }
+    function renderMonitorsAndProcesses() {
+      var panel = document.getElementById("monitor-panel");
+      var el = document.getElementById("monitor-list");
+      var countEl = document.getElementById("monitor-count");
+      var hasMonitors = monitorsData.length > 0;
+      var hasProcesses = processesData.length > 0;
+      if (!hasMonitors && !hasProcesses) {
+        el.innerHTML = "<div class=\\"empty\\">no monitors or processes</div>";
+        var counts = [];
+        if (countEl) countEl.textContent = "";
+        return;
+      }
+      var parts = [];
+      if (processesData.length) parts.push(processesData.length + "p");
+      if (monitorsData.length) parts.push(monitorsData.length + "m");
+      if (countEl) countEl.textContent = parts.join(" ");
+      var html = "";
+      // Processes section
+      if (hasProcesses) {
+        html += "<div class=\\"issue-sec-label\\">processes</div>";
+        html += processesData.map(function(p) {
+          var dur = fmtDur(Date.now() - p.spawnedAt);
+          var act = procActivityIcon(p.lastActivityAt);
+          var modelStr = p.model ? shortModel(p.model) : "";
+          var projName = p.projectPath ? p.projectPath.split("/").pop() : "";
+          return '<div class="proc-row">' +
+            '<span class="proc-pid">' + p.pid + '</span>' +
+            '<span class="proc-stage">' + escapeHtml(p.stage) + '</span>' +
+            '<span class="proc-model">' + escapeHtml(modelStr) + '</span>' +
+            '<span style="color:var(--dim);font-size:9px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escapeAttr(p.projectPath || "") + '">' + escapeHtml(projName) + '</span>' +
+            '<span class="proc-activity">' + act + '</span>' +
+            '<span class="proc-dur">' + dur + '</span>' +
+            '<button class="proc-kill" onclick="killProcess(' + p.pid + ')">KILL</button>' +
+          '</div>';
+        }).join("");
+      }
+      // Monitors section
+      if (hasMonitors) {
+        html += "<div class=\\"issue-sec-label\\">monitors</div>";
+        html += monitorsData.map(function(m) {
+          var stateColor = m.state === "running" ? "var(--green)" : m.state === "completed" ? "var(--cyan)" : m.state === "failed" || m.state === "timeout" ? "var(--red)" : "var(--dim)";
+          var elapsed = m.registeredAt ? fmtDur(Date.now() - m.registeredAt) : "-";
+          var lastOut = m.lastOutput ? escapeHtml(m.lastOutput.slice(0, 80)) : "-";
+          return '<div style="padding:4px 6px;border-bottom:1px solid var(--border);font-size:11px">' +
+            '<div style="display:flex;align-items:center;gap:6px">' +
+              '<span style="color:' + stateColor + ';font-weight:bold">[' + m.state.toUpperCase() + ']</span>' +
+              '<span style="color:var(--green)">' + escapeHtml(m.name) + '</span>' +
+              '<span style="margin-left:auto;color:var(--dim)">' + elapsed + '</span>' +
+            '</div>' +
+            '<div style="color:var(--dim);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escapeAttr(m.lastOutput || "") + '">' + lastOut + '</div>' +
+            (m.issueId ? '<div style="color:var(--cyan-dim);font-size:10px;margin-top:1px">' + escapeHtml(m.issueId) + ' | checks: ' + m.checkCount + '</div>' : '') +
+          '</div>';
+        }).join("");
+      }
+      el.innerHTML = html;
     }
 
     // ---- Init ----
@@ -1352,11 +1716,15 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 
     loadInitial().then(function() { connectSSE(true); });
     fetchSvcStatus();
+    fetchPRProcessorStatus();
     fetchKnowledgeData();
     fetchMonitors();
+    fetchProcesses();
     setInterval(fetchSvcStatus, 15000);
+    setInterval(fetchPRProcessorStatus, 30000);
     setInterval(fetchKnowledgeData, 60000);
     setInterval(fetchMonitors, 60000);
+    setInterval(fetchProcesses, 30000);
     // Refresh pipeline elapsed times every 10s
     setInterval(() => { if (stageRows.length) renderStages(); }, 10000);
   </script>

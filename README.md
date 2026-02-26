@@ -46,9 +46,9 @@ OpenSwarm orchestrates multiple Claude Code instances as autonomous agents. It p
 - **Knowledge Graph** - Static code analysis, dependency mapping, and impact analysis for smarter task execution
 - **Discord Control** - Full command interface for monitoring, task dispatch, scheduling, and pair session management
 - **Dynamic Scheduling** - Cron-based job scheduler with Discord management commands
-- **PR Auto-Improvement** - Monitors open PRs and iteratively improves them via pair pipeline
+- **PR Auto-Improvement** - Monitors open PRs, auto-fixes CI failures, auto-resolves merge conflicts, and retries until all checks pass (conflict detection, AI-powered conflict resolution, CI polling, configurable retry loop)
 - **Long-Running Monitors** - Track external processes (training jobs, batch tasks) and report completion
-- **Web Dashboard** - Real-time status dashboard on port 3847
+- **Web Dashboard** - Real-time status dashboard on port 3847 with PR Processor monitoring
 - **i18n** - English and Korean locale support
 
 ## Prerequisites
@@ -93,7 +93,7 @@ LINEAR_TEAM_ID=your-linear-team-id
 | `github` | Repos list for CI monitoring |
 | `agents` | Agent definitions (name, projectPath, heartbeat interval) |
 | `autonomous` | Schedule, pair mode, role models, decomposition settings |
-| `prProcessor` | PR auto-improvement schedule and limits |
+| `prProcessor` | PR auto-improvement schedule, retry limits, conflict resolver config |
 
 ### Agent Roles
 
@@ -147,6 +147,10 @@ src/
 │   └── cliStreamParser.ts   # Claude CLI output parser
 ├── orchestration/           # Decision engine, task parser, scheduler, workflow
 ├── automation/              # Autonomous runner, cron scheduler, PR processor
+│   ├── autonomousRunner.ts  # Cron-driven heartbeat and task dispatch
+│   ├── prProcessor.ts       # PR auto-improvement (CI fixes, conflict resolution)
+│   ├── conflictResolver.ts  # AI-powered merge conflict resolution
+│   ├── prOwnership.ts       # Bot PR tracking for conflict resolution
 │   ├── longRunningMonitor.ts# External process monitoring
 │   └── runnerState.ts       # Persistent pipeline state
 ├── memory/                  # LanceDB + Xenova embeddings cognitive memory

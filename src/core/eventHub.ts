@@ -36,6 +36,15 @@ export type HubEvent =
   | { type: 'knowledge:updated'; data: { projectSlug: string; nodeCount: number; edgeCount: number } }
   | { type: 'monitor:checked'; data: { id: string; name: string; state: MonitorState; output?: string; checkCount: number } }
   | { type: 'monitor:stateChange'; data: { id: string; name: string; from: MonitorState; to: MonitorState; issueId?: string } }
+  | { type: 'process:spawn'; data: { pid: number; taskId: string; stage: string; model?: string; projectPath: string } }
+  | { type: 'process:exit'; data: { pid: number; exitCode: number | null; signal: string | null; durationMs: number } }
+  | { type: 'conflict:detected'; data: { repo: string; prNumber: number; branch: string } }
+  | { type: 'conflict:resolving'; data: { repo: string; prNumber: number; branch: string; attempt: number } }
+  | { type: 'conflict:resolved'; data: { repo: string; prNumber: number; branch: string; filesResolved: number } }
+  | { type: 'conflict:failed'; data: { repo: string; prNumber: number; branch: string; reason: string } }
+  | { type: 'pr_processor_start'; data: { repos: string[] } }
+  | { type: 'pr_processor_end'; data: { lastRun: number | null; nextRun: number | null } }
+  | { type: 'pr_processor_pr'; data: { pr: string; title: string } }
   | { type: 'heartbeat' };
 
 // ============================================
@@ -105,6 +114,12 @@ export function broadcastEvent(event: HubEvent): void {
     case 'task:cost':
     case 'monitor:checked':
     case 'monitor:stateChange':
+    case 'process:spawn':
+    case 'process:exit':
+    case 'conflict:detected':
+    case 'conflict:resolving':
+    case 'conflict:resolved':
+    case 'conflict:failed':
       stageBuffer.push(event);
       if (stageBuffer.length > STAGE_BUFFER_MAX) stageBuffer.shift();
       break;

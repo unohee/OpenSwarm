@@ -10,13 +10,15 @@ import { spawn, execFile } from 'node:child_process';
 import { getChatHistory } from '../discord/index.js';
 import { addSSEClient, getActiveSSECount, broadcastEvent, getLogBuffer, getStageBuffer, getChatBuffer } from '../core/eventHub.js';
 import { extractCostFromStreamJson, formatCost } from './costTracker.js';
-import { scanLocalProjects } from './projectMapper.js';
+import { scanLocalProjects, invalidateProjectCache } from './projectMapper.js';
 import type { AutonomousRunner } from '../automation/autonomousRunner.js';
 import { DASHBOARD_HTML } from './dashboardHtml.js';
 import { getGraph, toProjectSlug, getProjectHealth, scanAndCache, listGraphs } from '../knowledge/index.js';
 import { getProjectGitInfo, startGitStatusPoller } from './gitStatus.js';
 import { getActiveMonitors, registerMonitor, unregisterMonitor } from '../automation/longRunningMonitor.js';
 import type { LongRunningMonitorConfig } from '../core/types.js';
+import { getAllProcesses, killProcess, startHealthChecker } from '../adapters/processRegistry.js';
+import * as memory from '../memory/index.js';
 
 let server: ReturnType<typeof createServer> | null = null;
 let runnerRef: AutonomousRunner | undefined;
@@ -29,6 +31,7 @@ const REPOS_FILE = join(homedir(), '.claude', 'openswarm-repos.json');
 interface ReposConfig {
   pinned: string[];    // user-added repos (shown in dashboard)
   enabled: string[];   // explicitly enabled for agent work
+  basePaths: string[]; // custom scan base paths (added via dashboard)
 }
 
 function loadReposConfig(): ReposConfig {
@@ -37,7 +40,7 @@ function loadReposConfig(): ReposConfig {
       return JSON.parse(readFileSync(REPOS_FILE, 'utf-8')) as ReposConfig;
     }
   } catch {}
-  return { pinned: [], enabled: [] };
+  return { pinned: [], enabled: [], basePaths: [] };
 }
 
 function saveReposConfig(): void {
@@ -45,6 +48,7 @@ function saveReposConfig(): void {
     const cfg: ReposConfig = {
       pinned:  Array.from(pinnedProjects),
       enabled: runnerRef?.getEnabledProjects() ?? [],
+      basePaths: Array.from(customBasePaths),
     };
     writeFileSync(REPOS_FILE, JSON.stringify(cfg, null, 2));
   } catch (e) {
@@ -54,6 +58,7 @@ function saveReposConfig(): void {
 
 const _reposCfg = loadReposConfig();
 const pinnedProjects = new Set<string>(_reposCfg.pinned);
+const customBasePaths = new Set<string>(_reposCfg.basePaths ?? []);
 
 /**
  * Set runner reference (call after autonomous runner is initialized)
@@ -96,8 +101,16 @@ export async function startWebServer(port: number = 3847): Promise<void> {
     server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
       const url = req.url?.split('?')[0] || '/';
 
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Access-Control-Allow-Methods', 'GET, POST');
+      // CORS: allow localhost and Tailscale network
+      const origin = req.headers.origin;
+      if (origin && (
+        origin.startsWith('http://localhost:') ||
+        origin.startsWith('http://127.0.0.1:') ||
+        origin.startsWith('http://100.') // Tailscale CGNAT range (100.64.0.0/10)
+      )) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE');
+      }
 
       // ---- Dashboard ----
       if (url === '/' || url === '/index.html') {
@@ -183,9 +196,10 @@ export async function startWebServer(port: number = 3847): Promise<void> {
 
       // ---- Local projects for picker ----
       } else if (url === '/api/local-projects' && req.method === 'GET') {
-        const basePaths = runnerRef?.getAllowedProjects() ?? [];
+        const configPaths = runnerRef?.getAllowedProjects() ?? [];
+        const allBasePaths = [...new Set([...configPaths, ...customBasePaths])];
         try {
-          const locals = await scanLocalProjects(basePaths);
+          const locals = await scanLocalProjects(allBasePaths);
           const SKIP = ['/node_modules/', '/.git/', '/dist/', '/build/', '/__pycache__/', '/venv/', '/.venv/'];
           const filtered = locals.filter(l => !SKIP.some(s => l.path.includes(s)));
           res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -246,12 +260,48 @@ export async function startWebServer(port: number = 3847): Promise<void> {
           res.end(JSON.stringify({ error: 'Invalid JSON' }));
         }
 
+      // ---- Move Issue to Todo ----
+      } else if (url === '/api/issue/move-to-todo' && req.method === 'POST') {
+        const body = await readBody(req);
+        try {
+          const { issueId } = JSON.parse(body) as { issueId: string };
+          if (!issueId) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Missing issueId' }));
+            return;
+          }
+
+          // Import linear dynamically to avoid circular deps
+          const linearModule = await import('../linear/index.js');
+          await linearModule.updateIssueState(issueId, 'Todo');
+
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true }));
+        } catch (error) {
+          console.error('[Web] Failed to move issue to Todo:', error);
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: String(error) }));
+        }
+
       // ---- Heartbeat (manual trigger) ----
       } else if (url === '/api/heartbeat' && req.method === 'POST') {
         res.writeHead(202, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
         // Non-blocking heartbeat
         runnerRef?.heartbeat().catch((e: Error) => console.error('[Web] Heartbeat error:', e));
+
+      // ---- PR Processor Status ----
+      } else if (url === '/api/pr-processor-status' && req.method === 'GET') {
+        try {
+          const { getPRProcessor } = await import('../core/service.js');
+          const processor = getPRProcessor();
+          const status = processor ? processor.getStatus() : null;
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(status));
+        } catch (error) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: String(error) }));
+        }
 
       // ---- Chat history ----
       } else if (url === '/api/chat/history' && req.method === 'GET') {
@@ -304,7 +354,7 @@ export async function startWebServer(port: number = 3847): Promise<void> {
         const state    = runnerRef?.getState();
         const uptimeSec = state?.startedAt ? Math.floor((Date.now() - state.startedAt) / 1000) : 0;
 
-        // Format last 10 conversation entries from chatBuffer (excluding current message)
+        // 1. Short-term memory: recent chat buffer
         const chatBuf = getChatBuffer()
           .filter((ev): ev is Extract<typeof ev, { type: 'chat:user' | 'chat:agent' }> =>
             ev.type === 'chat:user' || ev.type === 'chat:agent'
@@ -312,6 +362,18 @@ export async function startWebServer(port: number = 3847): Promise<void> {
         const recentHistory = chatBuf.slice(-11, -1);
         const historyBlock = recentHistory.length > 0
           ? recentHistory.map(m => (m.type === 'chat:user' ? 'User' : 'VEGA') + ': ' + m.data.text).join('\n\n')
+          : '';
+
+        // 2. Long-term memory: semantic search (shared with Discord)
+        const memories = await memory.searchMemory(message, {
+          types: ['journal'],
+          repo: 'chat',  // Shared repo for both Discord and Dashboard
+          limit: 5,
+          minSimilarity: 0.4,
+          minTrust: 0.5,
+        });
+        const memoryContext = memories.length > 0
+          ? '## Relevant Past Discussions\n' + memories.map(m => `- ${m.content.replace(/^Q: |^A: /g, '')}`).join('\n')
           : '';
 
         const contextPrompt = [
@@ -330,6 +392,7 @@ export async function startWebServer(port: number = 3847): Promise<void> {
             historyBlock,
             '',
           ] : []),
+          ...(memoryContext ? [memoryContext, ''] : []),
           'Answer the user concisely and helpfully in the same language they use. Use the status data above if relevant.',
           '',
           'User: ' + message,
@@ -388,6 +451,16 @@ export async function startWebServer(port: number = 3847): Promise<void> {
         try { unlinkSync(tmpFile); } catch {}
 
         broadcastEvent({ type: 'chat:agent', data: { text: response, ts: Date.now() } });
+
+        // 3. Save conversation to long-term memory
+        await memory.saveConversation(
+          'dashboard',      // channelId (fixed for dashboard)
+          'dashboard-user', // userId
+          'User',           // userName
+          message,
+          response
+        );
+        console.log(`[Dashboard Chat] Saved to memory (${message.length} + ${response.length} chars)`);
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, response }));
@@ -550,6 +623,67 @@ export async function startWebServer(port: number = 3847): Promise<void> {
         res.writeHead(deleted ? 200 : 404, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: deleted }));
 
+      // ---- Processes: list ----
+      } else if (url === '/api/processes' && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(getAllProcesses()));
+
+      // ---- Processes: kill ----
+      } else if (url.startsWith('/api/processes/') && req.method === 'DELETE') {
+        const pidStr = url.replace('/api/processes/', '');
+        const pid = parseInt(pidStr, 10);
+        if (isNaN(pid)) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Invalid PID' }));
+        } else {
+          const killed = await killProcess(pid);
+          res.writeHead(killed ? 200 : 404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: killed }));
+        }
+
+      // ---- Scan Paths: list ----
+      } else if (url === '/api/scan-paths' && req.method === 'GET') {
+        const configPaths = runnerRef?.getAllowedProjects() ?? [];
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          configPaths,
+          customPaths: Array.from(customBasePaths),
+        }));
+
+      // ---- Scan Paths: add ----
+      } else if (url === '/api/scan-paths' && req.method === 'POST') {
+        const body = await readBody(req);
+        try {
+          const { path: newPath } = JSON.parse(body) as { path: string };
+          if (typeof newPath !== 'string' || !newPath.trim()) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Missing path' }));
+          } else {
+            customBasePaths.add(newPath.trim());
+            invalidateProjectCache();
+            // Update runner's allowedProjects with merged list
+            const configPaths = runnerRef?.getAllowedProjects() ?? [];
+            const merged = [...new Set([...configPaths, ...customBasePaths])];
+            runnerRef?.updateAllowedProjects(merged);
+            saveReposConfig();
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true }));
+          }
+        } catch {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Invalid JSON' }));
+        }
+
+      // ---- Scan Paths: remove ----
+      } else if (url.startsWith('/api/scan-paths/') && req.method === 'DELETE') {
+        const encodedPath = url.replace('/api/scan-paths/', '');
+        const decodedPath = decodeURIComponent(encodedPath);
+        customBasePaths.delete(decodedPath);
+        invalidateProjectCache();
+        saveReposConfig();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+
       // ---- Discord history (legacy) ----
       } else if (url === '/api/history') {
         const history = await getChatHistory();
@@ -572,9 +706,13 @@ export async function startWebServer(port: number = 3847): Promise<void> {
       }
     });
 
-    server.listen(port, () => {
-      console.log(`Web interface running at http://localhost:${port}`);
+    server.listen(port, '0.0.0.0', () => {
+      const tailscaleIP = '100.95.200.28'; // Current Tailscale IP
+      console.log(`Web interface running at:`);
+      console.log(`  - http://127.0.0.1:${port} (localhost)`);
+      console.log(`  - http://${tailscaleIP}:${port} (Tailscale)`);
       startGitStatusPoller(() => Array.from(pinnedProjects));
+      startHealthChecker(30000);
       resolve();
     });
   });

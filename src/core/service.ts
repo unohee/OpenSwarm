@@ -28,6 +28,13 @@ let githubCheckTimer: NodeJS.Timeout | null = null;
 let prProcessor: PRProcessor | null = null;
 
 /**
+ * Get PR Processor instance (for web dashboard)
+ */
+export function getPRProcessor(): PRProcessor | null {
+  return prProcessor;
+}
+
+/**
  * Start the service
  */
 export async function startService(config: SwarmConfig): Promise<void> {
@@ -180,9 +187,14 @@ export async function startService(config: SwarmConfig): Promise<void> {
       cooldownHours: config.prProcessor.cooldownHours,
       maxIterations: config.prProcessor.maxIterations,
       roles: config.autonomous?.defaultRoles,
+      maxRetries: config.prProcessor.maxRetries,
+      ciTimeoutMs: config.prProcessor.ciTimeoutMs,
+      ciPollIntervalMs: config.prProcessor.ciPollIntervalMs,
+      conflictResolver: config.prProcessor.conflictResolver,
     });
     prProcessor.start();
-    console.log(`[Service] PR Processor started (schedule: ${config.prProcessor.schedule}, repos: ${githubRepos.length})`);
+    const resolverStatus = config.prProcessor.conflictResolver?.enabled ? ', conflictResolver: ON' : '';
+    console.log(`[Service] PR Processor started (schedule: ${config.prProcessor.schedule}, repos: ${githubRepos.length}, maxRetries: ${config.prProcessor.maxRetries ?? 3}${resolverStatus})`);
   }
 
   // Initialize long-running monitors
