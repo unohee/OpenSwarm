@@ -7,12 +7,10 @@ OpenSwarm orchestrates multiple Claude Code instances as autonomous agents. It p
 ## 📸 Demo
 
 ### Web Dashboard (Port 3847)
-Real-time monitoring dashboard featuring:
-- **Repository Status**: Track multiple repos with branch info, commit counts, and health indicators
-- **Pipeline Events**: Live feed of worker/reviewer actions, test results, and documentation updates
-- **PR Processor**: Monitor automated PR improvement cycles and conflict resolution
-- **Agent Chat**: Interactive communication with the orchestrator
-- **Metrics**: Running tasks, queue depth, completion count, uptime, and cumulative cost
+
+![OpenSwarm Dashboard](screenshots/dashboard-main.png)
+
+Real-time supervisor dashboard with repository status, pipeline events, live logs, PR processor, and agent chat.
 
 ### CLI Chat Interface
 Interactive chat interface for direct agent communication:
