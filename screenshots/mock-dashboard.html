@@ -1,0 +1,1013 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenSwarm :: Supervisor</title>
+  <style>
+    :root {
+      --bg:        #0a0c0a;
+      --bg2:       #0d100d;
+      --bg3:       #111411;
+      --green:     #00ff41;
+      --green-dim: #003a00;
+      --green-mid: #00aa00;
+      --green-lo:  #005500;
+      --cyan:      #00ccdd;
+      --cyan-dim:  #003344;
+      --amber:     #ffaa00;
+      --red:       #ff3333;
+      --white:     #ccddcc;
+      --dim:       #445544;
+      --border:    #1a2a1a;
+      --border2:   #0d1a0d;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; overflow: hidden; }
+    body {
+      font-family: 'Cascadia Code', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+      background: var(--bg);
+      color: var(--white);
+      font-size: 13px;
+      line-height: 1.4;
+    }
+
+    /* ===== SCROLLBAR ===== */
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: var(--bg); }
+    ::-webkit-scrollbar-thumb { background: var(--green-lo); border-radius: 2px; }
+
+    /* ===== HEADER ===== */
+    header {
+      height: 38px;
+      background: var(--bg2);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      padding: 0 1rem;
+      gap: 0.75rem;
+      flex-shrink: 0;
+    }
+    .hdr-logo {
+      color: var(--green);
+      font-weight: bold;
+      font-size: 14px;
+      letter-spacing: 0.15em;
+    }
+    .hdr-fullname { color: var(--dim); font-size: 11px; letter-spacing: 0.05em; margin-left: 0.25rem; }
+    .hdr-sep { color: var(--dim); margin-left: 0.5rem; }
+    .hdr-sub { color: var(--dim); font-size: 11px; letter-spacing: 0.1em; }
+    .hdr-right { margin-left: auto; display: flex; align-items: center; gap: 0.5rem; }
+    #sse-status {
+      font-size: 10px;
+      padding: 1px 6px;
+      border: 1px solid var(--dim);
+      color: var(--dim);
+      letter-spacing: 0.1em;
+    }
+    #sse-status.connected { border-color: var(--green); color: var(--green); }
+    #sse-status.disconnected { border-color: var(--red); color: var(--red); }
+    .btn {
+      font-family: inherit;
+      font-size: 10px;
+      padding: 2px 10px;
+      background: transparent;
+      border: 1px solid var(--green-lo);
+      color: var(--green-mid);
+      cursor: pointer;
+      letter-spacing: 0.1em;
+      transition: all 0.15s;
+    }
+    .btn:hover:not(:disabled) { border-color: var(--green); color: var(--green); background: var(--green-dim); }
+    .btn:disabled { opacity: 0.4; cursor: default; }
+    .btn-active { border-color: var(--amber); color: var(--amber); }
+    .btn-active:hover:not(:disabled) { background: #332200; border-color: var(--amber); }
+    .btn-danger { border-color: #551111; color: var(--red); }
+    .btn-danger:hover:not(:disabled) { background: #220000; border-color: var(--red); }
+    .svc-group { display: flex; align-items: center; gap: 4px; margin-right: 8px; }
+    .svc-status {
+      font-size: 9px; padding: 1px 6px;
+      border: 1px solid var(--dim); color: var(--dim);
+      letter-spacing: 0.1em; text-transform: uppercase;
+    }
+    .svc-status.active { border-color: var(--green); color: var(--green); }
+    .svc-status.inactive { border-color: var(--red); color: var(--red); }
+    .svc-sep { color: var(--border); margin: 0 2px; }
+
+    /* ===== STATS BAR ===== */
+    .stats-bar {
+      height: 36px;
+      background: var(--bg2);
+      border-bottom: 1px solid var(--border2);
+      display: flex;
+      align-items: center;
+      padding: 0 1rem;
+      gap: 1.5rem;
+      flex-shrink: 0;
+    }
+    .stat {
+      display: flex;
+      align-items: baseline;
+      gap: 0.4rem;
+    }
+    .stat-label { font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.1em; }
+    .stat-val { font-size: 15px; font-weight: bold; color: var(--green); }
+    .stat-val.amber { color: var(--amber); }
+    .stat-val.cyan { color: var(--cyan); }
+    .stat-divider { color: var(--border); }
+
+    /* ===== MAIN GRID ===== */
+    .main-grid {
+      display: grid;
+      grid-template-columns: 290px 1fr 340px;
+      height: calc(100vh - 74px);
+      overflow: hidden;
+    }
+    .col {
+      display: flex;
+      flex-direction: column;
+      border-right: 1px solid var(--border);
+      overflow: hidden;
+    }
+    .col:last-child { border-right: none; }
+
+    /* ===== PANEL ===== */
+    .panel { display: flex; flex-direction: column; overflow: hidden; flex: 1; }
+    .panel + .panel { border-top: 1px solid var(--border); }
+    .panel-hdr {
+      height: 28px;
+      padding: 0 0.75rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      background: var(--bg3);
+      border-bottom: 1px solid var(--border2);
+      flex-shrink: 0;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--dim);
+    }
+    .panel-hdr-title { color: var(--green-mid); }
+    .panel-hdr-badge {
+      margin-left: auto;
+      font-size: 9px;
+      color: var(--dim);
+    }
+    .panel-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0.5rem;
+    }
+    .empty { color: var(--dim); font-size: 11px; text-align: center; padding: 1.5rem 0.5rem; }
+
+    /* ===== PROJECTS ===== */
+    .proj-card {
+      border: 1px solid var(--border);
+      margin-bottom: 4px;
+      background: var(--bg2);
+    }
+    .proj-card.disabled { opacity: 0.45; }
+    .proj-hdr {
+      display: flex;
+      align-items: center;
+      padding: 5px 7px;
+      gap: 6px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .proj-hdr:hover { background: var(--green-dim); }
+    .proj-arrow { color: var(--dim); font-size: 9px; width: 10px; flex-shrink: 0; }
+    .proj-info { flex: 1; min-width: 0; }
+    .proj-name { color: var(--green); font-size: 12px; font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .proj-path { color: var(--dim); font-size: 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .proj-counts { display: flex; gap: 3px; }
+    .cnt { font-size: 9px; padding: 1px 4px; font-weight: bold; }
+    .cnt-run { color: var(--green); border: 1px solid var(--green-lo); }
+    .cnt-que { color: var(--amber); border: 1px solid #332200; }
+    .cnt-pnd { color: var(--cyan); border: 1px solid var(--cyan-dim); }
+    .proj-toggle { flex-shrink: 0; }
+    .toggle { position: relative; display: inline-block; width: 30px; height: 16px; }
+    .toggle input { opacity: 0; width: 0; height: 0; }
+    .slider {
+      position: absolute; cursor: pointer;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: #111; border: 1px solid var(--dim);
+      border-radius: 16px; transition: 0.2s;
+    }
+    .slider:before {
+      position: absolute; content: "";
+      height: 10px; width: 10px;
+      left: 2px; bottom: 2px;
+      background: var(--dim); border-radius: 50%; transition: 0.2s;
+    }
+    input:checked + .slider { background: var(--green-dim); border-color: var(--green-lo); }
+    input:checked + .slider:before { background: var(--green); transform: translateX(14px); }
+    .proj-issues { border-top: 1px solid var(--border2); padding: 4px 7px; }
+    .issue-sec-label {
+      font-size: 9px; color: var(--dim); text-transform: uppercase;
+      letter-spacing: 0.1em; margin: 4px 0 2px;
+    }
+    .issue-row {
+      display: flex; align-items: center; gap: 4px;
+      padding: 2px 0; font-size: 11px;
+      border-bottom: 1px solid var(--border2);
+    }
+    .issue-row:last-child { border-bottom: none; }
+    .git-info { color: var(--dim); font-size: 9px; display: flex; gap: 6px; align-items: center; }
+    .git-branch-name { color: var(--cyan); }
+    .git-dirty { color: var(--amber); }
+    .git-sync { color: var(--dim); }
+    .pr-row { display: flex; align-items: center; gap: 4px; padding: 2px 0; font-size: 11px; border-bottom: 1px solid var(--border2); }
+    .pr-row:last-child { border-bottom: none; }
+    .pr-num { color: var(--cyan); font-size: 9px; min-width: 32px; }
+    .pr-branch { color: var(--green-lo); font-size: 9px; max-width: 80px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .pr-title { flex: 1; color: var(--white); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .pr-age { color: var(--dim); font-size: 9px; flex-shrink: 0; }
+    .idot { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; }
+    .idot-run { background: var(--green); }
+    .idot-que { background: var(--amber); }
+    .idot-pnd { background: var(--dim); }
+    .prio { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; }
+    .prio-1 { background: var(--red); }
+    .prio-2 { background: var(--amber); }
+    .prio-3 { background: var(--green-mid); }
+    .prio-4 { background: var(--dim); }
+    .issue-id { color: var(--cyan); font-size: 9px; min-width: 50px; }
+    .issue-title { flex: 1; color: var(--white); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .issue-row.issue-backlog { opacity: 0.45; }
+
+    /* ===== PROCESS ROW ===== */
+    .proc-row {
+      display: flex; align-items: center; gap: 6px;
+      padding: 4px 6px; border-bottom: 1px solid var(--border2);
+      font-size: 11px;
+    }
+    .proc-pid { color: var(--cyan); font-size: 10px; min-width: 42px; font-variant-numeric: tabular-nums; }
+    .proc-stage { color: var(--green); min-width: 56px; font-weight: bold; text-transform: uppercase; font-size: 10px; }
+    .proc-model { color: var(--dim); font-size: 9px; min-width: 56px; }
+    .proc-dur { color: var(--amber); font-size: 9px; min-width: 42px; text-align: right; font-variant-numeric: tabular-nums; }
+    .proc-activity { font-size: 10px; min-width: 16px; text-align: center; }
+    .proc-kill {
+      font-family: inherit; font-size: 9px; padding: 1px 5px;
+      background: transparent; border: 1px solid #551111; color: var(--red);
+      cursor: pointer; margin-left: auto;
+    }
+    .proc-kill:hover { background: #220000; border-color: var(--red); }
+
+    /* ===== PIPELINE ===== */
+    .stage-row {
+      display: flex; align-items: center; gap: 6px;
+      padding: 3px 0; border-bottom: 1px solid var(--border2);
+      font-size: 11px;
+    }
+    .sdot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; background: var(--dim); }
+    .sdot.start  { background: var(--amber); }
+    .sdot.complete { background: var(--green); }
+    .sdot.fail   { background: var(--red); }
+    .sname { color: var(--white); min-width: 70px; }
+    .srepo { color: var(--green-lo); font-size: 9px; min-width: 50px; max-width: 90px; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .stask { color: var(--cyan); font-size: 10px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .selapsed { color: var(--amber); font-size: 9px; flex-shrink: 0; min-width: 36px; text-align: right; }
+    .smodel { color: var(--dim); font-size: 9px; flex-shrink: 0; min-width: 56px; text-align: right; }
+    .stokens { color: var(--amber); font-size: 9px; flex-shrink: 0; min-width: 80px; text-align: right; white-space: nowrap; }
+    .sstatus { margin-left: auto; font-size: 9px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.06em; flex-shrink: 0; }
+
+    /* ===== LOG TAB BAR ===== */
+    .log-tab-bar {
+      display: flex; gap: 0; border-bottom: 1px solid #1a2a1a;
+      padding: 0 4px; overflow-x: auto; flex-shrink: 0;
+    }
+    .log-tab {
+      background: transparent; border: none; border-bottom: 2px solid transparent;
+      color: var(--dim); font-family: inherit; font-size: 10px;
+      padding: 4px 8px; cursor: pointer; white-space: nowrap;
+      text-transform: uppercase; letter-spacing: .05em;
+    }
+    .log-tab:hover { color: var(--green-mid); }
+    .log-tab.active { color: var(--green); border-bottom-color: var(--green); }
+
+    /* ===== LOG ===== */
+    .log-area { font-size: 11px; line-height: 1.5; padding: 4px 0; }
+    .log-line { padding: 3px 8px; display: flex; gap: 6px; align-items: flex-start; border-radius: 2px; margin: 1px 0; }
+    .log-line:hover { background: rgba(255,255,255,0.03); }
+    .log-line.log-success .ltext { color: var(--green); }
+    .log-line.log-fail .ltext { color: var(--red); }
+    .log-line.log-warn .ltext { color: var(--amber); }
+    .log-line.log-system { opacity: 0.6; }
+    .log-line.log-heading { border-top: 1px solid var(--border2); margin-top: 6px; padding-top: 8px; }
+    .ltime { color: var(--dim); font-size: 9px; flex-shrink: 0; min-width: 36px; opacity: 0.7; padding-top: 2px; font-variant-numeric: tabular-nums; }
+    .licon { flex-shrink: 0; min-width: 14px; text-align: center; font-size: 11px; padding-top: 1px; }
+    .ltag { color: var(--green-lo); min-width: 52px; flex-shrink: 0; padding-top: 1px; font-size: 10px; font-weight: 500; }
+    .lstage { color: var(--cyan); min-width: 60px; flex-shrink: 0; font-size: 10px; padding-top: 1px; text-transform: uppercase; letter-spacing: 0.03em; opacity: 0.8; }
+    .ltext { color: #99aa99; word-break: break-word; white-space: pre-wrap; flex: 1; min-width: 0; }
+    .ltext .lhighlight { color: var(--white); font-weight: 500; }
+    .ltext .lcost { color: var(--amber); font-size: 10px; }
+    .ltext .lfiles { color: var(--cyan); font-size: 10px; }
+    .log-line.log-spacer { height: 6px; padding: 0; margin: 0; min-height: 6px; }
+    .log-line.log-separator { opacity: 0.2; padding: 0 8px; margin: 4px 0; }
+    .log-line.log-separator .ltext { color: var(--dim); }
+    .log-line.log-code .ltext { font-family: 'JetBrains Mono', 'Fira Code', monospace; color: var(--cyan); opacity: 0.8; font-size: 10px; }
+    .log-line.log-heading2 .ltext { color: var(--white); font-weight: 600; font-size: 12px; }
+    .log-line.log-tool .ltext { color: var(--dim); font-style: italic; font-size: 10px; }
+
+    /* ===== CHAT ===== */
+    .chat-col { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
+    .chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .chat-line { display: flex; gap: 6px; font-size: 12px; line-height: 1.5; }
+    .chat-prefix {
+      flex-shrink: 0;
+      font-weight: bold;
+    }
+    .chat-user .chat-prefix { color: var(--amber); }
+    .chat-agent .chat-prefix { color: var(--cyan); }
+    .chat-text { color: var(--white); white-space: pre-wrap; word-break: break-word; flex: 1; }
+    .chat-agent .chat-text { color: var(--white); }
+    .chat-user .chat-text { color: var(--amber); }
+    .chat-ts { color: var(--dim); font-size: 9px; flex-shrink: 0; align-self: flex-start; padding-top: 2px; }
+
+    .chat-input-area {
+      border-top: 1px solid var(--border);
+      padding: 6px 8px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--bg3);
+      flex-shrink: 0;
+    }
+    .chat-prompt { color: var(--green); font-size: 12px; flex-shrink: 0; }
+    .chat-input {
+      flex: 1;
+      background: transparent;
+      border: none;
+      outline: none;
+      font-family: inherit;
+      font-size: 12px;
+      color: var(--green);
+      caret-color: var(--green);
+    }
+    .chat-input::placeholder { color: var(--dim); }
+    .chat-send {
+      font-family: inherit;
+      font-size: 10px;
+      padding: 2px 8px;
+      background: transparent;
+      border: 1px solid var(--green-lo);
+      color: var(--green-mid);
+      cursor: pointer;
+    }
+    .chat-send:hover { border-color: var(--green); color: var(--green); }
+    .chat-send:disabled { opacity: 0.3; cursor: default; }
+
+    /* ===== TAB BAR (hidden on desktop) ===== */
+    .tab-bar { display: none; }
+
+    /* ===== MOBILE RESPONSIVE ===== */
+    @media (max-width: 768px) {
+      html, body { overflow: auto; }
+      header {
+        height: auto;
+        min-height: 38px;
+        flex-wrap: wrap;
+        padding: 6px 0.75rem;
+        gap: 4px;
+      }
+      .hdr-fullname { display: none; }
+      .hdr-right { width: 100%; justify-content: flex-end; }
+      .stats-bar {
+        height: auto;
+        min-height: 32px;
+        flex-wrap: wrap;
+        padding: 4px 0.75rem;
+        gap: 0.5rem;
+        font-size: 11px;
+      }
+      .stat-divider { display: none; }
+      .tab-bar {
+        display: flex;
+        background: var(--bg2);
+        border-bottom: 1px solid var(--border);
+      }
+      .tab {
+        flex: 1;
+        font-family: inherit;
+        font-size: 11px;
+        letter-spacing: 0.1em;
+        padding: 10px 0;
+        min-height: 44px;
+        background: transparent;
+        border: none;
+        border-bottom: 2px solid transparent;
+        color: var(--dim);
+        cursor: pointer;
+        text-align: center;
+        transition: all 0.15s;
+      }
+      .tab.active {
+        color: var(--green);
+        border-bottom-color: var(--green);
+      }
+      .main-grid {
+        display: flex;
+        flex-direction: column;
+        height: auto;
+        min-height: calc(100vh - 160px);
+        overflow: visible;
+      }
+      .col {
+        display: none;
+        border-right: none;
+        overflow: visible;
+        min-height: calc(100vh - 200px);
+      }
+      .col.mob-active {
+        display: flex;
+        flex: 1;
+      }
+      .chat-input-area {
+        position: sticky;
+        bottom: 0;
+        z-index: 10;
+        min-height: 44px;
+      }
+      .chat-input { min-height: 32px; font-size: 14px; }
+      .chat-send { min-height: 36px; padding: 4px 12px; }
+      .btn { min-height: 36px; padding: 4px 10px; }
+      .proj-hdr { min-height: 44px; padding: 8px 7px; }
+      .toggle { width: 40px; height: 22px; }
+      .slider:before { height: 14px; width: 14px; left: 3px; bottom: 3px; }
+      input:checked + .slider:before { transform: translateX(18px); }
+    }
+  </style>
+</head>
+<body>
+  <!-- HEADER -->
+  <header>
+    <span class="hdr-logo">OpenSwarm</span>
+    <span class="hdr-fullname">: Vector-Encoded General Agent</span>
+    <span class="hdr-sep">::</span>
+    <span class="hdr-sub">SUPERVISOR</span>
+    <div class="hdr-right">
+      <div class="svc-group">
+        <span class="svc-status active" id="svc-status">ACTIVE</span>
+        <span class="svc-sep">&vert;</span>
+        <button class="btn btn-danger" id="svc-stop-btn" disabled>&#9208; STOP</button>
+        <button class="btn" id="svc-restart-btn" disabled>&#8635; RESTART</button>
+      </div>
+      <span id="sse-status" class="connected">LIVE</span>
+      <button class="btn btn-active" id="hb-btn" disabled>&#9654; HEARTBEAT</button>
+    </div>
+  </header>
+
+  <!-- STATS BAR -->
+  <div class="stats-bar">
+    <div class="stat"><span class="stat-label">RUN</span><span class="stat-val">2</span></div>
+    <span class="stat-divider">&vert;</span>
+    <div class="stat"><span class="stat-label">QUEUE</span><span class="stat-val amber">1</span></div>
+    <span class="stat-divider">&vert;</span>
+    <div class="stat"><span class="stat-label">DONE</span><span class="stat-val">47</span></div>
+    <span class="stat-divider">&vert;</span>
+    <div class="stat"><span class="stat-label">SSE</span><span class="stat-val cyan">3</span></div>
+    <span class="stat-divider">&vert;</span>
+    <div class="stat"><span class="stat-label">UPTIME</span><span class="stat-val">5h 42m 18s</span></div>
+    <span class="stat-divider">&vert;</span>
+    <div class="stat"><span class="stat-label">COST</span><span class="stat-val cyan">$4.38</span></div>
+  </div>
+
+  <!-- TAB BAR (mobile only) -->
+  <div class="tab-bar">
+    <button class="tab active" data-tab="0">REPOS</button>
+    <button class="tab" data-tab="1">PIPELINE</button>
+    <button class="tab" data-tab="2">CHAT</button>
+  </div>
+
+  <!-- MAIN GRID -->
+  <div class="main-grid">
+
+    <!-- LEFT: REPOSITORIES -->
+    <div class="col">
+      <div class="panel">
+        <div class="panel-hdr">
+          <span class="panel-hdr-title">REPOSITORIES</span>
+          <span class="panel-hdr-badge">3/3</span>
+          <button class="btn" style="margin-left:auto;font-size:9px;padding:1px 6px" disabled>+ ADD</button>
+        </div>
+        <div class="panel-body" id="project-list">
+
+          <!-- Project 1: example-app (expanded) -->
+          <div class="proj-card expanded">
+            <div class="proj-hdr">
+              <span class="proj-arrow">&#9660;</span>
+              <div class="proj-info">
+                <div class="proj-name">example-app</div>
+                <div class="proj-path">~/dev/example-app</div>
+                <div class="git-info">
+                  &#9095; <span class="git-branch-name">main</span>
+                  <span class="git-dirty">&#9679; 13</span>
+                </div>
+              </div>
+              <div class="proj-counts">
+                <span class="cnt cnt-run">1r</span>
+              </div>
+              <div class="proj-toggle" style="display:flex;align-items:center;gap:4px">
+                <label class="toggle">
+                  <input type="checkbox" checked disabled>
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+            <div class="proj-issues">
+              <div class="issue-sec-label">running</div>
+              <div class="issue-row">
+                <span class="idot idot-run"></span>
+                <span class="prio prio-2"></span>
+                <span class="issue-id">EXA-142</span>
+                <span class="issue-title">Implement user authentication flow</span>
+              </div>
+              <div class="issue-sec-label">todo (2)</div>
+              <div class="issue-row">
+                <span class="idot idot-pnd"></span>
+                <span class="prio prio-2"></span>
+                <span class="issue-id">EXA-139</span>
+                <span class="issue-title">Add rate limiting to API endpoints</span>
+              </div>
+              <div class="issue-row">
+                <span class="idot idot-pnd"></span>
+                <span class="prio prio-3"></span>
+                <span class="issue-id">EXA-136</span>
+                <span class="issue-title">Refactor database connection pool</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Project 2: backend-api -->
+          <div class="proj-card">
+            <div class="proj-hdr">
+              <span class="proj-arrow">&#9654;</span>
+              <div class="proj-info">
+                <div class="proj-name">backend-api</div>
+                <div class="proj-path">~/dev/backend-api</div>
+                <div class="git-info">
+                  &#9095; <span class="git-branch-name">main</span>
+                  <span class="git-dirty">&#9679; 8</span>
+                </div>
+              </div>
+              <div class="proj-counts">
+                <span class="cnt cnt-run">1r</span>
+                <span class="cnt cnt-pnd">5p</span>
+              </div>
+              <div class="proj-toggle" style="display:flex;align-items:center;gap:4px">
+                <label class="toggle">
+                  <input type="checkbox" checked disabled>
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <!-- Project 3: ml-pipeline -->
+          <div class="proj-card">
+            <div class="proj-hdr">
+              <span class="proj-arrow">&#9654;</span>
+              <div class="proj-info">
+                <div class="proj-name">ml-pipeline</div>
+                <div class="proj-path">~/dev/ml-pipeline</div>
+                <div class="git-info">
+                  &#9095; <span class="git-branch-name">feature/training</span>
+                </div>
+              </div>
+              <div class="proj-counts">
+                <span class="cnt cnt-pnd">3p</span>
+              </div>
+              <div class="proj-toggle" style="display:flex;align-items:center;gap:4px">
+                <label class="toggle">
+                  <input type="checkbox" checked disabled>
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- MONITORS & PROCESSES -->
+      <div class="panel" id="monitor-panel">
+        <div class="panel-hdr">
+          <span class="panel-hdr-title">MONITORS &amp; PROCESSES</span>
+          <span class="panel-hdr-badge">2p</span>
+        </div>
+        <div class="panel-body" id="monitor-list">
+          <div class="issue-sec-label">processes</div>
+          <div class="proc-row">
+            <span class="proc-pid">284712</span>
+            <span class="proc-stage">WORKER</span>
+            <span class="proc-model">sonnet-4.5</span>
+            <span style="color:var(--dim);font-size:9px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">example-app</span>
+            <span class="proc-activity">&#9889;</span>
+            <span class="proc-dur">2m</span>
+            <button class="proc-kill" disabled>KILL</button>
+          </div>
+          <div class="proc-row">
+            <span class="proc-pid">284891</span>
+            <span class="proc-stage">REVIEWER</span>
+            <span class="proc-model">haiku-4.5</span>
+            <span style="color:var(--dim);font-size:9px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">backend-api</span>
+            <span class="proc-activity">&#9889;</span>
+            <span class="proc-dur">1m</span>
+            <button class="proc-kill" disabled>KILL</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- MIDDLE: PIPELINE + LOG -->
+    <div class="col">
+      <div class="panel" style="flex: 0 0 38%">
+        <div class="panel-hdr">
+          <span class="panel-hdr-title">PIPELINE</span>
+          <span class="panel-hdr-badge">10/100</span>
+        </div>
+        <div class="panel-body" id="stage-list">
+
+          <!-- Pipeline Row 1 -->
+          <div class="stage-row">
+            <div class="sdot complete"></div>
+            <div class="srepo">example-app</div>
+            <div class="sname">reviewer</div>
+            <div class="stask">EXA-142 Implement user auth...</div>
+            <div class="smodel">haiku-4.5</div>
+            <div class="stokens">3.5k/4.6k $0.19</div>
+            <div class="selapsed">6m58s</div>
+            <div class="sstatus">COMPLETE</div>
+          </div>
+
+          <!-- Pipeline Row 2 -->
+          <div class="stage-row">
+            <div class="sdot complete"></div>
+            <div class="srepo">example-app</div>
+            <div class="sname">worker</div>
+            <div class="stask">EXA-142 Implement user auth...</div>
+            <div class="smodel">sonnet-4.5</div>
+            <div class="stokens">50/11.1k $0.24</div>
+            <div class="selapsed">6m58s</div>
+            <div class="sstatus">COMPLETE</div>
+          </div>
+
+          <!-- Pipeline Row 3 -->
+          <div class="stage-row">
+            <div class="sdot start"></div>
+            <div class="srepo">backend-api</div>
+            <div class="sname">worker</div>
+            <div class="stask">EXA-140 Add caching layer...</div>
+            <div class="smodel">haiku-4.5</div>
+            <div class="stokens"></div>
+            <div class="selapsed">6m58s</div>
+            <div class="sstatus">START</div>
+          </div>
+
+          <!-- Pipeline Row 4 -->
+          <div class="stage-row">
+            <div class="sdot complete"></div>
+            <div class="srepo">example-app</div>
+            <div class="sname">reviewer</div>
+            <div class="stask">EXA-142 Implement user auth...</div>
+            <div class="smodel">sonnet-4</div>
+            <div class="stokens"></div>
+            <div class="selapsed">6m58s</div>
+            <div class="sstatus">COMPLETE</div>
+          </div>
+
+          <!-- Pipeline Row 5 -->
+          <div class="stage-row">
+            <div class="sdot start"></div>
+            <div class="srepo">example-app</div>
+            <div class="sname">iter #1</div>
+            <div class="stask">EXA-142 Implement user auth...</div>
+            <div class="smodel"></div>
+            <div class="stokens"></div>
+            <div class="selapsed">6m58s</div>
+            <div class="sstatus">START</div>
+          </div>
+
+          <!-- Pipeline Row 6 -->
+          <div class="stage-row">
+            <div class="sdot complete"></div>
+            <div class="srepo">ml-pipeline</div>
+            <div class="sname">tester</div>
+            <div class="stask">EXA-135 Add unit tests...</div>
+            <div class="smodel">haiku-4.5</div>
+            <div class="stokens">2.1k/3.2k $0.08</div>
+            <div class="selapsed">4m12s</div>
+            <div class="sstatus">COMPLETE</div>
+          </div>
+
+          <!-- Pipeline Row 7 -->
+          <div class="stage-row">
+            <div class="sdot complete"></div>
+            <div class="srepo">backend-api</div>
+            <div class="sname">documenter</div>
+            <div class="stask">EXA-138 Update API docs...</div>
+            <div class="smodel">haiku-4.5</div>
+            <div class="stokens"></div>
+            <div class="selapsed">3m45s</div>
+            <div class="sstatus">COMPLETE</div>
+          </div>
+
+          <!-- Pipeline Row 8 -->
+          <div class="stage-row">
+            <div class="sdot start"></div>
+            <div class="srepo">ml-pipeline</div>
+            <div class="sname">worker</div>
+            <div class="stask">EXA-137 Optimize batch pro...</div>
+            <div class="smodel">sonnet-4.5</div>
+            <div class="stokens"></div>
+            <div class="selapsed">2m30s</div>
+            <div class="sstatus">START</div>
+          </div>
+
+          <!-- Pipeline Row 9 -->
+          <div class="stage-row">
+            <div class="sdot complete"></div>
+            <div class="srepo">example-app</div>
+            <div class="sname">decompose</div>
+            <div class="stask">EXA-141 Refactor auth mo...</div>
+            <div class="smodel"></div>
+            <div class="stokens"></div>
+            <div class="selapsed">1m15s</div>
+            <div class="sstatus">COMPLETE</div>
+          </div>
+
+          <!-- Pipeline Row 10 -->
+          <div class="stage-row">
+            <div class="sdot start"></div>
+            <div class="srepo">backend-api</div>
+            <div class="sname">reviewer</div>
+            <div class="stask">EXA-140 Add caching layer...</div>
+            <div class="smodel">haiku-4.5</div>
+            <div class="stokens"></div>
+            <div class="selapsed">45s</div>
+            <div class="sstatus">START</div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- LIVE LOG -->
+      <div class="panel">
+        <div class="panel-hdr">
+          <span class="panel-hdr-title">LIVE LOG</span>
+          <span class="panel-hdr-badge">108/200</span>
+        </div>
+        <div class="log-tab-bar">
+          <button class="log-tab active">ALL</button>
+          <button class="log-tab">EXA-142</button>
+          <button class="log-tab">EXA-140</button>
+        </div>
+        <div class="panel-body log-area" id="log-list">
+
+          <!-- Log line 1 -->
+          <div class="log-line">
+            <span class="ltime">14:23:02</span>
+            <span class="licon">&#9679;</span>
+            <span class="ltag">EXA-142</span>
+            <span class="lstage">WORKER</span>
+            <span class="ltext"><span class="lhighlight">HIGH</span> auth_controller.py | 22% | -18% | 20+</span>
+          </div>
+
+          <!-- Log line 2 -->
+          <div class="log-line">
+            <span class="ltime">14:23:02</span>
+            <span class="licon">&#9679;</span>
+            <span class="ltag">EXA-142</span>
+            <span class="lstage">WORKER</span>
+            <span class="ltext"><span class="lhighlight">HIGH</span> session_manager.py | 18% | -22% | 20+</span>
+          </div>
+
+          <!-- Log line 3 -->
+          <div class="log-line">
+            <span class="ltime">14:23:02</span>
+            <span class="licon">&#9679;</span>
+            <span class="ltag">EXA-142</span>
+            <span class="lstage">WORKER</span>
+            <span class="ltext">MEDIUM token_validator.py | 26% | -14% | 20+</span>
+          </div>
+
+          <!-- Log line 4 -->
+          <div class="log-line">
+            <span class="ltime">14:23:02</span>
+            <span class="licon">&#9679;</span>
+            <span class="ltag">EXA-142</span>
+            <span class="lstage">WORKER</span>
+            <span class="ltext">MEDIUM user_service.py | 30% | -10% | 30+</span>
+          </div>
+
+          <!-- Log line 5 -->
+          <div class="log-line">
+            <span class="ltime">14:23:02</span>
+            <span class="licon">&#183;</span>
+            <span class="ltag">EXA-142</span>
+            <span class="lstage">WORKER</span>
+            <span class="ltext">LOW middleware.py | 38% | -2% | 50+</span>
+          </div>
+
+          <!-- Log line 6 -->
+          <div class="log-line">
+            <span class="ltime">14:23:02</span>
+            <span class="licon">&#183;</span>
+            <span class="ltag">EXA-142</span>
+            <span class="lstage">WORKER</span>
+            <span class="ltext">LOW rate_limiter.py | 39% | -1% | 10+</span>
+          </div>
+
+          <!-- Log line 7: heading2 -->
+          <div class="log-line log-heading2">
+            <span class="ltime">14:23:02</span>
+            <span class="licon">&#9632;</span>
+            <span class="ltag">EXA-142</span>
+            <span class="lstage">WORKER</span>
+            <span class="ltext">Deliverables Created (67.2 KB)</span>
+          </div>
+
+          <!-- Log line 8 -->
+          <div class="log-line">
+            <span class="ltime">14:23:02</span>
+            <span class="licon">&#183;</span>
+            <span class="ltag">EXA-142</span>
+            <span class="lstage">WORKER</span>
+            <span class="ltext">1. AUTH_IMPLEMENTATION_REPORT.md - Implementation summary</span>
+          </div>
+
+          <!-- Log line 9 -->
+          <div class="log-line">
+            <span class="ltime">14:23:02</span>
+            <span class="licon">&#183;</span>
+            <span class="ltag">EXA-142</span>
+            <span class="lstage">WORKER</span>
+            <span class="ltext">2. SESSION_MANAGEMENT_SPEC.md - Technical specification</span>
+          </div>
+
+          <!-- Log line 10 -->
+          <div class="log-line">
+            <span class="ltime">14:23:02</span>
+            <span class="licon">&#183;</span>
+            <span class="ltag">EXA-142</span>
+            <span class="lstage">WORKER</span>
+            <span class="ltext">3. TEST_COVERAGE_REPORT.md - Test plan with 200+ test cases</span>
+          </div>
+
+          <!-- Log line 11: heading2 -->
+          <div class="log-line log-heading2">
+            <span class="ltime">14:23:03</span>
+            <span class="licon">&#9632;</span>
+            <span class="ltag">EXA-142</span>
+            <span class="lstage">WORKER</span>
+            <span class="ltext">Testing Strategy</span>
+          </div>
+
+          <!-- Log line 12 -->
+          <div class="log-line">
+            <span class="ltime">14:23:03</span>
+            <span class="licon">&#183;</span>
+            <span class="ltag">EXA-142</span>
+            <span class="lstage">WORKER</span>
+            <span class="ltext">- Phase 1 (Week 1): Auth + Session operations (100+ tests)</span>
+          </div>
+
+          <!-- Log line 13 -->
+          <div class="log-line">
+            <span class="ltime">14:23:03</span>
+            <span class="licon">&#183;</span>
+            <span class="ltag">EXA-142</span>
+            <span class="lstage">WORKER</span>
+            <span class="ltext">- Phase 2 (Week 2): Token validation endpoints (50+ tests)</span>
+          </div>
+
+          <!-- Log line 14 -->
+          <div class="log-line">
+            <span class="ltime">14:23:03</span>
+            <span class="licon">&#183;</span>
+            <span class="ltag">EXA-142</span>
+            <span class="lstage">WORKER</span>
+            <span class="ltext">- Phase 3 (Week 3): Rate limiting (60+ tests)</span>
+          </div>
+
+          <!-- Log line 15 -->
+          <div class="log-line">
+            <span class="ltime">14:23:03</span>
+            <span class="licon">&#183;</span>
+            <span class="ltag">EXA-142</span>
+            <span class="lstage">WORKER</span>
+            <span class="ltext">Target: 48% &#8594; 80%+ coverage in 3 weeks | Total Tests: 150-200+</span>
+          </div>
+
+          <!-- Log line 16: system -->
+          <div class="log-line log-system">
+            <span class="ltime">14:23:03</span>
+            <span class="licon">&#8212;</span>
+            <span class="ltag">SYS</span>
+            <span class="lstage">EXIT</span>
+            <span class="ltext">Process exited PID=284612 code=0 duration=<span class="lcost">102.3s</span></span>
+          </div>
+
+          <!-- Log line 17: heading -->
+          <div class="log-line log-heading">
+            <span class="ltime">14:23:03</span>
+            <span class="licon">&#9655;</span>
+            <span class="ltag">EXA-142</span>
+            <span class="lstage">PRE-CHECK</span>
+            <span class="ltext">Process spawned PID=284712 stage=pre-check model=claude-haiku-4-5-20251001</span>
+          </div>
+
+          <!-- Log line 18: system -->
+          <div class="log-line log-system">
+            <span class="ltime">14:23:19</span>
+            <span class="licon">&#8212;</span>
+            <span class="ltag">SYS</span>
+            <span class="lstage">EXIT</span>
+            <span class="ltext">Process exited PID=284701 code=0 duration=<span class="lcost">8.1s</span></span>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT: PR PROCESSOR + CHAT -->
+    <div class="col">
+      <!-- PR PROCESSOR -->
+      <div class="panel" style="flex: 0 0 auto;">
+        <div class="panel-hdr">
+          <span class="panel-hdr-title">PR PROCESSOR</span>
+          <span class="panel-hdr-badge" style="color: var(--cyan);">IDLE</span>
+        </div>
+        <div class="panel-body" style="font-size: 11px; line-height: 1.5;">
+          <div style="display: flex; flex-direction: column; gap: 6px;">
+            <div><span style="color: var(--dim);">Schedule:</span> <span>*/30 * * * *</span></div>
+            <div><span style="color: var(--dim);">Repos:</span> <span>3</span></div>
+            <div><span style="color: var(--dim);">Last run:</span> <span>02:30 PM</span></div>
+            <div><span style="color: var(--dim);">Next run:</span> <span>03:00 PM</span></div>
+            <div style="color: var(--green); font-size: 10px; margin-top: 4px;">&#10003; Conflict Resolver: ON</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- AGENT CHAT -->
+      <div class="panel-hdr">
+        <span class="panel-hdr-title">AGENT CHAT</span>
+        <span class="panel-hdr-badge"></span>
+      </div>
+      <div class="chat-col">
+        <div class="chat-messages" id="chat-messages">
+
+          <!-- Chat message 1: User -->
+          <div class="chat-line chat-user">
+            <span class="chat-prefix">YOU &gt;</span>
+            <span class="chat-text">What's the status of the auth implementation?</span>
+            <span class="chat-ts">14:21</span>
+          </div>
+
+          <!-- Chat message 2: Agent -->
+          <div class="chat-line chat-agent">
+            <span class="chat-prefix">OpenSwarm&gt;</span>
+            <span class="chat-text">EXA-142 authentication implementation is in progress. The worker has completed the initial code generation with auth_controller.py, session_manager.py, and token_validator.py. Currently in reviewer stage. Confidence score: 87%. Estimated completion: 15 minutes.</span>
+            <span class="chat-ts">14:21</span>
+          </div>
+
+          <!-- Chat message 3: User -->
+          <div class="chat-line chat-user">
+            <span class="chat-prefix">YOU &gt;</span>
+            <span class="chat-text">Great, what about the caching task?</span>
+            <span class="chat-ts">14:22</span>
+          </div>
+
+          <!-- Chat message 4: Agent -->
+          <div class="chat-line chat-agent">
+            <span class="chat-prefix">OpenSwarm&gt;</span>
+            <span class="chat-text">EXA-140 caching layer task is queued for backend-api. It will start once the current worker slot opens. Priority: Medium.</span>
+            <span class="chat-ts">14:22</span>
+          </div>
+
+        </div>
+        <div class="chat-input-area">
+          <span class="chat-prompt">&gt;</span>
+          <input
+            class="chat-input"
+            type="text"
+            placeholder="message OpenSwarm..."
+            disabled
+          >
+          <button class="chat-send" disabled>SEND</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</body>
+</html>
