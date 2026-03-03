@@ -93,7 +93,25 @@ async function callClaude(
     let capturedSessionId = sessionId || '';
     let cost = 0;
     let tokens = 0;
-    let lastStreamTime = Date.now();
+    let stderrOutput = '';
+    let thinkingTimer: NodeJS.Timeout | null = null;
+
+    // Monitor for thinking pauses (no output for 2 seconds)
+    const resetThinkingTimer = () => {
+      if (thinkingTimer) {
+        clearTimeout(thinkingTimer);
+      }
+      thinkingTimer = setTimeout(() => {
+        // If no output for 2 seconds and we have some response, signal thinking
+        if (fullResponse.length > 0) {
+          onStream('', true);
+        }
+      }, 2000);
+    };
+
+    proc.stderr.on('data', (chunk: Buffer) => {
+      stderrOutput += chunk.toString();
+    });
 
     proc.stdout.on('data', (chunk: Buffer) => {
       buffer += chunk.toString();
@@ -115,13 +133,14 @@ async function callClaude(
               if (block.type === 'text' && block.text) {
                 fullResponse += block.text;
                 onStream(block.text, false);
-                lastStreamTime = Date.now();
+                resetThinkingTimer(); // Reset thinking detection
               }
             }
           }
 
           // Extract cost and tokens from result
           if (event.type === 'result') {
+            if (thinkingTimer) clearTimeout(thinkingTimer);
             cost = event.total_cost_usd ?? 0;
             tokens = (event.input_tokens ?? 0) + (event.output_tokens ?? 0);
             if (event.session_id) {
@@ -135,8 +154,12 @@ async function callClaude(
     });
 
     proc.on('close', (code) => {
-      if (code !== 0 && fullResponse === '') {
-        reject(new Error(`claude exited with code ${code}`));
+      if (thinkingTimer) clearTimeout(thinkingTimer);
+      if (code !== 0) {
+        // Always report non-zero exit codes
+        const errorMsg = stderrOutput.trim() || 'Unknown error';
+        const errorPrefix = fullResponse ? 'Partial response received, but' : 'Claude';
+        reject(new Error(`${errorPrefix} exited with code ${code}: ${errorMsg}`));
       } else {
         resolve({
           response: fullResponse,
@@ -148,6 +171,7 @@ async function callClaude(
     });
 
     proc.on('error', (err) => {
+      if (thinkingTimer) clearTimeout(thinkingTimer);
       reject(new Error(`Failed to spawn claude: ${err.message}`));
     });
 
@@ -583,12 +607,25 @@ async function sendMessage(state: AppState, ui: ReturnType<typeof createUI>, mes
       message,
       state.session.model,
       state.session.claudeSessionId,
-      (chunk) => {
-        // Stop spinner on first chunk
-        if (!spinnerStopped) {
+      (chunk, isThinking) => {
+        // Handle thinking notification (show/resume spinner)
+        if (isThinking) {
+          if (spinnerStopped) {
+            // Resume spinner for thinking phase
+            spinnerStopped = false;
+            const newSpinner = startSpinner(ui);
+            Object.assign(spinnerData, newSpinner);
+          }
+          return;
+        }
+
+        // Stop spinner on first text chunk
+        if (!spinnerStopped && chunk) {
           stopSpinner(ui, spinnerData);
           spinnerStopped = true;
         }
+
+        if (!chunk) return;
 
         assistantContent += chunk;
         // Throttle rendering for smoother streaming (30fps)
