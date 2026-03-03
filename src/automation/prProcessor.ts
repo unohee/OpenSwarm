@@ -50,6 +50,7 @@ export interface PRProcessorConfig {
   ciTimeoutMs?: number;         // CI completion timeout (default: 10min)
   ciPollIntervalMs?: number;    // CI polling interval (default: 30s)
   conflictResolver?: ConflictResolverConfig;
+  repoMappings?: Record<string, string>; // Custom repo → local path mappings
 }
 
 type PRStateEntry = {
@@ -528,7 +529,16 @@ export class PRProcessor {
    * Map repo to local project path
    */
   private mapRepoToProject(repo: string): string | null {
-    // "Intrect-io/STONKS" → "STONKS"
+    // Check custom mappings first
+    if (this.config.repoMappings?.[repo]) {
+      const mapped = this.config.repoMappings[repo].replace(/^~/, homedir());
+      if (existsSync(mapped)) {
+        return mapped;
+      }
+      console.log(`[PRProcessor] Custom mapping found but path does not exist: ${repo} → ${mapped}`);
+    }
+
+    // Fallback: "Intrect-io/STONKS" → "STONKS"
     const repoName = repo.split('/').pop();
     if (!repoName) return null;
 
