@@ -134,8 +134,8 @@ export class AutonomousRunner {
       this.recordPipelineHistory(task, result);
       await reportToDiscord(formatPipelineResultEmbed(result));
 
-      // Track as completed to prevent re-selection (persist to disk)
-      if (task.issueId) {
+      // Track as completed ONLY on success to prevent re-selection (persist to disk)
+      if (task.issueId && result.success) {
         this.completedTaskIds.add(task.issueId);
         clearRejection(task.issueId); // Clear rejection count on success
         this.saveTaskState();
