@@ -142,6 +142,9 @@ export async function runPreCheck(options: ReviewerOptions): Promise<PreCheckRes
       processContext: options.processContext,
     });
 
+    // DEBUG: Log raw Haiku output for troubleshooting
+    console.log('[Reviewer] Pre-check raw output (first 500 chars):', raw.stdout.slice(0, 500));
+
     // Parse pre-check output
     const lines = raw.stdout.split('\n');
     const passedLine = lines.find((l: string) => l.startsWith('PASSED:'));
@@ -158,9 +161,24 @@ export async function runPreCheck(options: ReviewerOptions): Promise<PreCheckRes
           .filter(Boolean)
       : [];
 
+    // DEBUG: Log parsing results
+    if (!passed && issues.length === 0) {
+      console.warn('[Reviewer] Pre-check failed but no issues found. Haiku may not be following format.');
+      console.warn('[Reviewer] PASSED line:', passedLine || '(not found)');
+      console.warn('[Reviewer] ISSUES section:', issueStart >= 0 ? 'found' : 'not found');
+
+      // Provide better default error message
+      if (!passedLine) {
+        issues.push('Haiku did not provide PASSED: line in expected format');
+      }
+      if (issueStart < 0) {
+        issues.push('Haiku did not provide ISSUES: section in expected format');
+      }
+    }
+
     return {
       passed,
-      issues,
+      issues: issues.length > 0 ? issues : ['Pre-check failed with no specific issues (format parsing error)'],
       confidence: Math.min(3, Math.max(0, confidence)),
     };
   } catch (error) {

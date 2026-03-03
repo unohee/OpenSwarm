@@ -341,18 +341,30 @@ export class PairPipeline extends EventEmitter {
 
           console.log(`[Pipeline] Pre-check result: passed=${preCheck.passed}, confidence=${preCheck.confidence}, issues=${preCheck.issues.length}`);
 
-          // If pre-check fails, reject immediately without expensive Sonnet review
-          if (!preCheck.passed) {
-            console.log('[Pipeline] Pre-check failed, rejecting without full review');
+          // If pre-check fails with format parsing error, it's likely Haiku not following instructions
+          // Escalate to Sonnet review instead of immediate rejection
+          const isFormatError = !preCheck.passed &&
+            preCheck.issues.some(i => i.includes('did not provide') || i.includes('format parsing'));
+
+          if (!preCheck.passed && !isFormatError) {
+            // Pre-check failed with real issues, reject without full review
+            console.log('[Pipeline] Pre-check failed with specific issues, rejecting without full review');
+            const issueMsg = preCheck.issues.length > 0
+              ? preCheck.issues.join('; ')
+              : 'Unknown reason';
             result = {
               decision: 'reject',
-              feedback: `Pre-check failed: ${preCheck.issues.join('; ')}`,
+              feedback: `Pre-check failed: ${issueMsg}`,
               issues: preCheck.issues,
               suggestions: ['Fix the basic issues and retry'],
             };
           } else {
-            // Pre-check passed, proceed with full Sonnet review
-            console.log('[Pipeline] Pre-check passed, proceeding to full review (Sonnet)...');
+            // Pre-check passed OR failed due to format error (Haiku issue) - proceed with Sonnet review
+            if (isFormatError) {
+              console.log('[Pipeline] Pre-check format error detected (Haiku issue), escalating to Sonnet review for accurate assessment');
+            } else {
+              console.log('[Pipeline] Pre-check passed, proceeding to full review (Sonnet)...');
+            }
             result = await reviewerAgent.runReviewer({
               taskTitle: context.task.title,
               taskDescription: context.task.description || '',
