@@ -211,7 +211,6 @@ function createUI() {
     fastCSR: true, // Faster rendering for streaming
   });
 
-  // Color palette - Claude Code inspired
   const colors = {
     bg: '#1a1a1a',
     statusBg: '#2d3748',
@@ -229,7 +228,6 @@ function createUI() {
     dimText: '#718096',
   };
 
-  // Status bar (top) - Claude Code style
   const statusBar = blessed.box({
     top: 0,
     left: 0,
@@ -242,7 +240,6 @@ function createUI() {
     },
   });
 
-  // Tab bar - sleek design
   const tabBar = blessed.box({
     top: 1,
     left: 0,
@@ -284,7 +281,6 @@ function createUI() {
     },
   });
 
-  // Projects tab - matching style
   const projectsBox = blessed.box({
     top: 2,
     left: 0,
@@ -307,7 +303,6 @@ function createUI() {
     hidden: true,
   });
 
-  // Tasks tab
   const tasksBox = blessed.box({
     top: 2,
     left: 0,
@@ -330,7 +325,6 @@ function createUI() {
     hidden: true,
   });
 
-  // Logs tab
   const logsBox = blessed.log({
     top: 2,
     left: 0,
@@ -378,13 +372,12 @@ function createUI() {
     },
   });
 
-  // Help bar (bottom) - subtle
   const helpBar = blessed.box({
     bottom: 0,
     left: 0,
     width: '100%',
     height: 1,
-    content: ' {#718096-fg}Tab{/} Switch  {#718096-fg}Enter{/} Send  {#718096-fg}Shift+Enter{/} Newline  {#718096-fg}Esc{/} Clear  {#718096-fg}Ctrl+C{/} Exit  {#718096-fg}/help{/} Commands',
+    content: ' {#718096-fg}Tab{/} Switch  {#718096-fg}Enter{/} Send  {#718096-fg}Shift+Enter{/} Newline  {#718096-fg}Esc{/} Exit Input  {#718096-fg}i{/} Focus Input  {#718096-fg}Ctrl+C{/} Exit  {#718096-fg}/help{/} Cmds',
     tags: true,
     style: {
       fg: '#a0aec0',
@@ -437,13 +430,11 @@ function updateTabBar(ui: ReturnType<typeof createUI>, currentTab: number) {
 function switchTab(state: AppState, ui: ReturnType<typeof createUI>, tabIndex: number) {
   state.currentTab = tabIndex;
 
-  // Hide all content boxes
   ui.chatLog.hide();
   ui.projectsBox.hide();
   ui.tasksBox.hide();
   ui.logsBox.hide();
 
-  // Show selected tab
   switch (tabIndex) {
     case 0:
       ui.chatLog.show();
@@ -552,7 +543,6 @@ function startSpinner(ui: ReturnType<typeof createUI>): { interval: NodeJS.Timeo
   let frameIndex = 0;
   const loadingMessage = LOADING_MESSAGES[Math.floor(Math.random() * LOADING_MESSAGES.length)];
 
-  // Add spinner line to chat
   const lines = ui.chatLog.getLines();
   const lineIndex = lines.length;
 
@@ -573,7 +563,6 @@ function stopSpinner(
   spinnerData: { interval: NodeJS.Timeout; lineIndex: number }
 ): void {
   clearInterval(spinnerData.interval);
-  // Remove spinner line
   ui.chatLog.deleteLine(spinnerData.lineIndex);
   ui.screen.render();
 }
@@ -581,7 +570,6 @@ function stopSpinner(
 async function sendMessage(state: AppState, ui: ReturnType<typeof createUI>, message: string) {
   if (!message.trim()) return;
 
-  // Display user message - Claude Code style
   ui.chatLog.log('');
   ui.chatLog.log(`{#60a5fa-fg}{bold}▸ You{/bold}{/}`);
   ui.chatLog.log(`  ${message}`);
@@ -591,7 +579,6 @@ async function sendMessage(state: AppState, ui: ReturnType<typeof createUI>, mes
 
   state.session.messages.push({ role: 'user', content: message });
 
-  // Prepare assistant message placeholder
   ui.chatLog.log(`{#34d399-fg}{bold}▸ Assistant{/bold}{/}`);
   const assistantHeaderLine = ui.chatLog.getLines().length - 1;
   let assistantContent = '';
@@ -599,7 +586,6 @@ async function sendMessage(state: AppState, ui: ReturnType<typeof createUI>, mes
   let spinnerStopped = false;
   let contentStartLine = assistantHeaderLine + 1;
 
-  // Start spinner
   const spinnerData = startSpinner(ui);
 
   try {
@@ -712,7 +698,6 @@ function updateStatusBar(state: AppState, ui: ReturnType<typeof createUI>) {
   const cost = state.session.totalCost > 0 ? `$${state.session.totalCost.toFixed(4)}` : '$0.00';
   const msgs = state.session.messages.length;
 
-  // Claude Code inspired status bar
   const status = [
     '{bold}OpenSwarm{/bold}',
     `{#718096-fg}│{/}`,
@@ -805,7 +790,9 @@ async function handleCommand(
       ui.chatLog.log('');
       ui.chatLog.log('    {#718096-fg}1-4{/}            Switch tabs directly');
       ui.chatLog.log('    {#718096-fg}Tab/Shift+Tab{/}  Cycle through tabs');
-      ui.chatLog.log('    {#718096-fg}Ctrl+C{/}         Exit and save');
+      ui.chatLog.log('    {#718096-fg}Esc{/}            Exit input mode (blur)');
+      ui.chatLog.log('    {#718096-fg}i / Enter{/}      Focus input (from chat)');
+      ui.chatLog.log('    {#718096-fg}Ctrl+C{/}         Exit (double press to confirm)');
       ui.chatLog.log('');
       ui.screen.render();
       break;
@@ -822,7 +809,6 @@ async function handleCommand(
 }
 // Main
 export async function main(): Promise<void> {
-  // Initialize session
   const loadArg = process.argv[2];
   let session: Session;
 
@@ -868,7 +854,6 @@ export async function main(): Promise<void> {
 
   const ui = createUI();
 
-  // Initial status
   updateStatusBar(state, ui);
   updateTabBar(ui, state.currentTab);
 
@@ -913,6 +898,7 @@ export async function main(): Promise<void> {
   });
 
   // Ctrl+C: Clear input or exit (Claude Code style)
+  let ctrlCPressed = false;
   ui.screen.key(['C-c'], async () => {
     const currentValue = ui.inputBox.getValue();
     if (currentValue && currentValue.trim()) {
@@ -920,16 +906,39 @@ export async function main(): Promise<void> {
       ui.inputBox.clearValue();
       ui.inputBox.focus();
       ui.screen.render();
+      ctrlCPressed = false;
     } else {
-      // If input is empty, exit
-      await saveSession(state.session);
-      process.exit(0);
+      // If input is empty, exit with double Ctrl+C
+      if (ctrlCPressed) {
+        await saveSession(state.session);
+        process.exit(0);
+      } else {
+        ctrlCPressed = true;
+        ui.statusBar.setContent(' {#f59e0b-fg}Press Ctrl+C again to exit{/}');
+        ui.screen.render();
+        setTimeout(() => {
+          ctrlCPressed = false;
+          updateStatusBar(state, ui);
+          ui.screen.render();
+        }, 2000);
+      }
     }
   });
 
-  // Escape: Clear input
+  // Escape: Clear input and blur (exit input mode)
   ui.screen.key(['escape'], () => {
-    ui.inputBox.clearValue();
+    const currentValue = ui.inputBox.getValue();
+    if (currentValue && currentValue.trim()) {
+      // Clear input if has content
+      ui.inputBox.clearValue();
+    }
+    // Blur input box to exit input mode
+    ui.chatLog.focus();
+    ui.screen.render();
+  });
+
+  // Enter in chatLog: focus input
+  ui.chatLog.key(['enter', 'i'], () => {
     ui.inputBox.focus();
     ui.screen.render();
   });
@@ -951,12 +960,6 @@ export async function main(): Promise<void> {
     } else {
       await sendMessage(state, ui, trimmed);
     }
-  });
-
-  // For backward compatibility with blessed events
-  ui.inputBox.on('submit', async (_value: string) => {
-    // This is now handled by the Enter key handler above
-    // Keep this for compatibility but do nothing
   });
 
   // Focus input by default
