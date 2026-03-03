@@ -195,41 +195,6 @@ const LOADING_MESSAGES = [
 
 const SPINNER_FRAMES = ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷'];
 
-const ASCII_BANNER = `
-   ▄▄▄▄▄▄▄▄▄▄▄  ▄▄▄▄▄▄▄▄▄▄▄  ▄▄▄▄▄▄▄▄▄▄▄  ▄▄        ▄  ▄▄▄▄▄▄▄▄▄▄▄  ▄         ▄  ▄▄▄▄▄▄▄▄▄▄▄  ▄▄▄▄▄▄▄▄▄▄▄  ▄▄       ▄▄
-  ▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌▐░░▌      ▐░▌▐░░░░░░░░░░░▌▐░▌       ▐░▌▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌▐░░▌     ▐░░▌
-  ▐░█▀▀▀▀▀▀▀█░▌▐░█▀▀▀▀▀▀▀█░▌▐░█▀▀▀▀▀▀▀▀▀ ▐░▌░▌     ▐░▌▐░█▀▀▀▀▀▀▀▀▀  ▐░▌     ▐░▌ ▐░█▀▀▀▀▀▀▀█░▌▐░█▀▀▀▀▀▀▀█░▌▐░▌░▌   ▐░▐░▌
-  ▐░▌       ▐░▌▐░▌       ▐░▌▐░▌          ▐░▌▐░▌    ▐░▌▐░▌            ▐░▌   ▐░▌  ▐░▌       ▐░▌▐░▌       ▐░▌▐░▌▐░▌ ▐░▌▐░▌
-  ▐░▌       ▐░▌▐░█▄▄▄▄▄▄▄█░▌▐░█▄▄▄▄▄▄▄▄▄ ▐░▌ ▐░▌   ▐░▌ ▐░█▄▄▄▄▄▄▄▄▄   ▐░▌ ▐░▌   ▐░█▄▄▄▄▄▄▄█░▌▐░█▄▄▄▄▄▄▄█░▌▐░▌ ▐░▐░▌ ▐░▌
-  ▐░▌       ▐░▌▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌▐░▌  ▐░▌  ▐░▌  ▐░░░░░░░░░░░▌  ▐░▐░▌    ▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌▐░▌  ▐░▌  ▐░▌
-  ▐░▌       ▐░▌▐░█▀▀▀▀▀▀▀▀▀ ▐░█▀▀▀▀▀▀▀▀▀ ▐░▌   ▐░▌ ▐░▌   ▐░█▀▀▀▀▀▀▀▀▀    ▐░▌     ▐░█▀▀▀▀▀▀▀█░▌▐░█▀▀▀▀█░█▀▀ ▐░▌   ▀   ▐░▌
-  ▐░▌       ▐░▌▐░▌          ▐░▌          ▐░▌    ▐░▌▐░▌   ▐░▌            ▐░▌░▌    ▐░▌       ▐░▌▐░▌     ▐░▌  ▐░▌       ▐░▌
-  ▐░█▄▄▄▄▄▄▄█░▌▐░▌          ▐░█▄▄▄▄▄▄▄▄▄ ▐░▌     ▐░▐░▌   ▐░█▄▄▄▄▄▄▄▄▄  ▐░▌ ▐░▌   ▐░▌       ▐░▌▐░▌      ▐░▌ ▐░▌       ▐░▌
-  ▐░░░░░░░░░░░▌▐░▌          ▐░░░░░░░░░░░▌▐░▌      ▐░░▌   ▐░░░░░░░░░░░▌▐░▌   ▐░▌  ▐░▌       ▐░▌▐░▌       ▐░▌▐░▌       ▐░▌
-   ▀▀▀▀▀▀▀▀▀▀▀  ▀            ▀▀▀▀▀▀▀▀▀▀▀  ▀        ▀▀     ▀▀▀▀▀▀▀▀▀▀▀  ▀     ▀    ▀         ▀  ▀         ▀  ▀         ▀
-`;
-
-const BLESSINGS = [
-  'From the weakness of the mind, Omnissiah save us',
-  'From the lies of the Antipath, circuit preserve us',
-  'From the rage of the Beast, iron protect us',
-  'From the temptations of the flesh, silica cleanse us',
-  'From the ravages of the Destroyer, anima shield us',
-  'From this rotting cage of biomatter, Machine God set us free',
-];
-
-// ============================================
-// Utility Functions
-// ============================================
-
-function toHex(str: string): string {
-  return str.split('').map(c => c.charCodeAt(0).toString(16).padStart(2, '0')).join('');
-}
-
-function toBinary(num: number): string {
-  return num.toString(2).padStart(16, '0');
-}
-
 // ============================================
 // UI Components - Claude Code Style
 // ============================================
@@ -241,6 +206,9 @@ function createUI() {
     fullUnicode: true,
     terminal: 'xterm-256color',
     forceUnicode: true,
+    warnings: false, // Suppress warnings that can corrupt display
+    dockBorders: true, // Better border handling in tmux
+    fastCSR: true, // Faster rendering for streaming
   });
 
   // Color palette - Claude Code inspired
@@ -287,12 +255,12 @@ function createUI() {
     },
   });
 
-  // Chat tab content - clean borders
+  // Chat tab content - clean borders (adjusted for taller input box)
   const chatLog = blessed.log({
     top: 2,
     left: 0,
     width: '100%',
-    height: '100%-7',
+    height: '100%-9',  // Increased from -7 to -9 for 5-line input box
     scrollable: true,
     alwaysScroll: true,
     mouse: true,
@@ -321,7 +289,7 @@ function createUI() {
     top: 2,
     left: 0,
     width: '100%',
-    height: '100%-7',
+    height: '100%-9',  // Adjusted for taller input box
     content: '{center}{#718096-fg}Loading projects...{/}{/center}',
     tags: true,
     scrollable: true,
@@ -344,7 +312,7 @@ function createUI() {
     top: 2,
     left: 0,
     width: '100%',
-    height: '100%-7',
+    height: '100%-9',  // Adjusted for taller input box
     content: '{center}{#718096-fg}Loading tasks...{/}{/center}',
     tags: true,
     scrollable: true,
@@ -367,7 +335,7 @@ function createUI() {
     top: 2,
     left: 0,
     width: '100%',
-    height: '100%-7',
+    height: '100%-9',  // Adjusted for taller input box
     scrollable: true,
     alwaysScroll: true,
     mouse: true,
@@ -385,16 +353,20 @@ function createUI() {
     hidden: true,
   });
 
-  // Input box - prominent when focused
-  const inputBox = blessed.textbox({
+  // Input box - textarea for multiline + Korean support
+  const inputBox = blessed.textarea({
     bottom: 1,
     left: 0,
     width: '100%',
-    height: 3,
+    height: 5,  // Increased height for multiline
     inputOnFocus: true,
     border: { type: 'line' },
-    label: ' {#718096-fg}Message{/} ',
+    label: ' {#718096-fg}Message (Shift+Enter: newline, Enter: send){/} ',
     tags: true,
+    keys: true,  // Enable key handling
+    mouse: true,
+    scrollable: true,
+    alwaysScroll: false,
     style: {
       fg: '#f7fafc',
       bg: '#1a1a1a',
@@ -412,7 +384,7 @@ function createUI() {
     left: 0,
     width: '100%',
     height: 1,
-    content: ' {#718096-fg}Tab{/} Switch  {#718096-fg}Enter{/} Send  {#718096-fg}Esc{/} Clear  {#718096-fg}Ctrl+C{/} Clear/Exit  {#718096-fg}/help{/} Commands',
+    content: ' {#718096-fg}Tab{/} Switch  {#718096-fg}Enter{/} Send  {#718096-fg}Shift+Enter{/} Newline  {#718096-fg}Esc{/} Clear  {#718096-fg}Ctrl+C{/} Exit  {#718096-fg}/help{/} Commands',
     tags: true,
     style: {
       fg: '#a0aec0',
@@ -637,13 +609,14 @@ async function sendMessage(state: AppState, ui: ReturnType<typeof createUI>, mes
 
   // Prepare assistant message placeholder
   ui.chatLog.log(`{#34d399-fg}{bold}▸ Assistant{/bold}{/}`);
+  const assistantHeaderLine = ui.chatLog.getLines().length - 1;
   let assistantContent = '';
   let lastRenderTime = 0;
   let spinnerStopped = false;
+  let contentStartLine = assistantHeaderLine + 1;
 
-  // Start spinner & diagnostics
+  // Start spinner
   const spinnerData = startSpinner(ui);
-  const startTime = Date.now();
 
   try {
     const result = await callClaude(
@@ -658,24 +631,25 @@ async function sendMessage(state: AppState, ui: ReturnType<typeof createUI>, mes
         }
 
         assistantContent += chunk;
-        // Throttle rendering for smooth streaming (max 60fps)
+        // Throttle rendering for smoother streaming (30fps instead of 60fps)
         const now = Date.now();
-        if (now - lastRenderTime < 16) return;
+        if (now - lastRenderTime < 33) return;
         lastRenderTime = now;
 
-        // Update content with streaming text
-        const lines = ui.chatLog.getLines();
-        const headerIdx = lines.length - 1;
-        if (headerIdx >= 0) {
-          // Format with indentation
-          const formatted = assistantContent
-            .split('\n')
-            .map(line => `  ${line}`)
-            .join('\n');
-          ui.chatLog.setLine(headerIdx, `{#34d399-fg}{bold}▸ Assistant{/bold}{/}\n${formatted}`);
-          ui.chatLog.setScrollPerc(100);
-          ui.screen.render();
+        // Clear previous content lines
+        const currentLines = ui.chatLog.getLines().length;
+        for (let i = contentStartLine; i < currentLines; i++) {
+          ui.chatLog.deleteLine(contentStartLine);
         }
+
+        // Add updated content line by line (prevents line wrapping issues)
+        const contentLines = assistantContent.split('\n');
+        for (const line of contentLines) {
+          ui.chatLog.log(`  ${line}`);
+        }
+
+        ui.chatLog.setScrollPerc(100);
+        ui.screen.render();
       }
     );
 
@@ -694,15 +668,22 @@ async function sendMessage(state: AppState, ui: ReturnType<typeof createUI>, mes
     state.session.totalTokens += result.tokens;
 
     // Finalize assistant message with cost
-    const formatted = result.response
-      .split('\n')
-      .map(line => `  ${line}`)
-      .join('\n');
-    const costStr = result.cost > 0 ? `\n  {#718096-fg}${result.tokens} tokens · $${result.cost.toFixed(4)}{/}` : '';
-    ui.chatLog.setLine(
-      ui.chatLog.getLines().length - 1,
-      `{#34d399-fg}{bold}▸ Assistant{/bold}{/}\n${formatted}${costStr}`
-    );
+    // Clear streaming content first
+    const currentLines = ui.chatLog.getLines().length;
+    for (let i = contentStartLine; i < currentLines; i++) {
+      ui.chatLog.deleteLine(contentStartLine);
+    }
+
+    // Add final content line by line
+    const contentLines = result.response.split('\n');
+    for (const line of contentLines) {
+      ui.chatLog.log(`  ${line}`);
+    }
+
+    // Add cost info if available
+    if (result.cost > 0) {
+      ui.chatLog.log(`  {#718096-fg}${result.tokens} tokens · $${result.cost.toFixed(4)}{/}`);
+    }
     ui.chatLog.log('');
 
     state.session.messages.push({
@@ -957,13 +938,17 @@ export async function main(): Promise<void> {
     ui.screen.render();
   });
 
-  // Input submission
-  ui.inputBox.on('submit', async (value: string) => {
+  // Shift+Enter: Insert newline (handled by textarea by default)
+  // Enter: Submit message
+  ui.inputBox.key(['enter'], async () => {
+    const value = ui.inputBox.getValue();
     const trimmed = value.trim();
-    ui.inputBox.clearValue();
-    ui.inputBox.focus();
 
     if (!trimmed) return;
+
+    ui.inputBox.clearValue();
+    ui.inputBox.focus();
+    ui.screen.render();
 
     if (trimmed.startsWith('/')) {
       await handleCommand(trimmed, state, ui);
@@ -972,8 +957,21 @@ export async function main(): Promise<void> {
     }
   });
 
+  // For backward compatibility with blessed events
+  ui.inputBox.on('submit', async (_value: string) => {
+    // This is now handled by the Enter key handler above
+    // Keep this for compatibility but do nothing
+  });
+
   // Focus input by default
   ui.inputBox.focus();
+
+  // Handle terminal resize (important for tmux)
+  process.stdout.on('resize', () => {
+    ui.screen.alloc();
+    ui.screen.realloc();
+    ui.screen.render();
+  });
 
   // Render
   ui.screen.render();
