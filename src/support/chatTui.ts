@@ -523,43 +523,14 @@ async function loadTasksData(box: blessed.Widgets.BoxElement) {
       return;
     }
 
-    const lines: string[] = [''];
-
-    // Build task info map (taskId -> {title, issueIdentifier})
+    // Build task info map and extract stage events
     const taskInfo = new Map<string, { title?: string; issueIdentifier?: string }>();
+    const allStageEvents: Array<{ taskId: string; stage: string; status: string; model?: string; inputTokens?: number; outputTokens?: number; costUsd?: number }> = [];
+
     for (const event of stages) {
       if (event.type === 'task:started' && event.data.taskId) {
-        taskInfo.set(event.data.taskId, {
-          title: event.data.title,
-          issueIdentifier: event.data.issueIdentifier,
-        });
-      }
-    }
-
-    // Group by taskId and show most recent stages
-    const taskStages = new Map<string, typeof stages>();
-    for (const event of stages) {
-      if (event.type === 'pipeline:stage' && event.data.taskId) {
-        const tid = event.data.taskId;
-        if (!taskStages.has(tid)) taskStages.set(tid, []);
-        taskStages.get(tid)!.push(event);
-      }
-    }
-
-    // Flatten all stages with timestamps for sorting
-    const allStageEvents: Array<{
-      taskId: string;
-      stage: string;
-      status: string;
-      model?: string;
-      inputTokens?: number;
-      outputTokens?: number;
-      costUsd?: number;
-      timestamp: number;
-    }> = [];
-
-    for (const event of stages) {
-      if (event.type === 'pipeline:stage' && event.data.taskId && event.data.stage) {
+        taskInfo.set(event.data.taskId, { title: event.data.title, issueIdentifier: event.data.issueIdentifier });
+      } else if (event.type === 'pipeline:stage' && event.data.taskId && event.data.stage) {
         allStageEvents.push({
           taskId: event.data.taskId,
           stage: event.data.stage,
@@ -568,7 +539,6 @@ async function loadTasksData(box: blessed.Widgets.BoxElement) {
           inputTokens: event.data.inputTokens,
           outputTokens: event.data.outputTokens,
           costUsd: event.data.costUsd,
-          timestamp: Date.now(), // events are already ordered
         });
       }
     }
@@ -578,52 +548,45 @@ async function loadTasksData(box: blessed.Widgets.BoxElement) {
       return;
     }
 
-    // Show most recent 15 stage events
+    // Render pipeline table
     const recentStages = allStageEvents.slice(-15).reverse();
+    const lines = [
+      '',
+      `  {#34d399-fg}{bold}Pipeline Events{/bold} {#718096-fg}(${recentStages.length} recent){/}{/}`,
+      '',
+      `  {#718096-fg}${'TASK'.padEnd(12)} ${'STAGE'.padEnd(10)} ${'MODEL'.padEnd(12)} ${'TOKENS'.padEnd(15)} STATUS{/}`,
+      `  {#444444-fg}${'─'.repeat(70)}{/}`,
+    ];
 
-    lines.push(`  {#34d399-fg}{bold}Pipeline Events{/bold} {#718096-fg}(${recentStages.length} recent){/}{/}`);
-    lines.push('');
-    lines.push(`  {#718096-fg}${'TASK'.padEnd(12)} ${'STAGE'.padEnd(10)} ${'MODEL'.padEnd(12)} ${'TOKENS'.padEnd(15)} STATUS{/}`);
-    lines.push(`  {#444444-fg}${'─'.repeat(70)}{/}`);
+    for (const ev of recentStages) {
+      const info = taskInfo.get(ev.taskId);
+      const task = (info?.issueIdentifier || ev.taskId.slice(0, 8)).padEnd(12).slice(0, 12);
+      const stage = ev.stage.padEnd(10).slice(0, 10);
 
-    for (const event of recentStages) {
-      const info = taskInfo.get(event.taskId);
-      const taskLabel = (info?.issueIdentifier || event.taskId.slice(0, 8)).padEnd(12).slice(0, 12);
+      const statusMap: Record<string, [string, string]> = {
+        start: ['◐', '#f59e0b'],
+        complete: ['●', '#34d399'],
+        fail: ['✗', '#ef4444'],
+      };
+      const [icon, color] = statusMap[ev.status] || ['○', '#718096'];
 
-      let statusIcon = '○';
-      let statusColor = '#718096';
-      if (event.status === 'start') {
-        statusIcon = '◐';
-        statusColor = '#f59e0b';
-      } else if (event.status === 'complete') {
-        statusIcon = '●';
-        statusColor = '#34d399';
-      } else if (event.status === 'fail') {
-        statusIcon = '✗';
-        statusColor = '#ef4444';
+      let model = '';
+      if (ev.model?.includes('sonnet-4-5')) model = 'sonnet-4.5';
+      else if (ev.model?.includes('haiku-4-5')) model = 'haiku-4.5';
+      else if (ev.model?.includes('opus-4')) model = 'opus-4';
+      else if (ev.model) model = ev.model.split('-').pop() || '';
+      model = model.padEnd(12).slice(0, 12);
+
+      let tokens = '';
+      if (ev.inputTokens || ev.outputTokens) {
+        const inK = ev.inputTokens ? Math.round(ev.inputTokens / 1000) : 0;
+        const outK = ev.outputTokens ? Math.round(ev.outputTokens / 1000) : 0;
+        tokens = `${inK}k/${outK}k`;
+        if (ev.costUsd != null) tokens += ` $${ev.costUsd.toFixed(2)}`;
       }
+      tokens = tokens.padEnd(15).slice(0, 15);
 
-      let modelStr = '';
-      if (event.model) {
-        if (event.model.includes('sonnet-4-5')) modelStr = 'sonnet-4.5';
-        else if (event.model.includes('haiku-4-5')) modelStr = 'haiku-4.5';
-        else if (event.model.includes('opus-4')) modelStr = 'opus-4';
-        else modelStr = event.model.split('-').pop() || '';
-      }
-      modelStr = modelStr.padEnd(12).slice(0, 12);
-
-      const stageStr = (event.stage || '').padEnd(10).slice(0, 10);
-
-      let tokensStr = '';
-      if (event.inputTokens || event.outputTokens) {
-        const inK = event.inputTokens ? Math.round(event.inputTokens / 1000) : 0;
-        const outK = event.outputTokens ? Math.round(event.outputTokens / 1000) : 0;
-        tokensStr = `${inK}k/${outK}k`;
-        if (event.costUsd != null) tokensStr += ` $${event.costUsd.toFixed(2)}`;
-      }
-      tokensStr = tokensStr.padEnd(15).slice(0, 15);
-
-      lines.push(`  {#34d399-fg}${taskLabel}{/} {#718096-fg}${stageStr}{/} {#34d399-fg}${modelStr}{/} {#718096-fg}${tokensStr}{/} {${statusColor}-fg}${statusIcon} ${event.status}{/}`);
+      lines.push(`  {#34d399-fg}${task}{/} {#718096-fg}${stage}{/} {#34d399-fg}${model}{/} {#718096-fg}${tokens}{/} {${color}-fg}${icon} ${ev.status}{/}`);
     }
 
     box.setContent(lines.join('\n'));
