@@ -325,6 +325,28 @@ function createUI() {
     hidden: true,
   });
 
+  const stuckBox = blessed.box({
+    top: 2,
+    left: 0,
+    width: '100%',
+    height: '100%-9',
+    content: '{center}{#718096-fg}Loading stuck issues...{/}{/center}',
+    tags: true,
+    scrollable: true,
+    alwaysScroll: true,
+    mouse: true,
+    keys: true,
+    vi: true,
+    scrollbar: {
+      ch: '█',
+      style: { fg: colors.scrollbar },
+    },
+    style: {
+      border: { fg: colors.border },
+    },
+    hidden: true,
+  });
+
   const logsBox = blessed.log({
     top: 2,
     left: 0,
@@ -390,6 +412,7 @@ function createUI() {
   screen.append(chatLog);
   screen.append(projectsBox);
   screen.append(tasksBox);
+  screen.append(stuckBox);
   screen.append(logsBox);
   screen.append(inputBox);
   screen.append(helpBar);
@@ -401,6 +424,7 @@ function createUI() {
     chatLog,
     projectsBox,
     tasksBox,
+    stuckBox,
     logsBox,
     inputBox,
     helpBar,
@@ -412,7 +436,8 @@ function updateTabBar(ui: ReturnType<typeof createUI>, currentTab: number) {
     { key: '1', name: 'Chat', icon: '💬' },
     { key: '2', name: 'Projects', icon: '📁' },
     { key: '3', name: 'Tasks', icon: '✓' },
-    { key: '4', name: 'Logs', icon: '📝' },
+    { key: '4', name: 'Stuck', icon: '⚠' },
+    { key: '5', name: 'Logs', icon: '📝' },
   ];
 
   const content = tabs.map((tab, idx) => {
@@ -433,6 +458,7 @@ function switchTab(state: AppState, ui: ReturnType<typeof createUI>, tabIndex: n
   ui.chatLog.hide();
   ui.projectsBox.hide();
   ui.tasksBox.hide();
+  ui.stuckBox.hide();
   ui.logsBox.hide();
 
   switch (tabIndex) {
@@ -448,6 +474,10 @@ function switchTab(state: AppState, ui: ReturnType<typeof createUI>, tabIndex: n
       loadTasksData(ui.tasksBox);
       break;
     case 3:
+      ui.stuckBox.show();
+      loadStuckData(ui.stuckBox);
+      break;
+    case 4:
       ui.logsBox.show();
       break;
   }
@@ -592,6 +622,84 @@ async function loadTasksData(box: blessed.Widgets.BoxElement) {
     box.setContent(lines.join('\n'));
   } catch (err) {
     box.setContent(`\n{center}{#ef4444-fg}Failed to load pipeline{/}\n{#718096-fg}${err}{/}{/center}`);
+  }
+}
+
+async function loadStuckData(box: blessed.Widgets.BoxElement) {
+  try {
+    const response = await fetch('http://127.0.0.1:3847/api/stuck-issues');
+    const { stuckIssues, failedIssues } = await response.json() as {
+      stuckIssues: Array<{
+        identifier: string;
+        title: string;
+        state: string;
+        priority: number;
+        stuckDays: number;
+        reason: string;
+        project?: { name: string };
+      }>;
+      failedIssues: Array<{
+        identifier: string;
+        title: string;
+        state: string;
+        priority: number;
+        reason: string;
+        project?: { name: string };
+      }>;
+    };
+
+    const totalStuck = stuckIssues.length;
+    const totalFailed = failedIssues.length;
+    const total = totalStuck + totalFailed;
+
+    if (total === 0) {
+      box.setContent('\n{center}{#34d399-fg}✓ All issues healthy{/}{/center}');
+      return;
+    }
+
+    const lines = [
+      '',
+      `  {#ef4444-fg}⚠ ${total} issue${total > 1 ? 's' : ''} need attention{/}`,
+      '',
+    ];
+
+    // Stuck issues
+    if (totalStuck > 0) {
+      lines.push(`  {#f59e0b-fg}{bold}⏱ STUCK (${totalStuck}){/bold}{/}`);
+      lines.push('');
+
+      for (const issue of stuckIssues) {
+        const priorityIcon = issue.priority === 1 ? '{#ef4444-fg}🔴{/}' : issue.priority === 2 ? '{#f59e0b-fg}🟡{/}' : '{#718096-fg}⚪{/}';
+        lines.push(`  ${priorityIcon} {bold}${issue.identifier}{/bold}`);
+        lines.push(`    ${issue.title.substring(0, 60)}${issue.title.length > 60 ? '...' : ''}`);
+        lines.push(`    {#f59e0b-fg}${issue.reason}{/}`);
+        if (issue.project?.name) {
+          lines.push(`    {#718096-fg}📁 ${issue.project.name}{/}`);
+        }
+        lines.push('');
+      }
+    }
+
+    // Failed issues
+    if (totalFailed > 0) {
+      lines.push(`  {#ef4444-fg}{bold}✖ FAILED (${totalFailed}){/bold}{/}`);
+      lines.push('');
+
+      for (const issue of failedIssues) {
+        const priorityIcon = issue.priority === 1 ? '{#ef4444-fg}🔴{/}' : issue.priority === 2 ? '{#f59e0b-fg}🟡{/}' : '{#718096-fg}⚪{/}';
+        lines.push(`  ${priorityIcon} {bold}${issue.identifier}{/bold}`);
+        lines.push(`    ${issue.title.substring(0, 60)}${issue.title.length > 60 ? '...' : ''}`);
+        lines.push(`    {#ef4444-fg}${issue.reason}{/}`);
+        if (issue.project?.name) {
+          lines.push(`    {#718096-fg}📁 ${issue.project.name}{/}`);
+        }
+        lines.push('');
+      }
+    }
+
+    box.setContent(lines.join('\n'));
+  } catch (err) {
+    box.setContent(`\n{center}{#ef4444-fg}Failed to load stuck issues{/}\n{#718096-fg}${err}{/}{/center}`);
   }
 }
 // Loading Spinner (inline in chat)
@@ -944,12 +1052,13 @@ export async function main(): Promise<void> {
   ui.screen.key(['2'], () => switchTab(state, ui, 1));
   ui.screen.key(['3'], () => switchTab(state, ui, 2));
   ui.screen.key(['4'], () => switchTab(state, ui, 3));
+  ui.screen.key(['5'], () => switchTab(state, ui, 4));
   ui.screen.key(['tab'], () => {
-    const next = (state.currentTab + 1) % 4;
+    const next = (state.currentTab + 1) % 5;
     switchTab(state, ui, next);
   });
   ui.screen.key(['S-tab'], () => {
-    const prev = (state.currentTab - 1 + 4) % 4;
+    const prev = (state.currentTab - 1 + 5) % 5;
     switchTab(state, ui, prev);
   });
 
@@ -1031,10 +1140,11 @@ export async function main(): Promise<void> {
   // Render
   ui.screen.render();
 
-  // Auto-refresh Projects/Tasks tabs every 5s
+  // Auto-refresh Projects/Tasks/Stuck tabs every 5s
   setInterval(() => {
     if (state.currentTab === 1) loadProjectsData(ui.projectsBox);
     if (state.currentTab === 2) loadTasksData(ui.tasksBox);
+    if (state.currentTab === 3) loadStuckData(ui.stuckBox);
     ui.screen.render();
   }, 5000);
 

@@ -1082,3 +1082,122 @@ _This issue was auto-created by an agent. Please review and adjust priority or d
     comments: [],
   };
 }
+
+/**
+ * Get stuck/failed issues and PRs (issues stuck in In Progress for >7 days, or with retry/failed labels)
+ */
+export async function getStuckIssues(): Promise<{
+  stuckIssues: Array<LinearIssueInfo & { stuckDays: number; reason: string }>;
+  failedIssues: Array<LinearIssueInfo & { reason: string }>;
+}> {
+  const linear = getClient();
+  const now = Date.now();
+  const STUCK_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+  // Fetch In Progress issues
+  const inProgressIssues = await withRateLimit('linear', async () => linear.issues({
+    filter: {
+      team: { id: { eq: teamId } },
+      state: { name: { eq: 'In Progress' } },
+    },
+    first: 100,
+  }));
+
+  // Fetch issues with retry/failed/blocked labels
+  const problematicIssues = await withRateLimit('linear', async () => linear.issues({
+    filter: {
+      team: { id: { eq: teamId } },
+      state: { name: { nin: ['Done', 'Canceled'] } },
+      labels: { name: { in: ['retry', 'failed', 'blocked', 'needs-help'] } },
+    },
+    first: 100,
+  }));
+
+  const stuckIssues: Array<LinearIssueInfo & { stuckDays: number; reason: string }> = [];
+  const failedIssues: Array<LinearIssueInfo & { reason: string }> = [];
+
+  // Process In Progress issues (check if stuck)
+  for (const issue of inProgressIssues.nodes) {
+    const updatedAt = new Date(issue.updatedAt).getTime();
+    const stuckMs = now - updatedAt;
+
+    if (stuckMs > STUCK_THRESHOLD_MS) {
+      const [state, labels, comments, project] = await Promise.all([
+        issue.state,
+        issue.labels(),
+        issue.comments(),
+        getProjectInfo(issue),
+      ]);
+
+      const stuckDays = Math.floor(stuckMs / (24 * 60 * 60 * 1000));
+      stuckIssues.push({
+        id: issue.id,
+        identifier: issue.identifier,
+        title: issue.title,
+        description: issue.description ?? undefined,
+        state: state?.name ?? 'Unknown',
+        priority: issue.priority,
+        labels: labels.nodes.map((l) => l.name),
+        comments: comments.nodes.map((c) => ({
+          id: c.id,
+          body: c.body,
+          createdAt: c.createdAt.toISOString(),
+          user: undefined,
+        })),
+        project,
+        stuckDays,
+        reason: `No updates for ${stuckDays} days`,
+      });
+    }
+  }
+
+  // Process problematic issues (retry, failed, blocked)
+  for (const issue of problematicIssues.nodes) {
+    const [state, labels, comments, project] = await Promise.all([
+      issue.state,
+      issue.labels(),
+      issue.comments(),
+      getProjectInfo(issue),
+    ]);
+
+    const labelNames = labels.nodes.map((l) => l.name);
+    let reason = 'Unknown issue';
+
+    if (labelNames.includes('failed')) {
+      reason = 'Marked as failed';
+    } else if (labelNames.includes('retry')) {
+      reason = 'Requires retry';
+    } else if (labelNames.includes('blocked')) {
+      reason = 'Blocked by dependencies';
+    } else if (labelNames.includes('needs-help')) {
+      reason = 'Needs manual intervention';
+    }
+
+    failedIssues.push({
+      id: issue.id,
+      identifier: issue.identifier,
+      title: issue.title,
+      description: issue.description ?? undefined,
+      state: state?.name ?? 'Unknown',
+      priority: issue.priority,
+      labels: labelNames,
+      comments: comments.nodes.map((c) => ({
+        id: c.id,
+        body: c.body,
+        createdAt: c.createdAt.toISOString(),
+        user: undefined,
+      })),
+      project,
+      reason,
+    });
+  }
+
+  return {
+    stuckIssues: stuckIssues.sort((a, b) => b.stuckDays - a.stuckDays),
+    failedIssues: failedIssues.sort((a, b) => {
+      const pa = a.priority === 0 ? 999 : a.priority;
+      const pb = b.priority === 0 ? 999 : b.priority;
+      return pa - pb;
+    }),
+  };
+}
