@@ -316,6 +316,19 @@ export async function startWebServer(port: number = 3847): Promise<void> {
           res.end(JSON.stringify({ error: String(error) }));
         }
 
+      // ---- Stuck/Failed Issues ----
+      } else if (url === '/api/stuck-issues' && req.method === 'GET') {
+        try {
+          const linearModule = await import('../linear/index.js');
+          const result = await linearModule.getStuckIssues();
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(result));
+        } catch (error) {
+          console.error('[Web] Failed to fetch stuck issues:', error);
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: String(error) }));
+        }
+
       // ---- Chat history ----
       } else if (url === '/api/chat/history' && req.method === 'GET') {
         const buf = getChatBuffer();

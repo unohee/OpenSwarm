@@ -623,6 +623,17 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         </div>
       </div>
 
+      <!-- STUCK/FAILED ISSUES -->
+      <div class="panel" style="flex: 0 0 auto; max-height: 200px;">
+        <div class="panel-hdr">
+          <span class="panel-hdr-title">⚠ STUCK/FAILED</span>
+          <span class="panel-hdr-badge" id="stuck-badge">0</span>
+        </div>
+        <div class="panel-body" style="font-size: 10px; line-height: 1.4; overflow-y: auto;">
+          <div id="stuck-list" style="color: var(--dim);">Loading...</div>
+        </div>
+      </div>
+
       <!-- AGENT CHAT -->
       <div class="panel-hdr">
         <span class="panel-hdr-title">AGENT CHAT</span>
@@ -765,6 +776,66 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         const el = document.getElementById("svc-status");
         el.textContent = "unknown";
         el.className = "svc-status inactive";
+      }
+    }
+
+    // ---- Stuck/Failed Issues ----
+    async function fetchStuckIssues() {
+      try {
+        const res = await fetch("/api/stuck-issues");
+        const data = await res.json();
+        const list = document.getElementById("stuck-list");
+        const badge = document.getElementById("stuck-badge");
+
+        const totalStuck = data.stuckIssues?.length ?? 0;
+        const totalFailed = data.failedIssues?.length ?? 0;
+        const total = totalStuck + totalFailed;
+
+        badge.textContent = total;
+        badge.style.color = total > 0 ? "var(--red)" : "var(--dim)";
+
+        if (total === 0) {
+          list.innerHTML = '<div style="color: var(--green-mid); padding: 4px;">✓ All issues healthy</div>';
+          return;
+        }
+
+        let html = '';
+
+        // Stuck issues (In Progress for >7 days)
+        if (totalStuck > 0) {
+          html += '<div style="color: var(--amber); font-weight: bold; margin-bottom: 4px; font-size: 9px; text-transform: uppercase;">⏱ Stuck (' + totalStuck + ')</div>';
+          data.stuckIssues.forEach(issue => {
+            const priorityColor = issue.priority === 1 ? 'var(--red)' : issue.priority === 2 ? 'var(--amber)' : 'var(--dim)';
+            html += '<div style="margin-bottom: 6px; padding: 4px; border-left: 2px solid ' + priorityColor + '; background: rgba(255, 170, 0, 0.05);">';
+            html += '<div style="color: var(--white); font-size: 10px; margin-bottom: 2px;">' + issue.identifier + ': ' + issue.title.substring(0, 40) + (issue.title.length > 40 ? '...' : '') + '</div>';
+            html += '<div style="color: var(--amber); font-size: 9px;">' + issue.reason + '</div>';
+            if (issue.project?.name) {
+              html += '<div style="color: var(--dim); font-size: 9px; margin-top: 2px;">📁 ' + issue.project.name + '</div>';
+            }
+            html += '</div>';
+          });
+        }
+
+        // Failed issues (retry, failed, blocked labels)
+        if (totalFailed > 0) {
+          if (totalStuck > 0) html += '<div style="height: 8px;"></div>';
+          html += '<div style="color: var(--red); font-weight: bold; margin-bottom: 4px; font-size: 9px; text-transform: uppercase;">✖ Failed (' + totalFailed + ')</div>';
+          data.failedIssues.forEach(issue => {
+            const priorityColor = issue.priority === 1 ? 'var(--red)' : issue.priority === 2 ? 'var(--amber)' : 'var(--dim)';
+            html += '<div style="margin-bottom: 6px; padding: 4px; border-left: 2px solid ' + priorityColor + '; background: rgba(255, 51, 51, 0.05);">';
+            html += '<div style="color: var(--white); font-size: 10px; margin-bottom: 2px;">' + issue.identifier + ': ' + issue.title.substring(0, 40) + (issue.title.length > 40 ? '...' : '') + '</div>';
+            html += '<div style="color: var(--red); font-size: 9px;">' + issue.reason + '</div>';
+            if (issue.project?.name) {
+              html += '<div style="color: var(--dim); font-size: 9px; margin-top: 2px;">📁 ' + issue.project.name + '</div>';
+            }
+            html += '</div>';
+          });
+        }
+
+        list.innerHTML = html;
+      } catch (err) {
+        console.error("Failed to fetch stuck issues:", err);
+        document.getElementById("stuck-list").innerHTML = '<div style="color: var(--red);">Error loading</div>';
       }
     }
 
@@ -1717,11 +1788,13 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     loadInitial().then(function() { connectSSE(true); });
     fetchSvcStatus();
     fetchPRProcessorStatus();
+    fetchStuckIssues();
     fetchKnowledgeData();
     fetchMonitors();
     fetchProcesses();
     setInterval(fetchSvcStatus, 15000);
     setInterval(fetchPRProcessorStatus, 30000);
+    setInterval(fetchStuckIssues, 30000);
     setInterval(fetchKnowledgeData, 60000);
     setInterval(fetchMonitors, 60000);
     setInterval(fetchProcesses, 30000);
