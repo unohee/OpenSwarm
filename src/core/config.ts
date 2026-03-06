@@ -82,9 +82,9 @@ const PairModeConfigSchema = z.object({
 
 const ModelConfigSchema = z.object({
   /** Worker agent model */
-  worker: z.string().default('claude-sonnet-4-20250514'),
+  worker: z.string().default('claude-sonnet-4-5-20250929'),
   /** Reviewer agent model */
-  reviewer: z.string().default('claude-sonnet-4-20250514'),
+  reviewer: z.string().default('claude-sonnet-4-5-20250929'),
 }).optional();
 
 /** Per-role configuration schema */
@@ -107,7 +107,7 @@ const DefaultRolesConfigSchema = z.object({
     enabled: true,
     model: 'claude-haiku-4-5-20251001',
     timeoutMs: 0,
-    escalateModel: 'claude-sonnet-4-20250514',
+    escalateModel: 'claude-sonnet-4-5-20250929',
     escalateAfterIteration: 3,
   }),
   reviewer: RoleConfigSchema.default({
@@ -156,7 +156,7 @@ const DecompositionConfigSchema = z.object({
   /** Auto-move to backlog if too complex or failing (default: true) */
   autoBacklog: z.boolean().default(true).optional(),
   /** Planner model */
-  plannerModel: z.string().default('claude-sonnet-4-20250514'),
+  plannerModel: z.string().default('claude-sonnet-4-5-20250929'),
   /** Planner timeout (ms) - default 600000 (10min) */
   plannerTimeoutMs: z.number().min(60000).default(600000),
 }).optional();
@@ -224,6 +224,15 @@ const PRProcessorConfigSchema = z.object({
   cooldownHours: z.number().default(6),
   maxIterations: z.number().min(1).max(10).default(3),
   conflictResolver: ConflictResolverConfigSchema,
+  repoMappings: z.record(z.string(), z.string()).optional(),
+}).optional();
+
+const CIWorkerConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  checkIntervalMs: z.number().positive().default(300000),
+  autoRetry: z.boolean().default(false),
+  createIssues: z.boolean().default(true),
+  maxAgeDays: z.number().positive().default(30),
 }).optional();
 
 const RawConfigSchema = z.object({
@@ -235,6 +244,7 @@ const RawConfigSchema = z.object({
   pairMode: PairModeConfigSchema,
   autonomous: AutonomousConfigSchema,
   prProcessor: PRProcessorConfigSchema,
+  ciWorker: CIWorkerConfigSchema,
   monitors: z.array(LongRunningMonitorConfigSchema).optional(),
   agents: z.array(AgentSessionSchema).min(1, 'At least one agent is required'),
   defaultHeartbeatInterval: z.number().positive().default(DEFAULT_HEARTBEAT_INTERVAL),
@@ -400,6 +410,13 @@ function transformConfig(raw: RawConfig): SwarmConfig {
       cooldownHours: raw.prProcessor.cooldownHours,
       maxIterations: raw.prProcessor.maxIterations,
       conflictResolver: raw.prProcessor.conflictResolver as ConflictResolverConfig | undefined,
+    } : undefined,
+    ciWorker: raw.ciWorker ? {
+      enabled: raw.ciWorker.enabled,
+      checkIntervalMs: raw.ciWorker.checkIntervalMs,
+      autoRetry: raw.ciWorker.autoRetry,
+      createIssues: raw.ciWorker.createIssues,
+      maxAgeDays: raw.ciWorker.maxAgeDays,
     } : undefined,
     monitors: raw.monitors as LongRunningMonitorConfig[] | undefined,
   };

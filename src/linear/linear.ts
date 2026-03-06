@@ -6,6 +6,7 @@ import { LinearClient } from '@linear/sdk';
 import type { LinearIssueInfo, LinearProjectInfo } from '../core/types.js';
 import { getDateLocale } from '../locale/index.js';
 import { setLinearClient } from './projectUpdater.js';
+import { withRateLimit } from '../support/rateLimiter.js';
 
 /**
  * Extract project info from an issue
@@ -32,6 +33,36 @@ let teamId: string = '';
 const DAILY_ISSUE_LIMIT = 10;
 let dailyIssueCount = 0;
 let lastResetDate: string = '';
+
+// ============================================
+// Caching Layer
+// ============================================
+
+interface CachedIssues {
+  data: LinearIssueInfo[];
+  timestamp: number;
+  agentLabel: string;
+}
+
+const inProgressCache = new Map<string, CachedIssues>();
+const backlogCache = new Map<string, CachedIssues>();
+const myIssuesCache = new Map<string, CachedIssues>();
+const CACHE_TTL_MS = 60000; // 1 minute cache
+
+function isCacheValid(cache: CachedIssues | undefined): boolean {
+  if (!cache) return false;
+  return Date.now() - cache.timestamp < CACHE_TTL_MS;
+}
+
+/**
+ * Clear all caches (call when issues are mutated)
+ */
+export function clearLinearCache(): void {
+  inProgressCache.clear();
+  backlogCache.clear();
+  myIssuesCache.clear();
+  console.log('[Linear] Cache cleared');
+}
 
 /**
  * Reset daily counter on date change
@@ -62,17 +93,19 @@ export function getDailyIssueCount(): number {
 
 /**
  * Initialize the Linear client
+ * Rate limiting is applied at the function level in this file
  */
 export function initLinear(apiKey: string, team: string): void {
   client = new LinearClient({ apiKey });
   teamId = team;
   setLinearClient(client);
+  console.log('[Linear] Client initialized');
 }
 
 /**
  * Return the Linear client instance
  */
-function getClient(): LinearClient {
+export function getClient(): LinearClient {
   if (!client) {
     throw new Error('Linear client not initialized. Call initLinear() first.');
   }
@@ -80,27 +113,39 @@ function getClient(): LinearClient {
 }
 
 /**
- * Get in-progress issues for an agent
+ * Get in-progress issues for an agent (with caching)
  */
 export async function getInProgressIssues(
   agentLabel: string
 ): Promise<LinearIssueInfo[]> {
+  // Check cache first
+  const cached = inProgressCache.get(agentLabel);
+  if (cached && isCacheValid(cached)) {
+    console.log(`[Linear] Using cached in-progress issues for ${agentLabel}`);
+    return cached.data;
+  }
+
+  console.log(`[Linear] Fetching in-progress issues for ${agentLabel}`);
   const linear = getClient();
 
-  const issues = await linear.issues({
+  const issues = await withRateLimit('linear', async () => linear.issues({
     filter: {
       team: { id: { eq: teamId } },
       state: { name: { in: ['In Progress', 'Started'] } },
       labels: { name: { eq: agentLabel } },
     },
-  });
+  }));
 
   const result: LinearIssueInfo[] = [];
 
+  // Batch fetch all related data to minimize API calls
   for (const issue of issues.nodes) {
-    const [comments, labels, project] = await Promise.all([
+    // Use Promise.all to parallelize, but still results in N queries per issue
+    // Linear SDK doesn't support includes/eager loading, so this is unavoidable
+    const [comments, labels, state, project] = await Promise.all([
       issue.comments(),
       issue.labels(),
+      issue.state,
       getProjectInfo(issue),
     ]);
 
@@ -109,7 +154,7 @@ export async function getInProgressIssues(
       identifier: issue.identifier,
       title: issue.title,
       description: issue.description ?? undefined,
-      state: (await issue.state)?.name ?? 'Unknown',
+      state: state?.name ?? 'Unknown',
       priority: issue.priority,
       labels: labels.nodes.map((l) => l.name),
       comments: comments.nodes.map((c) => ({
@@ -122,25 +167,40 @@ export async function getInProgressIssues(
     });
   }
 
+  // Cache the result
+  inProgressCache.set(agentLabel, {
+    data: result,
+    timestamp: Date.now(),
+    agentLabel,
+  });
+
   return result;
 }
 
 /**
- * Get the next issue from the backlog
+ * Get the next issue from the backlog (with caching)
  */
 export async function getNextBacklogIssue(
   agentLabel: string
 ): Promise<LinearIssueInfo | null> {
+  // Check cache first
+  const cached = backlogCache.get(agentLabel);
+  if (cached && isCacheValid(cached) && cached.data.length > 0) {
+    console.log(`[Linear] Using cached backlog issue for ${agentLabel}`);
+    return cached.data[0];
+  }
+
+  console.log(`[Linear] Fetching backlog issues for ${agentLabel}`);
   const linear = getClient();
 
-  const issues = await linear.issues({
+  const issues = await withRateLimit('linear', async () => linear.issues({
     filter: {
       team: { id: { eq: teamId } },
       state: { name: { in: ['Backlog', 'Todo'] } },
       labels: { name: { eq: agentLabel } },
     },
     first: 10, // Fetch multiple and sort by priority
-  });
+  }));
 
   // Sort by priority (lower = higher priority: 1=Urgent, 4=Low, 0=None)
   const sorted = [...issues.nodes].sort((a, b) => {
@@ -153,18 +213,19 @@ export async function getNextBacklogIssue(
   const issue = sorted[0];
   if (!issue) return null;
 
-  const [comments, labels, project] = await Promise.all([
+  const [comments, labels, state, project] = await Promise.all([
     issue.comments(),
     issue.labels(),
+    issue.state,
     getProjectInfo(issue),
   ]);
 
-  return {
+  const result = {
     id: issue.id,
     identifier: issue.identifier,
     title: issue.title,
     description: issue.description ?? undefined,
-    state: (await issue.state)?.name ?? 'Unknown',
+    state: state?.name ?? 'Unknown',
     priority: issue.priority,
     labels: labels.nodes.map((l) => l.name),
     comments: comments.nodes.map((c) => ({
@@ -175,6 +236,15 @@ export async function getNextBacklogIssue(
     })),
     project,
   };
+
+  // Cache the result
+  backlogCache.set(agentLabel, {
+    data: [result],
+    timestamp: Date.now(),
+    agentLabel,
+  });
+
+  return result;
 }
 
 /**
@@ -193,7 +263,7 @@ export interface GetMyIssuesOptions {
 }
 
 /**
- * Get assigned active issues
+ * Get assigned active issues (with caching)
  * (Todo, In Progress, Review states - excludes Backlog)
  */
 export async function getMyIssues(
@@ -204,6 +274,18 @@ export async function getMyIssues(
     : agentLabelOrOptions ?? {};
 
   const { agentLabel, slim = false, timeoutMs = 30000 } = opts;
+
+  // Generate cache key
+  const cacheKey = `${agentLabel || 'all'}:${slim}`;
+
+  // Check cache first
+  const cached = myIssuesCache.get(cacheKey);
+  if (cached && isCacheValid(cached)) {
+    console.log(`[Linear] Using cached issues for ${cacheKey}`);
+    return cached.data;
+  }
+
+  console.log(`[Linear] Fetching issues for ${cacheKey}`);
   const linear = getClient();
 
   const baseFilter: any = {
@@ -223,8 +305,8 @@ export async function getMyIssues(
     const backlogFilter = { ...baseFilter, state: { name: { in: ['Backlog'] } } };
 
     const [executableIssues, backlogIssues] = await Promise.all([
-      linear.issues({ filter: executableFilter, first: 50 }),
-      linear.issues({ filter: backlogFilter, first: 50 }),
+      withRateLimit('linear', async () => linear.issues({ filter: executableFilter, first: 50 })),
+      withRateLimit('linear', async () => linear.issues({ filter: backlogFilter, first: 50 })),
     ]);
 
     const issues = {
@@ -297,12 +379,21 @@ export async function getMyIssues(
   };
 
   // Apply timeout
-  return Promise.race([
+  const result = await Promise.race([
     fetchIssues(),
     new Promise<never>((_, reject) =>
       setTimeout(() => reject(new Error(`getMyIssues timed out after ${timeoutMs}ms`)), timeoutMs)
     ),
   ]);
+
+  // Cache the result
+  myIssuesCache.set(cacheKey, {
+    data: result,
+    timestamp: Date.now(),
+    agentLabel: agentLabel || 'all',
+  });
+
+  return result;
 }
 
 /**
@@ -391,6 +482,9 @@ export async function updateIssueState(
       await linear.updateIssue(issueId, {
         stateId: targetState.id,
       });
+
+      // Clear cache after mutation
+      clearLinearCache();
 
       console.log(`[Linear] Issue ${issueId} state changed to ${stateName}`);
       return;
@@ -762,6 +856,9 @@ export async function createIssue(
   // Increment counter
   dailyIssueCount++;
 
+  // Clear cache after mutation
+  clearLinearCache();
+
   return {
     id: issue.id,
     identifier: issue.identifier,
@@ -983,5 +1080,124 @@ _This issue was auto-created by an agent. Please review and adjust priority or d
     priority: 4,
     labels: ['agent-proposal', sessionName].filter(Boolean),
     comments: [],
+  };
+}
+
+/**
+ * Get stuck/failed issues and PRs (issues stuck in In Progress for >7 days, or with retry/failed labels)
+ */
+export async function getStuckIssues(): Promise<{
+  stuckIssues: Array<LinearIssueInfo & { stuckDays: number; reason: string }>;
+  failedIssues: Array<LinearIssueInfo & { reason: string }>;
+}> {
+  const linear = getClient();
+  const now = Date.now();
+  const STUCK_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+  // Fetch In Progress issues
+  const inProgressIssues = await withRateLimit('linear', async () => linear.issues({
+    filter: {
+      team: { id: { eq: teamId } },
+      state: { name: { eq: 'In Progress' } },
+    },
+    first: 100,
+  }));
+
+  // Fetch issues with retry/failed/blocked labels
+  const problematicIssues = await withRateLimit('linear', async () => linear.issues({
+    filter: {
+      team: { id: { eq: teamId } },
+      state: { name: { nin: ['Done', 'Canceled'] } },
+      labels: { name: { in: ['retry', 'failed', 'blocked', 'needs-help'] } },
+    },
+    first: 100,
+  }));
+
+  const stuckIssues: Array<LinearIssueInfo & { stuckDays: number; reason: string }> = [];
+  const failedIssues: Array<LinearIssueInfo & { reason: string }> = [];
+
+  // Process In Progress issues (check if stuck)
+  for (const issue of inProgressIssues.nodes) {
+    const updatedAt = new Date(issue.updatedAt).getTime();
+    const stuckMs = now - updatedAt;
+
+    if (stuckMs > STUCK_THRESHOLD_MS) {
+      const [state, labels, comments, project] = await Promise.all([
+        issue.state,
+        issue.labels(),
+        issue.comments(),
+        getProjectInfo(issue),
+      ]);
+
+      const stuckDays = Math.floor(stuckMs / (24 * 60 * 60 * 1000));
+      stuckIssues.push({
+        id: issue.id,
+        identifier: issue.identifier,
+        title: issue.title,
+        description: issue.description ?? undefined,
+        state: state?.name ?? 'Unknown',
+        priority: issue.priority,
+        labels: labels.nodes.map((l) => l.name),
+        comments: comments.nodes.map((c) => ({
+          id: c.id,
+          body: c.body,
+          createdAt: c.createdAt.toISOString(),
+          user: undefined,
+        })),
+        project,
+        stuckDays,
+        reason: `No updates for ${stuckDays} days`,
+      });
+    }
+  }
+
+  // Process problematic issues (retry, failed, blocked)
+  for (const issue of problematicIssues.nodes) {
+    const [state, labels, comments, project] = await Promise.all([
+      issue.state,
+      issue.labels(),
+      issue.comments(),
+      getProjectInfo(issue),
+    ]);
+
+    const labelNames = labels.nodes.map((l) => l.name);
+    let reason = 'Unknown issue';
+
+    if (labelNames.includes('failed')) {
+      reason = 'Marked as failed';
+    } else if (labelNames.includes('retry')) {
+      reason = 'Requires retry';
+    } else if (labelNames.includes('blocked')) {
+      reason = 'Blocked by dependencies';
+    } else if (labelNames.includes('needs-help')) {
+      reason = 'Needs manual intervention';
+    }
+
+    failedIssues.push({
+      id: issue.id,
+      identifier: issue.identifier,
+      title: issue.title,
+      description: issue.description ?? undefined,
+      state: state?.name ?? 'Unknown',
+      priority: issue.priority,
+      labels: labelNames,
+      comments: comments.nodes.map((c) => ({
+        id: c.id,
+        body: c.body,
+        createdAt: c.createdAt.toISOString(),
+        user: undefined,
+      })),
+      project,
+      reason,
+    });
+  }
+
+  return {
+    stuckIssues: stuckIssues.sort((a, b) => b.stuckDays - a.stuckDays),
+    failedIssues: failedIssues.sort((a, b) => {
+      const pa = a.priority === 0 ? 999 : a.priority;
+      const pb = b.priority === 0 ? 999 : b.priority;
+      return pa - pb;
+    }),
   };
 }

@@ -11,6 +11,29 @@ import { spawn } from 'node:child_process';
 // Constants
 const CHAT_DIR = resolve(homedir(), '.openswarm', 'chat');
 const DEFAULT_MODEL = 'claude-sonnet-4-5-20250929';
+
+// Render guard: blessed는 동시 render() 호출 시 화면이 검은색으로 깨질 수 있음
+let renderScheduled = false;
+let screenRef: blessed.Widgets.Screen | null = null;
+
+function safeRender() {
+  if (renderScheduled || !screenRef) return;
+  renderScheduled = true;
+  process.nextTick(() => {
+    renderScheduled = false;
+    try {
+      screenRef!.render();
+    } catch {
+      // render 실패 시 복구 시도
+      try {
+        screenRef!.alloc();
+        screenRef!.render();
+      } catch {
+        // 무시 — 다음 사이클에서 복구
+      }
+    }
+  });
+}
 // Types
 type Message = { role: 'user' | 'assistant'; content: string; cost?: number };
 
@@ -325,6 +348,28 @@ function createUI() {
     hidden: true,
   });
 
+  const stuckBox = blessed.box({
+    top: 2,
+    left: 0,
+    width: '100%',
+    height: '100%-9',
+    content: '{center}{#718096-fg}Loading stuck issues...{/}{/center}',
+    tags: true,
+    scrollable: true,
+    alwaysScroll: true,
+    mouse: true,
+    keys: true,
+    vi: true,
+    scrollbar: {
+      ch: '█',
+      style: { fg: colors.scrollbar },
+    },
+    style: {
+      border: { fg: colors.border },
+    },
+    hidden: true,
+  });
+
   const logsBox = blessed.log({
     top: 2,
     left: 0,
@@ -390,6 +435,7 @@ function createUI() {
   screen.append(chatLog);
   screen.append(projectsBox);
   screen.append(tasksBox);
+  screen.append(stuckBox);
   screen.append(logsBox);
   screen.append(inputBox);
   screen.append(helpBar);
@@ -401,6 +447,7 @@ function createUI() {
     chatLog,
     projectsBox,
     tasksBox,
+    stuckBox,
     logsBox,
     inputBox,
     helpBar,
@@ -412,7 +459,8 @@ function updateTabBar(ui: ReturnType<typeof createUI>, currentTab: number) {
     { key: '1', name: 'Chat', icon: '💬' },
     { key: '2', name: 'Projects', icon: '📁' },
     { key: '3', name: 'Tasks', icon: '✓' },
-    { key: '4', name: 'Logs', icon: '📝' },
+    { key: '4', name: 'Stuck', icon: '⚠' },
+    { key: '5', name: 'Logs', icon: '📝' },
   ];
 
   const content = tabs.map((tab, idx) => {
@@ -433,6 +481,7 @@ function switchTab(state: AppState, ui: ReturnType<typeof createUI>, tabIndex: n
   ui.chatLog.hide();
   ui.projectsBox.hide();
   ui.tasksBox.hide();
+  ui.stuckBox.hide();
   ui.logsBox.hide();
 
   switch (tabIndex) {
@@ -448,12 +497,16 @@ function switchTab(state: AppState, ui: ReturnType<typeof createUI>, tabIndex: n
       loadTasksData(ui.tasksBox);
       break;
     case 3:
+      ui.stuckBox.show();
+      loadStuckData(ui.stuckBox);
+      break;
+    case 4:
       ui.logsBox.show();
       break;
   }
 
   updateTabBar(ui, tabIndex);
-  ui.screen.render();
+  safeRender();
 }
 // Data Loaders
 async function loadProjectsData(box: blessed.Widgets.BoxElement) {
@@ -500,42 +553,176 @@ async function loadProjectsData(box: blessed.Widgets.BoxElement) {
 
 async function loadTasksData(box: blessed.Widgets.BoxElement) {
   try {
-    const response = await fetch('http://127.0.0.1:3847/api/tasks');
-    const { running, queued } = await response.json() as {
-      running: Array<{ id?: string; description?: string }>;
-      queued: Array<{ id?: string; description?: string }>;
+    const response = await fetch('http://127.0.0.1:3847/api/pipeline');
+    const { stages } = await response.json() as {
+      stages: Array<{
+        type: string;
+        data: {
+          taskId?: string;
+          stage?: string;
+          status?: 'start' | 'complete' | 'fail';
+          model?: string;
+          inputTokens?: number;
+          outputTokens?: number;
+          costUsd?: number;
+          title?: string;
+          issueIdentifier?: string;
+        };
+      }>;
     };
 
-    if (running.length === 0 && queued.length === 0) {
-      box.setContent('\n{center}{#718096-fg}No active tasks{/}{/center}');
+    if (stages.length === 0) {
+      box.setContent('\n{center}{#718096-fg}No pipeline events{/}{/center}');
       return;
     }
 
-    const lines: string[] = [''];
+    // Build task info map and extract stage events
+    const taskInfo = new Map<string, { title?: string; issueIdentifier?: string }>();
+    const allStageEvents: Array<{ taskId: string; stage: string; status: string; model?: string; inputTokens?: number; outputTokens?: number; costUsd?: number }> = [];
 
-    if (running.length > 0) {
-      lines.push(`  {#34d399-fg}{bold}Running{/bold} {#718096-fg}(${running.length}){/}{/}`);
-      lines.push('');
-      for (const t of running) {
-        const desc = t.description || t.id || '{#718096-fg}(no description){/}';
-        lines.push(`    {#34d399-fg}▸{/} ${desc}`);
+    for (const event of stages) {
+      if (event.type === 'task:started' && event.data.taskId) {
+        taskInfo.set(event.data.taskId, { title: event.data.title, issueIdentifier: event.data.issueIdentifier });
+      } else if (event.type === 'pipeline:stage' && event.data.taskId && event.data.stage) {
+        allStageEvents.push({
+          taskId: event.data.taskId,
+          stage: event.data.stage,
+          status: event.data.status || '',
+          model: event.data.model,
+          inputTokens: event.data.inputTokens,
+          outputTokens: event.data.outputTokens,
+          costUsd: event.data.costUsd,
+        });
       }
-      lines.push('');
     }
 
-    if (queued.length > 0) {
-      lines.push(`  {#f59e0b-fg}{bold}Queued{/bold} {#718096-fg}(${queued.length}){/}{/}`);
-      lines.push('');
-      for (const t of queued) {
-        const desc = t.description || t.id || '{#718096-fg}(no description){/}';
-        lines.push(`    {#718096-fg}•{/} ${desc}`);
+    if (allStageEvents.length === 0) {
+      box.setContent('\n{center}{#718096-fg}No active pipeline stages{/}{/center}');
+      return;
+    }
+
+    // Render pipeline table
+    const recentStages = allStageEvents.slice(-15).reverse();
+    const lines = [
+      '',
+      `  {#34d399-fg}{bold}Pipeline Events{/bold} {#718096-fg}(${recentStages.length} recent){/}{/}`,
+      '',
+      `  {#718096-fg}${'TASK'.padEnd(12)} ${'STAGE'.padEnd(10)} ${'MODEL'.padEnd(12)} ${'TOKENS'.padEnd(15)} STATUS{/}`,
+      `  {#444444-fg}${'─'.repeat(70)}{/}`,
+    ];
+
+    for (const ev of recentStages) {
+      const info = taskInfo.get(ev.taskId);
+      const task = (info?.issueIdentifier || ev.taskId.slice(0, 8)).padEnd(12).slice(0, 12);
+      const stage = ev.stage.padEnd(10).slice(0, 10);
+
+      const statusMap: Record<string, [string, string]> = {
+        start: ['◐', '#f59e0b'],
+        complete: ['●', '#34d399'],
+        fail: ['✗', '#ef4444'],
+      };
+      const [icon, color] = statusMap[ev.status] || ['○', '#718096'];
+
+      let model = '';
+      if (ev.model?.includes('sonnet-4-5')) model = 'sonnet-4.5';
+      else if (ev.model?.includes('haiku-4-5')) model = 'haiku-4.5';
+      else if (ev.model?.includes('opus-4')) model = 'opus-4';
+      else if (ev.model) model = ev.model.split('-').pop() || '';
+      model = model.padEnd(12).slice(0, 12);
+
+      let tokens = '';
+      if (ev.inputTokens || ev.outputTokens) {
+        const inK = ev.inputTokens ? Math.round(ev.inputTokens / 1000) : 0;
+        const outK = ev.outputTokens ? Math.round(ev.outputTokens / 1000) : 0;
+        tokens = `${inK}k/${outK}k`;
+        if (ev.costUsd != null) tokens += ` $${ev.costUsd.toFixed(2)}`;
       }
-      lines.push('');
+      tokens = tokens.padEnd(15).slice(0, 15);
+
+      lines.push(`  {#34d399-fg}${task}{/} {#718096-fg}${stage}{/} {#34d399-fg}${model}{/} {#718096-fg}${tokens}{/} {${color}-fg}${icon} ${ev.status}{/}`);
     }
 
     box.setContent(lines.join('\n'));
   } catch (err) {
-    box.setContent(`\n{center}{#ef4444-fg}Failed to load tasks{/}\n{#718096-fg}${err}{/}{/center}`);
+    box.setContent(`\n{center}{#ef4444-fg}Failed to load pipeline{/}\n{#718096-fg}${err}{/}{/center}`);
+  }
+}
+
+async function loadStuckData(box: blessed.Widgets.BoxElement) {
+  try {
+    const response = await fetch('http://127.0.0.1:3847/api/stuck-issues');
+    const { stuckIssues, failedIssues } = await response.json() as {
+      stuckIssues: Array<{
+        identifier: string;
+        title: string;
+        state: string;
+        priority: number;
+        stuckDays: number;
+        reason: string;
+        project?: { name: string };
+      }>;
+      failedIssues: Array<{
+        identifier: string;
+        title: string;
+        state: string;
+        priority: number;
+        reason: string;
+        project?: { name: string };
+      }>;
+    };
+
+    const totalStuck = stuckIssues.length;
+    const totalFailed = failedIssues.length;
+    const total = totalStuck + totalFailed;
+
+    if (total === 0) {
+      box.setContent('\n{center}{#34d399-fg}✓ All issues healthy{/}{/center}');
+      return;
+    }
+
+    const lines = [
+      '',
+      `  {#ef4444-fg}⚠ ${total} issue${total > 1 ? 's' : ''} need attention{/}`,
+      '',
+    ];
+
+    // Stuck issues
+    if (totalStuck > 0) {
+      lines.push(`  {#f59e0b-fg}{bold}⏱ STUCK (${totalStuck}){/bold}{/}`);
+      lines.push('');
+
+      for (const issue of stuckIssues) {
+        const priorityIcon = issue.priority === 1 ? '{#ef4444-fg}🔴{/}' : issue.priority === 2 ? '{#f59e0b-fg}🟡{/}' : '{#718096-fg}⚪{/}';
+        lines.push(`  ${priorityIcon} {bold}${issue.identifier}{/bold}`);
+        lines.push(`    ${issue.title.substring(0, 60)}${issue.title.length > 60 ? '...' : ''}`);
+        lines.push(`    {#f59e0b-fg}${issue.reason}{/}`);
+        if (issue.project?.name) {
+          lines.push(`    {#718096-fg}📁 ${issue.project.name}{/}`);
+        }
+        lines.push('');
+      }
+    }
+
+    // Failed issues
+    if (totalFailed > 0) {
+      lines.push(`  {#ef4444-fg}{bold}✖ FAILED (${totalFailed}){/bold}{/}`);
+      lines.push('');
+
+      for (const issue of failedIssues) {
+        const priorityIcon = issue.priority === 1 ? '{#ef4444-fg}🔴{/}' : issue.priority === 2 ? '{#f59e0b-fg}🟡{/}' : '{#718096-fg}⚪{/}';
+        lines.push(`  ${priorityIcon} {bold}${issue.identifier}{/bold}`);
+        lines.push(`    ${issue.title.substring(0, 60)}${issue.title.length > 60 ? '...' : ''}`);
+        lines.push(`    {#ef4444-fg}${issue.reason}{/}`);
+        if (issue.project?.name) {
+          lines.push(`    {#718096-fg}📁 ${issue.project.name}{/}`);
+        }
+        lines.push('');
+      }
+    }
+
+    box.setContent(lines.join('\n'));
+  } catch (err) {
+    box.setContent(`\n{center}{#ef4444-fg}Failed to load stuck issues{/}\n{#718096-fg}${err}{/}{/center}`);
   }
 }
 // Loading Spinner (inline in chat)
@@ -551,7 +738,7 @@ function startSpinner(ui: ReturnType<typeof createUI>): { interval: NodeJS.Timeo
     const content = `  {#667eea-fg}${spinner}{/} {#718096-fg}${loadingMessage}...{/}`;
     ui.chatLog.setLine(lineIndex, content);
     ui.chatLog.setScrollPerc(100);
-    ui.screen.render();
+    safeRender();
     frameIndex++;
   }, 80);
 
@@ -564,7 +751,7 @@ function stopSpinner(
 ): void {
   clearInterval(spinnerData.interval);
   ui.chatLog.deleteLine(spinnerData.lineIndex);
-  ui.screen.render();
+  safeRender();
 }
 // Chat Logic
 async function sendMessage(state: AppState, ui: ReturnType<typeof createUI>, message: string) {
@@ -575,7 +762,7 @@ async function sendMessage(state: AppState, ui: ReturnType<typeof createUI>, mes
   ui.chatLog.log(`  ${message}`);
   ui.chatLog.log('');
   ui.chatLog.setScrollPerc(100);
-  ui.screen.render();
+  safeRender();
 
   state.session.messages.push({ role: 'user', content: message });
 
@@ -619,9 +806,10 @@ async function sendMessage(state: AppState, ui: ReturnType<typeof createUI>, mes
         if (now - lastRenderTime < 33) return;
         lastRenderTime = now;
 
-        // Clear previous content lines
+        // Clear previous content lines (안전한 역순 삭제)
         const currentLines = ui.chatLog.getLines().length;
-        for (let i = contentStartLine; i < currentLines; i++) {
+        const deleteCount = Math.max(0, Math.min(currentLines - contentStartLine, currentLines));
+        for (let i = 0; i < deleteCount; i++) {
           ui.chatLog.deleteLine(contentStartLine);
         }
 
@@ -633,7 +821,7 @@ async function sendMessage(state: AppState, ui: ReturnType<typeof createUI>, mes
         }
 
         ui.chatLog.setScrollPerc(100);
-        ui.screen.render();
+        safeRender();
       }
     );
 
@@ -652,9 +840,10 @@ async function sendMessage(state: AppState, ui: ReturnType<typeof createUI>, mes
     state.session.totalTokens += result.tokens;
 
     // Finalize assistant message with cost
-    // Clear streaming content first
-    const currentLines = ui.chatLog.getLines().length;
-    for (let i = contentStartLine; i < currentLines; i++) {
+    // Clear streaming content first (안전한 삭제)
+    const finalLines = ui.chatLog.getLines().length;
+    const finalDeleteCount = Math.max(0, Math.min(finalLines - contentStartLine, finalLines));
+    for (let i = 0; i < finalDeleteCount; i++) {
       ui.chatLog.deleteLine(contentStartLine);
     }
 
@@ -679,7 +868,7 @@ async function sendMessage(state: AppState, ui: ReturnType<typeof createUI>, mes
 
     await saveSession(state.session);
     updateStatusBar(state, ui);
-    ui.screen.render();
+    safeRender();
   } catch (err) {
     if (!spinnerStopped) {
       stopSpinner(ui, spinnerData);
@@ -689,7 +878,7 @@ async function sendMessage(state: AppState, ui: ReturnType<typeof createUI>, mes
     ui.chatLog.log(`  ${msg}`);
     ui.chatLog.log('');
     state.session.messages.pop(); // Remove user message on failure
-    ui.screen.render();
+    safeRender();
   }
 }
 // Status Bar Update
@@ -732,7 +921,7 @@ async function handleCommand(
       ui.chatLog.log('{#34d399-fg}✓ Conversation cleared{/}');
       ui.chatLog.log('');
       updateStatusBar(state, ui);
-      ui.screen.render();
+      safeRender();
       break;
 
     case 'model':
@@ -759,7 +948,7 @@ async function handleCommand(
         updateStatusBar(state, ui);
       }
       ui.chatLog.log('');
-      ui.screen.render();
+      safeRender();
       break;
     }
 
@@ -771,7 +960,7 @@ async function handleCommand(
       ui.chatLog.log(`  {#34d399-fg}✓ Session saved: {bold}${name}{/bold}{/}`);
       ui.chatLog.log('');
       updateStatusBar(state, ui);
-      ui.screen.render();
+      safeRender();
       break;
     }
 
@@ -794,7 +983,7 @@ async function handleCommand(
       ui.chatLog.log('    {#718096-fg}i / Enter{/}      Focus input (from chat)');
       ui.chatLog.log('    {#718096-fg}Ctrl+C{/}         Exit (double press to confirm)');
       ui.chatLog.log('');
-      ui.screen.render();
+      safeRender();
       break;
 
     default:
@@ -802,7 +991,7 @@ async function handleCommand(
       ui.chatLog.log(`  {#ef4444-fg}Unknown command: /{bold}${command}{/bold}{/}`);
       ui.chatLog.log(`  {#718096-fg}Type {/}{#60a5fa-fg}/help{/}{#718096-fg} for available commands{/}`);
       ui.chatLog.log('');
-      ui.screen.render();
+      safeRender();
   }
 
   return false;
@@ -853,6 +1042,7 @@ export async function main(): Promise<void> {
   };
 
   const ui = createUI();
+  screenRef = ui.screen;  // safeRender용 참조 설정
 
   updateStatusBar(state, ui);
   updateTabBar(ui, state.currentTab);
@@ -888,12 +1078,13 @@ export async function main(): Promise<void> {
   ui.screen.key(['2'], () => switchTab(state, ui, 1));
   ui.screen.key(['3'], () => switchTab(state, ui, 2));
   ui.screen.key(['4'], () => switchTab(state, ui, 3));
+  ui.screen.key(['5'], () => switchTab(state, ui, 4));
   ui.screen.key(['tab'], () => {
-    const next = (state.currentTab + 1) % 4;
+    const next = (state.currentTab + 1) % 5;
     switchTab(state, ui, next);
   });
   ui.screen.key(['S-tab'], () => {
-    const prev = (state.currentTab - 1 + 4) % 4;
+    const prev = (state.currentTab - 1 + 5) % 5;
     switchTab(state, ui, prev);
   });
 
@@ -905,7 +1096,7 @@ export async function main(): Promise<void> {
       // If input has text, just clear it
       ui.inputBox.clearValue();
       ui.inputBox.focus();
-      ui.screen.render();
+      safeRender();
       ctrlCPressed = false;
     } else {
       // If input is empty, exit with double Ctrl+C
@@ -915,11 +1106,11 @@ export async function main(): Promise<void> {
       } else {
         ctrlCPressed = true;
         ui.statusBar.setContent(' {#f59e0b-fg}Press Ctrl+C again to exit{/}');
-        ui.screen.render();
+        safeRender();
         setTimeout(() => {
           ctrlCPressed = false;
           updateStatusBar(state, ui);
-          ui.screen.render();
+          safeRender();
         }, 2000);
       }
     }
@@ -934,13 +1125,13 @@ export async function main(): Promise<void> {
     }
     // Blur input box to exit input mode
     ui.chatLog.focus();
-    ui.screen.render();
+    safeRender();
   });
 
   // Enter in chatLog: focus input
   ui.chatLog.key(['enter', 'i'], () => {
     ui.inputBox.focus();
-    ui.screen.render();
+    safeRender();
   });
 
   // Shift+Enter: Insert newline (handled by textarea by default)
@@ -953,7 +1144,7 @@ export async function main(): Promise<void> {
 
     ui.inputBox.clearValue();
     ui.inputBox.focus();
-    ui.screen.render();
+    safeRender();
 
     if (trimmed.startsWith('/')) {
       await handleCommand(trimmed, state, ui);
@@ -965,21 +1156,26 @@ export async function main(): Promise<void> {
   // Focus input by default
   ui.inputBox.focus();
 
-  // Handle terminal resize (important for tmux)
+  // Handle terminal resize (important for tmux) — debounce로 연속 resize 시 깜빡임 방지
+  let resizeTimer: NodeJS.Timeout | null = null;
   process.stdout.on('resize', () => {
-    ui.screen.alloc();
-    ui.screen.realloc();
-    ui.screen.render();
+    if (resizeTimer) clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      ui.screen.alloc();
+      ui.screen.realloc();
+      safeRender();
+    }, 50);
   });
 
   // Render
-  ui.screen.render();
+  safeRender();
 
-  // Auto-refresh Projects/Tasks tabs every 5s
+  // Auto-refresh Projects/Tasks/Stuck tabs every 5s
   setInterval(() => {
     if (state.currentTab === 1) loadProjectsData(ui.projectsBox);
     if (state.currentTab === 2) loadTasksData(ui.tasksBox);
-    ui.screen.render();
+    if (state.currentTab === 3) loadStuckData(ui.stuckBox);
+    safeRender();
   }, 5000);
 
   // System logs (example - hook into eventHub in real implementation)

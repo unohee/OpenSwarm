@@ -10,6 +10,7 @@ import { spawn, execFile } from 'node:child_process';
 import { getChatHistory } from '../discord/index.js';
 import { addSSEClient, getActiveSSECount, broadcastEvent, getLogBuffer, getStageBuffer, getChatBuffer } from '../core/eventHub.js';
 import { extractCostFromStreamJson, formatCost } from './costTracker.js';
+import { getRateLimiterMetrics } from './rateLimiter.js';
 import { scanLocalProjects, invalidateProjectCache } from './projectMapper.js';
 import type { AutonomousRunner } from '../automation/autonomousRunner.js';
 import { DASHBOARD_HTML } from './dashboardHtml.js';
@@ -148,6 +149,18 @@ export async function startWebServer(port: number = 3847): Promise<void> {
         const queued  = runnerRef?.getQueuedTasks() ?? [];
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ running, queued }));
+
+      // ---- Pipeline GET (detailed pipeline stages) ----
+      } else if (url === '/api/pipeline') {
+        const stages = getStageBuffer();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ stages }));
+
+      // ---- Rate Limiter Metrics GET ----
+      } else if (url === '/api/rate-limits') {
+        const metrics = getRateLimiterMetrics();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(metrics));
 
       // ---- Projects GET (pinned + active projects) ----
       } else if (url === '/api/projects' && req.method === 'GET') {
@@ -299,6 +312,31 @@ export async function startWebServer(port: number = 3847): Promise<void> {
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify(status));
         } catch (error) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: String(error) }));
+        }
+
+      // ---- CI Worker Status ----
+      } else if (url === '/api/ci-worker-status' && req.method === 'GET') {
+        try {
+          const { getCIWorkerStatus } = await import('../automation/ciWorker.js');
+          const status = getCIWorkerStatus();
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(status));
+        } catch (error) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: String(error) }));
+        }
+
+      // ---- Stuck/Failed Issues ----
+      } else if (url === '/api/stuck-issues' && req.method === 'GET') {
+        try {
+          const linearModule = await import('../linear/index.js');
+          const result = await linearModule.getStuckIssues();
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(result));
+        } catch (error) {
+          console.error('[Web] Failed to fetch stuck issues:', error);
           res.writeHead(500, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: String(error) }));
         }

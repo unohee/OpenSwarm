@@ -14,8 +14,13 @@ import * as scheduler from '../automation/scheduler.js';
 import * as web from '../support/web.js';
 import * as autonomous from '../automation/autonomousRunner.js';
 import { PRProcessor } from '../automation/prProcessor.js';
+import { startCIWorker, stopCIWorker } from '../automation/ciWorker.js';
 import { initMonitors } from '../automation/longRunningMonitor.js';
+import * as dailyReporter from '../automation/dailyReporter.js';
 import { initLocale, t } from '../locale/index.js';
+import { initRateLimiters, destroyRateLimiters } from '../support/rateLimiter.js';
+import { compactMemoryTable, shouldCompact, cleanupBackupFiles } from '../memory/compaction.js';
+import { Cron } from 'croner';
 
 let state: ServiceState = {
   running: false,
@@ -26,6 +31,7 @@ let state: ServiceState = {
 let githubRepos: string[] = [];
 let githubCheckTimer: NodeJS.Timeout | null = null;
 let prProcessor: PRProcessor | null = null;
+let memoryCompactionJob: Cron | null = null;
 
 /**
  * Get PR Processor instance (for web dashboard)
@@ -42,6 +48,11 @@ export async function startService(config: SwarmConfig): Promise<void> {
 
   // Locale initialization
   initLocale(config.language);
+
+  // Rate limiter initialization
+  console.log('⚡ Initializing rate limiters...');
+  initRateLimiters();
+  console.log('✅ Rate limiters ready');
 
   // Linear initialization
   console.log('🔗 Initializing Linear client...');
@@ -199,6 +210,22 @@ export async function startService(config: SwarmConfig): Promise<void> {
     console.log(`[Service] PR Processor started (schedule: ${config.prProcessor.schedule}, repos: ${githubRepos.length}, maxRetries: ${config.prProcessor.maxRetries ?? 3}${resolverStatus})`);
   }
 
+  // Start CI Worker
+  if (config.ciWorker?.enabled && githubRepos.length > 0) {
+    startCIWorker({
+      repos: githubRepos,
+      checkIntervalMs: config.ciWorker.checkIntervalMs,
+      autoRetry: config.ciWorker.autoRetry,
+      createIssues: config.ciWorker.createIssues,
+      maxAgeDays: config.ciWorker.maxAgeDays,
+    });
+    const features = [
+      config.ciWorker.autoRetry && 'auto-retry',
+      config.ciWorker.createIssues && 'linear-issues',
+    ].filter(Boolean).join(', ');
+    console.log(`[Service] CI Worker started (interval: ${(config.ciWorker.checkIntervalMs ?? 300000) / 1000}s, repos: ${githubRepos.length}, features: ${features || 'monitor-only'})`);
+  }
+
   // Initialize long-running monitors
   if (config.monitors?.length) {
     initMonitors(config.monitors);
@@ -206,6 +233,44 @@ export async function startService(config: SwarmConfig): Promise<void> {
   } else {
     initMonitors(); // Restore only from persisted files
   }
+
+  // Start daily status reporter
+  if (config.dailyReporter?.enabled) {
+    dailyReporter.setLinearClient(linear.getClient());
+    dailyReporter.setTeamId(config.linearTeamId);
+    dailyReporter.setDailyReporterDiscord(async (content: any) => {
+      await discord.sendToChannel(content);
+    });
+    dailyReporter.startDailyReporter(config.dailyReporter);
+    console.log(`[Service] Daily reporter started (schedule: ${config.dailyReporter.schedule || '18:00 daily'})`);
+  }
+
+  // Memory compaction scheduler (daily at 2 AM)
+  console.log('[Service] Scheduling memory compaction (daily at 2 AM)...');
+  memoryCompactionJob = Cron('0 2 * * *', async () => {
+    console.log('[Compaction] Daily compaction triggered');
+
+    try {
+      // Clean up backup files first
+      await cleanupBackupFiles();
+
+      // Check if compaction is needed
+      const needed = await shouldCompact();
+      if (needed) {
+        const stats = await compactMemoryTable();
+        console.log(`[Compaction] Success: ${stats.before} → ${stats.after} records (-${stats.removed})`);
+
+        // Report compaction success (skip Discord notification for routine maintenance)
+        console.log(`[Compaction] Reported: ${stats.before} → ${stats.after} records`);
+      } else {
+        console.log('[Compaction] Skipped (not needed)');
+      }
+    } catch (error) {
+      console.error('[Compaction] Failed:', error);
+      // Error already logged above
+    }
+  });
+  console.log('[Service] Memory compaction scheduled');
 
   // Startup notification
   const autoStatus = config.autonomous?.enabled
@@ -373,6 +438,13 @@ export async function stopService(): Promise<void> {
     console.log('GitHub monitoring stopped');
   }
 
+  // Stop memory compaction scheduler
+  if (memoryCompactionJob) {
+    memoryCompactionJob.stop();
+    memoryCompactionJob = null;
+    console.log('Memory compaction scheduler stopped');
+  }
+
   // Clean up agent timers
   for (const [name, timer] of state.timers) {
     clearInterval(timer);
@@ -387,12 +459,20 @@ export async function stopService(): Promise<void> {
     console.log('PR Processor stopped');
   }
 
+  // Stop CI Worker
+  stopCIWorker();
+  console.log('CI Worker stopped');
+
   // Stop scheduler
   scheduler.stopAllSchedules();
   console.log('Scheduler stopped');
 
   // Stop web server
   await web.stopWebServer();
+
+  // Cleanup rate limiters
+  destroyRateLimiters();
+  console.log('Rate limiters destroyed');
   console.log('Web server stopped');
 
   // Shutdown Discord
