@@ -104,7 +104,10 @@ export async function commitAndCreatePR(
 
   // Check for changes and commit
   const status = await git(worktreePath, 'status', '--porcelain');
+  let hasChanges = false;
+
   if (status.trim()) {
+    hasChanges = true;
     await git(worktreePath, 'add', '-A');
     const commitMsg = [
       `feat(${issueIdentifier}): ${title.slice(0, 72)}`,
@@ -121,10 +124,45 @@ export async function commitAndCreatePR(
     }
 
     await git(worktreePath, 'commit', '-m', commitMsg);
+    console.log(`[Worktree] Committed changes (${branchName})`);
+  } else {
+    console.log(`[Worktree] No changes detected (${branchName})`);
   }
 
-  // push
-  await git(worktreePath, 'push', '-u', 'origin', branchName, '--force-with-lease');
+  // Push if there are changes (need commits to push)
+  if (hasChanges) {
+    await git(worktreePath, 'push', '-u', 'origin', branchName, '--force-with-lease');
+    console.log(`[Worktree] Pushed branch ${branchName}`);
+  } else {
+    console.log(`[Worktree] No changes to commit (${branchName})`);
+  }
+
+  // Ensure branch exists on remote for PR creation
+  // This is critical when there are no changes - we still need the branch on remote to create a PR
+  let branchOnRemote = hasChanges; // If we pushed changes, branch is on remote
+
+  if (!branchOnRemote) {
+    // Check if branch exists on remote
+    const remoteBranchExists = await git(worktreePath, 'branch', '-r', '--list', `origin/${branchName}`)
+      .then((out) => out.trim().length > 0)
+      .catch(() => false);
+
+    if (!remoteBranchExists) {
+      // Branch created locally but not on remote, need to push it
+      console.log(`[Worktree] Branch not on remote, pushing ${branchName}...`);
+      try {
+        // Push branch without requiring commits
+        await git(worktreePath, 'push', '-u', 'origin', branchName);
+        console.log(`[Worktree] Pushed branch ${branchName} to remote (no commits, but branch created)`);
+        branchOnRemote = true;
+      } catch (err) {
+        console.warn(`[Worktree] Failed to push branch ${branchName}:`, err);
+        // Continue to PR creation - it may still work
+      }
+    } else {
+      branchOnRemote = true;
+    }
+  }
 
   // If PR already exists, just return the URL
   const existing = await gh('pr', 'list', '--head', branchName, '--state', 'open', '--json', 'url', '--jq', '.[0].url')
