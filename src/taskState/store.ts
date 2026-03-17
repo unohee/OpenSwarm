@@ -405,3 +405,17 @@ export function parseTaskStateSyncComment(body: string): OpenSwarmTaskState | nu
     return null;
   }
 }
+
+export function hydrateTaskStateFromComments(
+  issueId: string,
+  comments: Array<{ body: string; createdAt?: string }> = [],
+): OpenSwarmTaskState | undefined {
+  const latest = [...comments]
+    .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
+    .map((comment) => parseTaskStateSyncComment(comment.body))
+    .find((state): state is OpenSwarmTaskState => Boolean(state));
+
+  if (!latest) return undefined;
+
+  return upsertTaskState(issueId, latest);
+}

@@ -6,6 +6,8 @@ import {
   enrichTaskFromState,
   markTaskDone,
   completeParentIfChildrenDone,
+  buildTaskStateSyncComment,
+  hydrateTaskStateFromComments,
 } from './store.js';
 
 describe('task state store', () => {
@@ -102,5 +104,31 @@ describe('task state store', () => {
     expect(parent?.issueId).toBe('PARENT-1');
     expect(parent?.execution.status).toBe('done');
     expect(parent?.linearState).toBe('Done');
+  });
+
+  it('hydrates canonical state from the latest Linear sync comment', () => {
+    const older = buildTaskStateSyncComment(
+      upsertTaskState('ISSUE-9', {
+        linearState: 'Backlog',
+        execution: { status: 'blocked', retryCount: 0 },
+      }),
+      'Task blocked'
+    );
+
+    const latest = buildTaskStateSyncComment(
+      upsertTaskState('ISSUE-9', {
+        linearState: 'Done',
+        execution: { status: 'done', retryCount: 0 },
+      }),
+      'Task completed'
+    );
+
+    const hydrated = hydrateTaskStateFromComments('ISSUE-9', [
+      { body: older, createdAt: '2026-03-18T00:00:00.000Z' },
+      { body: latest, createdAt: '2026-03-18T01:00:00.000Z' },
+    ]);
+
+    expect(hydrated?.execution.status).toBe('done');
+    expect(hydrated?.linearState).toBe('Done');
   });
 });

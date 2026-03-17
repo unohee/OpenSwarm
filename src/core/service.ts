@@ -22,7 +22,7 @@ import { initRateLimiters, destroyRateLimiters } from '../support/rateLimiter.js
 import { compactMemoryTable, shouldCompact, cleanupBackupFiles } from '../memory/compaction.js';
 import { Cron } from 'croner';
 import { setDefaultAdapter } from '../adapters/index.js';
-import { enrichTaskFromState, updateTaskLinearState } from '../taskState/store.js';
+import { enrichTaskFromState, hydrateTaskStateFromComments, updateTaskLinearState } from '../taskState/store.js';
 
 let state: ServiceState = {
   running: false,
@@ -140,10 +140,11 @@ export async function startService(config: SwarmConfig): Promise<void> {
 
     // Register Linear fetcher
     autonomous.setLinearFetcher(async () => {
-      const issues = await linear.getMyIssues({ slim: true, timeoutMs: 90000 });
+      const issues = await linear.getMyIssues({ timeoutMs: 90000 });
       const { linearIssueToTask } = await import('../orchestration/decisionEngine.js');
       return issues.map((issue: any) => {
         updateTaskLinearState(issue.id, issue.state);
+        hydrateTaskStateFromComments(issue.id, issue.comments || []);
         return enrichTaskFromState(linearIssueToTask({
           id: issue.id,
           identifier: issue.identifier,
