@@ -32,6 +32,16 @@ import {
   canCreateMoreIssues,
   registerDecomposition,
 } from './runnerState.js';
+import {
+  buildTaskStateSyncComment,
+  completeParentIfChildrenDone,
+  markTaskBlocked,
+  markTaskDecomposed,
+  markTaskDone,
+  markTaskInProgress,
+  releaseDependentTasks,
+  upsertTaskState,
+} from '../taskState/store.js';
 
 // ============================================
 // Discord Reporter
@@ -340,9 +350,16 @@ export async function decomposeTask(
     return false;
   }
 
-  const createdSubIssues: Array<{ id: string; identifier: string; title: string }> = [];
+  const createdSubIssues: Array<{
+    id: string;
+    identifier: string;
+    title: string;
+    dependencies: string[];
+    topoRank: number;
+    estimatedMinutes: number;
+  }> = [];
 
-  for (const subTask of result.subTasks) {
+  for (const [index, subTask] of result.subTasks.entries()) {
     const depsStr = subTask.dependencies?.length
       ? `\n\n${t('runner.decomposition.prerequisite', { deps: subTask.dependencies.join(', ') })}`
       : '';
@@ -371,6 +388,9 @@ export async function decomposeTask(
       id: subResult.id,
       identifier: subResult.identifier,
       title: subResult.title,
+      dependencies: subTask.dependencies || [],
+      topoRank: index,
+      estimatedMinutes: subTask.estimatedMinutes,
     });
 
     console.log(`[AutonomousRunner] Created sub-issue: ${subResult.identifier}`);
@@ -396,6 +416,21 @@ export async function decomposeTask(
     result.totalEstimatedMinutes
   );
 
+  const childIdByTitle = new Map(createdSubIssues.map((subIssue) => [subIssue.title, subIssue.id]));
+  const parentState = markTaskDecomposed(task.issueId, {
+    issueIdentifier: task.issueIdentifier,
+    title: task.title,
+    projectId: task.linearProject?.id,
+    projectName: task.linearProject?.name,
+    parentIssueId: task.parentId,
+    childIssueIds: createdSubIssues.map((subIssue) => subIssue.id),
+  });
+
+  await linear.addComment(
+    task.issueId,
+    buildTaskStateSyncComment(parentState, 'Parent task decomposed')
+  );
+
   const subIssueList = createdSubIssues
     .map((s, i) => `${i + 1}. ${s.identifier}: ${s.title}`)
     .join('\n');
@@ -414,14 +449,45 @@ export async function decomposeTask(
   }
   console.log(`[AutonomousRunner] Decomposition complete: ${createdSubIssues.length} sub-issues created`);
 
-  // Move all sub-issues to Todo state so they can be picked up immediately
-  console.log('[AutonomousRunner] Moving sub-issues to Todo state...');
   for (const subIssue of createdSubIssues) {
+    const dependencyIssueIds = subIssue.dependencies
+      .map((title) => childIdByTitle.get(title))
+      .filter((value): value is string => Boolean(value));
+    const isReady = dependencyIssueIds.length === 0;
+
+    const childState = upsertTaskState(subIssue.id, {
+      issueIdentifier: subIssue.identifier,
+      title: subIssue.title,
+      projectId: task.linearProject?.id,
+      projectName: task.linearProject?.name,
+      parentIssueId: task.issueId,
+      dependencyIssueIds,
+      dependencyTitles: subIssue.dependencies,
+      topoRank: subIssue.topoRank,
+      execution: {
+        status: isReady ? 'todo' : 'blocked',
+        blockedReason: isReady ? undefined : `Waiting on dependencies: ${dependencyIssueIds.join(', ')}`,
+        retryCount: 0,
+      },
+      linearState: isReady ? 'Todo' : 'Backlog',
+    });
+
     try {
-      await linear.updateIssueState(subIssue.id, 'Todo');
-      console.log(`[AutonomousRunner] Moved ${subIssue.identifier} to Todo`);
+      if (isReady) {
+        await linear.updateIssueState(subIssue.id, 'Todo');
+        console.log(`[AutonomousRunner] Moved ${subIssue.identifier} to Todo`);
+      } else {
+        console.log(`[AutonomousRunner] Keeping ${subIssue.identifier} in Backlog until dependencies resolve`);
+      }
+      await linear.addComment(
+        subIssue.id,
+        buildTaskStateSyncComment(
+          childState,
+          isReady ? 'Task ready after decomposition' : 'Task blocked by decomposition dependency'
+        )
+      );
     } catch (err) {
-      console.warn(`[AutonomousRunner] Failed to move ${subIssue.identifier} to Todo:`, err);
+      console.warn(`[AutonomousRunner] Failed to initialize ${subIssue.identifier} state:`, err);
     }
   }
 
@@ -574,7 +640,19 @@ export async function executePipeline(
 
     if (task.issueId) {
       try {
-        await linear.logPairStart(task.issueId, `pipeline-${Date.now()}`, projectPath);
+        const sessionId = `pipeline-${Date.now()}`;
+        const inProgressState = markTaskInProgress(task.issueId, {
+          issueIdentifier: task.issueIdentifier,
+          title: task.title,
+          projectId: task.linearProject?.id,
+          projectName: task.linearProject?.name,
+          linearState: 'In Progress',
+          sessionId,
+          branchName: worktreeInfo?.branchName,
+          worktreePath: actualPath,
+        });
+        await linear.logPairStart(task.issueId, sessionId, projectPath);
+        await linear.addComment(task.issueId, buildTaskStateSyncComment(inProgressState, 'Task execution started'));
       } catch (err) {
         console.error(`[${taskPrefix}] Linear logPairStart failed:`, err);
         // Continue pipeline even if this fails
@@ -758,5 +836,59 @@ export async function reportExecutionResult(
     if (failedStepResult?.error) {
       await reportFn(`\`\`\`\n${failedStepResult.error.slice(0, 1500)}\n\`\`\``);
     }
+  }
+}
+
+export async function reconcileCompletionState(task: TaskItem): Promise<void> {
+  if (!task.issueId) return;
+
+  const released = releaseDependentTasks(task.issueId);
+  for (const child of released) {
+    try {
+      await linear.updateIssueState(child.issueId, 'Todo');
+      await linear.addComment(
+        child.issueId,
+        buildTaskStateSyncComment(child, 'Task unblocked and ready')
+      );
+    } catch (err) {
+      console.warn(`[AutonomousRunner] Failed to release dependent task ${child.issueId}:`, err);
+    }
+  }
+
+  const parent = completeParentIfChildrenDone(task.issueId);
+  if (!parent) return;
+
+  try {
+    await linear.updateIssueState(parent.issueId, 'Done');
+    await linear.addComment(
+      parent.issueId,
+      buildTaskStateSyncComment(parent, 'All child tasks completed')
+    );
+  } catch (err) {
+    console.warn(`[AutonomousRunner] Failed to complete parent task ${parent.issueId}:`, err);
+  }
+}
+
+export async function syncFailureState(task: TaskItem, reason: string): Promise<void> {
+  if (!task.issueId) return;
+  const state = markTaskBlocked(task.issueId, reason, task.blockedBy || [], task.linearState);
+  try {
+    await linear.addComment(task.issueId, buildTaskStateSyncComment(state, 'Task blocked'));
+  } catch (err) {
+    console.warn(`[AutonomousRunner] Failed to sync blocked state for ${task.issueId}:`, err);
+  }
+}
+
+export async function syncSuccessState(task: TaskItem, confidence?: number): Promise<void> {
+  if (!task.issueId) return;
+  const state = markTaskDone(task.issueId, {
+    issueIdentifier: task.issueIdentifier,
+    title: task.title,
+    confidence,
+  });
+  try {
+    await linear.addComment(task.issueId, buildTaskStateSyncComment(state, 'Task completed'));
+  } catch (err) {
+    console.warn(`[AutonomousRunner] Failed to sync success state for ${task.issueId}:`, err);
   }
 }

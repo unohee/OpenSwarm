@@ -961,18 +961,19 @@ export async function markAsDecomposed(
 - Total estimated time: ${totalMinutes}min
 
 This issue has been decomposed into sub-issues.
-Once all sub-issues are completed, this issue will be marked as done automatically.
+The parent issue remains active while child issues execute.
+Once all sub-issues are completed, OpenSwarm will close this issue automatically.
 
 ---
 _Auto-decomposed by Planner agent_`;
 
   await addComment(issueId, body);
 
-  // Move parent issue to Done — sub-issues represent the actual work
+  // Keep parent issue active until all child issues complete.
   try {
-    await updateIssueState(issueId, 'Done');
+    await updateIssueState(issueId, 'In Progress');
   } catch (err) {
-    console.warn('[Linear] Failed to mark decomposed parent as Done:', err);
+    console.warn('[Linear] Failed to mark decomposed parent as In Progress:', err);
   }
 
   // Add label (if decomposed label exists)

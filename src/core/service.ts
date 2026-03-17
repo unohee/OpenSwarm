@@ -22,6 +22,7 @@ import { initRateLimiters, destroyRateLimiters } from '../support/rateLimiter.js
 import { compactMemoryTable, shouldCompact, cleanupBackupFiles } from '../memory/compaction.js';
 import { Cron } from 'croner';
 import { setDefaultAdapter } from '../adapters/index.js';
+import { enrichTaskFromState, updateTaskLinearState } from '../taskState/store.js';
 
 let state: ServiceState = {
   running: false,
@@ -139,20 +140,23 @@ export async function startService(config: SwarmConfig): Promise<void> {
 
     // Register Linear fetcher
     autonomous.setLinearFetcher(async () => {
-      const issues = await linear.getMyIssues({ slim: true, timeoutMs: 30000 });
+      const issues = await linear.getMyIssues({ slim: true, timeoutMs: 90000 });
       const { linearIssueToTask } = await import('../orchestration/decisionEngine.js');
-      return issues.map((issue: any) => linearIssueToTask({
-        id: issue.id,
-        identifier: issue.identifier,
-        title: issue.title,
-        description: issue.description,
-        priority: issue.priority,
-        state: issue.state,
-        project: issue.project ? {
-          id: issue.project.id,
-          name: issue.project.name,
-        } : undefined,
-      }));
+      return issues.map((issue: any) => {
+        updateTaskLinearState(issue.id, issue.state);
+        return enrichTaskFromState(linearIssueToTask({
+          id: issue.id,
+          identifier: issue.identifier,
+          title: issue.title,
+          description: issue.description,
+          priority: issue.priority,
+          state: issue.state,
+          project: issue.project ? {
+            id: issue.project.id,
+            name: issue.project.name,
+          } : undefined,
+        }));
+      });
     });
     console.log('[Service] Linear fetcher registered');
 

@@ -18,6 +18,7 @@ import { checkWorkAllowed } from '../support/timeWindow.js';
 import { saveCognitiveMemory } from '../memory/index.js';
 import { analyzeIssue } from '../knowledge/index.js';
 import type { ImpactAnalysis } from '../knowledge/index.js';
+import { getTaskReadiness } from '../taskState/store.js';
 
 // ============================================
 // Types
@@ -51,6 +52,7 @@ export interface TaskItem {
   issueIdentifier?: string; // Linear issue identifier (e.g., LIN-123)
   linearState?: string;    // Linear issue state (e.g., 'Todo', 'Backlog', 'In Progress')
   parentId?: string;       // Parent issue ID (for decomposed sub-tasks)
+  topoRank?: number;       // Planner topological rank within a decomposed tree
   workflowId?: string;     // Mapped workflow
   createdAt: number;
   dueDate?: number;
@@ -408,10 +410,8 @@ export class DecisionEngine {
         if (!allowed) return false;
       }
 
-      // Check if task is blocked
-      if (task.blockedBy && task.blockedBy.length > 0) {
-        // Need to check if all blockedBy tasks are completed
-        // Currently simply exclude if blocked
+      const readiness = getTaskReadiness(task);
+      if (!readiness.ready) {
         return false;
       }
 
@@ -424,6 +424,12 @@ export class DecisionEngine {
    */
   private prioritizeTasks(tasks: TaskItem[]): TaskItem[] {
     return [...tasks].sort((a, b) => {
+      const topoA = a.topoRank ?? Number.MAX_SAFE_INTEGER;
+      const topoB = b.topoRank ?? Number.MAX_SAFE_INTEGER;
+      if (topoA !== topoB) {
+        return topoA - topoB;
+      }
+
       // 1. Priority (lower value = higher priority)
       if (a.priority !== b.priority) {
         return a.priority - b.priority;
@@ -671,6 +677,9 @@ export function linearIssueToTask(issue: {
   dueDate?: string;
   state?: string;
   project?: { id: string; name: string };
+  parentId?: string;
+  blockedBy?: string[];
+  topoRank?: number;
 }): TaskItem {
   return {
     id: issue.id,
@@ -681,6 +690,9 @@ export function linearIssueToTask(issue: {
     issueId: issue.id,
     issueIdentifier: issue.identifier,
     linearState: issue.state,
+    parentId: issue.parentId,
+    blockedBy: issue.blockedBy,
+    topoRank: issue.topoRank,
     linearProject: issue.project ? {
       id: issue.project.id,
       name: issue.project.name,

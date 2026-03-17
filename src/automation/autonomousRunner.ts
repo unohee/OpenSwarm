@@ -160,7 +160,7 @@ export class AutonomousRunner {
         this.saveTaskState();
       }
 
-      // Skip Linear state update for decomposed tasks (markAsDecomposed already moves to Done)
+      // Skip completion handling for decomposed tasks. Child issues represent the runnable work.
       if (result.finalStatus === 'decomposed') {
         console.log(`[Scheduler] Task decomposed into sub-issues, skipping Done state`);
         this.scheduleNextHeartbeat();
@@ -170,6 +170,7 @@ export class AutonomousRunner {
       // On success, update Linear issue to Done
       if (result.success && task.issueId) {
         try {
+          await execution.syncSuccessState(task);
           await linear.logPairComplete(task.issueId, result.sessionId, {
             attempts: result.iterations,
             duration: Math.floor(result.totalDuration / 1000),
@@ -185,6 +186,7 @@ export class AutonomousRunner {
               failedTests: result.testerResult.failedTests,
             } : undefined,
           });
+          await execution.reconcileCompletionState(task);
           console.log(`[Scheduler] Issue ${task.issueId} marked as Done`);
         } catch (err) {
           console.error(`[Scheduler] Failed to update issue state:`, err);
@@ -237,6 +239,7 @@ export class AutonomousRunner {
           this.saveTaskState();
 
           try {
+            await execution.syncFailureState(task, `Max rejection limit reached (${rejectionCount} attempts): ${feedback}`);
             await linear.logBlocked(task.issueId, 'autonomous-runner',
               `⚠️ **Max rejection limit reached (${rejectionCount} attempts)**\n\n` +
               `This task has been rejected ${rejectionCount} times by the reviewer and requires manual intervention.\n\n` +
@@ -255,6 +258,7 @@ export class AutonomousRunner {
           this.saveTaskState();
 
           try {
+            await execution.syncFailureState(task, `Review rejected (${rejectionCount}/3): ${feedback}`);
             await linear.logBlocked(task.issueId, 'autonomous-runner',
               t('runner.reviewRejected', { feedback }) +
               `\n\n**Rejection count:** ${rejectionCount}/3 - Will retry automatically ${retryIn}.`
@@ -783,6 +787,7 @@ export class AutonomousRunner {
       try {
         if (result.success) {
           // On success, move to Done
+          await execution.syncSuccessState(task);
           await linear.logPairComplete(task.issueId, result.sessionId, {
             attempts: result.iterations,
             duration: Math.floor(result.totalDuration / 1000),
@@ -798,6 +803,7 @@ export class AutonomousRunner {
               failedTests: result.testerResult.failedTests,
             } : undefined,
           });
+          await execution.reconcileCompletionState(task);
           console.log(`[AutonomousRunner] Issue ${task.issueId} marked as Done`);
 
           try {
@@ -810,6 +816,10 @@ export class AutonomousRunner {
           }
         } else if (result.finalStatus === 'rejected') {
           // Change to Blocked on review rejection
+          await execution.syncFailureState(
+            task,
+            `Review rejected: ${result.reviewResult?.feedback || t('common.fallback.noDescription')}`
+          );
           await linear.logBlocked(task.issueId, 'autonomous-runner',
             t('runner.reviewRejected', { feedback: result.reviewResult?.feedback || t('common.fallback.noDescription') })
           );
