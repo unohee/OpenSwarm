@@ -7,7 +7,7 @@ import { EmbedBuilder } from 'discord.js';
 import type { TaskItem, DecisionResult } from '../orchestration/decisionEngine.js';
 import type { ExecutorResult } from '../orchestration/workflow.js';
 import type { PipelineResult } from '../agents/pairPipeline.js';
-import type { DefaultRolesConfig, PipelineStage } from '../core/types.js';
+import type { DefaultRolesConfig, PipelineStage, JobProfile } from '../core/types.js';
 import { createPipelineFromConfig, buildTaskPrefix } from '../agents/pairPipeline.js';
 import { formatParsedTaskSummary, loadParsedTask } from '../orchestration/taskParser.js';
 import { saveCognitiveMemory } from '../memory/index.js';
@@ -16,6 +16,7 @@ import * as reviewerAgent from '../agents/reviewer.js';
 import * as projectMapper from '../support/projectMapper.js';
 import * as linear from '../linear/index.js';
 import * as planner from '../support/planner.js';
+import { analyzeIssue } from '../knowledge/index.js';
 import { t } from '../locale/index.js';
 import { broadcastEvent } from '../core/eventHub.js';
 import {
@@ -43,9 +44,7 @@ import {
   upsertTaskState,
 } from '../taskState/store.js';
 
-// ============================================
 // Discord Reporter
-// ============================================
 
 type DiscordSendFn = (content: string | { embeds: EmbedBuilder[] }) => Promise<void>;
 
@@ -79,9 +78,7 @@ export async function reportToDiscord(message: string | EmbedBuilder): Promise<v
   }
 }
 
-// ============================================
 // Linear Integration
-// ============================================
 
 type LinearFetchFn = () => Promise<TaskItem[]>;
 
@@ -116,9 +113,7 @@ export async function fetchLinearTasks(): Promise<{ tasks: TaskItem[]; error?: s
   }
 }
 
-// ============================================
 // Execution Context
-// ============================================
 
 export interface ExecutionContext {
   allowedProjects: string[];
@@ -135,15 +130,15 @@ export interface ExecutionContext {
   reportToDiscord: (message: string | EmbedBuilder) => Promise<void>;
   /** Git worktree mode: work in an isolated worktree per issue, auto-create PR */
   worktreeMode?: boolean;
+  /** Job profiles for on-the-fly model selection */
+  jobProfiles?: JobProfile[];
   /** Trigger immediate heartbeat (called after decomposition to pick up new sub-issues) */
   scheduleNextHeartbeat?: () => void;
   /** Pipeline guards configuration */
   guards?: Partial<import('../core/types.js').PipelineGuardsConfig>;
 }
 
-// ============================================
 // Project Path Resolution
-// ============================================
 
 export async function resolveProjectPath(
   ctx: ExecutionContext,
@@ -157,17 +152,19 @@ export async function resolveProjectPath(
     return null;
   }
 
-  const mappedPath = await projectMapper.mapLinearProject(
-    projectId,
-    projectName,
-    ctx.allowedProjects
-  );
-
-  if (mappedPath) {
-    console.log(`[AutonomousRunner] Mapped: ${projectName} → ${mappedPath}`);
-    return mappedPath;
+  // 1순위: allowedProjects에서 정확한 basename 매칭 (fuzzy보다 신뢰도 높음)
+  for (const allowed of ctx.allowedProjects) {
+    const expanded = allowed.replace('~', process.env.HOME || '');
+    const dirName = expanded.split('/').pop();
+    if (dirName === projectName || dirName?.toLowerCase() === projectName.toLowerCase()) {
+      if (await isValidProjectPath(expanded)) {
+        console.log(`[AutonomousRunner] AllowedProjects match: ${projectName} → ${expanded}`);
+        return expanded;
+      }
+    }
   }
 
+  // 2순위: ~/dev/{name} 직접 경로
   const directPath = `${process.env.HOME}/dev/${projectName}`;
   if (await isValidProjectPath(directPath)) {
     console.log(`[AutonomousRunner] Direct path found: ${projectName} → ${directPath}`);
@@ -180,27 +177,27 @@ export async function resolveProjectPath(
     return lowerPath;
   }
 
-  // Check ~/dev/tools/ subdirectory
+  // 3순위: ~/dev/tools/ 서브디렉토리
   const toolsPath = `${process.env.HOME}/dev/tools/${projectName}`;
   if (await isValidProjectPath(toolsPath)) {
     console.log(`[AutonomousRunner] Tools path found: ${projectName} → ${toolsPath}`);
     return toolsPath;
   }
 
-  // Check allowedProjects for exact basename match
-  for (const allowed of ctx.allowedProjects) {
-    const expanded = allowed.replace('~', process.env.HOME || '');
-    const dirName = expanded.split('/').pop();
-    if (dirName === projectName || dirName?.toLowerCase() === projectName.toLowerCase()) {
-      if (await isValidProjectPath(expanded)) {
-        console.log(`[AutonomousRunner] AllowedProjects match: ${projectName} → ${expanded}`);
-        return expanded;
-      }
-    }
+  // 4순위: fuzzy match (스캔 기반, 오탐 가능성 있음)
+  const mappedPath = await projectMapper.mapLinearProject(
+    projectId,
+    projectName,
+    ctx.allowedProjects
+  );
+
+  if (mappedPath) {
+    console.log(`[AutonomousRunner] Fuzzy mapped: ${projectName} → ${mappedPath}`);
+    return mappedPath;
   }
 
   console.error(`[AutonomousRunner] Failed to resolve project path for "${projectName}" - SKIP`);
-  console.error(`[AutonomousRunner] Tried: mapper, ${directPath}, ${lowerPath}, ${toolsPath}, allowedProjects`);
+  console.error(`[AutonomousRunner] Tried: allowedProjects, ${directPath}, ${lowerPath}, ${toolsPath}, fuzzy mapper`);
   return null;
 }
 
@@ -225,9 +222,7 @@ export async function isValidProjectPath(path: string): Promise<boolean> {
   }
 }
 
-// ============================================
 // Task Decomposition
-// ============================================
 
 export async function decomposeTask(
   ctx: ExecutionContext,
@@ -316,6 +311,9 @@ export async function decomposeTask(
     broadcastEvent({ type: 'log', data: { taskId, stage: 'decompose', line: `⏱ Planner running... ${elapsed}s` } });
   }, 30000);
 
+  // KG 영향 분석 — 플래너에 파일 분리 힌트 제공
+  const impactAnalysis = await analyzeIssue(projectPath, task.title, task.description).catch(() => null);
+
   let result: Awaited<ReturnType<typeof planner.runPlanner>>;
   try {
     result = await planner.runPlanner({
@@ -327,6 +325,7 @@ export async function decomposeTask(
       model: ctx.plannerModel ?? 'claude-sonnet-4-5-20250929',
       timeoutMs: ctx.plannerTimeoutMs ?? 600000,
       onLog: (line: string) => broadcastEvent({ type: 'log', data: { taskId, stage: 'decompose', line } }),
+      impactAnalysis: impactAnalysis ?? undefined,
     });
   } finally {
     clearInterval(progressTimer);
@@ -500,9 +499,7 @@ export async function decomposeTask(
   return true;
 }
 
-// ============================================
 // Pipeline Execution
-// ============================================
 
 export async function executePipeline(
   ctx: ExecutionContext,
@@ -513,7 +510,7 @@ export async function executePipeline(
 
   if (ctx.enableDecomposition) {
     const threshold = ctx.decompositionThresholdMinutes ?? 30;
-    const needsDecomp = planner.needsDecomposition(task, threshold);
+    const needsDecomp = planner.needsDecomposition(task, threshold, true); // heuristic pre-filter
 
     if (needsDecomp) {
       const estimated = planner.estimateTaskDuration(task);
@@ -568,7 +565,7 @@ export async function executePipeline(
 
   try {
     const roles = ctx.getRolesForProject(projectPath); // look up config using original path
-    const pipeline = createPipelineFromConfig(roles, ctx.pairMaxAttempts ?? 3, ctx.guards);
+    const pipeline = createPipelineFromConfig(roles, ctx.pairMaxAttempts ?? 3, ctx.guards, ctx.jobProfiles);
 
     const taskPrefix = buildTaskPrefix(task, actualPath);
 
@@ -721,9 +718,7 @@ function getEnabledStages(roles?: DefaultRolesConfig): PipelineStage[] {
   return stages;
 }
 
-// ============================================
 // Reporting
-// ============================================
 
 async function reportStageResult(
   stage: PipelineStage,

@@ -21,8 +21,130 @@ export const TASK_STATE_FILE = join(homedir(), '.claude', 'openswarm-task-state.
 export const PIPELINE_HISTORY_FILE = join(homedir(), '.claude', 'openswarm-pipeline-history.json');
 export const REJECTION_STATE_FILE = join(homedir(), '.claude', 'openswarm-rejection-state.json');
 export const DECOMPOSITION_STATE_FILE = join(homedir(), '.claude', 'openswarm-decomposition-state.json');
+export const DAILY_PACE_FILE = join(homedir(), '.openswarm', 'daily-pace.json');
 const MAX_PIPELINE_HISTORY = 100;
 const MAX_REJECTION_ATTEMPTS = 3;
+
+// 5시간 롤링 윈도우 기반 프로젝트별 pace 제어
+// Claude Max는 5시간마다 quota가 리프레시되므로 이에 맞춤
+
+const WINDOW_MS = 5 * 60 * 60 * 1000; // 5시간
+
+export interface ProjectPaceEntry {
+  completedAt: string; // ISO-8601
+  costUsd?: number;
+}
+
+export interface PaceState {
+  projects: Record<string, ProjectPaceEntry[]>;
+  updatedAt: string;
+}
+
+export interface DailyPaceState {
+  completedToday: number;
+  dateKey: string;
+  lastCompletionAt: string | null;
+  projectCounts: Record<string, number>;
+}
+
+let paceState: PaceState | null = null;
+
+function ensurePaceDir(): void {
+  const dir = join(homedir(), '.openswarm');
+  if (!existsSync(dir)) {
+    const { mkdirSync } = require('node:fs') as typeof import('node:fs');
+    mkdirSync(dir, { recursive: true });
+  }
+}
+
+function ensurePaceLoaded(): PaceState {
+  if (paceState) return paceState;
+  try {
+    if (existsSync(DAILY_PACE_FILE)) {
+      const raw = readFileSync(DAILY_PACE_FILE, 'utf8');
+      paceState = JSON.parse(raw) as PaceState;
+      if (!paceState!.projects) paceState!.projects = {};
+    } else {
+      paceState = { projects: {}, updatedAt: new Date().toISOString() };
+    }
+  } catch {
+    paceState = { projects: {}, updatedAt: new Date().toISOString() };
+  }
+  return paceState!;
+}
+
+function savePace(): void {
+  try {
+    ensurePaceDir();
+    writeFileSync(DAILY_PACE_FILE, JSON.stringify(paceState, null, 2), 'utf8');
+  } catch (err) {
+    console.warn('[Pace] Failed to save:', err);
+  }
+}
+
+function pruneOldEntries(entries: ProjectPaceEntry[]): ProjectPaceEntry[] {
+  const cutoff = Date.now() - WINDOW_MS;
+  return entries.filter(e => new Date(e.completedAt).getTime() > cutoff);
+}
+
+export function getProjectWindowCount(projectName: string): number {
+  const state = ensurePaceLoaded();
+  const entries = state.projects[projectName] ?? [];
+  return pruneOldEntries(entries).length;
+}
+
+export function canProjectAcceptTask(projectName: string, cap: number): boolean {
+  return getProjectWindowCount(projectName) < cap;
+}
+
+export function recordProjectCompletion(projectName: string, costUsd?: number): void {
+  const state = ensurePaceLoaded();
+  if (!state.projects[projectName]) state.projects[projectName] = [];
+  state.projects[projectName] = pruneOldEntries(state.projects[projectName]);
+  state.projects[projectName].push({ completedAt: new Date().toISOString(), costUsd });
+  state.updatedAt = new Date().toISOString();
+  savePace();
+  console.log(`[Pace] ${projectName}: ${state.projects[projectName].length} tasks in 5h window`);
+}
+
+export function getTotalWindowCount(): number {
+  const state = ensurePaceLoaded();
+  let total = 0;
+  for (const entries of Object.values(state.projects)) {
+    total += pruneOldEntries(entries).length;
+  }
+  return total;
+}
+
+export function getDailyPaceInfo(): DailyPaceState {
+  const state = ensurePaceLoaded();
+  const projectCounts: Record<string, number> = {};
+  let totalToday = 0;
+  let lastCompletion: string | null = null;
+  const today = new Date().toLocaleDateString('en-CA');
+
+  for (const [name, entries] of Object.entries(state.projects)) {
+    const active = pruneOldEntries(entries);
+    projectCounts[name] = active.length;
+    for (const e of entries) {
+      if (e.completedAt.startsWith(today)) totalToday++;
+      if (!lastCompletion || e.completedAt > lastCompletion) lastCompletion = e.completedAt;
+    }
+  }
+
+  return { completedToday: totalToday, dateKey: today, lastCompletionAt: lastCompletion, projectCounts };
+}
+
+// 하위 호환 래퍼
+export function getDailyCompletedCount(): number {
+  return getTotalWindowCount();
+}
+export function incrementDailyCompleted(): void {
+  // no-op — recordProjectCompletion으로 대체
+}
+export function canAcceptMoreTasks(cap: number): boolean {
+  return getTotalWindowCount() < cap;
+}
 
 export interface TaskState {
   completedTaskIds: Set<string>;
@@ -72,9 +194,7 @@ export function saveTaskState(state: TaskState): void {
   }
 }
 
-// ============================================
 // Pipeline History (persistent, time-ordered)
-// ============================================
 
 export interface PipelineHistoryEntry {
   sessionId: string;
@@ -94,9 +214,7 @@ export interface PipelineHistoryEntry {
   completedAt: string; // ISO-8601
 }
 
-// ============================================
 // Rejection State (track reviewer rejections per issue)
-// ============================================
 
 export interface RejectionEntry {
   issueId: string;
@@ -185,9 +303,7 @@ export function getAllRejectionEntries(): RejectionEntry[] {
   return Object.values(state.rejections);
 }
 
-// ============================================
 // Decomposition State (track parent-child relationships and daily limits)
-// ============================================
 
 export interface DecompositionEntry {
   issueId: string;
@@ -214,13 +330,13 @@ function ensureDecompositionStateLoaded(): DecompositionState {
       const raw = readFileSync(DECOMPOSITION_STATE_FILE, 'utf8');
       decompositionState = JSON.parse(raw) as DecompositionState;
       // Reset daily counter if date changed
-      const today = new Date().toISOString().split('T')[0];
+      const today = new Date().toLocaleDateString('en-CA');
       if (decompositionState.dailyCreationDate !== today) {
         decompositionState.dailyCreationCount = 0;
         decompositionState.dailyCreationDate = today;
       }
     } else {
-      const today = new Date().toISOString().split('T')[0];
+      const today = new Date().toLocaleDateString('en-CA');
       decompositionState = {
         decompositions: {},
         dailyCreationCount: 0,
@@ -229,7 +345,7 @@ function ensureDecompositionStateLoaded(): DecompositionState {
       };
     }
   } catch {
-    const today = new Date().toISOString().split('T')[0];
+    const today = new Date().toLocaleDateString('en-CA');
     decompositionState = {
       decompositions: {},
       dailyCreationCount: 0,
@@ -257,7 +373,7 @@ export function getChildrenCount(issueId: string): number {
  */
 function resetDailyCounterIfNeeded(): void {
   const state = ensureDecompositionStateLoaded();
-  const today = new Date().toISOString().split('T')[0];
+  const today = new Date().toLocaleDateString('en-CA');
   if (state.dailyCreationDate !== today) {
     console.log(`[DecompositionState] Daily counter reset: ${state.dailyCreationCount} → 0 (date: ${state.dailyCreationDate} → ${today})`);
     state.dailyCreationCount = 0;
@@ -328,9 +444,7 @@ export function registerDecomposition(
   }
 }
 
-// ============================================
 // Pipeline History (persistent, time-ordered)
-// ============================================
 
 // In-memory cache (loaded once at startup, appended per completion)
 let pipelineHistory: PipelineHistoryEntry[] | null = null;
@@ -367,9 +481,7 @@ export function getPipelineHistory(limit = 50): PipelineHistoryEntry[] {
   return ensureHistoryLoaded().slice(0, limit);
 }
 
-// ============================================
 // Project Info Query (for dashboard)
-// ============================================
 
 export interface ProjectInfo {
   path: string;
@@ -438,9 +550,7 @@ export function buildProjectsInfo(
   });
 }
 
-// ============================================
 // Exponential Backoff for Failed Task Retries
-// ============================================
 
 const BACKOFF_MINUTES = [10, 30, 60, 120]; // 10min, 30min, 1h, 2h
 

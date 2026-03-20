@@ -20,9 +20,7 @@ import { analyzeIssue } from '../knowledge/index.js';
 import type { ImpactAnalysis } from '../knowledge/index.js';
 import { getTaskReadiness } from '../taskState/store.js';
 
-// ============================================
 // Types
-// ============================================
 
 /**
  * Task source
@@ -58,6 +56,7 @@ export interface TaskItem {
   dueDate?: number;
   blockedBy?: string[];    // Other task IDs
   impactAnalysis?: ImpactAnalysis;  // Knowledge graph impact analysis
+  estimatedMinutes?: number;
 }
 
 /**
@@ -114,9 +113,7 @@ export interface DecisionEngineConfig {
   dryRun: boolean;
 }
 
-// ============================================
 // Constants
-// ============================================
 
 const ENGINE_STATE_FILE = resolve(homedir(), '.openswarm/decision-engine-state.json');
 const DISCOVERED_TASKS_FILE = resolve(homedir(), '.openswarm/discovered-tasks.json');
@@ -129,9 +126,7 @@ const DEFAULT_CONFIG: DecisionEngineConfig = {
   dryRun: false,
 };
 
-// ============================================
 // Engine State
-// ============================================
 
 interface EngineState {
   lastRunAt: number;
@@ -160,9 +155,7 @@ async function saveState(state: EngineState): Promise<void> {
   await fs.writeFile(ENGINE_STATE_FILE, JSON.stringify(state, null, 2));
 }
 
-// ============================================
 // Decision Engine
-// ============================================
 
 export class DecisionEngine {
   private config: DecisionEngineConfig;
@@ -407,11 +400,15 @@ export class DecisionEngine {
         const allowed = this.config.allowedProjects.some(p =>
           task.projectPath!.includes(p) || p.includes(task.projectPath!)
         );
-        if (!allowed) return false;
+        if (!allowed) {
+          console.log(`[DecisionEngine] Filtered out ${task.issueIdentifier}: project not allowed (${task.projectPath})`);
+          return false;
+        }
       }
 
       const readiness = getTaskReadiness(task);
       if (!readiness.ready) {
+        console.log(`[DecisionEngine] Filtered out ${task.issueIdentifier}: ${readiness.reason || 'not ready'} (blocked by: ${readiness.blockedBy.join(', ') || 'none'})`);
         return false;
       }
 
@@ -637,9 +634,7 @@ export class DecisionEngine {
   }
 }
 
-// ============================================
 // Singleton & Convenience Functions
-// ============================================
 
 let engineInstance: DecisionEngine | null = null;
 

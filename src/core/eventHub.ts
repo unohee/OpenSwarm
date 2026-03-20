@@ -8,9 +8,7 @@ import type { ServerResponse } from 'node:http';
 import type { CostInfo } from '../support/costTracker.js';
 import type { MonitorState } from './types.js';
 
-// ============================================
 // Types
-// ============================================
 
 export interface SwarmStats {
   runningTasks: number;
@@ -47,9 +45,7 @@ export type HubEvent =
   | { type: 'pr_processor_pr'; data: { pr: string; title: string } }
   | { type: 'heartbeat' };
 
-// ============================================
 // Singleton
-// ============================================
 
 const hub = new EventEmitter();
 hub.setMaxListeners(50);
@@ -86,9 +82,7 @@ function pushReplay(event: HubEvent): void {
   }
 }
 
-// ============================================
 // Exports
-// ============================================
 
 export function getEventHub(): EventEmitter {
   return hub;

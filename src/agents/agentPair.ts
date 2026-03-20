@@ -6,9 +6,7 @@
 import { randomUUID } from 'node:crypto';
 import type { CostInfo } from '../support/costTracker.js';
 
-// ============================================
 // Types
-// ============================================
 
 /**
  * Confidence level for execution results (legacy)
@@ -148,9 +146,7 @@ export interface CreatePairSessionOptions {
   models?: PairModelConfig;
 }
 
-// ============================================
 // Session Store
-// ============================================
 
 const sessions = new Map<string, PairSession>();
 
@@ -158,9 +154,7 @@ const sessions = new Map<string, PairSession>();
 const completedSessions: PairSession[] = [];
 const MAX_HISTORY = 50;
 
-// ============================================
 // Session Management
-// ============================================
 
 /**
  * Create a new pair session
@@ -345,9 +339,7 @@ export function clearAllSessions(): void {
   completedSessions.length = 0;
 }
 
-// ============================================
 // Formatting
-// ============================================
 
 /**
  * Format Worker message
@@ -449,9 +441,7 @@ export function formatDiscussion(session: PairSession): string {
     .join('\n\n---\n\n');
 }
 
-// ============================================
 // Confidence Tracking
-// ============================================
 
 /** Expanded uncertainty word list (from CLAUDE.md behavioral rules) */
 const UNCERTAINTY_WORDS = [
@@ -603,9 +593,7 @@ export function getConfidenceSummary(sessionId: string): string {
   ].join(' | ');
 }
 
-// ============================================
 // Fresh Context Retry Strategy
-// ============================================
 
 /**
  * Track failure and decide if fresh context is needed

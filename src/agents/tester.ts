@@ -3,25 +3,13 @@
 // Test execution agent (CLI adapter based)
 // ============================================
 
-import { homedir } from 'node:os';
 import type { WorkerResult } from './agentPair.js';
 import type { AdapterName } from '../adapters/types.js';
 import { getAdapter, spawnCli } from '../adapters/index.js';
 import { type CostInfo, extractCostFromStreamJson, formatCost } from '../support/costTracker.js';
+import { expandPath } from '../core/config.js';
 
-/**
- * Expand ~ path to home directory
- */
-function expandPath(p: string): string {
-  if (p.startsWith('~/')) {
-    return p.replace('~', homedir());
-  }
-  return p;
-}
-
-// ============================================
 // Types
-// ============================================
 
 export interface TesterOptions {
   taskTitle: string;
@@ -30,6 +18,7 @@ export interface TesterOptions {
   projectPath: string;
   timeoutMs?: number;
   model?: string;
+  maxTurns?: number;
   adapterName?: AdapterName;
 }
 
@@ -45,9 +34,7 @@ export interface TesterResult {
   costInfo?: CostInfo;
 }
 
-// ============================================
 // Prompts
-// ============================================
 
 /**
  * Build Tester prompt
@@ -64,7 +51,7 @@ function buildTesterPrompt(options: TesterOptions): string {
 
 ## Original Task
 - **Title:** ${options.taskTitle}
-- **Description:** ${options.taskDescription}
+- **Description:** ${options.taskDescription.slice(0, 200)}${options.taskDescription.length > 200 ? '...' : ''}
 
 ## Worker's Changes
 ${workerReport}
@@ -110,9 +97,7 @@ On failure:
 `;
 }
 
-// ============================================
 // Tester Execution
-// ============================================
 
 /**
  * Run Tester agent
@@ -128,6 +113,7 @@ export async function runTester(options: TesterOptions): Promise<TesterResult> {
       cwd,
       timeoutMs: options.timeoutMs,
       model: options.model,
+      maxTurns: options.maxTurns,
     });
 
     return parseTesterOutput(raw.stdout);
@@ -305,9 +291,7 @@ function extractErrorMessage(text: string): string {
   return 'Unknown error';
 }
 
-// ============================================
 // Formatting
-// ============================================
 
 /**
  * Format Tester result as Discord message

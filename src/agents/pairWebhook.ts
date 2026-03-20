@@ -5,9 +5,7 @@
 
 import type { PairSession } from './agentPair.js';
 
-// ============================================
 // Types
-// ============================================
 
 export interface WebhookPayload {
   event: 'pair_started' | 'pair_approved' | 'pair_rejected' | 'pair_failed' | 'pair_cancelled';
@@ -40,9 +38,7 @@ export interface WebhookResult {
   error?: string;
 }
 
-// ============================================
 // Webhook Functions
-// ============================================
 
 /**
  * Validate Webhook URL

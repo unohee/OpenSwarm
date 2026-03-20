@@ -7,7 +7,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { ConflictResolverConfig } from '../core/types.js';
 import type { PRInfo } from '../github/github.js';
-import { getPRBaseBranch, commentOnPR, waitForCICompletion } from '../github/github.js';
+import { getPRBaseBranch, commentOnPR } from '../github/github.js';
 import { isOwnedPR, getOwnedPRsForRepo } from './prOwnership.js';
 import { runWorker } from '../agents/worker.js';
 import { broadcastEvent } from '../core/eventHub.js';
@@ -21,9 +21,7 @@ async function gitExec(cwd: string, ...args: string[]): Promise<string> {
   return stdout;
 }
 
-// ============================================
 // Types
-// ============================================
 
 interface ResolutionAttempt {
   repo: string;
@@ -32,9 +30,7 @@ interface ResolutionAttempt {
   lastAttempt?: string;
 }
 
-// ============================================
 // ConflictResolver
-// ============================================
 
 export class ConflictResolver {
   private config: ConflictResolverConfig;

@@ -7,10 +7,11 @@ import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { spawn } from 'node:child_process';
+import { loadConfig } from '../core/config.js';
+import { getDefaultAdapterName, type AdapterName } from '../adapters/index.js';
+import { getDefaultChatModel, resolveChatModel, runChatCompletion, shortenChatModel } from './chatBackend.js';
 // Constants
 const CHAT_DIR = resolve(homedir(), '.openswarm', 'chat');
-const DEFAULT_MODEL = 'claude-sonnet-4-5-20250929';
 
 // Render guard: blessed는 동시 render() 호출 시 화면이 검은색으로 깨질 수 있음
 let renderScheduled = false;
@@ -39,6 +40,7 @@ type Message = { role: 'user' | 'assistant'; content: string; cost?: number };
 
 type Session = {
   id: string;
+  provider: AdapterName;
   model: string;
   messages: Message[];
   claudeSessionId?: string;
@@ -76,9 +78,11 @@ async function loadSession(id: string): Promise<Session | null> {
   const path = resolve(CHAT_DIR, `${id}.json`);
   if (!existsSync(path)) return null;
   const data = JSON.parse(await readFile(path, 'utf-8'));
-  // Ensure new fields exist
+  const provider = data.provider ?? inferProvider(undefined, data.model);
   return {
     ...data,
+    provider,
+    model: data.model ?? getDefaultChatModel(provider),
     totalCost: data.totalCost ?? 0,
     totalTokens: data.totalTokens ?? 0,
   };
@@ -89,117 +93,44 @@ function generateSessionId(): string {
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
 }
-// Claude CLI Backend
-async function callClaude(
+
+function inferProvider(provider?: AdapterName, model?: string): AdapterName {
+  if (provider) return provider;
+  if (model?.startsWith('gpt-') || model?.includes('codex')) return 'codex';
+  return loadDefaultProvider();
+}
+
+function loadDefaultProvider(): AdapterName {
+  try {
+    return loadConfig().adapter ?? getDefaultAdapterName();
+  } catch {
+    return getDefaultAdapterName();
+  }
+}
+
+// Shared chat backend
+async function callChatModel(
   prompt: string,
+  provider: AdapterName,
   model: string,
   sessionId: string | undefined,
   onStream: (text: string, isThinking: boolean) => void,
 ): Promise<{ response: string; sessionId: string; cost: number; tokens: number }> {
-  return new Promise((resolve, reject) => {
-    const args = [
-      '-p', prompt,
-      '--output-format', 'stream-json',
-      '--model', model,
-    ];
-
-    if (sessionId) {
-      args.push('--resume', sessionId);
-    }
-
-    const proc = spawn('claude', args, {
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-
-    let fullResponse = '';
-    let buffer = '';
-    let capturedSessionId = sessionId || '';
-    let cost = 0;
-    let tokens = 0;
-    let stderrOutput = '';
-    let thinkingTimer: NodeJS.Timeout | null = null;
-
-    // Monitor for thinking pauses (no output for 2 seconds)
-    const resetThinkingTimer = () => {
-      if (thinkingTimer) {
-        clearTimeout(thinkingTimer);
-      }
-      thinkingTimer = setTimeout(() => {
-        // If no output for 2 seconds and we have some response, signal thinking
-        if (fullResponse.length > 0) {
-          onStream('', true);
-        }
-      }, 2000);
-    };
-
-    proc.stderr.on('data', (chunk: Buffer) => {
-      stderrOutput += chunk.toString();
-    });
-
-    proc.stdout.on('data', (chunk: Buffer) => {
-      buffer += chunk.toString();
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        try {
-          const event = JSON.parse(line);
-
-          if (event.session_id && !capturedSessionId) {
-            capturedSessionId = event.session_id;
-          }
-
-          // Stream assistant response
-          if (event.type === 'assistant' && event.message?.content) {
-            for (const block of event.message.content) {
-              if (block.type === 'text' && block.text) {
-                fullResponse += block.text;
-                onStream(block.text, false);
-                resetThinkingTimer(); // Reset thinking detection
-              }
-            }
-          }
-
-          // Extract cost and tokens from result
-          if (event.type === 'result') {
-            if (thinkingTimer) clearTimeout(thinkingTimer);
-            cost = event.total_cost_usd ?? 0;
-            tokens = (event.input_tokens ?? 0) + (event.output_tokens ?? 0);
-            if (event.session_id) {
-              capturedSessionId = event.session_id;
-            }
-          }
-        } catch {
-          // Ignore parse failures
-        }
-      }
-    });
-
-    proc.on('close', (code) => {
-      if (thinkingTimer) clearTimeout(thinkingTimer);
-      if (code !== 0) {
-        // Always report non-zero exit codes
-        const errorMsg = stderrOutput.trim() || 'Unknown error';
-        const errorPrefix = fullResponse ? 'Partial response received, but' : 'Claude';
-        reject(new Error(`${errorPrefix} exited with code ${code}: ${errorMsg}`));
-      } else {
-        resolve({
-          response: fullResponse,
-          sessionId: capturedSessionId,
-          cost,
-          tokens,
-        });
-      }
-    });
-
-    proc.on('error', (err) => {
-      if (thinkingTimer) clearTimeout(thinkingTimer);
-      reject(new Error(`Failed to spawn claude: ${err.message}`));
-    });
-
-    proc.stdin.end();
+  const result = await runChatCompletion({
+    prompt,
+    provider,
+    model,
+    sessionId: provider === 'claude' ? sessionId : undefined,
+    timeoutMs: 180000,
+    onText: onStream,
   });
+
+  return {
+    response: result.response,
+    sessionId: result.sessionId ?? '',
+    cost: result.cost ?? 0,
+    tokens: result.tokens ?? 0,
+  };
 }
 // Warhammer 40k Loading Messages
 const LOADING_MESSAGES = [
@@ -776,8 +707,9 @@ async function sendMessage(state: AppState, ui: ReturnType<typeof createUI>, mes
   const spinnerData = startSpinner(ui);
 
   try {
-    const result = await callClaude(
+    const result = await callChatModel(
       message,
+      state.session.provider,
       state.session.model,
       state.session.claudeSessionId,
       (chunk, isThinking) => {
@@ -831,7 +763,7 @@ async function sendMessage(state: AppState, ui: ReturnType<typeof createUI>, mes
       spinnerStopped = true;
     }
 
-    if (result.sessionId) {
+    if (state.session.provider === 'claude' && result.sessionId) {
       state.session.claudeSessionId = result.sessionId;
     }
 
@@ -883,7 +815,7 @@ async function sendMessage(state: AppState, ui: ReturnType<typeof createUI>, mes
 }
 // Status Bar Update
 function updateStatusBar(state: AppState, ui: ReturnType<typeof createUI>) {
-  const modelShort = state.session.model.replace('claude-', '').replace(/-\d{8}$/, '');
+  const modelShort = shortenChatModel(state.session.model);
   const cost = state.session.totalCost > 0 ? `$${state.session.totalCost.toFixed(4)}` : '$0.00';
   const msgs = state.session.messages.length;
 
@@ -891,6 +823,8 @@ function updateStatusBar(state: AppState, ui: ReturnType<typeof createUI>) {
     '{bold}OpenSwarm{/bold}',
     `{#718096-fg}│{/}`,
     `{#a0aec0-fg}${state.session.id}{/}`,
+    `{#718096-fg}│{/}`,
+    `{#c084fc-fg}${state.session.provider}{/}`,
     `{#718096-fg}│{/}`,
     `{#60a5fa-fg}${modelShort}{/}`,
     `{#718096-fg}│{/}`,
@@ -924,26 +858,50 @@ async function handleCommand(
       safeRender();
       break;
 
+    case 'provider':
+    case 'p': {
+      const next = args[0];
+      ui.chatLog.log('');
+      if (!next) {
+        ui.chatLog.log(`  {bold}Current provider:{/bold} {#c084fc-fg}${state.session.provider}{/}`);
+        ui.chatLog.log('  {#718096-fg}Available providers:{/}');
+        ui.chatLog.log('    {#a0aec0-fg}claude{/}');
+        ui.chatLog.log('    {#a0aec0-fg}codex{/}');
+      } else if (next !== 'claude' && next !== 'codex') {
+        ui.chatLog.log(`  {#ef4444-fg}Unknown provider: ${next}{/}`);
+      } else {
+        state.session.provider = next;
+        state.session.model = getDefaultChatModel(next);
+        state.session.claudeSessionId = undefined;
+        ui.chatLog.log(`  {#34d399-fg}✓ Provider changed to {bold}${next}{/bold}{/}`);
+        ui.chatLog.log(`  {#34d399-fg}✓ Model changed to {bold}${state.session.model}{/bold}{/}`);
+        updateStatusBar(state, ui);
+      }
+      ui.chatLog.log('');
+      safeRender();
+      break;
+    }
+
     case 'model':
     case 'm': {
       const newModel = args[0];
       ui.chatLog.log('');
       if (!newModel) {
-        ui.chatLog.log(`  {bold}Current model:{/bold} {#60a5fa-fg}${state.session.model.replace('claude-', '').replace(/-\d{8}$/, '')}{/}`);
+        ui.chatLog.log(`  {bold}Current provider:{/bold} {#c084fc-fg}${state.session.provider}{/}`);
+        ui.chatLog.log(`  {bold}Current model:{/bold} {#60a5fa-fg}${shortenChatModel(state.session.model)}{/}`);
         ui.chatLog.log('');
         ui.chatLog.log('  {#718096-fg}Available models:{/}');
-        ui.chatLog.log('    {#a0aec0-fg}sonnet{/}  {#718096-fg}→{/} claude-sonnet-4-5');
-        ui.chatLog.log('    {#a0aec0-fg}haiku{/}   {#718096-fg}→{/} claude-haiku-4-5');
-        ui.chatLog.log('    {#a0aec0-fg}opus{/}    {#718096-fg}→{/} claude-opus-4-6');
+        if (state.session.provider === 'claude') {
+          ui.chatLog.log('    {#a0aec0-fg}sonnet{/}  {#718096-fg}→{/} claude-sonnet-4-5');
+          ui.chatLog.log('    {#a0aec0-fg}haiku{/}   {#718096-fg}→{/} claude-haiku-4-5');
+          ui.chatLog.log('    {#a0aec0-fg}opus{/}    {#718096-fg}→{/} claude-opus-4-6');
+        } else {
+          ui.chatLog.log('    {#a0aec0-fg}codex{/}   {#718096-fg}→{/} gpt-5-codex');
+        }
       } else {
-        const aliases: Record<string, string> = {
-          sonnet: 'claude-sonnet-4-5-20250929',
-          haiku: 'claude-haiku-4-5-20251001',
-          opus: 'claude-opus-4-6',
-        };
-        state.session.model = aliases[newModel] || newModel;
+        state.session.model = resolveChatModel(newModel, state.session.provider);
         state.session.claudeSessionId = undefined;
-        const shortName = state.session.model.replace('claude-', '').replace(/-\d{8}$/, '');
+        const shortName = shortenChatModel(state.session.model);
         ui.chatLog.log(`  {#34d399-fg}✓ Model changed to {bold}${shortName}{/bold}{/}`);
         updateStatusBar(state, ui);
       }
@@ -971,6 +929,7 @@ async function handleCommand(
       ui.chatLog.log('  {bold}Available Commands{/bold}');
       ui.chatLog.log('');
       ui.chatLog.log('    {#60a5fa-fg}/clear{/}         Clear conversation');
+      ui.chatLog.log('    {#60a5fa-fg}/provider{/} [id] Change provider {#718096-fg}(claude/codex){/}');
       ui.chatLog.log('    {#60a5fa-fg}/model{/} [name]  Change model {#718096-fg}(sonnet/haiku/opus){/}');
       ui.chatLog.log('    {#60a5fa-fg}/save{/} [name]   Save session');
       ui.chatLog.log('    {#60a5fa-fg}/help{/}          Show this help');
@@ -998,6 +957,7 @@ async function handleCommand(
 }
 // Main
 export async function main(): Promise<void> {
+  const defaultProvider = loadDefaultProvider();
   const loadArg = process.argv[2];
   let session: Session;
 
@@ -1008,7 +968,8 @@ export async function main(): Promise<void> {
     } else {
       session = {
         id: loadArg,
-        model: DEFAULT_MODEL,
+        provider: defaultProvider,
+        model: getDefaultChatModel(defaultProvider),
         messages: [],
         totalCost: 0,
         totalTokens: 0,
@@ -1019,7 +980,8 @@ export async function main(): Promise<void> {
   } else {
     session = {
       id: generateSessionId(),
-      model: DEFAULT_MODEL,
+      provider: defaultProvider,
+      model: getDefaultChatModel(defaultProvider),
       messages: [],
       totalCost: 0,
       totalTokens: 0,

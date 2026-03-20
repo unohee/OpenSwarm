@@ -17,8 +17,6 @@ config-docker.yaml
 # Personal / internal docs
 user.md
 VEGA_SYSTEM_PROMPT.md
-memory-system-suggestions.md
-BUGFIX_REPORT.md
 
 # Claude Code local settings
 .claude/settings.json
@@ -71,6 +69,13 @@ DASHBOARD_OPTIMIZATION_*.md
 DASHBOARD_PERFORMANCE_*.md
 IMPLEMENTATION_GUIDE.md
 *_IMPLEMENTATION_SUMMARY.md
+
+# ML/ONNX cache & models
+cache/
+models/
+
+# OpenSwarm local state
+.openswarm/
 
 # Trash
 trash/

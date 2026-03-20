@@ -168,6 +168,7 @@ export async function startService(config: SwarmConfig): Promise<void> {
     console.log('[Service] Discord reporter registered');
 
     const runnerInstance = await autonomous.startAutonomous({
+      defaultAdapter: config.adapter,
       linearTeamId: config.linearTeamId,
       allowedProjects: config.autonomous.allowedProjects,
       heartbeatSchedule: config.autonomous.schedule,
@@ -194,6 +195,10 @@ export async function startService(config: SwarmConfig): Promise<void> {
       worktreeMode: config.autonomous.worktreeMode ?? false,
       // Pipeline guards
       guards: config.autonomous.guards,
+      // Daily pace control
+      dailyTaskCap: config.autonomous.dailyTaskCap ?? 6,
+      interTaskCooldownMs: config.autonomous.interTaskCooldownMs ?? 1_800_000,
+      jobProfiles: config.autonomous.jobProfiles,
     });
     web.setWebRunner(runnerInstance);
     const modelInfo = config.autonomous.models

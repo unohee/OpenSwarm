@@ -265,12 +265,22 @@ export type RoleConfig = {
   escalateModel?: string;
   /** Escalate after this iteration number (default: 3) */
   escalateAfterIteration?: number;
+  /** Max agentic turns per CLI invocation */
+  maxTurns?: number;
 };
 
 /**
  * Pipeline stage
  */
 export type PipelineStage = 'worker' | 'reviewer' | 'tester' | 'documenter' | 'auditor' | 'skill-documenter';
+
+export type JobProfile = {
+  name: string;
+  minMinutes?: number;
+  maxMinutes?: number;
+  priority?: number;
+  roles?: Partial<Record<PipelineStage, string>>;
+};
 
 /**
  * Per-project agent configuration
@@ -328,9 +338,7 @@ export type DecompositionConfig = {
 /**
  * Autonomous execution mode configuration
  */
-// ============================================
 // Long-Running Monitor Types
-// ============================================
 
 /** Completion check strategy */
 export type CompletionCheck =
@@ -411,6 +419,12 @@ export type AutonomousStartupConfig = {
   worktreeMode?: boolean;
   /** Pipeline guards configuration */
   guards?: Partial<PipelineGuardsConfig>;
+  /** Daily task completion cap (default: 6) */
+  dailyTaskCap?: number;
+  /** Cooldown between task completions in ms (default: 1800000 = 30min) */
+  interTaskCooldownMs?: number;
+  /** Job profiles used to select models based on task traits */
+  jobProfiles?: JobProfile[];
 };
 
 /**

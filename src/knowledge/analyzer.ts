@@ -6,9 +6,7 @@
 import type { KnowledgeGraph } from './graph.js';
 import type { ImpactAnalysis, ProjectSummary } from './types.js';
 
-// ============================================
 // Issue Impact Analysis
-// ============================================
 
 /**
  * Analyze issue text to identify affected modules
@@ -87,9 +85,7 @@ export function analyzeIssueImpact(
   };
 }
 
-// ============================================
 // Module Health
-// ============================================
 
 export interface ModuleHealth {
   moduleId: string;
@@ -141,9 +137,7 @@ export function getModuleHealth(graph: KnowledgeGraph, moduleId: string): Module
   };
 }
 
-// ============================================
 // Review Focus
-// ============================================
 
 export interface ReviewFocus {
   criticalModules: string[];   // Modules requiring focused review

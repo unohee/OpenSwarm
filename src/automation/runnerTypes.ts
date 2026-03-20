@@ -4,9 +4,10 @@
 
 import type { DecisionResult, TaskItem } from '../orchestration/decisionEngine.js';
 import type { ExecutorResult } from '../orchestration/workflow.js';
-import type { DefaultRolesConfig, ProjectAgentConfig } from '../core/types.js';
+import type { DefaultRolesConfig, ProjectAgentConfig, JobProfile } from '../core/types.js';
 
 export interface AutonomousConfig {
+  defaultAdapter?: 'claude' | 'codex';
   linearTeamId: string;
   allowedProjects: string[];
   heartbeatSchedule: string;
@@ -32,6 +33,11 @@ export interface AutonomousConfig {
   decomposition?: import('../core/types.js').DecompositionConfig;
   worktreeMode?: boolean;
   guards?: Partial<import('../core/types.js').PipelineGuardsConfig>;
+  /** Per-project task cap in 5h rolling window (default: 6) */
+  dailyTaskCap?: number;
+  /** Cooldown between task completions in ms (default: 1800000 = 30min) */
+  interTaskCooldownMs?: number;
+  jobProfiles?: JobProfile[];
 }
 
 export interface RunnerState {

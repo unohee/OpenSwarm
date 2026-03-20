@@ -10,6 +10,7 @@ import { enrichWithGitInfo, getRecentlyChangedFiles } from './gitInfo.js';
 import { analyzeIssueImpact, getProjectHealth, suggestReviewFocus, getModuleHealth } from './analyzer.js';
 import type { ImpactAnalysis, ProjectSummary } from './types.js';
 import { saveCognitiveMemory } from '../memory/index.js';
+import { exportRepoGraph, hasRepoSnapshot, loadRepoSnapshot, snapshotAgeMinutes } from './graphqlExporter.js';
 
 // Re-exports
 export { KnowledgeGraph } from './graph.js';
@@ -20,6 +21,10 @@ export { analyzeIssueImpact, getProjectHealth, suggestReviewFocus, getModuleHeal
 export type { ModuleHealth, ReviewFocus } from './analyzer.js';
 export type { ImpactAnalysis, ProjectSummary } from './types.js';
 export type * from './types.js';
+
+// GraphQL exporter
+export { exportRepoGraph, hasRepoSnapshot, loadRepoSnapshot, snapshotAgeMinutes } from './graphqlExporter.js';
+export type { RepoSnapshot } from './graphqlExporter.js';
 
 // Repository knowledge management
 export {
@@ -40,9 +45,7 @@ export {
   saveGraphWithSummary,
 } from './repository.js';
 
-// ============================================
 // Singleton Cache
-// ============================================
 
 const graphCache = new Map<string, {
   graph: KnowledgeGraph;
@@ -122,6 +125,13 @@ export async function scanAndCache(
     const elapsed = Date.now() - startMs;
     console.log(`[Knowledge] Scan complete: ${slug} (${graph.nodeCount} nodes, ${graph.edgeCount} edges, ${elapsed}ms)`);
 
+    // Export GraphQL schema + snapshot for agent consumption
+    try {
+      exportRepoGraph(graph, projectPath);
+    } catch (e) {
+      console.warn(`[Knowledge] GraphQL export failed for ${slug}:`, e);
+    }
+
     // Save insights to cognitive memory (async, ignore failures)
     saveGraphInsights(projectPath).catch((e) => console.warn(`[Knowledge] Failed to save graph insights for ${slug}:`, e));
 
@@ -160,6 +170,13 @@ export async function refreshGraph(projectPath: string): Promise<KnowledgeGraph 
     await incrementalUpdate(cached, projectPath, changedFiles);
     await enrichWithGitInfo(cached, projectPath);
     await saveGraph(cached);
+
+    // Re-export snapshot with updated data
+    try {
+      exportRepoGraph(cached, projectPath);
+    } catch (e) {
+      console.warn(`[Knowledge] GraphQL export failed for ${slug}:`, e);
+    }
 
     return cached;
   } catch (err) {

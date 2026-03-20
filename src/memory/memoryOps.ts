@@ -22,9 +22,7 @@ import {
   type CognitiveMemoryRecord,
 } from './memoryCore.js';
 
-// ==============================================
 // Memory Revision Loop (PRD Phase 3)
-// ==============================================
 
 /**
  * Revise existing belief with new information
@@ -382,9 +380,7 @@ export async function cleanupExpired(): Promise<number> {
   }
 }
 
-// ==============================================
 // Background Cognition (PRD Phase 4)
-// ==============================================
 
 // Decay and archive thresholds
 const DECAY_INCREMENT = 0.03;      // PRD: decay += 0.03 weekly if not accessed
@@ -673,9 +669,7 @@ export async function getMemoryStats(): Promise<{
   }
 }
 
-// ============================================
 // Legacy compatibility functions (existing code support)
-// ============================================
 
 /**
  * Save conversation (legacy compatible)

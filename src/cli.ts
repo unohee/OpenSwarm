@@ -2,7 +2,6 @@
 // ============================================
 // OpenSwarm - CLI Entry Point
 // `openswarm run`, `openswarm init`, `openswarm validate`, `openswarm chat`, `openswarm start`
-// ============================================
 
 import { Command } from 'commander';
 import { writeFileSync, existsSync } from 'node:fs';
@@ -19,9 +18,7 @@ program
   .description('Autonomous Claude Code agents orchestrator')
   .version(VERSION);
 
-// ============================================
 // openswarm run <task>
-// ============================================
 
 program
   .command('run')
@@ -49,9 +46,7 @@ program
     });
   });
 
-// ============================================
 // openswarm init
-// ============================================
 
 program
   .command('init')
@@ -76,9 +71,7 @@ program
     console.log('  4. Run: openswarm start');
   });
 
-// ============================================
 // openswarm validate
-// ============================================
 
 program
   .command('validate')
@@ -110,13 +103,11 @@ program
     }
   });
 
-// ============================================
 // openswarm chat
-// ============================================
 
 program
   .command('chat')
-  .description('Start interactive chat CLI with Claude')
+  .description('Start interactive chat CLI with the configured provider')
   .argument('[session]', 'Session name to load/create (optional)')
   .option('--tui', 'Enable rich TUI mode (default: simple readline)')
   .action(async (session?: string, opts?: { tui?: boolean }) => {
@@ -135,9 +126,33 @@ program
     }
   });
 
-// ============================================
+// openswarm exec <prompt>
+
+program
+  .command('exec')
+  .description('Execute a task via the running daemon (auto-starts if needed)')
+  .argument('<prompt>', 'Task prompt to execute')
+  .option('--path <path>', 'Project path (default: cwd)')
+  .option('--timeout <seconds>', 'Timeout in seconds (default: 600)', parseInt)
+  .option('--no-auto-start', 'Do not auto-start the service')
+  .option('--local', 'Execute locally without daemon')
+  .option('--pipeline', 'Full pipeline: worker + reviewer + tester + documenter')
+  .option('--worker-only', 'Worker only, no review')
+  .option('-m, --model <model>', 'Model override for worker')
+  .action(async (prompt: string, opts: {
+    path?: string;
+    timeout?: number;
+    autoStart?: boolean;
+    local?: boolean;
+    pipeline?: boolean;
+    workerOnly?: boolean;
+    model?: string;
+  }) => {
+    const { executePrompt } = await import('./cli/promptHandler.js');
+    await executePrompt({ prompt, ...opts });
+  });
+
 // openswarm start
-// ============================================
 
 program
   .command('start')
@@ -147,8 +162,6 @@ program
     await import('./index.js');
   });
 
-// ============================================
 // Parse & Execute
-// ============================================
 
 program.parse();

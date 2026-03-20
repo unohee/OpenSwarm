@@ -140,11 +140,11 @@ export function upsertTaskState(issueId: string, patch: Partial<OpenSwarmTaskSta
     dependencyTitles: patch.dependencyTitles ?? current.dependencyTitles ?? [],
     execution: {
       ...current.execution,
-      ...(patch.execution || {}),
+      ...(patch.execution),
     },
     worktree: {
       ...current.worktree,
-      ...(patch.worktree || {}),
+      ...(patch.worktree),
     },
     updatedAt: new Date().toISOString(),
   };
@@ -298,11 +298,18 @@ export function getTaskReadiness(task: TaskItem): {
     : state?.dependencyIssueIds || [];
 
   if (state?.execution.status === 'decomposed') {
-    return {
-      ready: false,
-      blockedBy: [],
-      reason: 'Task already decomposed into child issues',
-    };
+    // If Linear state was manually changed back to actionable, allow re-execution
+    const linearState = task.linearState || state.linearState;
+    const reactivated = linearState === 'Todo' || linearState === 'In Progress';
+    if (!reactivated) {
+      return {
+        ready: false,
+        blockedBy: [],
+        reason: 'Task already decomposed into child issues',
+      };
+    }
+    // Decomposed but Linear state is actionable — allow execution
+    console.log(`[TaskState] ${task.issueIdentifier}: decomposed but Linear state is "${linearState}", allowing re-execution`);
   }
 
   if (dependencyIssueIds.length === 0) {

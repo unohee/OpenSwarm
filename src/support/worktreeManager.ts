@@ -23,9 +23,7 @@ async function gh(...args: string[]): Promise<string> {
   return stdout;
 }
 
-// ============================================
 // Types
-// ============================================
 
 export interface WorktreeInfo {
   /** {repoPath}/worktree/{issueId} */
@@ -37,9 +35,7 @@ export interface WorktreeInfo {
   issueId: string;
 }
 
-// ============================================
 // Branch & Path Utilities
-// ============================================
 
 /** Generate branch name: swarm/INT-512-llm-tool-interface */
 export function buildBranchName(issueIdentifier: string, title: string): string {
@@ -50,9 +46,7 @@ export function buildBranchName(issueIdentifier: string, title: string): string 
   return `swarm/${issueIdentifier}-${slug}`;
 }
 
-// ============================================
 // Worktree Lifecycle
-// ============================================
 
 /** Create git worktree + checkout branch */
 export async function createWorktree(

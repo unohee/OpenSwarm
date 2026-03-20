@@ -28,15 +28,22 @@ async function getProjectInfo(issue: any): Promise<LinearProjectInfo | undefined
 
 let client: LinearClient | null = null;
 let teamId: string = '';
+let teamIds: string[] = [];
+
+/** Build a Linear team filter that works for both single and multiple team IDs */
+function teamFilter() {
+  if (teamIds.length === 1) {
+    return { id: { eq: teamIds[0] } };
+  }
+  return { id: { in: teamIds } };
+}
 
 // Daily issue creation limit
 const DAILY_ISSUE_LIMIT = 10;
 let dailyIssueCount = 0;
 let lastResetDate: string = '';
 
-// ============================================
 // Caching Layer
-// ============================================
 
 interface CachedIssues {
   data: LinearIssueInfo[];
@@ -47,7 +54,7 @@ interface CachedIssues {
 const inProgressCache = new Map<string, CachedIssues>();
 const backlogCache = new Map<string, CachedIssues>();
 const myIssuesCache = new Map<string, CachedIssues>();
-const CACHE_TTL_MS = 60000; // 1 minute cache
+const CACHE_TTL_MS = 300000; // 5 minute cache (was 1min, reduced API calls)
 
 function isCacheValid(cache: CachedIssues | undefined): boolean {
   if (!cache) return false;
@@ -98,6 +105,7 @@ export function getDailyIssueCount(): number {
 export function initLinear(apiKey: string, team: string): void {
   client = new LinearClient({ apiKey });
   teamId = team;
+  teamIds = team.split(',').map(id => id.trim()).filter(Boolean);
   setLinearClient(client);
   console.log('[Linear] Client initialized');
 }
@@ -130,7 +138,7 @@ export async function getInProgressIssues(
 
   const issues = await withRateLimit('linear', async () => linear.issues({
     filter: {
-      team: { id: { eq: teamId } },
+      team: teamFilter(),
       state: { name: { in: ['In Progress', 'Started'] } },
       labels: { name: { eq: agentLabel } },
     },
@@ -195,7 +203,7 @@ export async function getNextBacklogIssue(
 
   const issues = await withRateLimit('linear', async () => linear.issues({
     filter: {
-      team: { id: { eq: teamId } },
+      team: teamFilter(),
       state: { name: { in: ['Backlog', 'Todo'] } },
       labels: { name: { eq: agentLabel } },
     },
@@ -289,7 +297,7 @@ export async function getMyIssues(
   const linear = getClient();
 
   const baseFilter: any = {
-    team: { id: { eq: teamId } },
+    team: teamFilter(),
   };
 
   // Add label filter if agentLabel is provided
@@ -299,52 +307,75 @@ export async function getMyIssues(
 
   // Wrap with timeout
   const fetchIssues = async (): Promise<LinearIssueInfo[]> => {
-    // Fetch executable issues first (Todo/In Progress/In Review), then Backlog for dashboard
-    // This prevents Backlog from filling up the result and pushing executable issues off-page
+    // Slim mode: query each state separately to avoid lazy resolver calls for issue.state
+    // Full mode: combined query then resolve per-issue
+    const result: LinearIssueInfo[] = [];
+
+    if (slim) {
+      // Separate queries per state → tag each issue without resolver calls
+      // Build a project ID→info cache to avoid per-issue project resolver calls
+      const todoFilter = { ...baseFilter, state: { name: { in: ['Todo'] } } };
+      const inProgressFilter = { ...baseFilter, state: { name: { in: ['In Progress', 'In Review'] } } };
+      const backlogFilter = { ...baseFilter, state: { name: { in: ['Backlog'] } } };
+
+      const [todoIssues, inProgressIssues, backlogIssues] = await Promise.all([
+        withRateLimit('linear', async () => linear.issues({ filter: todoFilter, first: 50 })),
+        withRateLimit('linear', async () => linear.issues({ filter: inProgressFilter, first: 50 })),
+        withRateLimit('linear', async () => linear.issues({ filter: backlogFilter, first: 50 })),
+      ]);
+
+      const withState = [
+        ...todoIssues.nodes.map(i => ({ issue: i, state: 'Todo' })),
+        ...inProgressIssues.nodes.map(i => ({ issue: i, state: 'In Progress' })),
+        ...backlogIssues.nodes.map(i => ({ issue: i, state: 'Backlog' })),
+      ];
+
+      // Resolve all project info in parallel (one API call per issue, but batched)
+      // issue.project returns id+name together, cache by project id to avoid duplicates
+      const projectCache = new Map<string, LinearProjectInfo>();
+      const projectResolutions = await Promise.all(
+        withState.map(({ issue }) =>
+          withRateLimit('linear', () => Promise.resolve(issue.project) as Promise<any>).catch(() => null)
+        )
+      );
+      for (const p of projectResolutions) {
+        if (p && !projectCache.has(p.id)) {
+          projectCache.set(p.id, { id: p.id, name: p.name, icon: p.icon ?? undefined, color: p.color ?? undefined });
+        }
+      }
+
+      for (let i = 0; i < withState.length; i++) {
+        const { issue, state } = withState[i];
+        const p = projectResolutions[i];
+        const project = p ? projectCache.get(p.id) : undefined;
+        result.push({
+          id: issue.id,
+          identifier: issue.identifier,
+          title: issue.title,
+          description: issue.description ?? undefined,
+          state,
+          priority: issue.priority,
+          labels: [],
+          comments: [],
+          project,
+        } as LinearIssueInfo);
+      }
+
+      return result;
+    }
+
+    // Full mode: fetch executable + backlog, then resolve per-issue
     const executableFilter = { ...baseFilter, state: { name: { in: ['Todo', 'In Progress', 'In Review'] } } };
     const backlogFilter = { ...baseFilter, state: { name: { in: ['Backlog'] } } };
-
     const [executableIssues, backlogIssues] = await Promise.all([
       withRateLimit('linear', async () => linear.issues({ filter: executableFilter, first: 50 })),
       withRateLimit('linear', async () => linear.issues({ filter: backlogFilter, first: 50 })),
     ]);
 
-    const issues = {
-      nodes: [...executableIssues.nodes, ...backlogIssues.nodes],
-    };
-
-    const result: LinearIssueInfo[] = [];
-
-    if (slim) {
-      // Slim mode: batch resolve state and project, skip comments/labels
-      // Process in batches of 10 to limit concurrent API calls
-      const BATCH_SIZE = 10;
-      for (let i = 0; i < issues.nodes.length; i += BATCH_SIZE) {
-        const batch = issues.nodes.slice(i, i + BATCH_SIZE);
-        const resolved = await Promise.all(
-          batch.map(async (issue) => {
-            const [state, project] = await Promise.all([
-              issue.state,
-              getProjectInfo(issue),
-            ]);
-            return {
-              id: issue.id,
-              identifier: issue.identifier,
-              title: issue.title,
-              description: issue.description ?? undefined,
-              state: state?.name ?? 'Unknown',
-              priority: issue.priority,
-              labels: [],
-              comments: [],
-              project,
-            } as LinearIssueInfo;
-          })
-        );
-        result.push(...resolved);
-      }
-    } else {
+    {
       // Full mode: load all details (comments, labels, project)
-      for (const issue of issues.nodes) {
+      const allNodes = [...executableIssues.nodes, ...backlogIssues.nodes];
+      for (const issue of allNodes) {
         const [comments, labels, project] = await Promise.all([
           issue.comments(),
           issue.labels(),
@@ -358,8 +389,8 @@ export async function getMyIssues(
           description: issue.description ?? undefined,
           state: (await issue.state)?.name ?? 'Unknown',
           priority: issue.priority,
-          labels: labels.nodes.map((l) => l.name),
-          comments: comments.nodes.map((c) => ({
+          labels: labels.nodes.map((l: { name: string }) => l.name),
+          comments: comments.nodes.map((c: { id: string; body: string; createdAt: Date }) => ({
             id: c.id,
             body: c.body,
             createdAt: c.createdAt.toISOString(),
@@ -414,7 +445,7 @@ export async function getIssue(issueIdOrIdentifier: string): Promise<LinearIssue
 
       const issues = await linear.issues({
         filter: {
-          team: { id: { eq: teamId } },
+          team: teamFilter(),
           number: { eq: issueNumber },
         },
         first: 1,
@@ -467,8 +498,13 @@ export async function updateIssueState(
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
+      // Fetch the issue to get its actual team ID (avoids cross-team state mismatch)
+      const issue = await linear.issue(issueId);
+      const issueTeam = await issue.team;
+      const resolvedTeamId = issueTeam?.id ?? teamIds[0] ?? teamId;
+
       // Get team workflow states
-      const team = await linear.team(teamId);
+      const team = await linear.team(resolvedTeamId);
       const states = await team.states();
       const targetState = states.nodes.find((s) =>
         s.name.toLowerCase().includes(stateName.toLowerCase())
@@ -587,9 +623,7 @@ Time: ${timestamp}`;
   await updateIssueState(issueId, 'Todo');
 }
 
-// ============================================
 // Pair Mode Linear Integration
-// ============================================
 
 /**
  * Log pair session start comment
@@ -835,7 +869,7 @@ export async function createIssue(
   const linear = getClient();
 
   // Look up label IDs
-  const team = await linear.team(teamId);
+  const team = await linear.team(teamIds[0] ?? teamId);
   const teamLabels = await team.labels();
   const labelIds = labels
     .map((name) => teamLabels.nodes.find((l) => l.name === name)?.id)
@@ -897,7 +931,7 @@ export async function createSubIssue(
     }
 
     // Look up label IDs
-    const team = await linear.team(teamId);
+    const team = await linear.team(teamIds[0] ?? teamId);
     const teamLabels = await team.labels();
     const labelIds = (options?.labels || [])
       .map((name) => teamLabels.nodes.find((l) => l.name === name)?.id)
@@ -909,9 +943,11 @@ export async function createSubIssue(
       labelIds.push(autoLabel.id);
     }
 
-    // Create the sub-issue
+    // Create the sub-issue (use parent issue's team ID, not global)
+    const parentTeam = await parentIssue.team;
+    const subIssueTeamId = parentTeam?.id ?? (teamIds[0] ?? teamId);
     const issuePayload = await linear.createIssue({
-      teamId,
+      teamId: subIssueTeamId,
       parentId,  // Link to parent issue
       title,
       description,
@@ -979,7 +1015,7 @@ _Auto-decomposed by Planner agent_`;
   // Add label (if decomposed label exists)
   try {
     const linear = getClient();
-    const team = await linear.team(teamId);
+    const team = await linear.team(teamIds[0] ?? teamId);
     const teamLabels = await team.labels();
     const decomposedLabel = teamLabels.nodes.find((l) => l.name === 'decomposed');
 
@@ -1022,7 +1058,7 @@ export async function proposeWork(
   const linear = getClient();
 
   // Look up Backlog state ID
-  const team = await linear.team(teamId);
+  const team = await linear.team(teamIds[0] ?? teamId);
   const states = await team.states();
   const backlogState = states.nodes.find((s) =>
     s.name.toLowerCase() === 'backlog'
@@ -1098,7 +1134,7 @@ export async function getStuckIssues(): Promise<{
   // Fetch In Progress issues
   const inProgressIssues = await withRateLimit('linear', async () => linear.issues({
     filter: {
-      team: { id: { eq: teamId } },
+      team: teamFilter(),
       state: { name: { eq: 'In Progress' } },
     },
     first: 100,
@@ -1107,7 +1143,7 @@ export async function getStuckIssues(): Promise<{
   // Fetch issues with retry/failed/blocked labels
   const problematicIssues = await withRateLimit('linear', async () => linear.issues({
     filter: {
-      team: { id: { eq: teamId } },
+      team: teamFilter(),
       state: { name: { nin: ['Done', 'Canceled'] } },
       labels: { name: { in: ['retry', 'failed', 'blocked', 'needs-help'] } },
     },

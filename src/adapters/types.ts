@@ -36,6 +36,7 @@ export interface CliRunOptions {
   cwd: string;
   timeoutMs?: number;
   model?: string;
+  maxTurns?: number;
   onLog?: (line: string) => void;
   processContext?: ProcessContext;
 }
@@ -63,6 +64,16 @@ export interface CliAdapter {
 
   /** Build the shell command and args for execution */
   buildCommand(options: CliRunOptions): { command: string; args: string[] };
+
+  /**
+   * Parse incremental stdout chunks for live log streaming.
+   * Returns the trailing incomplete buffer to carry into the next chunk.
+   */
+  parseStreamingChunk?(
+    chunk: string,
+    onLog: (line: string) => void,
+    buffer?: string,
+  ): string;
 
   /** Parse raw CLI output into a WorkerResult */
   parseWorkerOutput(raw: CliRunResult): WorkerResult;

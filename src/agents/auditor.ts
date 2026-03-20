@@ -3,22 +3,13 @@
 // /audit skill-based BS detection agent
 // ============================================
 
-import { homedir } from 'node:os';
 import type { WorkerResult } from './agentPair.js';
 import type { AdapterName } from '../adapters/types.js';
 import { getAdapter, spawnCli } from '../adapters/index.js';
 import { type CostInfo, extractCostFromStreamJson, formatCost } from '../support/costTracker.js';
+import { expandPath } from '../core/config.js';
 
-function expandPath(p: string): string {
-  if (p.startsWith('~/')) {
-    return p.replace('~', homedir());
-  }
-  return p;
-}
-
-// ============================================
 // Types
-// ============================================
 
 export interface AuditorOptions {
   taskTitle: string;
@@ -27,6 +18,7 @@ export interface AuditorOptions {
   projectPath: string;
   timeoutMs?: number;
   model?: string;
+  maxTurns?: number;
   adapterName?: AdapterName;
 }
 
@@ -42,9 +34,7 @@ export interface AuditorResult {
   costInfo?: CostInfo;
 }
 
-// ============================================
 // Prompts
-// ============================================
 
 function buildAuditorPrompt(options: AuditorOptions): string {
   const workerReport = `
@@ -58,7 +48,7 @@ function buildAuditorPrompt(options: AuditorOptions): string {
 
 ## Task Context
 - **Task:** ${options.taskTitle}
-- **Description:** ${options.taskDescription}
+- **Description:** ${options.taskDescription.slice(0, 200)}${options.taskDescription.length > 200 ? '...' : ''}
 
 ## Worker's Changes
 ${workerReport}
@@ -93,9 +83,7 @@ On failure:
 `;
 }
 
-// ============================================
 // Auditor Execution
-// ============================================
 
 export async function runAuditor(options: AuditorOptions): Promise<AuditorResult> {
   const prompt = buildAuditorPrompt(options);
@@ -108,6 +96,7 @@ export async function runAuditor(options: AuditorOptions): Promise<AuditorResult
       cwd,
       timeoutMs: options.timeoutMs,
       model: options.model,
+      maxTurns: options.maxTurns,
     });
     return parseAuditorOutput(raw.stdout);
   } catch (error) {
@@ -123,9 +112,7 @@ export async function runAuditor(options: AuditorOptions): Promise<AuditorResult
   }
 }
 
-// ============================================
 // Output Parsing
-// ============================================
 
 function parseAuditorOutput(output: string): AuditorResult {
   try {
@@ -263,9 +250,7 @@ function extractErrorMessage(text: string): string {
   return 'Unknown error';
 }
 
-// ============================================
 // Formatting
-// ============================================
 
 export function formatAuditReport(result: AuditorResult): string {
   const statusEmoji = result.success ? '🔍' : '🚨';

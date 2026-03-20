@@ -3,22 +3,13 @@
 // /documents skill-based automatic documentation update agent
 // ============================================
 
-import { homedir } from 'node:os';
 import type { WorkerResult } from './agentPair.js';
 import type { AdapterName } from '../adapters/types.js';
 import { getAdapter, spawnCli } from '../adapters/index.js';
 import { type CostInfo, extractCostFromStreamJson, formatCost } from '../support/costTracker.js';
+import { expandPath } from '../core/config.js';
 
-function expandPath(p: string): string {
-  if (p.startsWith('~/')) {
-    return p.replace('~', homedir());
-  }
-  return p;
-}
-
-// ============================================
 // Types
-// ============================================
 
 export interface SkillDocumenterOptions {
   taskTitle: string;
@@ -27,6 +18,7 @@ export interface SkillDocumenterOptions {
   projectPath: string;
   timeoutMs?: number;
   model?: string;
+  maxTurns?: number;
   adapterName?: AdapterName;
 }
 
@@ -38,9 +30,7 @@ export interface SkillDocumenterResult {
   costInfo?: CostInfo;
 }
 
-// ============================================
 // Prompts
-// ============================================
 
 function buildSkillDocumenterPrompt(options: SkillDocumenterOptions): string {
   const workerReport = `
@@ -54,7 +44,7 @@ function buildSkillDocumenterPrompt(options: SkillDocumenterOptions): string {
 
 ## Task Context
 - **Task:** ${options.taskTitle}
-- **Description:** ${options.taskDescription}
+- **Description:** ${options.taskDescription.slice(0, 200)}${options.taskDescription.length > 200 ? '...' : ''}
 
 ## Worker's Changes
 ${workerReport}
@@ -91,9 +81,7 @@ On failure:
 `;
 }
 
-// ============================================
 // Skill Documenter Execution
-// ============================================
 
 export async function runSkillDocumenter(options: SkillDocumenterOptions): Promise<SkillDocumenterResult> {
   const prompt = buildSkillDocumenterPrompt(options);
@@ -106,6 +94,7 @@ export async function runSkillDocumenter(options: SkillDocumenterOptions): Promi
       cwd,
       timeoutMs: options.timeoutMs,
       model: options.model,
+      maxTurns: options.maxTurns,
     });
     return parseSkillDocumenterOutput(raw.stdout);
   } catch (error) {
@@ -118,9 +107,7 @@ export async function runSkillDocumenter(options: SkillDocumenterOptions): Promi
   }
 }
 
-// ============================================
 // Output Parsing
-// ============================================
 
 function parseSkillDocumenterOutput(output: string): SkillDocumenterResult {
   try {
@@ -248,9 +235,7 @@ function extractErrorMessage(text: string): string {
   return 'Unknown error';
 }
 
-// ============================================
 // Formatting
-// ============================================
 
 export function formatSkillDocReport(result: SkillDocumenterResult): string {
   const statusEmoji = result.success ? '📄' : '❌';

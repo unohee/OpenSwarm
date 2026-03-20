@@ -3,25 +3,13 @@
 // Documentation agent (CLI adapter based)
 // ============================================
 
-import { homedir } from 'node:os';
 import type { WorkerResult } from './agentPair.js';
 import type { AdapterName } from '../adapters/types.js';
 import { getAdapter, spawnCli } from '../adapters/index.js';
 import { type CostInfo, extractCostFromStreamJson, formatCost } from '../support/costTracker.js';
+import { expandPath } from '../core/config.js';
 
-/**
- * Expand ~ path to home directory
- */
-function expandPath(p: string): string {
-  if (p.startsWith('~/')) {
-    return p.replace('~', homedir());
-  }
-  return p;
-}
-
-// ============================================
 // Types
-// ============================================
 
 export interface DocumenterOptions {
   taskTitle: string;
@@ -30,6 +18,7 @@ export interface DocumenterOptions {
   projectPath: string;
   timeoutMs?: number;
   model?: string;
+  maxTurns?: number;
   adapterName?: AdapterName;
 }
 
@@ -43,9 +32,7 @@ export interface DocumenterResult {
   costInfo?: CostInfo;
 }
 
-// ============================================
 // Prompts
-// ============================================
 
 /**
  * Build Documenter prompt
@@ -62,7 +49,7 @@ function buildDocumenterPrompt(options: DocumenterOptions): string {
 
 ## Original Task
 - **Title:** ${options.taskTitle}
-- **Description:** ${options.taskDescription}
+- **Description:** ${options.taskDescription.slice(0, 200)}${options.taskDescription.length > 200 ? '...' : ''}
 
 ## Worker's Changes
 ${workerReport}
@@ -116,9 +103,7 @@ On failure:
 `;
 }
 
-// ============================================
 // Documenter Execution
-// ============================================
 
 /**
  * Run Documenter agent
@@ -134,6 +119,7 @@ export async function runDocumenter(options: DocumenterOptions): Promise<Documen
       cwd,
       timeoutMs: options.timeoutMs,
       model: options.model,
+      maxTurns: options.maxTurns,
     });
 
     return parseDocumenterOutput(raw.stdout);
@@ -315,9 +301,7 @@ function extractErrorMessage(text: string): string {
   return 'Unknown error';
 }
 
-// ============================================
 // Formatting
-// ============================================
 
 /**
  * Format Documenter result as Discord message

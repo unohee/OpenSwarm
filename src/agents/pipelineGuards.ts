@@ -10,9 +10,7 @@ import type { PipelineGuardsConfig } from '../core/types.js';
 
 const execFileAsync = promisify(execFile);
 
-// ============================================
 // Types
-// ============================================
 
 export interface GuardResult {
   passed: boolean;
@@ -27,9 +25,7 @@ export interface GuardsRunResult {
   combinedIssues: string[];
 }
 
-// ============================================
 // Uncertainty Detection Patterns
-// ============================================
 
 const UNCERTAINTY_PATTERNS = [
   'maybe', 'might', 'probably', 'perhaps',
@@ -41,9 +37,7 @@ const UNCERTAINTY_PATTERNS = [
   'todo', 'fixme', 'xxx',
 ];
 
-// ============================================
 // Fake Data Detection Patterns
-// ============================================
 
 const FAKE_DATA_PATTERNS = [
   /faker\./i,
@@ -58,16 +52,12 @@ const FAKE_DATA_PATTERNS = [
   /sample\s*data/i,
 ];
 
-// ============================================
 // Conventional Commit Pattern
-// ============================================
 
 const CONVENTIONAL_COMMIT_RE =
   /^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\(.+\))?!?:\s.+/;
 
-// ============================================
 // Branch Name Patterns
-// ============================================
 
 const VALID_BRANCH_PATTERNS = [
   /^swarm\/.+/,
@@ -78,9 +68,7 @@ const VALID_BRANCH_PATTERNS = [
   /^develop$/,
 ];
 
-// ============================================
 // Guard Functions
-// ============================================
 
 /**
  * Quality gate: run tsc --noEmit on TypeScript files or ruff check on Python files.
@@ -216,9 +204,7 @@ function runUncertaintyDetection(workerResult: WorkerResult): GuardResult {
   return { passed: issues.length === 0, guard, issues, blocking: false };
 }
 
-// ============================================
 // Guard Runner
-// ============================================
 
 /**
  * Run all enabled guards on a worker result.

@@ -73,6 +73,18 @@ autonomous:
       model: claude-haiku-4-5-20251001
       timeoutMs: 120000   # 2 minutes
 
+  # Job profiles for lightweight vs heavy work
+  jobProfiles:
+    - name: quick-analysis
+      maxMinutes: 15
+      roles:
+        worker: claude-haiku-4-5-20251001
+    - name: deep-engineering
+      minMinutes: 16
+      roles:
+        worker: claude-sonnet-4-20250514
+        reviewer: claude-sonnet-4-20250514
+
 # Long-running task monitoring (RunPod training, batch processing, etc.)
 # monitors:
 #   - id: runpod-training

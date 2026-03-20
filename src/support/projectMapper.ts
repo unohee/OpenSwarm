@@ -5,11 +5,9 @@
 
 import { readdir, stat } from 'fs/promises';
 import { join, basename } from 'path';
-import { homedir } from 'os';
+import { expandPath } from '../core/config.js';
 
-// ============================================
 // Types
-// ============================================
 
 export interface ProjectMapping {
   linearProjectId: string;
@@ -27,18 +25,14 @@ export interface LocalProject {
   hasPyproject: boolean;
 }
 
-// ============================================
 // State
-// ============================================
 
 const mappingCache: Map<string, ProjectMapping> = new Map();
 const localProjectsCache: LocalProject[] = [];
 let lastScanTime = 0;
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
-// ============================================
 // Local Project Discovery
-// ============================================
 
 /**
  * Scan local project directories
@@ -59,9 +53,12 @@ export async function scanLocalProjects(basePaths: string[]): Promise<LocalProje
     try {
       const entries = await readdir(expandedPath, { withFileTypes: true });
 
+      const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', '.cache', '__pycache__', '.venv', 'venv', '.tox', 'coverage', '.next', '.turbo']);
+
       for (const entry of entries) {
         if (!entry.isDirectory()) continue;
         if (entry.name.startsWith('.')) continue; // Exclude hidden directories
+        if (SKIP_DIRS.has(entry.name)) continue; // Exclude known non-project dirs
 
         const projectPath = join(expandedPath, entry.name);
         const project = await analyzeProject(projectPath);
@@ -76,6 +73,7 @@ export async function scanLocalProjects(basePaths: string[]): Promise<LocalProje
           for (const subEntry of subEntries) {
             if (!subEntry.isDirectory()) continue;
             if (subEntry.name.startsWith('.')) continue;
+            if (SKIP_DIRS.has(subEntry.name)) continue;
 
             const subPath = join(projectPath, subEntry.name);
             const subProject = await analyzeProject(subPath);
@@ -129,9 +127,7 @@ async function analyzeProject(path: string): Promise<LocalProject | null> {
   }
 }
 
-// ============================================
 // Fuzzy Matching
-// ============================================
 
 /**
  * Match Linear project name to local project
@@ -227,9 +223,7 @@ function levenshteinDistance(a: string, b: string): number {
   return matrix[b.length][a.length];
 }
 
-// ============================================
 // Project Mapping
-// ============================================
 
 /**
  * Map Linear project to local path
@@ -295,16 +289,9 @@ export function invalidateProjectCache(): void {
   lastScanTime = 0;
 }
 
-// ============================================
 // Utilities
-// ============================================
 
-function expandPath(path: string): string {
-  if (path.startsWith('~/')) {
-    return join(homedir(), path.slice(2));
-  }
-  return path;
-}
+// expandPath imported from core/config.ts (deduplicated)
 
 async function fileExists(path: string): Promise<boolean> {
   try {
@@ -315,9 +302,7 @@ async function fileExists(path: string): Promise<boolean> {
   }
 }
 
-// ============================================
 // Debug / Status
-// ============================================
 
 /**
  * Get project mapper status

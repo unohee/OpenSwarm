@@ -124,18 +124,6 @@ ${feedbackSection}
 - **commands**: Bash로 실행한 명령어 (npm run build, pytest 등)
 - **confidencePercent**: 결과에 대한 확신도 (0-100). 불확실하면 60 미만으로 설정.
 
-실패 시 또는 낮은 확신도:
-\`\`\`json
-{
-  "success": false,
-  "summary": "실패 이유 (구체적으로)",
-  "filesChanged": [],
-  "commands": [],
-  "error": "상세 에러 메시지",
-  "confidencePercent": 30,
-  "haltReason": "완료할 수 없거나 불확실한 이유"
-}
-\`\`\`
 `;
   },
 
@@ -180,25 +168,6 @@ ${workerReport}
 }
 \`\`\`
 
-예시 (approve):
-\`\`\`json
-{
-  "decision": "approve",
-  "feedback": "요구사항을 정확히 구현했고, 코드 품질도 적절합니다.",
-  "issues": [],
-  "suggestions": ["향후 에러 핸들링 보강 고려"]
-}
-\`\`\`
-
-예시 (revise):
-\`\`\`json
-{
-  "decision": "revise",
-  "feedback": "기본 구현은 되었으나 몇 가지 수정이 필요합니다.",
-  "issues": ["에러 핸들링 누락", "테스트 코드 없음"],
-  "suggestions": ["try-catch 블록 추가", "단위 테스트 작성"]
-}
-\`\`\`
 `;
   },
 
@@ -232,14 +201,29 @@ ${workerReport}
     return lines.join('\n');
   },
 
-  buildPlannerPrompt({ taskTitle, taskDescription, projectName, targetMinutes }) {
+  buildPlannerPrompt({ taskTitle, taskDescription, projectName, targetMinutes, impactAnalysis }) {
+    const kgSection = impactAnalysis ? `
+## Knowledge Graph — 영향 모듈
+Knowledge Graph가 이 작업에 의해 영향받는 것으로 식별한 모듈:
+
+**직접 영향:** ${impactAnalysis.directModules.join(', ') || '식별 안됨'}
+**간접 의존:** ${impactAnalysis.dependentModules.join(', ') || '없음'}
+**테스트 파일:** ${impactAnalysis.testFiles.join(', ') || '없음'}
+**영향 범위:** ${impactAnalysis.estimatedScope}
+
+### 파일 분리 제약
+- 각 서브태스크는 서로 다른 파일/모듈을 수정하도록 분리하라 (병렬 워크트리 머지 충돌 방지)
+- 같은 파일을 변경해야 하는 서브태스크는 하나로 묶어라
+- 의존하는 파일 변경은 선행 서브태스크 이후에 실행되도록 순서를 지정하라
+` : '';
+
     return `# Planner Agent
 
 ## Task to Analyze
 - **Title:** ${taskTitle}
 - **Description:** ${taskDescription}
 - **Project:** ${projectName}
-
+${kgSection}
 ## Your Mission
 이 작업을 분석하고, ${targetMinutes}분 이내에 완료할 수 있는 단위로 분해하라.
 

@@ -7,6 +7,11 @@
 import dns from 'node:dns';
 dns.setDefaultResultOrder('ipv4first');
 
+// Strip Claude Code session markers so child processes (worker, planner) can launch Claude CLI
+// Without this, running the service from inside a Claude Code session blocks all CLI spawns.
+delete process.env['CLAUDECODE'];
+delete process.env['CLAUDE_CODE_ENTRYPOINT'];
+
 import { loadConfig, validateConfig } from './core/config.js';
 import { startService, stopService } from './core/service.js';
 

@@ -8,9 +8,7 @@ import { homedir } from 'os';
 import * as fs from 'fs/promises';
 import * as yaml from 'yaml';
 
-// ============================================
 // Types & Interfaces
-// ============================================
 
 /**
  * Failure handling strategy
@@ -127,9 +125,7 @@ export interface ExecutorResult {
   duration: number;
 }
 
-// ============================================
 // DAG Utilities
-// ============================================
 
 /**
  * Topological Sort (Kahn's Algorithm)
@@ -248,9 +244,7 @@ export function getParallelGroups(steps: WorkflowStep[]): WorkflowStep[][] {
   return groups;
 }
 
-// ============================================
 // Workflow Storage
-// ============================================
 
 const WORKFLOW_DIR = resolve(homedir(), '.openswarm/workflows');
 const EXECUTION_DIR = resolve(homedir(), '.openswarm/executions');
@@ -322,9 +316,7 @@ export async function loadExecution(executionId: string): Promise<WorkflowExecut
   }
 }
 
-// ============================================
 // Workflow Templates
-// ============================================
 
 /**
  * CI pipeline template
@@ -405,9 +397,7 @@ export function createReviewPipelineTemplate(projectPath: string, prNumber: stri
   };
 }
 
-// ============================================
 // Workflow Validation
-// ============================================
 
 /**
  * Validate workflow
@@ -461,9 +451,7 @@ export function validateWorkflow(workflow: WorkflowConfig): { valid: boolean; er
   return { valid: errors.length === 0, errors };
 }
 
-// ============================================
 // Exports
-// ============================================
 
 export {
   WORKFLOW_DIR,

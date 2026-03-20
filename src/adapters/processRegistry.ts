@@ -6,9 +6,7 @@
 import type { ChildProcess } from 'node:child_process';
 import { broadcastEvent } from '../core/eventHub.js';
 
-// ============================================
 // Types
-// ============================================
 
 export interface ProcessInfo {
   pid: number;
@@ -20,9 +18,7 @@ export interface ProcessInfo {
   lastActivityAt: number;
 }
 
-// ============================================
 // Registry (singleton)
-// ============================================
 
 const registry = new Map<number, ProcessInfo>();
 let healthCheckTimer: NodeJS.Timeout | null = null;

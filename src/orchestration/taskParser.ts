@@ -8,9 +8,7 @@ import { homedir } from 'os';
 import * as fs from 'fs/promises';
 import { WorkflowConfig, WorkflowStep } from './workflow.js';
 
-// ============================================
 // Types
-// ============================================
 
 /**
  * Parsed task structure
@@ -69,9 +67,7 @@ export interface Subtask {
   optional: boolean;
 }
 
-// ============================================
 // Task Type Detection
-// ============================================
 
 const TYPE_PATTERNS: { type: TaskType; patterns: RegExp[] }[] = [
   {
@@ -135,9 +131,7 @@ function detectTaskType(title: string, description: string): TaskType {
   return 'unknown';
 }
 
-// ============================================
 // Complexity Analysis
-// ============================================
 
 /**
  * Complexity analysis
@@ -222,9 +216,7 @@ function adjustComplexityWithGraph(
   return result;
 }
 
-// ============================================
 // Subtask Generation
-// ============================================
 
 /**
  * Subtask templates
@@ -537,9 +529,7 @@ ${template.prompt}
   return subtasks;
 }
 
-// ============================================
 // Main Parser
-// ============================================
 
 /**
  * Parse Linear issue into executable structure
@@ -615,9 +605,7 @@ function subtasksToWorkflow(
   };
 }
 
-// ============================================
 // Parsing Result Storage
-// ============================================
 
 const PARSED_TASKS_DIR = resolve(homedir(), '.openswarm/parsed-tasks');
 
@@ -643,9 +631,7 @@ export async function loadParsedTask(issueId: string): Promise<ParsedTask | null
   }
 }
 
-// ============================================
 // Utility Functions
-// ============================================
 
 /**
  * Generate parsed task summary (for Linear comments)

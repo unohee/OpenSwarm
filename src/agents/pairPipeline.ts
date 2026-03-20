@@ -10,13 +10,14 @@ import type { TesterResult } from './tester.js';
 import type { DocumenterResult } from './documenter.js';
 import type { AuditorResult } from './auditor.js';
 import type { SkillDocumenterResult } from './skillDocumenter.js';
-import type { PipelineStage, RoleConfig, PipelineGuardsConfig } from '../core/types.js';
+import type { PipelineStage, RoleConfig, PipelineGuardsConfig, JobProfile } from '../core/types.js';
 import { type CostInfo, aggregateCosts, formatCost } from '../support/costTracker.js';
 
 import { broadcastEvent } from '../core/eventHub.js';
 import { CONFIDENCE_THRESHOLDS } from './agentPair.js';
 import * as agentPair from './agentPair.js';
 import { runGuards, type GuardsRunResult } from './pipelineGuards.js';
+import { hasRepoSnapshot, scanAndCache } from '../knowledge/index.js';
 import * as workerAgent from './worker.js';
 import * as reviewerAgent from './reviewer.js';
 import * as testerAgent from './tester.js';
@@ -25,9 +26,7 @@ import * as auditorAgent from './auditor.js';
 import * as skillDocumenterAgent from './skillDocumenter.js';
 import { StuckDetector, createStuckDetector } from '../support/stuckDetector.js';
 
-// ============================================
 // Types
-// ============================================
 
 export interface PipelineConfig {
   /** List of active stages (executed in order) */
@@ -49,6 +48,12 @@ export interface PipelineConfig {
   };
   /** Pipeline guards configuration */
   guards?: Partial<PipelineGuardsConfig>;
+  /** Optional job profiles for model selection */
+  jobProfiles?: JobProfile[];
+  /** Skip tester if no code files (.ts/.js/.py etc.) changed (default: true) */
+  skipTesterIfNoCodeChange?: boolean;
+  /** Skip auditor if fewer than N files changed (default: 3) */
+  skipAuditorUnderFileCount?: number;
 }
 
 export interface StageResult {
@@ -128,9 +133,7 @@ export function buildTaskPrefix(task: TaskItem, projectPath: string): string {
   return parts.join(' | ');
 }
 
-// ============================================
 // Pipeline Events
-// ============================================
 
 export type PipelineEventType =
   | 'stage:start'
@@ -143,13 +146,12 @@ export type PipelineEventType =
   | 'pipeline:fail'
   | 'halt';
 
-// ============================================
 // Pair Pipeline
-// ============================================
 
 export class PairPipeline extends EventEmitter {
   private config: PipelineConfig;
   private stuckDetector: StuckDetector;
+  private jobProfiles: JobProfile[];
 
   constructor(config: PipelineConfig) {
     super();
@@ -164,6 +166,25 @@ export class PairPipeline extends EventEmitter {
       sameErrorRepeat: 2,
       revisionLoop: 4,
     });
+    this.jobProfiles = config.jobProfiles ?? [];
+  }
+
+  private matchesProfile(task: TaskItem, profile: JobProfile): boolean {
+    const estimate = task.estimatedMinutes ?? 0;
+    if (profile.minMinutes != null && estimate < profile.minMinutes) return false;
+    if (profile.maxMinutes != null && estimate > profile.maxMinutes) return false;
+    if (profile.priority != null && task.priority !== profile.priority) return false;
+    return true;
+  }
+
+  private getProfileForTask(task: TaskItem): JobProfile | undefined {
+    if (!this.jobProfiles || this.jobProfiles.length === 0) return undefined;
+    return this.jobProfiles.find((profile) => this.matchesProfile(task, profile));
+  }
+
+  private getModelForRole(stage: PipelineStage, task: TaskItem): string | undefined {
+    const profile = this.getProfileForTask(task);
+    return profile?.roles?.[stage] || this.config.roles?.[stage]?.model;
   }
 
   // ============================================
@@ -183,6 +204,16 @@ export class PairPipeline extends EventEmitter {
 
     // Reset stuck detector (new pipeline run)
     this.stuckDetector.reset();
+
+    // Ensure repo graph snapshot exists (first-time scan if needed)
+    if (!hasRepoSnapshot(projectPath)) {
+      console.log(`[Pipeline] No repo snapshot found, scanning ${projectPath}...`);
+      try {
+        await scanAndCache(projectPath);
+      } catch (e) {
+        console.warn(`[Pipeline] Repo scan failed (non-blocking):`, e);
+      }
+    }
 
     // Create session
     const session = agentPair.createPairSession({
@@ -232,9 +263,15 @@ export class PairPipeline extends EventEmitter {
 
       // Auditor (post-success, non-blocking)
       if (this.hasStage('auditor') && context.workerResult?.success) {
-        const auditorResult = await this.runStage('auditor', context);
-        stages.push(auditorResult);
-        // Auditor failure does not affect overall success
+        const auditorFileThreshold = this.config.skipAuditorUnderFileCount ?? 3;
+        const auditorChangedFiles = context.workerResult.filesChanged || [];
+        if (auditorChangedFiles.length < auditorFileThreshold) {
+          console.log(`[${context.taskPrefix}] Skipping auditor: ${auditorChangedFiles.length} files changed (threshold: ${auditorFileThreshold})`);
+        } else {
+          const auditorResult = await this.runStage('auditor', context);
+          stages.push(auditorResult);
+          // Auditor failure does not affect overall success
+        }
       }
 
       // Skill Documenter (post-success, non-blocking)
@@ -292,7 +329,7 @@ export class PairPipeline extends EventEmitter {
     overrides?: { model?: string }
   ): Promise<StageResult> {
     const startTime = Date.now();
-    const stageModel = overrides?.model ?? this.config.roles?.[stage]?.model;
+    const stageModel = overrides?.model ?? this.getModelForRole(stage, context.task);
     const prefix = context.taskPrefix;
     console.log(`[${prefix}] Stage starting: ${stage}`);
     this.emit('stage:start', { stage, context });
@@ -327,6 +364,7 @@ export class PairPipeline extends EventEmitter {
                   : undefined),
             timeoutMs: this.config.roles?.worker?.timeoutMs ?? 0,
             model: overrides?.model ?? this.config.roles?.worker?.model,
+            maxTurns: this.config.roles?.worker?.maxTurns,
             adapterName: this.config.roles?.worker?.adapter,
             issueIdentifier: context.task.issueIdentifier || context.task.issueId,
             projectName: context.task.linearProject?.name,
@@ -359,6 +397,13 @@ export class PairPipeline extends EventEmitter {
 
           // Pre-check disabled - Haiku format compliance issues causing false rejections
           // Proceed directly to full Sonnet review for reliability
+          // Reduce review depth when worker confidence is very high
+          let reviewerMaxTurns = this.config.roles?.reviewer?.maxTurns;
+          if (context.workerResult?.confidencePercent && context.workerResult.confidencePercent > 90) {
+            const cappedTurns = Math.min(reviewerMaxTurns ?? 10, 5);
+            console.log(`[${prefix}] High worker confidence (${context.workerResult.confidencePercent}%), limiting reviewer to ${cappedTurns} turns`);
+            reviewerMaxTurns = cappedTurns;
+          }
           console.log(`[${prefix}] Running full review (Sonnet)...`);
           result = await reviewerAgent.runReviewer({
             taskTitle: context.task.title,
@@ -367,6 +412,7 @@ export class PairPipeline extends EventEmitter {
             projectPath: context.projectPath,
             timeoutMs: this.config.roles?.reviewer?.timeoutMs ?? 0,
             model: this.config.roles?.reviewer?.model,
+            maxTurns: reviewerMaxTurns,
             adapterName: this.config.roles?.reviewer?.adapter,
             processContext: { taskId: context.task.id, stage: 'reviewer' },
           });
@@ -386,6 +432,7 @@ export class PairPipeline extends EventEmitter {
             projectPath: context.projectPath,
             timeoutMs: this.config.roles?.tester?.timeoutMs ?? 0,
             model: this.config.roles?.tester?.model,
+            maxTurns: this.config.roles?.tester?.maxTurns,
             adapterName: this.config.roles?.tester?.adapter,
           });
           context.testerResult = result as TesterResult;
@@ -402,6 +449,7 @@ export class PairPipeline extends EventEmitter {
             projectPath: context.projectPath,
             timeoutMs: this.config.roles?.documenter?.timeoutMs ?? 0,
             model: this.config.roles?.documenter?.model,
+            maxTurns: this.config.roles?.documenter?.maxTurns,
             adapterName: this.config.roles?.documenter?.adapter,
           });
           context.documenterResult = result as DocumenterResult;
@@ -418,6 +466,7 @@ export class PairPipeline extends EventEmitter {
             projectPath: context.projectPath,
             timeoutMs: this.config.roles?.auditor?.timeoutMs ?? 0,
             model: this.config.roles?.auditor?.model,
+            maxTurns: this.config.roles?.auditor?.maxTurns,
             adapterName: this.config.roles?.auditor?.adapter,
           });
           context.auditorResult = result as AuditorResult;
@@ -434,6 +483,7 @@ export class PairPipeline extends EventEmitter {
             projectPath: context.projectPath,
             timeoutMs: this.config.roles?.['skill-documenter']?.timeoutMs ?? 0,
             model: this.config.roles?.['skill-documenter']?.model,
+            maxTurns: this.config.roles?.['skill-documenter']?.maxTurns,
             adapterName: this.config.roles?.['skill-documenter']?.adapter,
           });
           context.skillDocumenterResult = result as SkillDocumenterResult;
@@ -573,7 +623,10 @@ export class PairPipeline extends EventEmitter {
       const workerCfg = this.config.roles?.worker;
       const escalateThreshold = workerCfg?.escalateAfterIteration ?? 3;
       const shouldEscalate = context.currentIteration >= escalateThreshold && !!workerCfg?.escalateModel;
-      const workerOverrides = shouldEscalate ? { model: workerCfg!.escalateModel! } : undefined;
+      const baseWorkerModel = this.getModelForRole('worker', context.task);
+      const workerOverrides = shouldEscalate
+        ? { model: workerCfg!.escalateModel! }
+        : (baseWorkerModel ? { model: baseWorkerModel } : undefined);
 
       if (shouldEscalate) {
         console.log(`[${context.taskPrefix}] Escalating worker model → ${workerCfg!.escalateModel} (iteration ${context.currentIteration})`);
@@ -725,6 +778,14 @@ export class PairPipeline extends EventEmitter {
 
       // ========== TESTER ==========
       if (hasTester) {
+        // Skip tester if no code files changed (configurable, default true)
+        const skipIfNoCode = this.config.skipTesterIfNoCodeChange ?? true;
+        const codeExtensions = /\.(ts|tsx|js|jsx|py|rs|go|java|rb|c|cpp|h|hpp)$/;
+        const changedFiles = context.workerResult?.filesChanged || [];
+        const hasCodeChange = changedFiles.some(f => codeExtensions.test(f));
+        if (skipIfNoCode && !hasCodeChange) {
+          console.log(`[${context.taskPrefix}] Skipping tester: no code files changed (${changedFiles.length} files: ${changedFiles.join(', ') || 'none'})`);
+        } else {
         const testerResult = await this.runStage('tester', context);
         stages.push(testerResult);
 
@@ -750,6 +811,7 @@ export class PairPipeline extends EventEmitter {
           agentPair.updateSessionStatus(context.session.id, 'revising');
           continue;
         }
+        } // end else (has code change)
       }
 
       // ========== ALL PASSED ==========
@@ -833,9 +895,7 @@ export class PairPipeline extends EventEmitter {
   }
 }
 
-// ============================================
 // Factory Functions
-// ============================================
 
 /**
  * Create default pipeline (Worker + Reviewer)
@@ -869,6 +929,7 @@ export function createPipelineFromConfig(
   roles: PipelineConfig['roles'],
   maxIterations = 3,
   guards?: Partial<PipelineGuardsConfig>,
+  jobProfiles?: JobProfile[],
 ): PairPipeline {
   const stages: PipelineStage[] = [];
 
@@ -896,18 +957,11 @@ export function createPipelineFromConfig(
     maxIterations,
     roles,
     guards,
+    jobProfiles,
   });
 }
 
-// ============================================
 // Helpers
-// ============================================
-
-/** Format epoch ms to HH:MM:SS local time string */
-function formatTimestamp(epochMs: number): string {
-  const d = new Date(epochMs);
-  return d.toLocaleTimeString('en-GB', { hour12: false }); // HH:MM:SS
-}
 
 // Re-export formatting functions (extracted to pipelineFormat.ts)
 export { formatPipelineResult, formatPipelineResultEmbed } from './pipelineFormat.js';

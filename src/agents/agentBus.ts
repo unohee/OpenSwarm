@@ -8,9 +8,7 @@ import { homedir } from 'os';
 import * as fs from 'fs/promises';
 import { existsSync } from 'fs';
 
-// ============================================
 // Types
-// ============================================
 
 /**
  * Message type
@@ -90,9 +88,7 @@ export interface SharedContext {
   data: Record<string, unknown>;
 }
 
-// ============================================
 // Bus Implementation (File-based)
-// ============================================
 
 const BUS_DIR = resolve(homedir(), '.openswarm/bus');
 
@@ -436,9 +432,7 @@ export class AgentBus {
   }
 }
 
-// ============================================
 // Helper Functions
-// ============================================
 
 /**
  * Create new bus instance

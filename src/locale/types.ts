@@ -411,6 +411,12 @@ export interface PromptTemplates {
     taskDescription: string;
     projectName: string;
     targetMinutes: number;
+    impactAnalysis?: {
+      directModules: string[];
+      dependentModules: string[];
+      testFiles: string[];
+      estimatedScope: 'small' | 'medium' | 'large';
+    };
   }) => string;
 }
 

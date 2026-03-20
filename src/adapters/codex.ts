@@ -21,7 +21,7 @@ export class CodexCliAdapter implements CliAdapter {
   readonly name = 'codex';
 
   readonly capabilities: AdapterCapabilities = {
-    supportsStreaming: false,
+    supportsStreaming: true,
     supportsJsonOutput: true,
     supportsModelSelection: true,
     managedGit: true,
@@ -42,6 +42,24 @@ export class CodexCliAdapter implements CliAdapter {
     const modelFlag = options.model ? ` -m ${shellEscape(options.model)}` : '';
     const cmd = `cat ${shellEscape(promptFile)} | codex exec --json --full-auto --skip-git-repo-check${modelFlag}`;
     return { command: cmd, args: [] };
+  }
+
+  parseStreamingChunk(
+    chunk: string,
+    onLog: (line: string) => void,
+    buffer: string = '',
+  ): string {
+    const combined = buffer + chunk;
+    const lines = combined.split('\n');
+    const remainder = lines.pop() ?? '';
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      emitCodexStreamEvent(trimmed, onLog);
+    }
+
+    return remainder;
   }
 
   parseWorkerOutput(raw: CliRunResult): WorkerResult {
@@ -81,6 +99,117 @@ function extractCodexMessageText(output: string): string {
   }
 
   return lastMessage || output;
+}
+
+function emitCodexStreamEvent(line: string, onLog: (line: string) => void): void {
+  try {
+    const event = JSON.parse(line);
+    const eventType = typeof event.type === 'string' ? event.type : '';
+
+    if (eventType === 'turn.started') {
+      onLog('───');
+      onLog('Codex turn started');
+      return;
+    }
+
+    if (eventType === 'turn.completed') {
+      onLog('Codex turn completed');
+      return;
+    }
+
+    if (
+      eventType === 'item.completed' &&
+      event.item?.type === 'agent_message' &&
+      typeof event.item.text === 'string'
+    ) {
+      emitCodexText(event.item.text, onLog);
+      return;
+    }
+
+    if (eventType === 'item.completed' && event.item?.type === 'reasoning') {
+      const summary = summarizeCodexReasoning(event.item);
+      if (summary) onLog(`▸ ${summary}`);
+      return;
+    }
+
+    if (eventType === 'error' && typeof event.message === 'string') {
+      onLog(`ERROR: ${truncate(event.message, 300)}`);
+    }
+  } catch {
+    // Ignore malformed or partial non-JSON lines.
+  }
+}
+
+function emitCodexText(text: string, onLog: (line: string) => void): void {
+  const lines = text.split('\n');
+  let inCodeBlock = false;
+  let prevWasEmpty = false;
+
+  for (const raw of lines) {
+    const trimmed = raw.trim();
+
+    if (trimmed.startsWith('```')) {
+      inCodeBlock = !inCodeBlock;
+      onLog(inCodeBlock ? '┌─ code ─' : '└────────');
+      prevWasEmpty = false;
+      continue;
+    }
+
+    if (!trimmed) {
+      if (!prevWasEmpty) {
+        onLog('');
+        prevWasEmpty = true;
+      }
+      continue;
+    }
+    prevWasEmpty = false;
+
+    if (inCodeBlock) {
+      onLog('│ ' + truncate(raw, 300));
+      continue;
+    }
+
+    const headerMatch = trimmed.match(/^(#{1,4})\s+(.+)/);
+    if (headerMatch) {
+      onLog('');
+      onLog('■ ' + headerMatch[2]);
+      continue;
+    }
+
+    if (/^[-*]\s/.test(trimmed) || /^\d+\.\s/.test(trimmed)) {
+      onLog('  ' + truncate(trimmed, 300));
+      continue;
+    }
+
+    onLog(truncate(trimmed, 300));
+  }
+}
+
+function summarizeCodexReasoning(item: Record<string, unknown>): string | null {
+  if (typeof item.text === 'string' && item.text.trim()) {
+    return truncate(item.text.trim(), 200);
+  }
+
+  if (typeof item.summary === 'string' && item.summary.trim()) {
+    return truncate(item.summary.trim(), 200);
+  }
+
+  if (Array.isArray(item.summary)) {
+    const text = item.summary
+      .map((entry) => {
+        if (typeof entry === 'string') return entry;
+        if (entry && typeof entry === 'object' && 'text' in entry && typeof entry.text === 'string') {
+          return entry.text;
+        }
+        return '';
+      })
+      .filter(Boolean)
+      .join(' ');
+
+    return text ? truncate(text, 200) : null;
+  }
+
+  return null;
 }
 
 function extractWorkerResultJson(text: string): WorkerResult | null {
@@ -285,4 +414,8 @@ function extractBulletsAfter(text: string, heading: RegExp): string[] {
     items.push(trimmed.replace(/^[-*]\s*/, ''));
   }
   return items;
+}
+
+function truncate(s: string, max: number): string {
+  return s.length > max ? s.slice(0, max) + '...' : s;
 }

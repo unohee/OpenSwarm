@@ -1,0 +1,71 @@
+#!/bin/bash
+# OpenSwarm CLI - 빌드 + 직접 실행 (launchd 없이)
+
+SWARM_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+PID_FILE="/tmp/openswarm.pid"
+
+start() {
+    # 기존 프로세스 종료
+    stop_quiet
+
+    echo "[swarm] Building..."
+    cd "$SWARM_DIR" && npx tsc --noEmit 2>/dev/null
+    if [ $? -ne 0 ]; then
+        echo "[swarm] Build failed"
+        exit 1
+    fi
+
+    echo "[swarm] Starting OpenSwarm..."
+    cd "$SWARM_DIR" && node --env-file=.env dist/index.js &
+    echo $! > "$PID_FILE"
+    echo "[swarm] Started (PID: $(cat $PID_FILE))"
+}
+
+stop_quiet() {
+    if [ -f "$PID_FILE" ]; then
+        kill "$(cat $PID_FILE)" 2>/dev/null
+        rm -f "$PID_FILE"
+    fi
+    pkill -f 'dist/index.js' 2>/dev/null || true
+}
+
+stop() {
+    stop_quiet
+    echo "[swarm] Stopped"
+}
+
+restart() {
+    echo "[swarm] Restarting..."
+    stop_quiet
+    sleep 1
+    start
+}
+
+status() {
+    if [ -f "$PID_FILE" ] && kill -0 "$(cat $PID_FILE)" 2>/dev/null; then
+        echo "[swarm] Running (PID: $(cat $PID_FILE))"
+    else
+        echo "[swarm] Not running"
+    fi
+}
+
+logs() {
+    if [ -f "$PID_FILE" ] && kill -0 "$(cat $PID_FILE)" 2>/dev/null; then
+        tail -f /dev/null --pid="$(cat $PID_FILE)" 2>/dev/null
+    fi
+    # launchd 로그 fallback
+    LOG="$HOME/.openswarm/logs/stdout.log"
+    [ -f "$LOG" ] && tail -50 "$LOG" || echo "[swarm] No logs found"
+}
+
+case "${1:-status}" in
+    start)   start ;;
+    stop)    stop ;;
+    restart) restart ;;
+    status)  status ;;
+    logs)    logs ;;
+    *)
+        echo "Usage: swarm {start|stop|restart|status|logs}"
+        exit 1
+        ;;
+esac

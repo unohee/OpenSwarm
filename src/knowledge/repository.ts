@@ -14,9 +14,7 @@ import type {
 } from './types.js';
 import { saveGraph } from './store.js';
 
-// ============================================
 // Issue Linking
-// ============================================
 
 /**
  * Link an issue to a module
@@ -105,9 +103,7 @@ export function getIssuesByModule(
   return node?.metadata?.relatedIssues ?? [];
 }
 
-// ============================================
 // Module State Management
-// ============================================
 
 /**
  * Update module state
@@ -206,9 +202,7 @@ export function updateModuleMetadata(
   return true;
 }
 
-// ============================================
 // Query Functions
-// ============================================
 
 /**
  * Get modules by state
@@ -281,9 +275,7 @@ export function getUntestedModules(
   return modules.filter(mod => !modulesThatHaveTests.has(mod.id));
 }
 
-// ============================================
 // Project Summary Generation
-// ============================================
 
 /**
  * Generate comprehensive project summary
@@ -351,9 +343,7 @@ export function generateProjectSummary(
   };
 }
 
-// ============================================
 // Persistence Helpers
-// ============================================
 
 /**
  * Save graph after updates

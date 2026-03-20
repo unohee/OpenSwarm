@@ -3,26 +3,14 @@
 // Task execution agent (CLI adapter based)
 // ============================================
 
-import { homedir } from 'node:os';
 import type { WorkerResult } from './agentPair.js';
 import * as gitTracker from '../support/gitTracker.js';
 import { t, getPrompts } from '../locale/index.js';
 import type { AdapterName, ProcessContext } from '../adapters/types.js';
 import { getAdapter, spawnCli } from '../adapters/index.js';
+import { expandPath } from '../core/config.js';
 
-/**
- * Expand ~ path to home directory
- */
-function expandPath(p: string): string {
-  if (p.startsWith('~/')) {
-    return p.replace('~', homedir());
-  }
-  return p;
-}
-
-// ============================================
 // Types
-// ============================================
 
 export interface WorkerOptions {
   taskTitle: string;
@@ -31,6 +19,7 @@ export interface WorkerOptions {
   previousFeedback?: string;   // Previous feedback from Reviewer (for revisions)
   timeoutMs?: number;
   model?: string;              // Claude model (default: claude-sonnet-4-5-20250929)
+  maxTurns?: number;           // Max agentic turns per CLI invocation
   adapterName?: AdapterName;
   issueIdentifier?: string;    // Linear issue ID (e.g., INT-123)
   projectName?: string;        // Linear project name
@@ -38,9 +27,7 @@ export interface WorkerOptions {
   processContext?: ProcessContext;
 }
 
-// ============================================
 // Prompts
-// ============================================
 
 /**
  * Build Worker prompt using locale templates
@@ -53,9 +40,7 @@ function buildWorkerPrompt(options: WorkerOptions): string {
   });
 }
 
-// ============================================
 // Worker Execution
-// ============================================
 
 /**
  * Run Worker agent
@@ -81,6 +66,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       cwd,
       timeoutMs: options.timeoutMs,
       model: options.model,
+      maxTurns: options.maxTurns,
       onLog: options.onLog,
       processContext: options.processContext,
     });
@@ -108,20 +94,24 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
 
     return parsedResult;
   } catch (error) {
+    const errMsg = error instanceof Error ? error.message : String(error);
+    console.error(`[Worker] Execution failed: ${errMsg}`);
+    // Log stderr hint if available (CLI spawn errors often contain useful info)
+    if (error instanceof Error && error.message.includes('code')) {
+      console.error(`[Worker] CLI exited with non-zero code — check claude CLI availability and permissions`);
+    }
     return {
       success: false,
       summary: 'Worker execution failed',
       filesChanged: [],
       commands: [],
       output: '',
-      error: error instanceof Error ? error.message : String(error),
+      error: errMsg,
     };
   }
 }
 
-// ============================================
 // Formatting
-// ============================================
 
 /**
  * Format Worker result as a Discord message

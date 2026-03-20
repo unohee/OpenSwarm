@@ -10,9 +10,7 @@ import YAML from 'yaml';
 import type { SwarmConfig, AgentSession, LongRunningMonitorConfig, ConflictResolverConfig } from './types.js';
 import { setTimeWindowConfig, DEFAULT_TIME_WINDOW } from '../support/timeWindow.js';
 
-// ============================================
 // Constants
-// ============================================
 
 const CONFIG_PATHS = [
   join(process.cwd(), 'config.yaml'),
@@ -24,9 +22,7 @@ const DEFAULT_HEARTBEAT_INTERVAL = 30 * 60 * 1000; // 30 minutes
 const DEFAULT_GITHUB_CHECK_INTERVAL = 5 * 60 * 1000; // 5 minutes
 const AdapterNameSchema = z.enum(['claude', 'codex']);
 
-// ============================================
 // Zod Schemas
-// ============================================
 
 const AgentSessionSchema = z.object({
   name: z.string().min(1, 'Agent name is required'),
@@ -164,6 +160,16 @@ const DecompositionConfigSchema = z.object({
   plannerTimeoutMs: z.number().min(60000).default(600000),
 }).optional();
 
+const PipelineStageSchema = z.enum(['worker', 'reviewer', 'tester', 'documenter', 'auditor', 'skill-documenter']);
+
+const JobProfileSchema = z.object({
+  name: z.string().min(1),
+  minMinutes: z.number().min(0).optional(),
+  maxMinutes: z.number().min(0).optional(),
+  priority: z.number().int().min(1).max(4).optional(),
+  roles: z.record(PipelineStageSchema, z.string()).optional(),
+});
+
 const AutonomousConfigSchema = z.object({
   /** Auto-enable on service start */
   enabled: z.boolean().default(false),
@@ -191,6 +197,12 @@ const AutonomousConfigSchema = z.object({
   decomposition: DecompositionConfigSchema,
   /** Git worktree mode: each task runs in isolated worktree */
   worktreeMode: z.boolean().default(false),
+  /** Dynamic job profiles for model selection */
+  jobProfiles: z.array(JobProfileSchema).optional(),
+  /** Daily task completion cap (default: 6) */
+  dailyTaskCap: z.number().min(1).max(50).default(6),
+  /** Cooldown between task completions in ms (default: 1800000 = 30min) */
+  interTaskCooldownMs: z.number().min(0).default(1800000),
 }).optional();
 
 // Long-Running Monitor schemas
@@ -256,9 +268,7 @@ const RawConfigSchema = z.object({
 
 export type RawConfig = z.infer<typeof RawConfigSchema>;
 
-// ============================================
 // Environment Variable Substitution
-// ============================================
 
 /**
  * Environment variable pattern: ${VAR_NAME} or ${VAR_NAME:-default}
@@ -306,16 +316,18 @@ function substituteEnvVarsDeep(obj: unknown): unknown {
 /**
  * Expand path (~/ handling)
  */
-function expandPath(path: string): string {
+export function expandPath(path: string, resolveRelative = false): string {
   if (path.startsWith('~/')) {
     return join(homedir(), path.slice(2));
+  }
+  if (resolveRelative) {
+    const { resolve } = require('node:path') as typeof import('node:path');
+    return resolve(path);
   }
   return path;
 }
 
-// ============================================
 // Config Loading
-// ============================================
 
 /**
  * Find configuration file
@@ -408,6 +420,8 @@ function transformConfig(raw: RawConfig): SwarmConfig {
         plannerTimeoutMs: raw.autonomous.decomposition.plannerTimeoutMs,
       } : undefined,
       worktreeMode: raw.autonomous.worktreeMode,
+      dailyTaskCap: raw.autonomous.dailyTaskCap,
+      interTaskCooldownMs: raw.autonomous.interTaskCooldownMs,
     } : undefined,
     prProcessor: raw.prProcessor ? {
       enabled: raw.prProcessor.enabled,

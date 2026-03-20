@@ -63,9 +63,7 @@ export function normalizeRecords(records: any[]): CognitiveMemoryRecord[] {
   }));
 }
 
-// ==============================================
 // PRD Memory Types (Cognitive Memory)
-// ==============================================
 export type CognitiveMemoryType = 'belief' | 'strategy' | 'user_model' | 'system_pattern' | 'constraint';
 
 // Legacy types for backward compatibility
@@ -77,9 +75,7 @@ export type MemoryType = CognitiveMemoryType | LegacyMemoryType;
 // Stability levels for beliefs
 export type StabilityLevel = 'low' | 'medium' | 'high';
 
-// ==============================================
 // PRD Memory Schema (Base + Extensions)
-// ==============================================
 export interface CognitiveMemoryRecord {
   [key: string]: unknown;
   id: string;
@@ -113,9 +109,7 @@ export interface CognitiveMemoryRecord {
 // Legacy compatibility alias (exported for use)
 export interface MemoryRecord extends CognitiveMemoryRecord {}
 
-// ==============================================
 // Importance Score by Type (PRD Table)
-// ==============================================
 export const BASE_IMPORTANCE: Record<CognitiveMemoryType, number> = {
   constraint: 0.9,
   user_model: 0.85,
@@ -250,9 +244,7 @@ export async function getEmbedding(text: string): Promise<number[]> {
   return vector;
 }
 
-// ==============================================
 // Semantic Distillation Engine (PRD Phase 1)
-// ==============================================
 
 /**
  * Distillation Quality Test (PRD core)
@@ -740,9 +732,7 @@ export async function recordFact(
   return id!;
 }
 
-// ==============================================
 // Hybrid Retrieval (PRD Phase 2)
-// ==============================================
 
 /**
  * PRD Hybrid Score calculation

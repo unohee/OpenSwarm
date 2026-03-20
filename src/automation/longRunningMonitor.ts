@@ -15,22 +15,16 @@ import type {
 } from '../core/types.js';
 import { broadcastEvent } from '../core/eventHub.js';
 
-// ============================================
 // Constants
-// ============================================
 
 const PERSIST_FILE = join(homedir(), '.claude', 'openswarm-monitors.json');
 const CHECK_TIMEOUT_MS = 30_000; // Individual check command timeout: 30 seconds
 
-// ============================================
 // State
-// ============================================
 
 const monitors = new Map<string, LongRunningMonitor>();
 
-// ============================================
 // Persistence
-// ============================================
 
 interface PersistedData {
   monitors: LongRunningMonitor[];
@@ -70,9 +64,7 @@ function saveToDisk(): void {
   }
 }
 
-// ============================================
 // Check Execution
-// ============================================
 
 function executeCheck(command: string): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
@@ -91,9 +83,7 @@ function executeCheck(command: string): Promise<{ exitCode: number; stdout: stri
   });
 }
 
-// ============================================
 // Result Evaluation
-// ============================================
 
 function evaluateResult(
   check: CompletionCheck,
@@ -129,9 +119,7 @@ function evaluateResult(
   }
 }
 
-// ============================================
 // State Transition Handler
-// ============================================
 
 function handleStateTransition(
   monitor: LongRunningMonitor,
@@ -155,9 +143,7 @@ function handleStateTransition(
   saveToDisk();
 }
 
-// ============================================
 // Public API
-// ============================================
 
 /**
  * Load monitors from config + persisted file at service startup

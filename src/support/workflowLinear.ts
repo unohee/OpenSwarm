@@ -11,9 +11,7 @@ import {
   topologicalSort,
 } from '../orchestration/workflow.js';
 
-// ============================================
 // Types
-// ============================================
 
 export interface LinearWorkflowOptions {
   /** Parent issue ID (tracks entire workflow) */
@@ -42,9 +40,7 @@ export interface WorkflowLinearSync {
   createdAt: number;
 }
 
-// ============================================
 // Linear MCP Integration
-// ============================================
 
 /**
  * Note: This module is used when a Linear MCP server is connected.
@@ -294,9 +290,7 @@ export function createExecutionSummary(execution: WorkflowExecution): {
   return { body: parts.join('\n'), health };
 }
 
-// ============================================
 // Linear MCP Command Templates
-// ============================================
 
 /**
  * Linear issue creation command template (for MCP)

@@ -121,7 +121,7 @@ async function runClaudeCli(
       const cmd = 'bash';
       const args = [
         '-c',
-        `cd "${expandedPath}" && claude -p "$(cat ${promptFile})" --output-format stream-json --permission-mode bypassPermissions`,
+        `cd "${expandedPath}" && claude -p "$(cat ${promptFile})" --output-format stream-json --verbose --permission-mode bypassPermissions --max-turns 15`,
       ];
 
       console.log(`[Scheduler] Spawning Claude CLI for ${jobId}...`);

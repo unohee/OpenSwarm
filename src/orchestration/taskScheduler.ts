@@ -7,9 +7,7 @@ import { EventEmitter } from 'node:events';
 import type { TaskItem } from './decisionEngine.js';
 import type { PipelineResult } from '../agents/pairPipeline.js';
 
-// ============================================
 // Types
-// ============================================
 
 export interface QueuedTask {
   task: TaskItem;
@@ -42,9 +40,7 @@ export interface SchedulerStats {
   byProject: Map<string, number>;
 }
 
-// ============================================
 // Task Scheduler
-// ============================================
 
 export class TaskScheduler extends EventEmitter {
   private config: SchedulerConfig;
@@ -387,9 +383,7 @@ export class TaskScheduler extends EventEmitter {
   }
 }
 
-// ============================================
 // Singleton
-// ============================================
 
 let schedulerInstance: TaskScheduler | null = null;
 

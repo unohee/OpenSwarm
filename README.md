@@ -180,6 +180,11 @@ openswarm chat [session-name]
 # Run a single task (no config needed)
 openswarm run "Fix the login bug" --path ~/my-project
 
+# Execute via daemon (auto-starts service if needed)
+openswarm exec "Run tests and fix failures" --worker-only
+openswarm exec "Review all pending PRs" --timeout 300
+openswarm exec "Fix CI" --local --pipeline
+
 # Initialize configuration
 openswarm init
 
@@ -190,7 +195,55 @@ openswarm validate
 openswarm start
 ```
 
+#### `openswarm exec` Options
+
+| Option | Description |
+|--------|-------------|
+| `--path <path>` | Project path (default: cwd) |
+| `--timeout <seconds>` | Timeout in seconds (default: 600) |
+| `--no-auto-start` | Do not auto-start the service |
+| `--local` | Execute locally without daemon |
+| `--pipeline` | Full pipeline: worker + reviewer + tester + documenter |
+| `--worker-only` | Worker only, no review |
+| `-m, --model <model>` | Model override for worker |
+
+Exit codes: `0` (success), `1` (failure), `2` (timeout).
+
 ### Running the Service
+
+#### macOS launchd Service (Recommended)
+
+**Installation:**
+```bash
+# Build and install as a system service
+npm run service:install
+```
+
+**Service Management:**
+```bash
+npm run service:start      # Start service
+npm run service:stop       # Stop service
+npm run service:restart    # Restart service
+npm run service:status     # View status and recent logs
+npm run service:logs       # View stdout logs (follow mode)
+npm run service:errors     # View stderr logs (follow mode)
+npm run service:uninstall  # Uninstall service
+```
+
+**Browser Auto-Launch (Optional):**
+```bash
+npm run browser:install    # Auto-open dashboard on boot
+npm run browser:uninstall  # Disable auto-open
+```
+
+The service will:
+- Auto-start on system boot
+- Auto-restart on crash
+- Log to `~/.openswarm/logs/`
+- Run with your user permissions (access to Claude CLI, gh, local files)
+- (Optional) Open web dashboard at http://localhost:3847 on boot
+
+#### Manual Execution
 
 ```bash
 # Development
@@ -200,10 +253,13 @@ npm run dev
 npm run build
 npm start
 
-# Background
+# Background (legacy)
 nohup npm start > openswarm.log 2>&1 &
+```
 
-# Docker
+#### Docker
+
+```bash
 docker compose up -d
 ```
 
@@ -236,6 +292,9 @@ openswarm() {
 ```
 src/
 ├── index.ts                 # Entry point
+├── cli.ts                   # CLI entry point (run, exec, chat, init, validate, start)
+├── cli/                     # CLI subcommand handlers
+│   └── promptHandler.ts     # `exec` command: daemon submit, auto-start, polling
 ├── core/                    # Config, service lifecycle, types, event hub
 ├── agents/                  # Worker, reviewer, tester, documenter, auditor
 │   ├── pairPipeline.ts      # Worker → Reviewer → Tester → Documenter pipeline

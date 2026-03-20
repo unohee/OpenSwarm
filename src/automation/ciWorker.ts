@@ -20,9 +20,7 @@ import { broadcastEvent } from '../core/eventHub.js';
 
 const execFileAsync = promisify(execFile);
 
-// ============================================
 // Types
-// ============================================
 
 export interface CIWorkerConfig {
   /** Repositories to monitor */
@@ -44,9 +42,7 @@ export interface FailureAnalysis {
   suggestion?: string;
 }
 
-// ============================================
 // CI Worker
-// ============================================
 
 export class CIWorker {
   private config: Required<CIWorkerConfig>;
@@ -346,9 +342,7 @@ export class CIWorker {
   }
 }
 
-// ============================================
 // Export
-// ============================================
 
 let workerInstance: CIWorker | null = null;
 

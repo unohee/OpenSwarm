@@ -5,9 +5,7 @@
 
 import type { GraphNode, GraphEdge, EdgeType, NodeType, ProjectSummary, SerializedGraph } from './types.js';
 
-// ============================================
 // KnowledgeGraph Class
-// ============================================
 
 export class KnowledgeGraph {
   private nodes = new Map<string, GraphNode>();

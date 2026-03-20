@@ -85,6 +85,10 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     .btn-active:hover:not(:disabled) { background: #332200; border-color: var(--amber); }
     .btn-danger { border-color: #551111; color: var(--red); }
     .btn-danger:hover:not(:disabled) { background: #220000; border-color: var(--red); }
+    #turbo-btn { border-color: #553300; color: #ff8800; transition: all 0.3s; }
+    #turbo-btn:hover:not(:disabled) { background: #221100; border-color: #ff8800; }
+    #turbo-btn.turbo-active { background: #331800; border-color: #ff8800; color: #ffaa00; box-shadow: 0 0 8px rgba(255,136,0,0.3); animation: turbo-pulse 2s infinite; }
+    @keyframes turbo-pulse { 0%,100% { box-shadow: 0 0 4px rgba(255,136,0,0.2); } 50% { box-shadow: 0 0 12px rgba(255,136,0,0.5); } }
     .move-to-todo-btn {
       font-family: inherit;
       font-size: 9px;
@@ -126,10 +130,44 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       gap: 0.4rem;
     }
     .stat-label { font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.1em; }
-    .stat-val { font-size: 15px; font-weight: bold; color: var(--green); }
+    .stat-val { font-size: 13px; font-weight: 500; color: var(--green); }
     .stat-val.amber { color: var(--amber); }
     .stat-val.cyan { color: var(--cyan); }
     .stat-val.red { color: #ff5555; }
+    #stat-adapter, #stat-pair-adapters {
+      font-size: 10px;
+      font-weight: 400;
+      letter-spacing: 0.02em;
+    }
+    .provider-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px;
+      border: 1px solid var(--border);
+      background: var(--bg3);
+    }
+    .provider-btn {
+      font-family: inherit;
+      font-size: 9px;
+      line-height: 1;
+      padding: 4px 8px;
+      background: transparent;
+      border: 1px solid transparent;
+      color: var(--dim);
+      cursor: pointer;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .provider-btn:hover:not(:disabled) {
+      color: var(--white);
+      border-color: var(--border);
+    }
+    .provider-btn.active {
+      color: var(--green);
+      border-color: var(--green-lo);
+      background: var(--green-dim);
+    }
     .stat-divider { color: var(--border); }
 
     /* ===== MAIN GRID ===== */
@@ -518,6 +556,13 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       <div class="svc-group">
         <span class="svc-status" id="svc-status">...</span>
         <span class="svc-sep">│</span>
+        <div class="provider-toggle">
+          <button class="provider-btn" id="provider-claude" onclick="switchProvider('claude')">Claude</button>
+          <button class="provider-btn" id="provider-codex" onclick="switchProvider('codex')">Codex</button>
+        </div>
+        <span class="svc-sep">│</span>
+        <button class="btn" id="turbo-btn" onclick="toggleTurbo()" title="Turbo: 5min heartbeat, 20 daily cap, 4h auto-expire">TURBO</button>
+        <span class="svc-sep">│</span>
         <button class="btn btn-danger" id="svc-stop-btn" onclick="svcAction('stop')">⏸ STOP</button>
         <button class="btn" id="svc-restart-btn" onclick="svcAction('restart')">↻ RESTART</button>
       </div>
@@ -535,7 +580,13 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     <span class="stat-divider">│</span>
     <div class="stat"><span class="stat-label">DONE</span><span class="stat-val" id="stat-completed">0</span></div>
     <span class="stat-divider">│</span>
+    <div class="stat"><span class="stat-label">PACE</span><span class="stat-val" id="stat-pace">-</span></div>
+    <span class="stat-divider">│</span>
     <div class="stat"><span class="stat-label">SSE</span><span class="stat-val cyan" id="stat-sse">-</span></div>
+    <span class="stat-divider">│</span>
+    <div class="stat"><span class="stat-label">CLI</span><span class="stat-val cyan" id="stat-adapter">-</span></div>
+    <span class="stat-divider">│</span>
+    <div class="stat"><span class="stat-label">PAIR</span><span class="stat-val cyan" id="stat-pair-adapters">-</span></div>
     <span class="stat-divider">│</span>
     <div class="stat"><span class="stat-label">UPTIME</span><span class="stat-val" id="stat-uptime">-</span></div>
     <span class="stat-divider">│</span>
@@ -773,14 +824,49 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 
     // ---- Stats ----
     function updateStats(data) {
+      function shortModel(model) {
+        if (!model) return "-";
+        return model.length > 18 ? model.slice(0, 15) + "..." : model;
+      }
+
       document.getElementById("stat-running").textContent = data.runningTasks ?? 0;
       document.getElementById("stat-queued").textContent = data.queuedTasks ?? 0;
       document.getElementById("stat-completed").textContent = data.completedToday ?? 0;
+      const defaultAdapter = data.adapters?.defaultAdapter ?? "-";
+      const workerAdapter = data.adapters?.worker?.adapter ?? "-";
+      const workerModel = shortModel(data.adapters?.worker?.model);
+      const reviewerAdapter = data.adapters?.reviewer?.adapter ?? "-";
+      const reviewerModel = shortModel(data.adapters?.reviewer?.model);
+      const chatModel = workerModel || "-";
+      document.getElementById("stat-adapter").textContent = defaultAdapter;
+      document.getElementById("stat-pair-adapters").textContent =
+        "W " + workerAdapter + ":" + workerModel + " / R " + reviewerAdapter + ":" + reviewerModel;
+      document.getElementById("chat-status").textContent = defaultAdapter + ":" + chatModel;
+      document.getElementById("provider-claude").classList.toggle("active", defaultAdapter === "claude");
+      document.getElementById("provider-codex").classList.toggle("active", defaultAdapter === "codex");
       if (data.uptime != null) {
         const s = Math.floor(data.uptime / 1000);
         const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
         document.getElementById("stat-uptime").textContent =
           (h ? h + "h " : "") + (m ? m + "m " : "") + ss + "s";
+      }
+      // Turbo mode
+      const turboBtn = document.getElementById("turbo-btn");
+      if (turboBtn) {
+        turboBtn.classList.toggle("turbo-active", !!data.turboMode);
+        if (data.turboMode && data.turboExpiresAt) {
+          const remainMin = Math.max(0, Math.round((data.turboExpiresAt - Date.now()) / 60000));
+          turboBtn.textContent = "TURBO " + remainMin + "m";
+        } else {
+          turboBtn.textContent = "TURBO";
+        }
+      }
+      // Daily pace
+      const paceEl = document.getElementById("stat-pace");
+      if (paceEl && data.dailyPace) {
+        const cap = data.turboMode ? 20 : 6;
+        paceEl.textContent = data.dailyPace.completedToday + "/" + cap;
+        paceEl.className = "stat-val" + (data.turboMode ? " amber" : "");
       }
     }
 
@@ -934,6 +1020,47 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       } catch(e) {
         addLogLine({ taskId: "system", stage: "error", line: "Heartbeat failed: " + e.message });
         btn.disabled = false; btn.textContent = "▶ HEARTBEAT";
+      }
+    }
+
+    async function toggleTurbo() {
+      const btn = document.getElementById("turbo-btn");
+      const isActive = btn.classList.contains("turbo-active");
+      const newState = !isActive;
+      if (newState && !confirm("Enable TURBO mode? (5min heartbeat, 20 daily cap, auto-expires in 4h)")) return;
+      btn.disabled = true;
+      try {
+        const res = await fetch("/api/turbo", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled: newState })
+        });
+        if (!res.ok) throw new Error("Failed");
+        addLogLine({ taskId: "system", stage: "turbo", line: newState ? "TURBO MODE ON" : "TURBO MODE OFF" });
+        const stats = await fetch("/api/stats").then(r => r.json());
+        updateStats(stats);
+      } catch (e) {
+        addLogLine({ taskId: "system", stage: "error", line: "Turbo toggle failed: " + e.message });
+      }
+      btn.disabled = false;
+    }
+
+    async function switchProvider(provider) {
+      try {
+        const res = await fetch("/api/provider", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ provider })
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error || "Failed to switch provider");
+        }
+        addLogLine({ taskId: "system", stage: "provider", line: "Provider switched to " + provider });
+        const stats = await fetch("/api/stats").then(r => r.json());
+        updateStats(stats);
+      } catch (e) {
+        addLogLine({ taskId: "system", stage: "error", line: "Provider switch failed: " + e.message });
       }
     }
 
@@ -1643,7 +1770,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         rows.push(
           "<div class=\\"scan-path-row\\">" +
             "<span class=\\"path\\">" + escapeHtml(p) + "</span>" +
-            "<span class=\\"scan-path-badge\\">config</span>" +
+            "<button class=\\"scan-path-remove\\" title=\\"remove\\" onclick=\\"removeScanPath('" + escapeAttr(p) + "')\\">✕</button>" +
           "</div>"
         );
       }

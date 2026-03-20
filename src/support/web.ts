@@ -3,13 +3,13 @@
 // ============================================
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { writeFileSync, unlinkSync, readFileSync, existsSync } from 'node:fs';
+import { writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { spawn, execFile } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { getChatHistory } from '../discord/index.js';
 import { addSSEClient, getActiveSSECount, broadcastEvent, getLogBuffer, getStageBuffer, getChatBuffer } from '../core/eventHub.js';
-import { extractCostFromStreamJson, formatCost } from './costTracker.js';
+import { formatCost } from './costTracker.js';
 import { getRateLimiterMetrics } from './rateLimiter.js';
 import { scanLocalProjects, invalidateProjectCache } from './projectMapper.js';
 import type { AutonomousRunner } from '../automation/autonomousRunner.js';
@@ -19,21 +19,47 @@ import { getProjectGitInfo, startGitStatusPoller } from './gitStatus.js';
 import { getActiveMonitors, registerMonitor, unregisterMonitor } from '../automation/longRunningMonitor.js';
 import type { LongRunningMonitorConfig } from '../core/types.js';
 import { getAllProcesses, killProcess, startHealthChecker } from '../adapters/processRegistry.js';
+import { setDefaultAdapter } from '../adapters/index.js';
 import * as memory from '../memory/index.js';
 import { fetchQuota } from './quotaTracker.js';
+import { PairPipeline, type PipelineResult } from '../agents/pairPipeline.js';
+import type { TaskItem } from '../orchestration/decisionEngine.js';
+import type { PipelineStage, RoleConfig } from '../core/types.js';
+import { initLocale } from '../locale/index.js';
+import { runChatCompletion, getDefaultChatModel } from './chatBackend.js';
 
 let server: ReturnType<typeof createServer> | null = null;
 let runnerRef: AutonomousRunner | undefined;
 
-// ============================================
+// Exec task store (in-memory)
+
+interface ExecTaskEntry {
+  taskId: string;
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  currentStage?: string;
+  result?: {
+    success: boolean;
+    summary?: string;
+    finalStatus?: string;
+  };
+  error?: string;
+  createdAt: number;
+}
+
+const execTasks = new Map<string, ExecTaskEntry>();
+
+function cleanupExecTask(taskId: string): void {
+  setTimeout(() => { execTasks.delete(taskId); }, 3600000); // 1 hour
+}
+
 // Pinned + enabled repos persistence
-// ============================================
 const REPOS_FILE = join(homedir(), '.claude', 'openswarm-repos.json');
 
 interface ReposConfig {
-  pinned: string[];    // user-added repos (shown in dashboard)
-  enabled: string[];   // explicitly enabled for agent work
-  basePaths: string[]; // custom scan base paths (added via dashboard)
+  pinned: string[];             // user-added repos (shown in dashboard)
+  enabled: string[];            // explicitly enabled for agent work
+  basePaths: string[];          // custom scan base paths (added via dashboard)
+  removedConfigPaths?: string[]; // config 경로 중 대시보드에서 제거한 항목
 }
 
 function loadReposConfig(): ReposConfig {
@@ -42,7 +68,7 @@ function loadReposConfig(): ReposConfig {
       return JSON.parse(readFileSync(REPOS_FILE, 'utf-8')) as ReposConfig;
     }
   } catch {}
-  return { pinned: [], enabled: [], basePaths: [] };
+  return { pinned: [], enabled: [], basePaths: [], removedConfigPaths: [] };
 }
 
 function saveReposConfig(): void {
@@ -51,6 +77,7 @@ function saveReposConfig(): void {
       pinned:  Array.from(pinnedProjects),
       enabled: runnerRef?.getEnabledProjects() ?? [],
       basePaths: Array.from(customBasePaths),
+      removedConfigPaths: Array.from(removedConfigPaths),
     };
     writeFileSync(REPOS_FILE, JSON.stringify(cfg, null, 2));
   } catch (e) {
@@ -61,6 +88,7 @@ function saveReposConfig(): void {
 const _reposCfg = loadReposConfig();
 const pinnedProjects = new Set<string>(_reposCfg.pinned);
 const customBasePaths = new Set<string>(_reposCfg.basePaths ?? []);
+const removedConfigPaths = new Set<string>(_reposCfg.removedConfigPaths ?? []);
 
 /**
  * Set runner reference (call after autonomous runner is initialized)
@@ -71,6 +99,14 @@ export function setWebRunner(runner: AutonomousRunner): void {
   for (const path of _reposCfg.enabled) {
     runner.enableProject(path);
   }
+  // 대시보드에서 제거된 config 경로를 runner의 allowedProjects에서도 제거
+  if (removedConfigPaths.size > 0) {
+    const current = runner.getAllowedProjects();
+    const filtered = current.filter(p => !removedConfigPaths.has(p));
+    if (filtered.length !== current.length) {
+      runner.updateAllowedProjects(filtered);
+    }
+  }
   // Pre-seed path cache from pinned + enabled projects so tasks without execution history are still matched
   const allSeeded = new Set([...pinnedProjects, ..._reposCfg.enabled]);
   for (const path of allSeeded) {
@@ -79,9 +115,7 @@ export function setWebRunner(runner: AutonomousRunner): void {
   }
 }
 
-// ============================================
 // Read POST body helper
-// ============================================
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve) => {
     let data = '';
@@ -90,9 +124,7 @@ function readBody(req: IncomingMessage): Promise<string> {
   });
 }
 
-// ============================================
 // Start web server
-// ============================================
 export async function startWebServer(port: number = 3847): Promise<void> {
   if (server) {
     console.log('Web interface already running, skipping...');
@@ -134,6 +166,7 @@ export async function startWebServer(port: number = 3847): Promise<void> {
       } else if (url === '/api/stats') {
         const stats = runnerRef?.getStats();
         const state = runnerRef?.getState();
+        const adapters = runnerRef?.getAdapterSummary();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           runningTasks: stats?.schedulerStats?.running ?? 0,
@@ -142,6 +175,10 @@ export async function startWebServer(port: number = 3847): Promise<void> {
           uptime: state?.startedAt ? Date.now() - state.startedAt : 0,
           isRunning: stats?.isRunning ?? false,
           sseClients: getActiveSSECount(),
+          adapters,
+          turboMode: stats?.turboMode ?? false,
+          turboExpiresAt: stats?.turboExpiresAt ?? null,
+          dailyPace: stats?.dailyPace ?? null,
         }));
 
       // ---- Tasks ----
@@ -306,6 +343,49 @@ export async function startWebServer(port: number = 3847): Promise<void> {
         // Non-blocking heartbeat
         runnerRef?.heartbeat().catch((e: Error) => console.error('[Web] Heartbeat error:', e));
 
+      // ---- Provider toggle ----
+      } else if (url === '/api/provider' && req.method === 'POST') {
+        const body = await readBody(req);
+        try {
+          const { provider } = JSON.parse(body) as { provider: 'claude' | 'codex' };
+          if (provider !== 'claude' && provider !== 'codex') {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Invalid provider' }));
+            return;
+          }
+
+          setDefaultAdapter(provider);
+          runnerRef?.switchProvider(provider);
+          broadcastEvent({
+            type: 'log',
+            data: { taskId: 'system', stage: 'provider', line: `Provider switched to ${provider}` },
+          });
+
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, provider }));
+        } catch {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Invalid JSON' }));
+        }
+
+      // ---- Turbo Mode Toggle ----
+      } else if (url === '/api/turbo' && req.method === 'POST') {
+        const body = await readBody(req);
+        try {
+          const { enabled } = JSON.parse(body) as { enabled: boolean };
+          if (typeof enabled !== 'boolean') {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'enabled must be boolean' }));
+            return;
+          }
+          runnerRef?.setTurboMode(enabled);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, turboMode: enabled }));
+        } catch {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Invalid JSON' }));
+        }
+
       // ---- PR Processor Status ----
       } else if (url === '/api/pr-processor-status' && req.method === 'GET') {
         try {
@@ -442,9 +522,14 @@ export async function startWebServer(port: number = 3847): Promise<void> {
           ? '## Relevant Past Discussions\n' + memories.map(m => `- ${m.content.replace(/^Q: |^A: /g, '')}`).join('\n')
           : '';
 
+        const provider = runnerRef?.getAdapterSummary().defaultAdapter ?? 'claude';
+        const model = runnerRef?.getAdapterSummary().worker?.model ?? getDefaultChatModel(provider);
+
         const contextPrompt = [
           'You are OpenSwarm, an autonomous code development supervisor.',
-          'You manage a fleet of Claude Code agents that autonomously work on Linear issues.',
+          'You manage a fleet of coding agents that autonomously work on Linear issues.',
+          `Current chat provider: ${provider}`,
+          `Current chat model: ${model}`,
           '',
           'Current system status:',
           '- Running tasks: ' + (stats?.schedulerStats?.running ?? 0),
@@ -464,57 +549,32 @@ export async function startWebServer(port: number = 3847): Promise<void> {
           'User: ' + message,
         ].join('\n');
 
-        const tmpFile = `/tmp/openswarm-chat-${Date.now()}.txt`;
-        try {
-          writeFileSync(tmpFile, contextPrompt);
-        } catch {
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Failed to write prompt' }));
-          return;
+        const result = await runChatCompletion({
+          prompt: contextPrompt,
+          provider,
+          model,
+          cwd: process.cwd(),
+          timeoutMs: 180000,
+        }).catch((error: Error) => ({
+          response: `[Error: ${error.message}]`,
+          provider,
+          model,
+          cost: undefined,
+          tokens: undefined,
+        }));
+        const response = result.response;
+
+        if (result.cost !== undefined) {
+          console.log(`[Web Chat] Cost: ${formatCost({
+            costUsd: result.cost,
+            inputTokens: result.tokens ?? 0,
+            outputTokens: 0,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+            durationMs: 0,
+            model: result.model,
+          })}`);
         }
-
-        // Pass prompt via stdin (safe for special characters)
-        const response = await new Promise<string>((resolve) => {
-          const proc = spawn(
-            'claude',
-            ['--output-format', 'stream-json', '-p', contextPrompt],
-            { shell: false, cwd: process.cwd(), env: process.env, stdio: ['ignore', 'pipe', 'pipe'] }
-          );
-          let out = '';
-          proc.stdout?.on('data', (d: Buffer) => { out += d.toString(); });
-          proc.on('close', () => {
-            // Extract cost
-            const costInfo = extractCostFromStreamJson(out);
-            if (costInfo) {
-              console.log(`[Web Chat] Cost: ${formatCost(costInfo)}`);
-            }
-            // Extract result text from stream-json
-            let resultText = '';
-            const assistantTexts: string[] = [];
-            for (const line of out.split('\n').filter(Boolean)) {
-              try {
-                const event = JSON.parse(line);
-                if (event.type === 'result' && event.result) {
-                  resultText = event.result;
-                }
-                // Collect text blocks from assistant messages (fallback when result is empty)
-                if (event.type === 'assistant' && event.message?.content) {
-                  for (const block of event.message.content) {
-                    if (block.type === 'text' && block.text?.trim()) {
-                      assistantTexts.push(block.text.trim());
-                    }
-                  }
-                }
-              } catch { /* ignore */ }
-            }
-            // Use result if available, otherwise combine assistant text, fallback to error message
-            resolve(resultText.trim() || assistantTexts.join('\n\n') || '[No response]');
-          });
-          proc.on('error', (e: Error) => resolve(`[Error: ${e.message}]`));
-          setTimeout(() => { proc.kill(); resolve('[Response timeout — try a shorter question]'); }, 180000);
-        });
-
-        try { unlinkSync(tmpFile); } catch {}
 
         broadcastEvent({ type: 'chat:agent', data: { text: response, ts: Date.now() } });
 
@@ -529,7 +589,7 @@ export async function startWebServer(port: number = 3847): Promise<void> {
         console.log(`[Dashboard Chat] Saved to memory (${message.length} + ${response.length} chars)`);
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, response }));
+        res.end(JSON.stringify({ ok: true, response, provider: result.provider, model: result.model }));
 
       // ---- Service control: status ----
       } else if (url === '/api/service/status' && req.method === 'GET') {
@@ -709,7 +769,9 @@ export async function startWebServer(port: number = 3847): Promise<void> {
 
       // ---- Scan Paths: list ----
       } else if (url === '/api/scan-paths' && req.method === 'GET') {
-        const configPaths = runnerRef?.getAllowedProjects() ?? [];
+        // removedConfigPaths에 있는 경로는 UI에 표시하지 않음
+        const allConfigPaths = runnerRef?.getAllowedProjects() ?? [];
+        const configPaths = allConfigPaths.filter(p => !removedConfigPaths.has(p));
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           configPaths,
@@ -744,7 +806,14 @@ export async function startWebServer(port: number = 3847): Promise<void> {
       } else if (url.startsWith('/api/scan-paths/') && req.method === 'DELETE') {
         const encodedPath = url.replace('/api/scan-paths/', '');
         const decodedPath = decodeURIComponent(encodedPath);
+        // customPaths에서 제거
         customBasePaths.delete(decodedPath);
+        // configPaths에서도 제거: removedConfigPaths에 기록하고 runner에서 즉시 반영
+        const allConfigPaths = runnerRef?.getAllowedProjects() ?? [];
+        if (allConfigPaths.includes(decodedPath)) {
+          removedConfigPaths.add(decodedPath);
+          runnerRef?.updateAllowedProjects(allConfigPaths.filter(p => p !== decodedPath));
+        }
         invalidateProjectCache();
         saveReposConfig();
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -761,6 +830,118 @@ export async function startWebServer(port: number = 3847): Promise<void> {
         const history = await getChatHistory();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(history));
+
+      // ---- Exec: submit task ----
+      } else if (url === '/api/exec' && req.method === 'POST') {
+        const body = await readBody(req);
+        try {
+          const { prompt, projectPath, pipeline, workerOnly, model } = JSON.parse(body) as {
+            prompt: string;
+            projectPath?: string;
+            pipeline?: boolean;
+            workerOnly?: boolean;
+            model?: string;
+          };
+
+          if (!prompt?.trim()) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Missing prompt' }));
+            return;
+          }
+
+          const taskId = `exec-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+          const resolvedPath = projectPath ?? process.cwd();
+
+          const entry: ExecTaskEntry = {
+            taskId,
+            status: 'queued',
+            createdAt: Date.now(),
+          };
+          execTasks.set(taskId, entry);
+
+          res.writeHead(202, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ taskId, status: 'queued' }));
+
+          // Run pipeline asynchronously
+          (async () => {
+            try {
+              initLocale('en');
+              entry.status = 'running';
+
+              // Determine stages
+              let stages: PipelineStage[];
+              if (workerOnly) {
+                stages = ['worker'];
+              } else if (pipeline) {
+                stages = ['worker', 'reviewer', 'tester', 'documenter'];
+              } else {
+                stages = ['worker', 'reviewer'];
+              }
+
+              // Build role config
+              const roles: Record<string, RoleConfig> = {};
+              if (model) {
+                roles.worker = { enabled: true, model, timeoutMs: 0 };
+              }
+
+              const task: TaskItem = {
+                id: taskId,
+                source: 'local',
+                title: prompt,
+                description: prompt,
+                priority: 3,
+                projectPath: resolvedPath,
+                createdAt: Date.now(),
+              };
+
+              const pipelineInstance = new PairPipeline({
+                stages,
+                maxIterations: 3,
+                roles: Object.keys(roles).length > 0 ? roles as any : undefined,
+              });
+
+              pipelineInstance.on('stage:start', ({ stage }: { stage: string }) => {
+                entry.currentStage = stage;
+              });
+
+              const result: PipelineResult = await pipelineInstance.run(task, resolvedPath);
+
+              entry.status = 'completed';
+              entry.result = {
+                success: result.success,
+                summary: result.workerResult?.summary,
+                finalStatus: result.finalStatus,
+              };
+            } catch (err) {
+              entry.status = 'failed';
+              entry.error = err instanceof Error ? err.message : String(err);
+            } finally {
+              cleanupExecTask(taskId);
+            }
+          })();
+
+        } catch {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Invalid JSON' }));
+        }
+
+      // ---- Exec: task status ----
+      } else if (url.startsWith('/api/exec/') && req.method === 'GET') {
+        const taskId = url.replace('/api/exec/', '');
+        const entry = execTasks.get(taskId);
+        if (!entry) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Task not found' }));
+        } else {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            taskId: entry.taskId,
+            status: entry.status,
+            currentStage: entry.currentStage,
+            result: entry.result,
+            error: entry.error,
+          }));
+        }
 
       } else {
         res.writeHead(404);

@@ -3,7 +3,6 @@
 //
 // Entry point, shared state, history, config,
 // events, and message routing.
-// ============================================
 
 import {
   Client,
@@ -30,9 +29,7 @@ export let reportChannelId: string = '';
 // Allowed user IDs (loaded from environment variables)
 const ALLOWED_USER_IDS = process.env.DISCORD_ALLOWED_USERS?.split(',').map(id => id.trim()) || [];
 
-// ============================================
 // OpenClaw-style History Management
-// ============================================
 
 // Per-channel history map (in-memory cache)
 export const channelHistoryMap = new Map<string, HistoryEntry[]>();
@@ -141,9 +138,7 @@ export function buildHistoryContext(channelId: string, currentMessage: string): 
   return `${HISTORY_CONTEXT_MARKER}\n${historyText}\n\n${CURRENT_MESSAGE_MARKER}\n${currentMessage}`;
 }
 
-// ============================================
 // Project Context Detection
-// ============================================
 
 import * as projectMapper from '../support/projectMapper.js';
 
@@ -318,6 +313,7 @@ import {
   handleAuto,
   handleApprove,
   handleReject,
+  handleTurbo,
 } from './discordHandlers.js';
 
 /**
@@ -430,6 +426,10 @@ async function handleMessage(msg: Message): Promise<void> {
 
       case 'reject':
         await handleReject(msg);
+        break;
+
+      case 'turbo':
+        await handleTurbo(msg, args[0]);
         break;
 
       case 'pair':
@@ -589,9 +589,7 @@ export async function sendToThread(threadId: string, content: string | EmbedBuil
   }
 }
 
-// ============================================
 // OpenSwarm Chat Feature
-// ============================================
 
 // Chat history storage path
 const CHAT_HISTORY_FILE = '/tmp/openswarm-chat-history.json';

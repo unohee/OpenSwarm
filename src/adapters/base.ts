@@ -60,7 +60,9 @@ export async function spawnCli(
         const text = data.toString();
         stdout += text;
         if (options.onLog && adapter.capabilities.supportsStreaming) {
-          streamBuffer = parseCliStreamChunk(text, options.onLog, streamBuffer);
+          streamBuffer = adapter.parseStreamingChunk
+            ? adapter.parseStreamingChunk(text, options.onLog, streamBuffer)
+            : parseCliStreamChunk(text, options.onLog, streamBuffer);
         }
       });
 
@@ -81,9 +83,20 @@ export async function spawnCli(
         if (timer) clearTimeout(timer);
         const durationMs = Date.now() - startTime;
 
+        if (options.onLog && adapter.capabilities.supportsStreaming && streamBuffer.trim()) {
+          streamBuffer = adapter.parseStreamingChunk
+            ? adapter.parseStreamingChunk('\n', options.onLog, streamBuffer)
+            : parseCliStreamChunk('\n', options.onLog, streamBuffer);
+        }
+
         if (code !== 0 && code !== null) {
-          console.error(`[${adapter.name}] CLI error:`, stderr.slice(0, 500));
-          reject(new Error(`${adapter.name} CLI failed with code ${code}`));
+          const stderrSnippet = stderr.slice(0, 500);
+          const stdoutSnippet = stdout.slice(0, 300);
+          console.error(`[${adapter.name}] CLI exited with code ${code}`);
+          console.error(`[${adapter.name}] stderr: ${stderrSnippet || '(empty)'}`);
+          console.error(`[${adapter.name}] stdout (first 300): ${stdoutSnippet || '(empty)'}`);
+          console.error(`[${adapter.name}] Duration: ${durationMs}ms, CWD: ${options.cwd}`);
+          reject(new Error(`${adapter.name} CLI failed with code ${code}: ${stderrSnippet.slice(0, 200)}`));
           return;
         }
 

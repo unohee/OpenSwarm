@@ -3,25 +3,13 @@
 // Code review agent (CLI adapter based)
 // ============================================
 
-import { homedir } from 'node:os';
 import type { WorkerResult, ReviewResult } from './agentPair.js';
 import { t, getPrompts } from '../locale/index.js';
 import type { AdapterName, ProcessContext } from '../adapters/types.js';
 import { getAdapter, spawnCli } from '../adapters/index.js';
+import { expandPath } from '../core/config.js';
 
-/**
- * Expand ~ path to home directory
- */
-function expandPath(p: string): string {
-  if (p.startsWith('~/')) {
-    return p.replace('~', homedir());
-  }
-  return p;
-}
-
-// ============================================
 // Types
-// ============================================
 
 export interface ReviewerOptions {
   taskTitle: string;
@@ -30,6 +18,7 @@ export interface ReviewerOptions {
   projectPath: string;
   timeoutMs?: number;
   model?: string;              // Claude model (default: claude-sonnet-4-5-20250929)
+  maxTurns?: number;           // Max agentic turns per CLI invocation
   adapterName?: AdapterName;
   processContext?: ProcessContext;
 }
@@ -40,9 +29,7 @@ export interface PreCheckResult {
   confidence: number; // 0-3: quality of the check
 }
 
-// ============================================
 // Prompts
-// ============================================
 
 /**
  * Build Pre-Check prompt for fast validation (Haiku)
@@ -105,11 +92,6 @@ function buildReviewerPrompt(options: ReviewerOptions): string {
 - **Files Changed (${files.length}):** ${filesSummary}
 - **Commands:** ${cmdsSummary}
 ${options.workerResult.error ? `- **Error:** ${options.workerResult.error}` : ''}
-
-### Worker Output (excerpt)
-\`\`\`
-${options.workerResult.output.slice(0, 2000)}${options.workerResult.output.length > 2000 ? '\n...(truncated)' : ''}
-\`\`\`
 `;
 
   return getPrompts().buildReviewerPrompt({
@@ -119,9 +101,7 @@ ${options.workerResult.output.slice(0, 2000)}${options.workerResult.output.lengt
   });
 }
 
-// ============================================
 // Pre-Check Execution (Fast Validation with Haiku)
-// ============================================
 
 /**
  * Run fast pre-check validation with Haiku model
@@ -140,6 +120,7 @@ export async function runPreCheck(options: ReviewerOptions): Promise<PreCheckRes
       cwd,
       timeoutMs: 30000, // 30 seconds max for pre-check
       model: options.model,
+      maxTurns: options.maxTurns,
       processContext: options.processContext,
     });
 
@@ -193,9 +174,7 @@ export async function runPreCheck(options: ReviewerOptions): Promise<PreCheckRes
   }
 }
 
-// ============================================
 // Reviewer Execution
-// ============================================
 
 /**
  * Run Reviewer agent (full review with Sonnet)
@@ -212,6 +191,7 @@ export async function runReviewer(options: ReviewerOptions): Promise<ReviewResul
       cwd,
       timeoutMs: options.timeoutMs ?? 180000, // 3 min default (review is faster)
       model: options.model,
+      maxTurns: options.maxTurns,
       processContext: options.processContext,
     });
 
@@ -227,9 +207,7 @@ export async function runReviewer(options: ReviewerOptions): Promise<ReviewResul
   }
 }
 
-// ============================================
 // Formatting
-// ============================================
 
 /**
  * Format Reviewer result as a Discord message

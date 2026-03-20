@@ -2,15 +2,12 @@
 // OpenSwarm - PR Ownership Tracker
 // Tracks which PRs were created by the bot
 // Persists to ~/.openswarm/pr-ownership.json
-// ============================================
 
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 
-// ============================================
 // Types
-// ============================================
 
 export interface OwnedPR {
   repo: string;
@@ -25,15 +22,11 @@ interface OwnershipState {
   updatedAt: string;
 }
 
-// ============================================
 // Constants
-// ============================================
 
 const OWNERSHIP_PATH = resolve(homedir(), '.openswarm', 'pr-ownership.json');
 
-// ============================================
 // State Management
-// ============================================
 
 async function loadState(): Promise<OwnershipState> {
   try {
@@ -50,9 +43,7 @@ async function saveState(state: OwnershipState): Promise<void> {
   await writeFile(OWNERSHIP_PATH, JSON.stringify(state, null, 2));
 }
 
-// ============================================
 // Public API
-// ============================================
 
 /** Register a PR as owned by the bot */
 export async function registerOwnedPR(pr: OwnedPR): Promise<void> {

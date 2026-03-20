@@ -6,17 +6,19 @@
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { join, relative, dirname, extname, basename } from 'node:path';
 import { KnowledgeGraph } from './graph.js';
-import type { GraphNode, GraphEdge, Language, ModuleMetrics } from './types.js';
+import type { GraphNode, Language, ModuleMetrics } from './types.js';
 
-// ============================================
 // Constants
-// ============================================
 
 const SKIP_DIRS = new Set([
   'node_modules', '.git', 'dist', 'build', '__pycache__',
   '.next', '.venv', 'venv', '.tox', '.mypy_cache', '.pytest_cache',
   'coverage', '.turbo', '.cache', '.parcel-cache',
+  '.venv-mcp', 'site-packages',
 ]);
+
+// Prefix-based skip: any directory name starting with these prefixes
+const SKIP_DIR_PREFIXES = ['.venv'];
 
 const SOURCE_EXTENSIONS = new Set([
   '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
@@ -35,9 +37,7 @@ const MAX_FILE_SIZE = 512 * 1024; // 512KB — skip large generated files
 const MAX_DEPTH = 15;
 const SCAN_TIMEOUT_MS = 30_000;
 
-// ============================================
 // Import Regex Patterns
-// ============================================
 
 // TypeScript/JavaScript
 const TS_IMPORT_FROM = /(?:import|export)\s+.*?\s+from\s+['"]([^'"]+)['"]/g;
@@ -48,9 +48,7 @@ const TS_DYNAMIC_IMPORT = /import\(\s*['"]([^'"]+)['"]\s*\)/g;
 const PY_FROM_IMPORT = /^from\s+([\w.]+)\s+import/gm;
 const PY_IMPORT = /^import\s+([\w.]+)/gm;
 
-// ============================================
 // Scanner
-// ============================================
 
 export interface ScanOptions {
   maxDepth?: number;
@@ -167,13 +165,11 @@ export async function incrementalUpdate(
   graph.scannedAt = Date.now();
 }
 
-// ============================================
 // Internal: Directory Walking
-// ============================================
 
 async function walkDirectory(
   graph: KnowledgeGraph,
-  rootPath: string,
+  _rootPath: string,
   currentPath: string,
   relPath: string,
   depth: number,
@@ -199,7 +195,7 @@ async function walkDirectory(
     const entryRelPath = relPath === '.' ? entry.name : `${relPath}/${entry.name}`;
 
     if (entry.isDirectory()) {
-      if (SKIP_DIRS.has(entry.name)) continue;
+      if (SKIP_DIRS.has(entry.name) || SKIP_DIR_PREFIXES.some(p => entry.name.startsWith(p))) continue;
 
       graph.addNode({
         id: entryRelPath,
@@ -209,7 +205,7 @@ async function walkDirectory(
       });
       graph.addEdge({ source: relPath === '.' ? '.' : relPath, target: entryRelPath, type: 'contains' });
 
-      await walkDirectory(graph, rootPath, entryPath, entryRelPath, depth + 1, maxDepth, startTime, timeoutMs);
+      await walkDirectory(graph, _rootPath, entryPath, entryRelPath, depth + 1, maxDepth, startTime, timeoutMs);
     } else if (entry.isFile()) {
       const ext = extname(entry.name);
       if (!SOURCE_EXTENSIONS.has(ext)) continue;
@@ -246,9 +242,7 @@ async function walkDirectory(
   }
 }
 
-// ============================================
 // Internal: Import Parsing
-// ============================================
 
 async function parseImports(
   graph: KnowledgeGraph,
@@ -345,9 +339,7 @@ function resolveRelativeImport(
   return null;
 }
 
-// ============================================
 // Internal: Test ↔ Module Mapping
-// ============================================
 
 function mapTestsToModules(graph: KnowledgeGraph): void {
   const testFiles = graph.getNodesByType('test_file');
@@ -382,7 +374,7 @@ function guessSourceFromTestName(testName: string, testPath: string): string | n
   if (!stripped || stripped === testName) return null;
 
   // Look in same directory
-  const ext = extname(testName).replace(/^\.test|\.spec/, '');
+  const _ext = extname(testName).replace(/^\.test|\.spec/, '');
   const candidates = [
     `${dir}/${stripped}.ts`,
     `${dir}/${stripped}.tsx`,
@@ -395,9 +387,7 @@ function guessSourceFromTestName(testName: string, testPath: string): string | n
   return candidates[0]?.replace(/\\/g, '/') ?? null;
 }
 
-// ============================================
 // Internal: Helpers
-// ============================================
 
 function detectLanguage(ext: string): Language {
   if (['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'].includes(ext)) return 'typescript';

@@ -2,7 +2,6 @@
 // OpenSwarm - Discord Pair System
 //
 // Worker/Reviewer pair session management.
-// ============================================
 
 import {
   TextChannel,

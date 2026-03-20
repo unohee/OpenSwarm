@@ -11,9 +11,7 @@ import * as fs from 'node:fs/promises';
 
 const execFileAsync = promisify(execFile);
 
-// ============================================
 // Types
-// ============================================
 
 /**
  * Checkpoint information
@@ -45,9 +43,7 @@ export interface RollbackResult {
  */
 export type RollbackStrategy = 'reset_hard' | 'reset_soft' | 'stash' | 'checkout_files';
 
-// ============================================
 // Checkpoint Storage
-// ============================================
 
 const CHECKPOINT_DIR = resolve(homedir(), '.openswarm/checkpoints');
 
@@ -94,9 +90,7 @@ export async function findCheckpointByExecution(executionId: string): Promise<Ch
   }
 }
 
-// ============================================
 // Git Operations
-// ============================================
 
 /**
  * Safe git command execution (no shell)
@@ -155,9 +149,7 @@ async function getChangedFiles(projectPath: string): Promise<string[]> {
   }
 }
 
-// ============================================
 // Checkpoint Creation
-// ============================================
 
 /**
  * Create checkpoint before workflow starts
@@ -207,9 +199,7 @@ export async function createCheckpoint(
   return checkpoint;
 }
 
-// ============================================
 // Rollback Operations
-// ============================================
 
 /**
  * Rollback to checkpoint
@@ -348,9 +338,7 @@ async function rollback(
   }
 }
 
-// ============================================
 // Cleanup
-// ============================================
 
 /**
  * Clean up old checkpoints
@@ -408,9 +396,7 @@ export async function listCheckpoints(): Promise<Checkpoint[]> {
   }
 }
 
-// ============================================
 // Utility Functions
-// ============================================
 
 /**
  * Get current git status summary

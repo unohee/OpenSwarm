@@ -4,19 +4,16 @@
 // ============================================
 
 import { execSync } from 'node:child_process';
-import { resolve } from 'node:path';
-import { homedir } from 'node:os';
 import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
 
 import { PairPipeline, type PipelineResult } from '../agents/pairPipeline.js';
 import type { TaskItem } from '../orchestration/decisionEngine.js';
 import type { PipelineStage, RoleConfig } from '../core/types.js';
 import { initLocale } from '../locale/index.js';
-import { formatCost } from '../support/costTracker.js';
+import { expandPath } from '../core/config.js';
 
-// ============================================
 // Types
-// ============================================
 
 export interface CliRunOptions {
   task: string;
@@ -27,17 +24,9 @@ export interface CliRunOptions {
   maxIterations?: number;
 }
 
-// ============================================
 // Helpers
-// ============================================
 
-/** Expand ~/... paths */
-function expandPath(p: string): string {
-  if (p.startsWith('~/')) {
-    return resolve(homedir(), p.slice(2));
-  }
-  return resolve(p);
-}
+// expandPath imported from core/config.ts (with resolveRelative=true for CLI paths)
 
 /** Check if Claude CLI is installed */
 function checkClaudeCli(): boolean {
@@ -59,9 +48,7 @@ function formatDuration(ms: number): string {
   return `${minutes}m ${remaining.toFixed(0)}s`;
 }
 
-// ============================================
 // Main Runner
-// ============================================
 
 export async function runCli(options: CliRunOptions): Promise<void> {
   // Initialize locale (needed for prompt templates)
@@ -75,7 +62,7 @@ export async function runCli(options: CliRunOptions): Promise<void> {
   }
 
   // 2. Resolve project path
-  const projectPath = expandPath(options.projectPath ?? process.cwd());
+  const projectPath = expandPath(options.projectPath ?? process.cwd(), true);
   if (!existsSync(projectPath)) {
     console.error(`Error: Project path does not exist: ${projectPath}`);
     process.exit(1);
@@ -170,9 +157,7 @@ export async function runCli(options: CliRunOptions): Promise<void> {
   process.exit(result.success ? 0 : 1);
 }
 
-// ============================================
 // Result Formatting
-// ============================================
 
 function printResult(result: PipelineResult): void {
   console.log('');

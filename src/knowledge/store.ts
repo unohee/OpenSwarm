@@ -10,15 +10,11 @@ import { KnowledgeGraph } from './graph.js';
 import { SerializedGraphSchema } from './types.js';
 import type { SerializedGraph } from './types.js';
 
-// ============================================
 // Constants
-// ============================================
 
 const STORE_DIR = join(homedir(), '.openswarm', 'knowledge-graph');
 
-// ============================================
 // Store Operations
-// ============================================
 
 /**
  * Save graph to JSON file

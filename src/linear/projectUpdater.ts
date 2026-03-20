@@ -2,7 +2,6 @@
 // OpenSwarm - Linear Project Updater (PO Agent)
 // Rich project status updates + overview auto-refresh
 // Uses pipeline history, rejection state, knowledge graph
-// ============================================
 
 import { LinearClient } from '@linear/sdk';
 import { getPipelineHistory, getAllRejectionEntries, type PipelineHistoryEntry, type RejectionEntry } from '../automation/runnerState.js';
@@ -35,9 +34,7 @@ export interface CompletedTaskInfo {
   projectPath?: string;
 }
 
-// ============================================
 // Metrics Collection
-// ============================================
 
 interface TodayActivity {
   completed: number;
@@ -171,9 +168,7 @@ async function collectKnowledgeMetrics(projectPath: string): Promise<KnowledgeMe
   }
 }
 
-// ============================================
 // Health Determination
-// ============================================
 
 type HealthStatus = 'onTrack' | 'atRisk' | 'offTrack';
 
@@ -219,9 +214,7 @@ function determineHealth(metrics: ProjectMetrics): { health: HealthStatus; score
   return { health, score };
 }
 
-// ============================================
 // Status Update Body Builder
-// ============================================
 
 function buildStatusUpdateBody(
   projectName: string,
@@ -323,123 +316,7 @@ function buildStatusUpdateBody(
   return lines.join('\n');
 }
 
-// ============================================
-// Overview Section Builder
-// ============================================
-
-function buildOverviewSection(
-  stateCounts: Map<string, number>,
-  priorityCounts: Map<number, number>,
-  metrics: ProjectMetrics,
-): string {
-  const now = new Date().toLocaleString(getDateLocale());
-
-  const lines: string[] = [];
-  lines.push(AUTOMATION_SECTION_MARKER);
-  lines.push(`> Last updated: ${now}`);
-  lines.push('');
-
-  // Issue Distribution - By State
-  lines.push('### Issue Distribution');
-  lines.push('**By State:**');
-  lines.push('| State | Count |');
-  lines.push('|-------|-------|');
-  const stateOrder = ['Done', 'In Progress', 'In Review', 'Todo', 'Backlog', 'Cancelled', 'Triage'];
-  for (const state of stateOrder) {
-    if (stateCounts.has(state)) {
-      lines.push(`| ${state} | ${stateCounts.get(state)} |`);
-    }
-  }
-  // Include any states not in the predefined order
-  for (const [state, count] of stateCounts) {
-    if (!stateOrder.includes(state)) {
-      lines.push(`| ${state} | ${count} |`);
-    }
-  }
-  lines.push('');
-
-  // Issue Distribution - By Priority
-  if (priorityCounts.size > 0) {
-    const priorityLabels: Record<number, string> = { 0: 'No Priority', 1: 'Urgent', 2: 'High', 3: 'Medium', 4: 'Low' };
-    lines.push('**By Priority:**');
-    lines.push('| Priority | Count |');
-    lines.push('|----------|-------|');
-    for (const p of [1, 2, 3, 4, 0]) {
-      if (priorityCounts.has(p)) {
-        lines.push(`| ${priorityLabels[p] ?? `P${p}`} | ${priorityCounts.get(p)} |`);
-      }
-    }
-    lines.push('');
-  }
-
-  // Automation Performance (30d)
-  lines.push('### Automation Performance (30d)');
-  lines.push('| Metric | Value |');
-  lines.push('|--------|-------|');
-  lines.push(`| Tasks Completed | ${metrics.rolling.successCount} / ${metrics.rolling.totalTasks} |`);
-  lines.push(`| Success Rate | ${metrics.rolling.successRate}% |`);
-  lines.push(`| Avg Duration | ${formatDuration(metrics.rolling.avgDuration)} |`);
-  lines.push(`| Total Cost | $${metrics.rolling.totalCost.toFixed(2)} |`);
-  lines.push(`| Active Rejections | ${metrics.rejections.length} |`);
-  lines.push('');
-
-  // Code Health (if knowledge graph available)
-  if (metrics.knowledge) {
-    const s = metrics.knowledge.summary;
-    const testCoverage = s.totalModules > 0
-      ? Math.round((1 - s.untestedModules.length / s.totalModules) * 100)
-      : 0;
-    const highRisk = metrics.knowledge.riskModules.filter(m => m.risk === 'high');
-    const highDebt = s.highTechDebtModules ?? [];
-
-    lines.push('### Code Health');
-    lines.push('| Metric | Value |');
-    lines.push('|--------|-------|');
-    lines.push(`| Modules | ${s.totalModules} |`);
-    lines.push(`| Test Files | ${s.totalTestFiles} |`);
-    lines.push(`| Test Coverage | ${testCoverage}% |`);
-    lines.push(`| High-Risk Modules | ${highRisk.length} |`);
-    lines.push(`| High Tech Debt | ${highDebt.length} |`);
-    lines.push('');
-
-    if (s.hotModules.length > 0) {
-      lines.push(`**Hot Modules**: ${s.hotModules.slice(0, 5).map(m => `\`${m}\``).join(', ')}`);
-    }
-    if (highDebt.length > 0) {
-      lines.push(`**Tech Debt Watch**: ${highDebt.slice(0, 5).map(m => `\`${m}\``).join(', ')}`);
-    }
-    if (s.hotModules.length > 0 || highDebt.length > 0) {
-      lines.push('');
-    }
-  }
-
-  // Risk Areas
-  const riskLines: string[] = [];
-  if (metrics.rejections.length > 0) {
-    riskLines.push(`- ${metrics.rejections.length} task(s) blocked by reviewer rejection`);
-  }
-  if (metrics.knowledge) {
-    const untested = metrics.knowledge.summary.untestedModules.length;
-    if (untested > 0) {
-      riskLines.push(`- ${untested} modules without tests`);
-    }
-  }
-  if (metrics.rolling.totalTasks > 0 && metrics.rolling.successRate < 70) {
-    riskLines.push(`- Low automation success rate: ${metrics.rolling.successRate}%`);
-  }
-
-  if (riskLines.length > 0) {
-    lines.push('### Risk Areas');
-    lines.push(riskLines.join('\n'));
-    lines.push('');
-  }
-
-  return lines.join('\n');
-}
-
-// ============================================
 // Public API
-// ============================================
 
 /**
  * Update Linear project Overview after task completion
@@ -459,9 +336,7 @@ export async function updateProjectAfterTask(
   await refreshProjectOverview(projectId, task.projectPath);
 }
 
-// ============================================
 // B-1. Create Status Update
-// ============================================
 
 /**
  * Post Status Update for a project (called by dailyReporter)
@@ -502,9 +377,7 @@ export async function postStatusUpdate(
   }
 }
 
-// ============================================
 // B-2. Project Overview refresh
-// ============================================
 
 const AUTOMATION_SECTION_MARKER = '## Automation Status';
 
@@ -534,30 +407,37 @@ async function refreshProjectOverview(projectId: string, projectPath?: string): 
       metrics.knowledge = await collectKnowledgeMetrics(projectPath);
     }
 
-    // Build overview section
-    const section = buildOverviewSection(stateCounts, priorityCounts, metrics);
-
-    // Replace automation section in existing description, or append
+    // Linear limits project description to 255 characters.
+    // Keep only the base description (before automation section marker).
+    // The full overview section is posted via Status Updates instead.
     const currentDesc = project.description ?? '';
     const markerIdx = currentDesc.indexOf(AUTOMATION_SECTION_MARKER);
+    const baseDesc = markerIdx >= 0
+      ? currentDesc.slice(0, markerIdx).trimEnd()
+      : currentDesc;
 
-    let newDesc: string;
-    if (markerIdx >= 0) {
-      newDesc = currentDesc.slice(0, markerIdx) + section;
-    } else {
-      newDesc = currentDesc + '\n\n' + section;
-    }
+    // Build a compact summary line for description (fits within 255 chars)
+    const doneCount = stateCounts.get('Done') ?? 0;
+    const inProgressCount = stateCounts.get('In Progress') ?? 0;
+    const todoCount = stateCounts.get('Todo') ?? 0;
+    const compactSummary = `Done:${doneCount} InProgress:${inProgressCount} Todo:${todoCount}`;
+    const descWithSummary = baseDesc
+      ? `${baseDesc}\n\n[${compactSummary}]`
+      : compactSummary;
 
-    await linear.updateProject(projectId, { description: newDesc });
+    // Truncate to 255 chars (Linear hard limit)
+    const finalDesc = descWithSummary.length > 255
+      ? descWithSummary.slice(0, 252) + '...'
+      : descWithSummary;
+
+    await linear.updateProject(projectId, { description: finalDesc });
     console.log(`[ProjectUpdater] Project overview updated for "${project.name}"`);
   } catch (err) {
     console.warn(`[ProjectUpdater] Failed to update project overview:`, err);
   }
 }
 
-// ============================================
 // Helpers
-// ============================================
 
 function formatDuration(ms: number): string {
   const sec = Math.floor(ms / 1000);

@@ -53,4 +53,41 @@ describe('CodexCliAdapter', () => {
     expect(result.issues).toEqual(['Missing test']);
     expect(result.suggestions).toEqual(['Add unit test']);
   });
+
+  it('streams agent messages into live log lines', () => {
+    const logs: string[] = [];
+    const remainder = adapter.parseStreamingChunk?.([
+      '{"type":"turn.started"}',
+      '{"type":"item.completed","item":{"type":"reasoning","text":"Checking repository state"}}',
+      '{"type":"item.completed","item":{"type":"agent_message","text":"## Plan\\n- first step\\n\\nDone"}}',
+      '{"type":"turn.completed"}',
+      '',
+    ].join('\n'), (line) => logs.push(line));
+
+    expect(remainder).toBe('');
+    expect(logs).toEqual([
+      '───',
+      'Codex turn started',
+      '▸ Checking repository state',
+      '',
+      '■ Plan',
+      '  - first step',
+      '',
+      'Done',
+      'Codex turn completed',
+    ]);
+  });
+
+  it('preserves partial codex json chunks until complete', () => {
+    const logs: string[] = [];
+    const chunk1 = '{"type":"item.completed","item":{"type":"agent_message","text":"Hello';
+    const chunk2 = ' world"}}\n';
+
+    const remainder1 = adapter.parseStreamingChunk?.(chunk1, (line) => logs.push(line));
+    const remainder2 = adapter.parseStreamingChunk?.(chunk2, (line) => logs.push(line), remainder1);
+
+    expect(remainder1).toBe(chunk1);
+    expect(remainder2).toBe('');
+    expect(logs).toEqual(['Hello world']);
+  });
 });

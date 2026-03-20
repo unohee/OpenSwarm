@@ -7,9 +7,7 @@ import { spawn } from 'node:child_process';
 import type { KnowledgeGraph } from './graph.js';
 import type { GitInfo } from './types.js';
 
-// ============================================
 // Git Command Runner (same pattern as gitTracker.ts)
-// ============================================
 
 function runGitCommand(cwd: string, args: string[], timeoutMs: number = 10_000): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -38,9 +36,7 @@ function runGitCommand(cwd: string, args: string[], timeoutMs: number = 10_000):
   });
 }
 
-// ============================================
 // Churn Calculation
-// ============================================
 
 interface FileChurn {
   path: string;

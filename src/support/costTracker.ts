@@ -3,9 +3,7 @@
 // Common cost extraction utilities for Claude CLI output
 // ============================================
 
-// ============================================
 // Types
-// ============================================
 
 export type CostInfo = {
   costUsd: number;
@@ -17,9 +15,7 @@ export type CostInfo = {
   model?: string;
 };
 
-// ============================================
 // Extraction
-// ============================================
 
 /**
  * Extract cost from Claude CLI JSON array output (--output-format json)
@@ -82,9 +78,7 @@ function extractFromResultEvent(event: any): CostInfo | undefined {
   };
 }
 
-// ============================================
 // Aggregation
-// ============================================
 
 /**
  * Aggregate multiple CostInfo into a single total
@@ -112,9 +106,7 @@ export function aggregateCosts(costs: (CostInfo | undefined)[]): CostInfo {
   return result;
 }
 
-// ============================================
 // Formatting
-// ============================================
 
 /**
  * Format token count with k/M suffix

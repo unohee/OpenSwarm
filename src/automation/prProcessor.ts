@@ -36,9 +36,7 @@ import type { TaskItem } from '../orchestration/decisionEngine.js';
 import type { DefaultRolesConfig, ConflictResolverConfig } from '../core/types.js';
 import { ConflictResolver } from './conflictResolver.js';
 
-// ============================================
 // Types
-// ============================================
 
 export interface PRProcessorConfig {
   repos: string[];
@@ -67,15 +65,11 @@ type PRState = {
   updatedAt: string;
 };
 
-// ============================================
 // Constants
-// ============================================
 
 const PR_STATE_PATH = resolve(homedir(), '.openswarm', 'pr-state.json');
 
-// ============================================
 // PR Processor
-// ============================================
 
 export class PRProcessor {
   private config: PRProcessorConfig;
@@ -448,7 +442,9 @@ export class PRProcessor {
         // 4b. Run pipeline
         const pipeline = createPipelineFromConfig(
           this.config.roles,
-          this.config.maxIterations
+          this.config.maxIterations,
+          undefined,
+          undefined
         );
         const result = await pipeline.run(task, projectPath);
         totalIterations += result.iterations;
@@ -744,7 +740,9 @@ export class PRProcessor {
       console.log(`[PRProcessor] ${key}: Running pipeline to address review feedback...`);
       const pipeline = createPipelineFromConfig(
         this.config.roles,
-        this.config.maxIterations
+        this.config.maxIterations,
+        undefined,
+        undefined
       );
       const result = await pipeline.run(task, projectPath);
       totalIterations += result.iterations;

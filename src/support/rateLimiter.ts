@@ -180,9 +180,7 @@ class RateLimiter {
   }
 }
 
-// ============================================
 // Global Rate Limiters
-// ============================================
 
 const limiters = new Map<string, RateLimiter>();
 

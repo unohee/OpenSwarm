@@ -20,9 +20,7 @@ import { t } from '../locale/index.js';
 
 const execFileAsync = promisify(execFile);
 
-// ============================================
 // Claude CLI Adapter
-// ============================================
 
 export class ClaudeCliAdapter implements CliAdapter {
   readonly name = 'claude';
@@ -48,7 +46,8 @@ export class ClaudeCliAdapter implements CliAdapter {
     // options.prompt is the temp file path (set by spawnCli)
     const promptFile = options.prompt;
     const modelFlag = options.model ? ` --model ${options.model}` : '';
-    const cmd = `echo "" | claude -p "$(cat ${promptFile})" --output-format stream-json --permission-mode bypassPermissions${modelFlag}`;
+    const maxTurnsFlag = options.maxTurns ? ` --max-turns ${options.maxTurns}` : '';
+    const cmd = `echo "" | claude -p "$(cat ${promptFile})" --output-format stream-json --verbose --permission-mode bypassPermissions${modelFlag}${maxTurnsFlag}`;
     return { command: cmd, args: [] };
   }
 
@@ -109,9 +108,7 @@ export class ClaudeCliAdapter implements CliAdapter {
   }
 }
 
-// ============================================
 // Worker Output Parsing (extracted from worker.ts)
-// ============================================
 
 function extractWorkerResultJson(text: string): WorkerResult | null {
   const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
@@ -171,7 +168,10 @@ function extractWorkerResultJson(text: string): WorkerResult | null {
 }
 
 function extractWorkerFromText(text: string): WorkerResult {
-  const hasError = /error|fail|exception|cannot/i.test(text);
+  // Only flag as error if the text is very short (likely a CLI error message, not normal output)
+  // Normal worker output often contains words like "error" in code comments or descriptions
+  const isShortOutput = text.length < 500;
+  const hasError = isShortOutput && /\b(?:error|fail(?:ed)?|exception|cannot)\b/i.test(text);
   const hasSuccess = /success|completed|done|finished/i.test(text);
 
   const filePatterns = [
@@ -228,9 +228,7 @@ function extractErrorMessage(text: string): string {
   return 'Unknown error';
 }
 
-// ============================================
 // Reviewer Output Parsing (extracted from reviewer.ts)
-// ============================================
 
 function extractReviewerResultJson(text: string): ReviewResult | null {
   const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/);

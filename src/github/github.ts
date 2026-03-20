@@ -237,9 +237,7 @@ export async function summarizeNotifications(): Promise<string> {
   return `**${notifications.length} GitHub notification(s)** (${breakdown})\n\n${recent.join('\n')}`;
 }
 
-// ============================================
 // CI State Monitoring (state-based)
-// ============================================
 
 const CI_STATE_PATH = resolve(homedir(), '.openswarm', 'ci-state.json');
 
@@ -414,9 +412,7 @@ export function needsReminder(health: RepoHealth, intervalHours: number = 24): b
   return hoursSince >= intervalHours;
 }
 
-// ============================================
 // PR API Functions
-// ============================================
 
 /**
  * PR basic info
@@ -642,9 +638,7 @@ export async function getPRBaseBranch(repo: string, prNumber: number): Promise<s
   }
 }
 
-// ============================================
 // PR Auto-Fix Support
-// ============================================
 
 /**
  * Check if PR has merge conflicts

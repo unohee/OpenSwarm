@@ -8,9 +8,7 @@ import path from 'node:path';
 import { homedir } from 'node:os';
 import { t } from '../locale/index.js';
 
-// ============================================
 // Types
-// ============================================
 
 export interface PairSessionRecord {
   sessionId: string;
@@ -49,9 +47,7 @@ export interface DailyMetrics {
   avgDurationMs: number;
 }
 
-// ============================================
 // Storage
-// ============================================
 
 const METRICS_DIR = path.join(homedir(), '.openswarm', 'metrics');
 const RECORDS_FILE = path.join(METRICS_DIR, 'pair-records.json');
@@ -107,9 +103,7 @@ async function saveSummary(): Promise<void> {
   }
 }
 
-// ============================================
 // Public API
-// ============================================
 
 /**
  * Record session result

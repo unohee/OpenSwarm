@@ -3,11 +3,11 @@
 // ============================================
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { homedir } from 'node:os';
 import { existsSync, readdirSync, statSync, writeFileSync, appendFileSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { checkWorkAllowed, getTimeWindowSummary } from './timeWindow.js';
 import { extractCostFromStreamJson, formatCost } from './costTracker.js';
+import { expandPath } from '../core/config.js';
 
 /**
  * Known repository list (alias -> path)
@@ -39,15 +39,7 @@ type DevTask = {
 
 const activeTasks: Map<string, DevTask> = new Map();
 
-/**
- * Expand path (~/ handling)
- */
-function expandPath(p: string): string {
-  if (p.startsWith('~/')) {
-    return resolve(homedir(), p.slice(2));
-  }
-  return resolve(p);
-}
+// expandPath imported from core/config.ts
 
 /**
  * Resolve repository path
@@ -151,6 +143,7 @@ export async function runDevTask(
   const claudeProcess = spawn('claude', [
     '-p', task,
     '--output-format', 'stream-json',
+    '--verbose',
     '--permission-mode', 'bypassPermissions'
   ], {
     cwd: path,

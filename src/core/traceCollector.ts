@@ -5,9 +5,7 @@
 
 import { randomUUID } from 'node:crypto';
 
-// ============================================
 // Types
-// ============================================
 
 export type SpanStatus = 'running' | 'completed' | 'failed';
 
@@ -59,9 +57,7 @@ export type Trace = {
   metadata: Record<string, unknown>;
 };
 
-// ============================================
 // TraceCollector
-// ============================================
 
 /**
  * 에이전트 실행 추적 수집기

@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Service identifier -->
+    <key>Label</key>
+    <string>com.intrect.openswarm</string>
+
+    <!-- Program to run -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/node</string>
+        <string>--env-file=.env</string>
+        <string>dist/index.js</string>
+    </array>
+
+    <!-- Working directory -->
+    <key>WorkingDirectory</key>
+    <string>/Users/unohee/dev/OpenSwarm</string>
+
+    <!-- Environment variables -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- PATH for node, claude, gh -->
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>
+
+        <!-- Home directory for Claude CLI credentials -->
+        <key>HOME</key>
+        <string>/Users/unohee</string>
+    </dict>
+
+    <!-- Start on system boot -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Keep service running (auto-restart on crash) -->
+    <key>KeepAlive</key>
+    <dict>
+        <!-- Restart if process exits unexpectedly -->
+        <key>SuccessfulExit</key>
+        <false/>
+        <!-- Don't restart if manually stopped -->
+        <key>Crashed</key>
+        <true/>
+    </dict>
+
+    <!-- Log output -->
+    <key>StandardOutPath</key>
+    <string>/Users/unohee/.openswarm/logs/stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/unohee/.openswarm/logs/stderr.log</string>
+
+    <!-- Process type (interactive for better resource access) -->
+    <key>ProcessType</key>
+    <string>Interactive</string>
+
+    <!-- Nice level (0 = normal priority) -->
+    <key>Nice</key>
+    <integer>0</integer>
+
+    <!-- Throttle restart interval (wait 10 seconds before restart) -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+</dict>
+</plist>

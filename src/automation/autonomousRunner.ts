@@ -14,6 +14,11 @@ import {
   setRetryTime,
   clearRetryTime,
   formatRetryTime,
+  getDailyCompletedCount,
+  getDailyPaceInfo,
+  recordProjectCompletion,
+  canProjectAcceptTask,
+  getProjectWindowCount,
   type TaskState,
   type ProjectInfo,
 } from './runnerState.js';
@@ -42,7 +47,10 @@ import { broadcastEvent, type SwarmStats } from '../core/eventHub.js';
 import { pruneWorktrees } from '../support/worktreeManager.js';
 import { refreshGraph, toProjectSlug } from '../knowledge/index.js';
 import { checkAllMonitors, getActiveMonitors } from './longRunningMonitor.js';
+import { detectFileConflicts } from '../orchestration/conflictDetector.js';
+import { checkQuotaAllowance } from '../support/quotaTracker.js';
 import type { AutonomousConfig, RunnerState } from './runnerTypes.js';
+import type { AdapterName } from '../adapters/types.js';
 
 // Re-export types and integration setters (used by service.ts)
 export { setDiscordReporter, setLinearFetcher } from './runnerExecution.js';
@@ -84,6 +92,11 @@ export class AutonomousRunner {
 
   // Cache: linearProjectName → resolvedLocalPath (populated during task execution)
   private projectPathCache = new Map<string, string>();
+
+  // Turbo mode: faster heartbeat, higher daily cap, no stage skipping
+  private turboMode = false;
+  private turboExpiresAt: number | null = null;
+  private static readonly TURBO_DURATION_MS = 4 * 60 * 60 * 1000; // 4 hours auto-expire
 
   // Track completed/failed task IDs to prevent re-selection (persisted to disk)
   private completedTaskIds = new Set<string>();
@@ -158,6 +171,9 @@ export class AutonomousRunner {
         clearRejection(task.issueId); // Clear rejection count on success
         clearRetryTime(task.issueId, this.failedTaskRetryTimes); // Clear retry backoff time
         this.saveTaskState();
+        // Track project-level pace (5h rolling window)
+        const projectName = task.linearProject?.name ?? 'unknown';
+        recordProjectCompletion(projectName, result.totalCost?.costUsd);
       }
 
       // Skip completion handling for decomposed tasks. Child issues represent the runnable work.
@@ -283,6 +299,7 @@ export class AutonomousRunner {
           this.saveTaskState();
           console.log(`[Scheduler] Task failure count: ${count}/${AutonomousRunner.MAX_RETRY_COUNT} for ${taskCtx} — BLOCKED`);
           try {
+            await execution.syncFailureState(task, `Autonomous execution failed ${count} times`);
             await linear.logBlocked(task.issueId, 'autonomous-runner',
               `Autonomous execution failed ${count} times. Moving to Blocked for manual review.`
             );
@@ -370,15 +387,41 @@ export class AutonomousRunner {
     return filtered;
   }
 
-  /** Schedule next heartbeat (debounced 5s) */
+  /** Schedule next heartbeat with pace-aware cooldown */
   private _nextHeartbeatTimer: ReturnType<typeof setTimeout> | null = null;
   private scheduleNextHeartbeat(): void {
     if (this._nextHeartbeatTimer) return; // already scheduled
-    console.log('[AutonomousRunner] Scheduling next heartbeat in 5s (event-driven)');
+
+    const isTurbo = this.getTurboMode();
+
+    // Turbo: 5min flat, no progressive slowdown
+    if (isTurbo) {
+      const turboCooldown = 5 * 60_000; // 5min
+      console.log(`[AutonomousRunner] TURBO: next heartbeat in 5min`);
+      this._nextHeartbeatTimer = setTimeout(() => {
+        this._nextHeartbeatTimer = null;
+        void this.heartbeat();
+      }, turboCooldown);
+      return;
+    }
+
+    // Normal: progressive slowdown based on 5h window usage
+    const perProjectCap = this.config.dailyTaskCap ?? 6;
+    const globalCap = Math.max(this.enabledProjects.size, 3) * perProjectCap;
+    const baseCooldown = this.config.interTaskCooldownMs ?? 1_800_000; // 30min default
+    const totalInWindow = getDailyCompletedCount();
+
+    // Progressive slowdown: ratio² × 3 multiplier
+    const ratio = totalInWindow / globalCap;
+    const multiplier = 1 + (ratio * ratio * 3);
+    const adjustedCooldown = Math.round(baseCooldown * multiplier);
+
+    const cooldownMin = Math.round(adjustedCooldown / 60_000);
+    console.log(`[AutonomousRunner] Scheduling next heartbeat in ${cooldownMin}min (5h window: ${totalInWindow}/${globalCap}, multiplier: ${multiplier.toFixed(2)}x)`);
     this._nextHeartbeatTimer = setTimeout(() => {
       this._nextHeartbeatTimer = null;
       void this.heartbeat();
-    }, 5000);
+    }, adjustedCooldown);
   }
 
   private async runAvailableTasks(): Promise<void> {
@@ -513,6 +556,7 @@ export class AutonomousRunner {
 
   /** Send system message to dashboard LIVE LOG */
   private syslog(line: string): void {
+    console.log(`[HB] ${line}`);
     broadcastEvent({ type: 'log', data: { taskId: 'system', stage: 'heartbeat', line } });
   }
 
@@ -548,6 +592,32 @@ export class AutonomousRunner {
         return;
       }
       this.syslog('✓ Time window: allowed');
+
+      // 1.5 Quota gate — skip heartbeat if Claude Max quota is too high
+      const quotaCheck = await checkQuotaAllowance(80);
+      if (!quotaCheck.allowed) {
+        console.log(`[AutonomousRunner] Quota gate: SKIP — ${quotaCheck.reason}`);
+        broadcastEvent({ type: 'log', data: { taskId: 'system', stage: 'quota', line: `⏸ ${quotaCheck.reason}` } });
+        return;
+      }
+      if (quotaCheck.utilization !== undefined && quotaCheck.utilization > 60) {
+        console.log(`[AutonomousRunner] Quota warning: ${quotaCheck.utilization.toFixed(0)}% utilization`);
+      }
+
+      // 1.6 Pace gate — per-project 5h rolling window
+      const isTurbo = this.getTurboMode();
+      const perProjectCap = isTurbo ? 20 : (this.config.dailyTaskCap ?? 6);
+      const totalInWindow = getDailyCompletedCount();
+      // 전역 상한: 프로젝트 수 × per-project cap (안전장치)
+      const globalCap = Math.max(this.enabledProjects.size, 3) * perProjectCap;
+      if (totalInWindow >= globalCap) {
+        console.log(`[AutonomousRunner] Global pace limit: ${totalInWindow}/${globalCap} tasks in 5h window — skipping`);
+        this.syslog(`⏸ Global pace: ${totalInWindow}/${globalCap} (5h window)`);
+        broadcastEvent({ type: 'log', data: { taskId: 'system', stage: 'pace', line: `⏸ Global pace: ${totalInWindow}/${globalCap}` } });
+        return;
+      }
+      const modeLabel = isTurbo ? 'TURBO' : 'Normal';
+      this.syslog(`✓ Pace: ${totalInWindow}/${globalCap} global, ${perProjectCap}/project [${modeLabel}]`);
 
       // 2. Fetch tasks from Linear
       this.syslog('⟳ Fetching tasks from Linear...');
@@ -664,44 +734,99 @@ export class AutonomousRunner {
       [] // No project exclusion — worktree mode isolates each task
     );
 
+    console.log(`[AutonomousRunner] Decision: ${decision.action} — ${decision.reason} (${decision.tasks?.length ?? 0} tasks)`);
     if (decision.action === 'skip' || decision.action === 'defer') {
       this.syslog(`→ Decision: ${decision.action} — ${decision.reason}`);
       return;
     }
 
-    // Add validated tasks to queue
+    // Add validated tasks to queue (with conflict detection)
     let enqueuedCount = 0;
+
+    // Pre-filter: resolve project paths and skip invalid tasks
+    const candidates: { task: TaskItem; projectPath: string }[] = [];
     for (const { task } of decision.tasks) {
-      // Skip if already queued or running
       if (this.scheduler.isTaskQueued(task.id) || this.scheduler.isTaskRunning(task.id)) {
         this.syslog(`  Skip (already queued/running): ${task.issueIdentifier || task.id.slice(0, 8)} ${task.title}`);
         continue;
       }
 
       const projectPath = await this.resolveProjectPath(task);
-
-      // Skip if project path mapping failed
       if (!projectPath) {
         this.syslog(`✗ Cannot resolve project path for "${task.linearProject?.name || task.title}" — skipping`);
         continue;
       }
 
-      // Cache linearProjectName → resolvedPath for dashboard
       if (task.linearProject?.name) {
         this.projectPathCache.set(task.linearProject.name, projectPath);
       }
 
-      // Skip if project is already busy (double check)
       if (this.scheduler.isProjectBusy(projectPath)) {
         this.syslog(`  Project busy: ${projectPath}`);
         continue;
       }
 
-      // Skip if project is not in enabled list (allow-list; empty = nothing runs)
       if (this.enabledProjects.size > 0 && !this.isProjectEnabled(projectPath)) {
         this.syslog(`  Project not enabled: ${projectPath}`);
         continue;
       }
+
+      // 프로젝트별 5시간 윈도우 cap 체크
+      const projName = task.linearProject?.name ?? 'unknown';
+      const perProjectCap = this.config.dailyTaskCap ?? 6;
+      if (!canProjectAcceptTask(projName, perProjectCap)) {
+        const count = getProjectWindowCount(projName);
+        this.syslog(`  ⏸ ${projName}: ${count}/${perProjectCap} tasks in 5h window — throttled`);
+        continue;
+      }
+
+      candidates.push({ task, projectPath });
+    }
+
+    // Group candidates by projectPath for conflict detection
+    const byProject = new Map<string, { task: TaskItem; projectPath: string }[]>();
+    for (const c of candidates) {
+      const group = byProject.get(c.projectPath) || [];
+      group.push(c);
+      byProject.set(c.projectPath, group);
+    }
+
+    // Detect file conflicts per project using Knowledge Graph
+    const safeTasks = new Set<string>(); // task IDs safe to enqueue
+    for (const [projPath, group] of byProject) {
+      if (group.length <= 1) {
+        // 단일 태스크 → 충돌 없음
+        for (const c of group) safeTasks.add(c.task.id);
+        continue;
+      }
+
+      try {
+        const result = await detectFileConflicts(group.map(c => c.task), projPath);
+
+        for (const t of result.safe) {
+          safeTasks.add(t.id);
+        }
+
+        for (const cg of result.conflictGroups) {
+          const ids = cg.tasks.map(t => t.issueIdentifier || t.id.slice(0, 8)).join(', ');
+          this.syslog(`Conflict group: [${ids}] shared: ${cg.sharedModules.join(', ')}`);
+          // 충돌 그룹의 연기된 태스크 로그
+          for (const t of cg.tasks) {
+            if (!safeTasks.has(t.id)) {
+              this.syslog(`Conflict detected — deferring: ${t.issueIdentifier || t.id.slice(0, 8)} ${t.title}`);
+            }
+          }
+        }
+      } catch (err) {
+        // KG 분석 실패 시 모든 태스크를 safe로 처리 (graceful degradation)
+        console.warn(`[AutonomousRunner] Conflict detection failed for ${projPath}:`, err);
+        for (const c of group) safeTasks.add(c.task.id);
+      }
+    }
+
+    // Enqueue safe tasks only
+    for (const { task, projectPath } of candidates) {
+      if (!safeTasks.has(task.id)) continue;
 
       this.scheduler.enqueue(task, projectPath);
       broadcastEvent({ type: 'task:queued', data: { taskId: task.id, title: task.title, projectPath, issueIdentifier: task.issueIdentifier } });
@@ -709,7 +834,6 @@ export class AutonomousRunner {
       enqueuedCount++;
 
       // Claim the task immediately: set Linear to 'In Progress' so restarts don't re-queue it
-      // (fetch filter only picks up 'Todo' issues)
       if (task.issueId) {
         linear.updateIssueState(task.issueId, 'In Progress').catch((err: Error) =>
           console.warn(`[AutonomousRunner] Failed to claim issue ${task.issueIdentifier}:`, err)
@@ -844,6 +968,7 @@ export class AutonomousRunner {
       decompositionMaxChildren: this.config.decomposition?.maxChildrenPerTask ?? 5,
       decompositionDailyLimit: this.config.decomposition?.dailyLimit ?? 20,
       decompositionAutoBacklog: this.config.decomposition?.autoBacklog ?? true,
+      jobProfiles: this.config.jobProfiles,
       getRolesForProject: (p) => this.getRolesForProject(p),
       reportToDiscord,
       worktreeMode: this.config.worktreeMode ?? false,
@@ -915,7 +1040,141 @@ export class AutonomousRunner {
   getStats() {
     return { isRunning: this.state.isRunning, lastHeartbeat: this.state.lastHeartbeat,
       engineStats: this.engine.getStats(), pendingApproval: !!this.state.pendingApproval,
-      schedulerStats: this.scheduler.getStats() };
+      schedulerStats: this.scheduler.getStats(),
+      turboMode: this.turboMode,
+      turboExpiresAt: this.turboExpiresAt,
+      dailyPace: getDailyPaceInfo(),
+    };
+  }
+
+  // ============================================
+  // Turbo Mode
+  // ============================================
+
+  getTurboMode(): boolean {
+    // Auto-expire turbo
+    if (this.turboMode && this.turboExpiresAt && Date.now() >= this.turboExpiresAt) {
+      this.setTurboMode(false);
+    }
+    return this.turboMode;
+  }
+
+  setTurboMode(enabled: boolean): void {
+    this.turboMode = enabled;
+    if (enabled) {
+      this.turboExpiresAt = Date.now() + AutonomousRunner.TURBO_DURATION_MS;
+      const expiresIn = Math.round(AutonomousRunner.TURBO_DURATION_MS / 3_600_000);
+      console.log(`[AutonomousRunner] TURBO MODE ON (auto-expires in ${expiresIn}h)`);
+      broadcastEvent({ type: 'log', data: { taskId: 'system', stage: 'turbo', line: `TURBO ON — expires in ${expiresIn}h` } });
+    } else {
+      this.turboExpiresAt = null;
+      console.log('[AutonomousRunner] TURBO MODE OFF');
+      broadcastEvent({ type: 'log', data: { taskId: 'system', stage: 'turbo', line: 'TURBO OFF — normal pace resumed' } });
+    }
+  }
+
+  getAdapterSummary() {
+    const defaultAdapter = this.config.defaultAdapter ?? 'claude';
+    const defaultRoles = this.config.defaultRoles;
+
+    return {
+      defaultAdapter,
+      worker: {
+        adapter: defaultRoles?.worker?.adapter ?? defaultAdapter,
+        model: defaultRoles?.worker?.model ?? this.config.workerModel ?? 'claude-sonnet-4-5-20250929',
+        enabled: defaultRoles?.worker?.enabled !== false,
+      },
+      reviewer: {
+        adapter: defaultRoles?.reviewer?.adapter ?? defaultAdapter,
+        model: defaultRoles?.reviewer?.model ?? this.config.reviewerModel ?? 'claude-haiku-4-5-20251001',
+        enabled: defaultRoles?.reviewer?.enabled !== false,
+      },
+      tester: defaultRoles?.tester ? {
+        adapter: defaultRoles.tester.adapter ?? defaultAdapter,
+        model: defaultRoles.tester.model,
+        enabled: defaultRoles.tester.enabled !== false,
+      } : undefined,
+      documenter: defaultRoles?.documenter ? {
+        adapter: defaultRoles.documenter.adapter ?? defaultAdapter,
+        model: defaultRoles.documenter.model,
+        enabled: defaultRoles.documenter.enabled !== false,
+      } : undefined,
+    };
+  }
+
+  switchProvider(adapter: AdapterName): void {
+    const mapModelForProvider = (model: string | undefined, role: 'worker' | 'reviewer' | 'tester' | 'documenter' | 'auditor' | 'skill-documenter'): string => {
+      const current = model || '';
+      const isClaudeModel = current.startsWith('claude-');
+      const isCodexModel = current.startsWith('gpt-') || current.startsWith('o3') || current.startsWith('o4') || current.includes('codex');
+
+      if (adapter === 'codex') {
+        if (isCodexModel) return current;
+        // 역할별 경량 모델 매핑 (토큰 절감)
+        // worker: o4-mini (코드 생성 — 빠르고 저렴)
+        // reviewer: o3 (판단력 필요 — 중량)
+        // tester/documenter/auditor: o4-mini (보조 작업)
+        if (role === 'reviewer') return 'o3';
+        return 'o4-mini';
+      }
+
+      if (isClaudeModel) return current;
+      if (role === 'reviewer') return 'claude-sonnet-4-20250514';
+      return 'claude-haiku-4-5-20251001';
+    };
+
+    this.config.defaultAdapter = adapter;
+
+    if (this.config.defaultRoles) {
+      this.config.defaultRoles.worker = {
+        ...this.config.defaultRoles.worker,
+        adapter,
+        model: mapModelForProvider(this.config.defaultRoles.worker.model, 'worker'),
+      };
+      this.config.defaultRoles.reviewer = {
+        ...this.config.defaultRoles.reviewer,
+        adapter,
+        model: mapModelForProvider(this.config.defaultRoles.reviewer.model, 'reviewer'),
+      };
+
+      if (this.config.defaultRoles.tester) {
+        this.config.defaultRoles.tester = {
+          ...this.config.defaultRoles.tester,
+          adapter,
+          model: mapModelForProvider(this.config.defaultRoles.tester.model, 'tester'),
+        };
+      }
+      if (this.config.defaultRoles.documenter) {
+        this.config.defaultRoles.documenter = {
+          ...this.config.defaultRoles.documenter,
+          adapter,
+          model: mapModelForProvider(this.config.defaultRoles.documenter.model, 'documenter'),
+        };
+      }
+      if (this.config.defaultRoles.auditor) {
+        this.config.defaultRoles.auditor = {
+          ...this.config.defaultRoles.auditor,
+          adapter,
+          model: mapModelForProvider(this.config.defaultRoles.auditor.model, 'auditor'),
+        };
+      }
+      if (this.config.defaultRoles['skill-documenter']) {
+        this.config.defaultRoles['skill-documenter'] = {
+          ...this.config.defaultRoles['skill-documenter'],
+          adapter,
+          model: mapModelForProvider(this.config.defaultRoles['skill-documenter'].model, 'skill-documenter'),
+        };
+      }
+    }
+
+    if (this.config.workerModel) {
+      this.config.workerModel = mapModelForProvider(this.config.workerModel, 'worker');
+    }
+    if (this.config.reviewerModel) {
+      this.config.reviewerModel = mapModelForProvider(this.config.reviewerModel, 'reviewer');
+    }
+
+    console.log(`[AutonomousRunner] Provider switched: ${adapter}`);
   }
 
   pauseScheduler(): void { this.scheduler.pause(); }

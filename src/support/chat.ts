@@ -2,8 +2,7 @@
 // ============================================
 // OpenSwarm - Interactive Chat CLI
 // Interactive chat interface for CLI agent command center
-// Backend: claude -p (Claude Code OAuth auth)
-// ============================================
+// Backend: Claude/Codex via shared chat adapter backend
 
 import * as readline from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
@@ -11,16 +10,12 @@ import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { readFile, writeFile, mkdir, readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { spawn } from 'node:child_process';
-
-// ============================================
-// Constants
-// ============================================
+import { loadConfig } from '../core/config.js';
+import { getDefaultAdapterName, type AdapterName } from '../adapters/index.js';
+import { getDefaultChatModel, resolveChatModel, runChatCompletion, shortenChatModel } from './chatBackend.js';
 
 const CHAT_DIR = resolve(homedir(), '.openswarm', 'chat');
-const DEFAULT_MODEL = 'claude-sonnet-4-5-20250929';
 
-// ANSI
 const DIM = '\x1b[2m';
 const BOLD = '\x1b[1m';
 const CYAN = '\x1b[36m';
@@ -28,126 +23,17 @@ const GREEN = '\x1b[32m';
 const RED = '\x1b[31m';
 const RESET = '\x1b[0m';
 
-// ============================================
-// Types
-// ============================================
-
 type Message = { role: 'user' | 'assistant'; content: string };
 
 type Session = {
   id: string;
+  provider: AdapterName;
   model: string;
   messages: Message[];
   claudeSessionId?: string;
   createdAt: string;
   updatedAt: string;
 };
-
-// ============================================
-// Claude CLI Backend
-// ============================================
-
-async function callClaude(
-  prompt: string,
-  model: string,
-  sessionId?: string,
-): Promise<{ response: string; sessionId: string; cost?: number }> {
-  return new Promise((resolve, reject) => {
-    const args = [
-      '-p', prompt,
-      '--output-format', 'stream-json',
-      '--model', model,
-    ];
-
-    if (sessionId) {
-      args.push('--resume', sessionId);
-    }
-
-    const proc = spawn('claude', args, {
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-
-    let fullResponse = '';
-    let buffer = '';
-    let capturedSessionId = sessionId || '';
-    let cost: number | undefined;
-    let headerPrinted = false;
-    let stderrOutput = '';
-
-    proc.stdout.on('data', (chunk: Buffer) => {
-      buffer += chunk.toString();
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        try {
-          const event = JSON.parse(line);
-
-          if (event.session_id && !capturedSessionId) {
-            capturedSessionId = event.session_id;
-          }
-
-          // Assistant response
-          if (event.type === 'assistant' && event.message?.content) {
-            if (!headerPrinted) {
-              process.stdout.write(`\n${GREEN}${BOLD}assistant${RESET} `);
-              headerPrinted = true;
-            }
-            for (const block of event.message.content) {
-              if (block.type === 'text') {
-                process.stdout.write(block.text);
-                fullResponse += block.text;
-              }
-            }
-          }
-
-          // Result
-          if (event.type === 'result') {
-            cost = event.total_cost_usd;
-            if (event.session_id) {
-              capturedSessionId = event.session_id;
-            }
-          }
-        } catch {
-          // Ignore parse failures
-        }
-      }
-    });
-
-    proc.stderr.on('data', (chunk: Buffer) => {
-      stderrOutput += chunk.toString();
-    });
-
-    proc.on('close', (code) => {
-      if (headerPrinted && cost !== undefined) {
-        process.stdout.write(`\n${DIM}($${cost.toFixed(4)})${RESET}`);
-      }
-      process.stdout.write('\n\n');
-
-      if (code !== 0 && fullResponse === '') {
-        const errorMsg = stderrOutput.trim() || 'No error output captured';
-        reject(new Error(`claude exited with code ${code}. stderr: ${errorMsg}`));
-      } else {
-        resolve({
-          response: fullResponse,
-          sessionId: capturedSessionId,
-          cost,
-        });
-      }
-    });
-
-    proc.on('error', (err) => {
-      reject(new Error(`Failed to spawn claude: ${err.message}`));
-    });
-
-    proc.stdin.end();
-  });
-}
-
-// ============================================
-// Session Management
-// ============================================
 
 async function ensureChatDir(): Promise<void> {
   await mkdir(CHAT_DIR, { recursive: true });
@@ -163,7 +49,17 @@ async function saveSession(session: Session): Promise<void> {
 async function loadSession(id: string): Promise<Session | null> {
   const path = resolve(CHAT_DIR, `${id}.json`);
   if (!existsSync(path)) return null;
-  return JSON.parse(await readFile(path, 'utf-8'));
+  const raw = JSON.parse(await readFile(path, 'utf-8')) as Partial<Session>;
+  const provider = inferProvider(raw.provider, raw.model);
+  return {
+    id: raw.id || id,
+    provider,
+    model: raw.model || getDefaultChatModel(provider),
+    messages: Array.isArray(raw.messages) ? raw.messages : [],
+    claudeSessionId: raw.claudeSessionId,
+    createdAt: raw.createdAt || new Date().toISOString(),
+    updatedAt: raw.updatedAt || new Date().toISOString(),
+  };
 }
 
 async function listSessions(): Promise<string[]> {
@@ -180,21 +76,23 @@ function generateSessionId(): string {
   return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
 }
 
-// ============================================
-// Chat
-// ============================================
-
 async function chat(session: Session, userMessage: string): Promise<void> {
   session.messages.push({ role: 'user', content: userMessage });
 
   try {
-    const result = await callClaude(
-      userMessage,
-      session.model,
-      session.claudeSessionId,
-    );
+    process.stdout.write(`\n${GREEN}${BOLD}${session.provider}${RESET} `);
+    const result = await runChatCompletion({
+      prompt: userMessage,
+      provider: session.provider,
+      model: session.model,
+      sessionId: session.provider === 'claude' ? session.claudeSessionId : undefined,
+      onText: (text, isThinking) => {
+        if (!isThinking) process.stdout.write(text);
+      },
+    });
+    process.stdout.write('\n\n');
 
-    if (result.sessionId) {
+    if (session.provider === 'claude' && result.sessionId) {
       session.claudeSessionId = result.sessionId;
     }
 
@@ -211,10 +109,6 @@ async function chat(session: Session, userMessage: string): Promise<void> {
     session.messages.pop();
   }
 }
-
-// ============================================
-// Slash Commands
-// ============================================
 
 async function handleCommand(
   cmd: string,
@@ -256,7 +150,8 @@ async function handleCommand(
             const data = await loadSession(s);
             const msgCount = data?.messages.length ?? 0;
             const hasResume = data?.claudeSessionId ? ' (resumable)' : '';
-            console.log(`  ${CYAN}${s}${RESET} ${msgCount} msgs${hasResume}`);
+            const provider = data?.provider ?? inferProvider(undefined, data?.model);
+            console.log(`  ${CYAN}${s}${RESET} ${msgCount} msgs ${DIM}[${provider}]${RESET}${hasResume}`);
           }
         }
         return 'handled';
@@ -271,47 +166,66 @@ async function handleCommand(
       return 'handled';
     }
 
+    case 'provider': {
+      const next = args[0];
+      if (!next) {
+        console.log(`${BOLD}Provider:${RESET} ${session.provider}`);
+        console.log(`${DIM}  claude | codex${RESET}`);
+        return 'handled';
+      }
+      if (next !== 'claude' && next !== 'codex') {
+        console.log(`${RED}Unknown provider: ${next}${RESET}`);
+        return 'handled';
+      }
+      session.provider = next;
+      session.model = getDefaultChatModel(next);
+      session.claudeSessionId = undefined;
+      console.log(`${GREEN}Provider: ${session.provider}${RESET}`);
+      console.log(`${GREEN}Model: ${session.model}${RESET}`);
+      return 'handled';
+    }
+
     case 'model': {
       const newModel = args[0];
       if (!newModel) {
+        console.log(`${BOLD}Provider:${RESET} ${session.provider}`);
         console.log(`${BOLD}Model:${RESET} ${session.model}`);
-        console.log(`${DIM}  sonnet → claude-sonnet-4-5-20250929${RESET}`);
-        console.log(`${DIM}  haiku  → claude-haiku-4-5-20251001${RESET}`);
-        console.log(`${DIM}  opus   → claude-opus-4-6${RESET}`);
+        if (session.provider === 'claude') {
+          console.log(`${DIM}  sonnet → claude-sonnet-4-5-20250929${RESET}`);
+          console.log(`${DIM}  haiku  → claude-haiku-4-5-20251001${RESET}`);
+          console.log(`${DIM}  opus   → claude-opus-4-6${RESET}`);
+        } else {
+          console.log(`${DIM}  codex  → gpt-5-codex${RESET}`);
+        }
         return 'handled';
       }
-      const aliases: Record<string, string> = {
-        sonnet: 'claude-sonnet-4-5-20250929',
-        haiku: 'claude-haiku-4-5-20251001',
-        opus: 'claude-opus-4-6',
-      };
-      session.model = aliases[newModel] || newModel;
-      // Reset claude session on model change
+      session.model = resolveChatModel(newModel, session.provider);
       session.claudeSessionId = undefined;
       console.log(`${GREEN}Model: ${session.model}${RESET}`);
       return 'handled';
     }
 
     case 'info':
-    case 'status': {
+    case 'status':
       console.log(`${BOLD}Session:${RESET} ${session.id}`);
+      console.log(`${BOLD}Provider:${RESET} ${session.provider}`);
       console.log(`${BOLD}Model:${RESET} ${session.model}`);
       console.log(`${BOLD}Messages:${RESET} ${session.messages.length}`);
-      console.log(`${BOLD}Claude session:${RESET} ${session.claudeSessionId ? 'active' : 'none'}`);
+      console.log(`${BOLD}Claude resume:${RESET} ${session.claudeSessionId ? 'active' : 'none'}`);
       return 'handled';
-    }
 
     case 'help':
     case 'h':
     case '?':
       console.log(`
 ${BOLD}Commands:${RESET}
-  ${CYAN}/clear${RESET}          Clear conversation
-  ${CYAN}/save [name]${RESET}    Save session
-  ${CYAN}/load [name]${RESET}    List/load sessions
-  ${CYAN}/model [id]${RESET}     Change model (sonnet/haiku/opus)
-  ${CYAN}/info${RESET}           Session info
-  ${CYAN}/exit${RESET}           Exit (Ctrl+D)
+  ${CYAN}/clear${RESET}            Clear conversation
+  ${CYAN}/save [name]${RESET}      Save session
+  ${CYAN}/load [name]${RESET}      List/load sessions
+  ${CYAN}/provider [id]${RESET}    Change provider (claude/codex)
+  ${CYAN}/model [id]${RESET}       Change model
+  ${CYAN}/info${RESET}             Session info
+  ${CYAN}/exit${RESET}             Exit (Ctrl+D)
 
 ${BOLD}Multiline:${RESET}  ${CYAN}"""${RESET} start → ${CYAN}"""${RESET} end
 `);
@@ -323,22 +237,8 @@ ${BOLD}Multiline:${RESET}  ${CYAN}"""${RESET} start → ${CYAN}"""${RESET} end
   }
 }
 
-// ============================================
-// Main
-// ============================================
-
 async function main(): Promise<void> {
-  // Check if claude CLI exists
-  try {
-    const { execSync } = await import('node:child_process');
-    execSync('which claude', { stdio: 'pipe' });
-  } catch {
-    console.error(`${RED}claude CLI not found.${RESET}`);
-    console.error(`${DIM}npm i -g @anthropic-ai/claude-code${RESET}`);
-    process.exit(1);
-  }
-
-  // Initialize session
+  const defaultProvider = loadDefaultProvider();
   const loadArg = process.argv[2];
   let session: Session;
 
@@ -348,32 +248,18 @@ async function main(): Promise<void> {
       session = loaded;
       console.log(`${GREEN}Resumed: ${loadArg} (${loaded.messages.length} msgs)${RESET}`);
     } else {
-      session = {
-        id: loadArg,
-        model: DEFAULT_MODEL,
-        messages: [],
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
+      session = createSession(loadArg, defaultProvider);
     }
   } else {
-    session = {
-      id: generateSessionId(),
-      model: DEFAULT_MODEL,
-      messages: [],
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
+    session = createSession(generateSessionId(), defaultProvider);
   }
 
-  // Header
-  const shortModel = session.model.replace('claude-', '').replace(/-\d{8}$/, '');
+  const shortModel = shortenChatModel(session.model);
   console.log(`${BOLD}╔════════════════════════════════════╗${RESET}`);
-  console.log(`${BOLD}║${RESET}  Swarm Chat  ${DIM}${shortModel}${RESET}`);
+  console.log(`${BOLD}║${RESET}  Swarm Chat  ${DIM}${session.provider}:${shortModel}${RESET}`);
   console.log(`${BOLD}╚════════════════════════════════════╝${RESET}`);
   console.log(`${DIM}${session.id} | /help | Ctrl+D exit${RESET}\n`);
 
-  // REPL
   const rl = readline.createInterface({ input: stdin, output: stdout, terminal: true });
   rl.on('SIGINT', () => process.stdout.write('\n'));
 
@@ -390,15 +276,17 @@ async function main(): Promise<void> {
     const trimmed = input.trim();
     if (!trimmed) continue;
 
-    // Multiline
     if (trimmed === '"""' || trimmed === "'''") {
       const delim = trimmed;
       const lines: string[] = [];
       console.log(`${DIM}(multiline — ${delim} to end)${RESET}`);
       while (true) {
         let line: string;
-        try { line = await rl.question(`${DIM}...${RESET} `); }
-        catch { break; }
+        try {
+          line = await rl.question(`${DIM}...${RESET} `);
+        } catch {
+          break;
+        }
         if (line.trim() === delim) break;
         lines.push(line);
       }
@@ -406,7 +294,6 @@ async function main(): Promise<void> {
       continue;
     }
 
-    // Commands
     if (trimmed.startsWith('/')) {
       if (await handleCommand(trimmed, session) === 'exit') break;
       continue;
@@ -419,6 +306,31 @@ async function main(): Promise<void> {
   console.log(`\n${DIM}Saved: ${session.id}${RESET}`);
   rl.close();
   process.exit(0);
+}
+
+function createSession(id: string, provider: AdapterName): Session {
+  return {
+    id,
+    provider,
+    model: getDefaultChatModel(provider),
+    messages: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function inferProvider(provider?: AdapterName, model?: string): AdapterName {
+  if (provider) return provider;
+  if (model?.startsWith('gpt-') || model?.includes('codex')) return 'codex';
+  return loadDefaultProvider();
+}
+
+function loadDefaultProvider(): AdapterName {
+  try {
+    return loadConfig().adapter ?? getDefaultAdapterName();
+  } catch {
+    return getDefaultAdapterName();
+  }
 }
 
 main().catch((err) => {

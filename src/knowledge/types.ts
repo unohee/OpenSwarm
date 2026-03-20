@@ -5,9 +5,7 @@
 
 import { z } from 'zod';
 
-// ============================================
 // Node Types
-// ============================================
 
 export const NodeTypeSchema = z.enum(['project', 'directory', 'module', 'test_file']);
 export type NodeType = z.infer<typeof NodeTypeSchema>;
@@ -18,9 +16,7 @@ export type EdgeType = z.infer<typeof EdgeTypeSchema>;
 export const LanguageSchema = z.enum(['typescript', 'python', 'other']);
 export type Language = z.infer<typeof LanguageSchema>;
 
-// ============================================
 // Module State & Development Stage
-// ============================================
 
 export const ModuleStateSchema = z.enum([
   'stable',        // Production-ready, well-tested
@@ -41,9 +37,7 @@ export const DevelopmentStageSchema = z.enum([
 ]);
 export type DevelopmentStage = z.infer<typeof DevelopmentStageSchema>;
 
-// ============================================
 // Issue Tracking
-// ============================================
 
 export const IssueReferenceSchema = z.object({
   issueId: z.string(),           // Linear issue ID
@@ -57,9 +51,7 @@ export const IssueReferenceSchema = z.object({
 });
 export type IssueReference = z.infer<typeof IssueReferenceSchema>;
 
-// ============================================
 // Module Metadata (Extended)
-// ============================================
 
 export const ModuleMetadataSchema = z.object({
   state: ModuleStateSchema.optional(),
@@ -74,9 +66,7 @@ export const ModuleMetadataSchema = z.object({
 });
 export type ModuleMetadata = z.infer<typeof ModuleMetadataSchema>;
 
-// ============================================
 // Module Metrics
-// ============================================
 
 export const ModuleMetricsSchema = z.object({
   loc: z.number(),
@@ -86,9 +76,7 @@ export const ModuleMetricsSchema = z.object({
 });
 export type ModuleMetrics = z.infer<typeof ModuleMetricsSchema>;
 
-// ============================================
 // Git Info
-// ============================================
 
 export const GitInfoSchema = z.object({
   lastCommitDate: z.number(),
@@ -97,9 +85,7 @@ export const GitInfoSchema = z.object({
 });
 export type GitInfo = z.infer<typeof GitInfoSchema>;
 
-// ============================================
 // Graph Node
-// ============================================
 
 export const GraphNodeSchema = z.object({
   id: z.string(),           // Unique ID based on relative path (e.g., "src/core/service.ts")
@@ -112,9 +98,7 @@ export const GraphNodeSchema = z.object({
 });
 export type GraphNode = z.infer<typeof GraphNodeSchema>;
 
-// ============================================
 // Graph Edge
-// ============================================
 
 export const GraphEdgeSchema = z.object({
   source: z.string(),       // Source node ID
@@ -124,9 +108,7 @@ export const GraphEdgeSchema = z.object({
 });
 export type GraphEdge = z.infer<typeof GraphEdgeSchema>;
 
-// ============================================
 // Project Summary
-// ============================================
 
 export const ProjectSummarySchema = z.object({
   totalModules: z.number(),
@@ -145,9 +127,7 @@ export const ProjectSummarySchema = z.object({
 });
 export type ProjectSummary = z.infer<typeof ProjectSummarySchema>;
 
-// ============================================
 // Impact Analysis
-// ============================================
 
 export const ImpactAnalysisSchema = z.object({
   directModules: z.array(z.string()),      // Modules referenced in issue text
@@ -157,9 +137,7 @@ export const ImpactAnalysisSchema = z.object({
 });
 export type ImpactAnalysis = z.infer<typeof ImpactAnalysisSchema>;
 
-// ============================================
 // Serialized Graph (JSON persistence)
-// ============================================
 
 export const SerializedGraphSchema = z.object({
   version: z.literal(1),

@@ -123,18 +123,6 @@ After completing the task, output results in the following JSON format:
 - **commands**: Bash commands executed (npm run build, pytest, etc.)
 - **confidencePercent**: Your confidence in the result (0-100). Set below 60 if uncertain.
 
-On failure or low confidence:
-\`\`\`json
-{
-  "success": false,
-  "summary": "Specific failure reason",
-  "filesChanged": [],
-  "commands": [],
-  "error": "Detailed error message",
-  "confidencePercent": 30,
-  "haltReason": "Why you could not complete or are uncertain"
-}
-\`\`\`
 `;
   },
 
@@ -179,25 +167,6 @@ After review, output results in the following JSON format:
 }
 \`\`\`
 
-Example (approve):
-\`\`\`json
-{
-  "decision": "approve",
-  "feedback": "Requirements accurately implemented, code quality is adequate.",
-  "issues": [],
-  "suggestions": ["Consider strengthening error handling in the future"]
-}
-\`\`\`
-
-Example (revise):
-\`\`\`json
-{
-  "decision": "revise",
-  "feedback": "Basic implementation is done but some fixes are needed.",
-  "issues": ["Missing error handling", "No test code"],
-  "suggestions": ["Add try-catch blocks", "Write unit tests"]
-}
-\`\`\`
 `;
   },
 
@@ -231,14 +200,29 @@ Example (revise):
     return lines.join('\n');
   },
 
-  buildPlannerPrompt({ taskTitle, taskDescription, projectName, targetMinutes }) {
+  buildPlannerPrompt({ taskTitle, taskDescription, projectName, targetMinutes, impactAnalysis }) {
+    const kgSection = impactAnalysis ? `
+## Knowledge Graph — Affected Modules
+The following modules are identified by the Knowledge Graph as being affected by this task:
+
+**Directly affected:** ${impactAnalysis.directModules.join(', ') || 'none identified'}
+**Dependents (indirect):** ${impactAnalysis.dependentModules.join(', ') || 'none'}
+**Test files:** ${impactAnalysis.testFiles.join(', ') || 'none'}
+**Estimated scope:** ${impactAnalysis.estimatedScope}
+
+### File Separation Constraints
+- Each sub-task MUST modify different files/modules to avoid merge conflicts in parallel worktrees
+- If multiple sub-tasks need to change the same file, combine them into a single sub-task
+- Order sub-tasks so dependent file changes come after their dependencies
+` : '';
+
     return `# Planner Agent
 
 ## Task to Analyze
 - **Title:** ${taskTitle}
 - **Description:** ${taskDescription}
 - **Project:** ${projectName}
-
+${kgSection}
 ## Your Mission
 Analyze this task and decompose it into units completable within ${targetMinutes} minutes.
 

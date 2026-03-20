@@ -8,10 +8,9 @@ import { writeFileSync, unlinkSync } from 'node:fs';
 import type { TaskItem } from '../orchestration/decisionEngine.js';
 import { type CostInfo, extractCostFromStreamJson, formatCost } from './costTracker.js';
 import { t, getPrompts } from '../locale/index.js';
+import type { ImpactAnalysis } from '../knowledge/types.js';
 
-// ============================================
 // Types
-// ============================================
 
 export interface PlannerOptions {
   taskTitle: string;
@@ -22,6 +21,7 @@ export interface PlannerOptions {
   model?: string;
   targetMinutes?: number;  // Target time per sub-task (default 25 min)
   onLog?: (line: string) => void;  // Stream planner stdout to dashboard
+  impactAnalysis?: ImpactAnalysis;  // KG 영향 분석 (파일 분리 유도)
 }
 
 export interface SubTask {
@@ -43,9 +43,7 @@ export interface PlannerResult {
   costInfo?: CostInfo;
 }
 
-// ============================================
 // Prompts
-// ============================================
 
 function buildPlannerPrompt(options: PlannerOptions): string {
   return getPrompts().buildPlannerPrompt({
@@ -53,12 +51,11 @@ function buildPlannerPrompt(options: PlannerOptions): string {
     taskDescription: options.taskDescription,
     projectName: options.projectName || options.projectPath,
     targetMinutes: options.targetMinutes ?? 25,
+    impactAnalysis: options.impactAnalysis ?? undefined,
   });
 }
 
-// ============================================
 // Planner Execution
-// ============================================
 
 /**
  * Run Planner agent
@@ -137,7 +134,7 @@ async function runClaudeCli(
   const tmpFile = `/tmp/planner-prompt-${Date.now()}.txt`;
   writeFileSync(tmpFile, prompt);
 
-  const args = ['--output-format', 'stream-json', '--max-turns', '1'];
+  const args = ['--output-format', 'stream-json', '--verbose', '--max-turns', '1'];
   if (model) {
     args.push('--model', model);
   }
@@ -375,9 +372,7 @@ function extractFromText(text: string, originalTitle: string): PlannerResult {
   };
 }
 
-// ============================================
 // Linear Integration
-// ============================================
 
 /**
  * Create sub-tasks as Linear sub-issues
@@ -430,16 +425,20 @@ export function estimateTaskDuration(task: TaskItem): number {
 }
 
 /**
- * Determine whether decomposition is needed
+ * Determine whether decomposition is needed.
+ * Always returns true when enableDecomposition is set — the LLM planner decides.
+ * The pre-LLM heuristic only applies if explicitly requested via checkHeuristic flag.
  */
-export function needsDecomposition(task: TaskItem, maxMinutes: number = 30): boolean {
-  const estimated = estimateTaskDuration(task);
-  return estimated > maxMinutes;
+export function needsDecomposition(task: TaskItem, maxMinutes: number = 30, checkHeuristic: boolean = false): boolean {
+  if (checkHeuristic) {
+    const estimated = estimateTaskDuration(task);
+    return estimated > maxMinutes;
+  }
+  // Always run planner for all tasks; planner itself will return needsDecomposition:false for small tasks
+  return true;
 }
 
-// ============================================
 // Formatting
-// ============================================
 
 /**
  * Format Planner result as a Discord message
