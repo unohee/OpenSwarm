@@ -72,9 +72,12 @@ Saved: openswarm-overview
   │                      PairPipeline                            │
   │  ┌────────┐   ┌──────────┐   ┌────────┐   ┌─────────────┐  │
   │  │ Worker │──>│ Reviewer │──>│ Tester │──>│ Documenter  │  │
-  │  │ (CLI)  │<──│  (CLI)   │   │ (CLI)  │   │   (CLI)     │  │
-  │  └────────┘   └──────────┘   └────────┘   └─────────────┘  │
-  │       ↕ StuckDetector                                        │
+  │  │(Adapter│<──│(Adapter) │   │(Adapter│   │  (Adapter)  │  │
+  │  └───┬────┘   └──────────┘   └────────┘   └─────────────┘  │
+  │      │  ↕ StuckDetector                                      │
+  │  ┌───┴────────────────────────────────────────────────────┐  │
+  │  │ CLI Adapters: Claude (`claude -p`) | Codex (`codex`)   │  │
+  │  └────────────────────────────────────────────────────────┘  │
   └──────────────────────────────────────────────────────────────┘
            │                     │                     │
            v                     v                     v
@@ -86,23 +89,27 @@ Saved: openswarm-overview
 
 ## Features
 
+- **Multi-Provider Adapters** - Pluggable CLI adapter system supporting **Claude Code** (`claude -p`) and **OpenAI Codex** (`codex exec`), with runtime provider switching via Discord command
 - **Autonomous Pipeline** - Cron-driven heartbeat fetches Linear issues, runs Worker/Reviewer pair loops, and updates issue state automatically
 - **Worker/Reviewer Pairs** - Multi-iteration code generation with automated review, testing, and documentation stages
 - **Decision Engine** - Scope validation, rate limiting, priority-based task selection, and workflow mapping
 - **Cognitive Memory** - LanceDB vector store with Xenova/multilingual-e5-base embeddings for long-term recall across sessions
-- **Knowledge Graph** - Static code analysis, dependency mapping, and impact analysis for smarter task execution
-- **Discord Control** - Full command interface for monitoring, task dispatch, scheduling, and pair session management
+- **Knowledge Graph** - Static code analysis, dependency mapping, impact analysis, and file-level conflict detection across concurrent tasks
+- **Discord Control** - Full command interface for monitoring, task dispatch, scheduling, provider switching, and pair session management
 - **Rich TUI Chat** - Claude Code inspired terminal interface with tabs, streaming responses, and geek-themed loading messages
 - **Dynamic Scheduling** - Cron-based job scheduler with Discord management commands
-- **PR Auto-Improvement** - Monitors open PRs, auto-fixes CI failures, auto-resolves merge conflicts, and retries until all checks pass (conflict detection, AI-powered conflict resolution, CI polling, configurable retry loop)
+- **PR Auto-Improvement** - Monitors open PRs, auto-fixes CI failures, auto-resolves merge conflicts, and retries until all checks pass
 - **Long-Running Monitors** - Track external processes (training jobs, batch tasks) and report completion
-- **Web Dashboard** - Real-time status dashboard on port 3847 with PR Processor monitoring
+- **Web Dashboard** - Real-time pipeline stages, cost tracking, worktree status, and live logs on port 3847
+- **Pace Control** - 5-hour rolling window task caps, per-project limits, turbo mode, exponential backoff on failures
 - **i18n** - English and Korean locale support
 
 ## Prerequisites
 
 - **Node.js** >= 22
-- **Claude Code CLI** installed and authenticated (`claude -p`)
+- **CLI Provider** (at least one):
+  - **Claude Code CLI** installed and authenticated (`claude -p`) — default provider
+  - **OpenAI Codex CLI** installed (`codex exec`) — alternative provider
 - **Discord Bot** token with message content intent
 - **Linear** API key and team ID
 - **GitHub CLI** (`gh`) for CI monitoring (optional)
@@ -142,6 +149,34 @@ LINEAR_TEAM_ID=your-linear-team-id
 | `agents` | Agent definitions (name, projectPath, heartbeat interval) |
 | `autonomous` | Schedule, pair mode, role models, decomposition settings |
 | `prProcessor` | PR auto-improvement schedule, retry limits, conflict resolver config |
+
+### CLI Adapter (Provider)
+
+OpenSwarm supports multiple CLI backends. Set the default in `config.yaml`:
+
+```yaml
+adapter: claude   # "claude" (default) or "codex"
+```
+
+Switch at runtime via Discord: `!provider codex` / `!provider claude`
+
+| Adapter | CLI Command | Models | Git Management |
+|---------|-------------|--------|----------------|
+| `claude` | `claude -p` | claude-sonnet-4, claude-haiku-4.5, claude-opus-4 | Manual (worker commits) |
+| `codex` | `codex exec` | o3, o4-mini | Auto (`--full-auto`) |
+
+Per-role adapter overrides are supported — e.g., use Codex for workers and Claude for reviewers:
+
+```yaml
+autonomous:
+  defaultRoles:
+    worker:
+      adapter: codex
+      model: o4-mini
+    reviewer:
+      adapter: claude
+      model: claude-sonnet-4-20250514
+```
 
 ### Agent Roles
 
@@ -296,6 +331,7 @@ src/
 ├── cli/                     # CLI subcommand handlers
 │   └── promptHandler.ts     # `exec` command: daemon submit, auto-start, polling
 ├── core/                    # Config, service lifecycle, types, event hub
+├── adapters/                # CLI provider adapters (claude, codex), process registry
 ├── agents/                  # Worker, reviewer, tester, documenter, auditor
 │   ├── pairPipeline.ts      # Worker → Reviewer → Tester → Documenter pipeline
 │   ├── agentBus.ts          # Inter-agent message bus
@@ -375,6 +411,7 @@ src/
 | Command | Description |
 |---------|-------------|
 | `!ci` | GitHub CI failure status |
+| `!provider <claude\|codex>` | Switch CLI provider at runtime |
 | `!codex` | Recent session records |
 | `!memory search "<query>"` | Search cognitive memory |
 | `!help` | Full command reference |
@@ -413,7 +450,7 @@ Background cognition: decay, consolidation, contradiction detection, and distill
 | Runtime | Node.js 22+ (ESM) |
 | Language | TypeScript (strict mode) |
 | Build | tsc |
-| Agent Execution | Claude Code CLI (`claude -p`) via `child_process.spawn` |
+| Agent Execution | Claude Code CLI (`claude -p`) or OpenAI Codex CLI (`codex exec`) via pluggable adapters |
 | Task Management | Linear SDK (`@linear/sdk`) |
 | Communication | Discord.js 14 |
 | Vector DB | LanceDB + Apache Arrow |
