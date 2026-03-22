@@ -1106,16 +1106,14 @@ export class AutonomousRunner {
     const mapModelForProvider = (model: string | undefined, role: 'worker' | 'reviewer' | 'tester' | 'documenter' | 'auditor' | 'skill-documenter'): string => {
       const current = model || '';
       const isClaudeModel = current.startsWith('claude-');
-      const isCodexModel = current.startsWith('gpt-') || current.startsWith('o3') || current.startsWith('o4') || current.includes('codex');
+      // ChatGPT 계정 Codex에서는 gpt-5.x / gpt-*-codex 계열만 지원
+      // o-series (o3, o4-mini 등)는 사용 불가
+      const isCodexCompatible = current.startsWith('gpt-');
 
       if (adapter === 'codex') {
-        if (isCodexModel) return current;
-        // 역할별 경량 모델 매핑 (토큰 절감)
-        // worker: o4-mini (코드 생성 — 빠르고 저렴)
-        // reviewer: o3 (판단력 필요 — 중량)
-        // tester/documenter/auditor: o4-mini (보조 작업)
-        if (role === 'reviewer') return 'o3';
-        return 'o4-mini';
+        if (isCodexCompatible) return current;
+        // 비호환 모델(o-series 포함) → 모델 플래그 생략 → Codex 기본값 사용
+        return '';
       }
 
       if (isClaudeModel) return current;
