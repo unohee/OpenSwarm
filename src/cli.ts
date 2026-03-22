@@ -29,12 +29,14 @@ program
   .option('--pipeline', 'Full pipeline: worker + reviewer + tester + documenter')
   .option('--worker-only', 'Worker only, no review')
   .option('--max-iterations <n>', 'Max retry iterations', parseInt)
+  .option('-v, --verbose', 'Enable detailed execution logging')
   .action(async (task: string, opts: {
     path?: string;
     model?: string;
     pipeline?: boolean;
     workerOnly?: boolean;
     maxIterations?: number;
+    verbose?: boolean;
   }) => {
     await runCli({
       task,
@@ -43,6 +45,7 @@ program
       pipeline: opts.pipeline,
       workerOnly: opts.workerOnly,
       maxIterations: opts.maxIterations,
+      verbose: opts.verbose,
     });
   });
 
@@ -139,6 +142,7 @@ program
   .option('--pipeline', 'Full pipeline: worker + reviewer + tester + documenter')
   .option('--worker-only', 'Worker only, no review')
   .option('-m, --model <model>', 'Model override for worker')
+  .option('-v, --verbose', 'Enable detailed execution logging')
   .action(async (prompt: string, opts: {
     path?: string;
     timeout?: number;
@@ -147,6 +151,7 @@ program
     pipeline?: boolean;
     workerOnly?: boolean;
     model?: string;
+    verbose?: boolean;
   }) => {
     const { executePrompt } = await import('./cli/promptHandler.js');
     await executePrompt({ prompt, ...opts });

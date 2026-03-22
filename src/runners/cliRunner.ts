@@ -22,6 +22,7 @@ export interface CliRunOptions {
   pipeline?: boolean;
   workerOnly?: boolean;
   maxIterations?: number;
+  verbose?: boolean;
 }
 
 // Helpers
@@ -100,6 +101,7 @@ export async function runCli(options: CliRunOptions): Promise<void> {
     stages,
     maxIterations: options.maxIterations ?? 3,
     roles: Object.keys(roles).length > 0 ? roles as any : undefined,
+    verbose: options.verbose,
   });
 
   // 7. Print header
@@ -112,6 +114,9 @@ export async function runCli(options: CliRunOptions): Promise<void> {
   console.log(`  Pipeline: ${stageNames}`);
   if (options.model) {
     console.log(`  Model:    ${options.model}`);
+  }
+  if (options.verbose) {
+    console.log(`  Verbose:  enabled`);
   }
   console.log('');
 
@@ -140,6 +145,29 @@ export async function runCli(options: CliRunOptions): Promise<void> {
       console.log(`\n  --- Iteration ${iteration}/${maxIterations} ---`);
     }
   });
+
+  // 8.5. Verbose event listeners
+  if (options.verbose) {
+    pipeline.on('log', ({ line }: { line: string }) => {
+      console.log(`  ${line}`);
+    });
+
+    pipeline.on('halt', ({ reason, sessionId }: { reason: string; sessionId: string }) => {
+      console.log(`  [verbose] HALT: ${reason} (session: ${sessionId})`);
+    });
+
+    pipeline.on('stuck', ({ sessionId, iteration }: { sessionId: string; iteration: number }) => {
+      console.log(`  [verbose] STUCK detected at iteration ${iteration} (session: ${sessionId})`);
+    });
+
+    pipeline.on('iteration:fail', ({ iteration, reason }: { iteration: number; reason?: string }) => {
+      console.log(`  [verbose] Iteration ${iteration} failed${reason ? `: ${reason}` : ''}`);
+    });
+
+    pipeline.on('iteration:complete', ({ iteration }: { iteration: number }) => {
+      console.log(`  [verbose] Iteration ${iteration} completed`);
+    });
+  }
 
   // 9. Run pipeline
   let result: PipelineResult;

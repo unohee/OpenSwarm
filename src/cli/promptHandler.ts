@@ -20,6 +20,7 @@ export interface ExecOptions {
   pipeline?: boolean;
   workerOnly?: boolean;
   model?: string;
+  verbose?: boolean;
 }
 
 interface ExecTaskResponse {
@@ -121,6 +122,7 @@ async function submitTask(opts: ExecOptions, projectPath: string): Promise<ExecT
     pipeline: opts.pipeline,
     workerOnly: opts.workerOnly,
     model: opts.model,
+    verbose: opts.verbose,
   };
 
   const res = await fetch(`${BASE_URL}/api/exec`, {
@@ -178,6 +180,7 @@ async function executeLocal(opts: ExecOptions, projectPath: string): Promise<voi
     model: opts.model,
     pipeline: opts.pipeline,
     workerOnly: opts.workerOnly,
+    verbose: opts.verbose,
   });
 }
 

@@ -54,6 +54,8 @@ export interface PipelineConfig {
   skipTesterIfNoCodeChange?: boolean;
   /** Skip auditor if fewer than N files changed (default: 3) */
   skipAuditorUnderFileCount?: number;
+  /** Enable verbose logging (detailed stage info, agent decisions, timing) */
+  verbose?: boolean;
 }
 
 export interface StageResult {
@@ -335,6 +337,10 @@ export class PairPipeline extends EventEmitter {
     this.emit('stage:start', { stage, context });
     broadcastEvent({ type: 'pipeline:stage', data: { taskId: context.task.id, stage, status: 'start', model: stageModel } });
 
+    if (this.config.verbose) {
+      this.emit('log', { line: `[verbose] Stage: ${stage} | model: ${stageModel ?? 'default'} | iteration: ${context.currentIteration}` });
+    }
+
     try {
       let result: WorkerResult | ReviewResult | TesterResult | DocumenterResult | AuditorResult | SkillDocumenterResult;
 
@@ -373,6 +379,23 @@ export class PairPipeline extends EventEmitter {
           });
           agentPair.saveWorkerResult(context.session.id, result as WorkerResult);
           context.workerResult = result as WorkerResult;
+
+          // Verbose: emit detailed worker result info
+          if (this.config.verbose) {
+            const wr = result as WorkerResult;
+            if (wr.filesChanged?.length) {
+              this.emit('log', { line: `[verbose] Files changed: ${wr.filesChanged.join(', ')}` });
+            }
+            if (wr.commands?.length) {
+              this.emit('log', { line: `[verbose] Commands executed: ${wr.commands.join('; ')}` });
+            }
+            if (wr.confidencePercent != null) {
+              this.emit('log', { line: `[verbose] Worker confidence: ${wr.confidencePercent}%` });
+            }
+            if (wr.haltReason) {
+              this.emit('log', { line: `[verbose] Worker halt reason: ${wr.haltReason}` });
+            }
+          }
 
           // Track confidence and check for degradation
           const attempt = context.session.worker.attempts;
@@ -419,6 +442,18 @@ export class PairPipeline extends EventEmitter {
 
           agentPair.saveReviewerResult(context.session.id, result as ReviewResult);
           context.reviewResult = result as ReviewResult;
+
+          // Verbose: emit reviewer decision details
+          if (this.config.verbose) {
+            const rr = result as ReviewResult;
+            this.emit('log', { line: `[verbose] Reviewer decision: ${rr.decision}` });
+            if (rr.feedback) {
+              const lines = rr.feedback.split('\n').slice(0, 10);
+              for (const line of lines) {
+                this.emit('log', { line: `[verbose]   ${line}` });
+              }
+            }
+          }
           break;
 
         case 'tester':
@@ -436,6 +471,12 @@ export class PairPipeline extends EventEmitter {
             adapterName: this.config.roles?.tester?.adapter,
           });
           context.testerResult = result as TesterResult;
+
+          // Verbose: emit tester details
+          if (this.config.verbose) {
+            const tr = result as TesterResult;
+            this.emit('log', { line: `[verbose] Tests passed: ${tr.testsPassed}, failed: ${tr.testsFailed}${tr.coverage != null ? `, coverage: ${tr.coverage}%` : ''}` });
+          }
           break;
 
         case 'documenter':
@@ -506,6 +547,10 @@ export class PairPipeline extends EventEmitter {
       console.log(`[${prefix}] ${stage} completed (${(stageResult.duration / 1000).toFixed(1)}s)`);
       this.emit('stage:complete', { stage, result: stageResult, context });
       const costInfo = (result as { costInfo?: CostInfo }).costInfo;
+
+      if (this.config.verbose) {
+        this.emit('log', { line: `[verbose] Stage ${stage} completed in ${(stageResult.duration / 1000).toFixed(1)}s${costInfo ? ` | cost: $${costInfo.costUsd.toFixed(4)} (${costInfo.inputTokens}in/${costInfo.outputTokens}out)` : ''}` });
+      }
       broadcastEvent({ type: 'pipeline:stage', data: {
         taskId: context.task.id, stage, status: 'complete',
         model: costInfo?.model,
