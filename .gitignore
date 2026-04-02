@@ -19,8 +19,7 @@ user.md
 VEGA_SYSTEM_PROMPT.md
 
 # Claude Code local settings
-.claude/settings.json
-.claude/mcp.json
+.claude/
 
 # Logs
 *.log
