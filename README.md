@@ -358,7 +358,7 @@ src/
 
 ## `@intrect/claude-driver` (npm 패키지)
 
-OpenSwarm의 Claude CLI 스폰 + 스트리밍 파싱 로직을 독립 패키지로 추출했습니다. 다른 프로젝트에서 OpenSwarm 없이 바로 사용할 수 있습니다.
+Claude CLI spawn and NDJSON streaming logic extracted from OpenSwarm as a standalone package. Use it in any project without pulling in OpenSwarm.
 
 ```bash
 npm install @intrect/claude-driver
