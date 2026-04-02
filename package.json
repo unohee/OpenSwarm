@@ -1,5 +1,5 @@
 {
-  "name": "openswarm",
+  "name": "@intrect/openswarm",
   "version": "0.2.0",
   "description": "Autonomous Claude Code agents orchestrator with Discord control and Linear memory",
   "type": "module",
@@ -7,6 +7,13 @@
   "bin": {
     "openswarm": "dist/cli.js"
   },
+  "files": [
+    "dist",
+    "config.example.yaml",
+    "templates",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "predev": "pkill -f 'tsx src/index.ts' 2>/dev/null || true",
     "dev": "node --env-file=.env --import=tsx src/index.ts",
