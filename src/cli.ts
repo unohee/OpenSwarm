@@ -167,6 +167,13 @@ program
     await import('./index.js');
   });
 
+// 서브커맨드 없이 `openswarm`만 입력 시 → TUI chat 실행
+
+program.action(async () => {
+  const { main } = await import('./support/chatTui.js');
+  await main();
+});
+
 // Parse & Execute
 
 program.parse();

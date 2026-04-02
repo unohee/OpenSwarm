@@ -1,6 +1,6 @@
 {
   "name": "@intrect/openswarm",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Autonomous Claude Code agents orchestrator with Discord control and Linear memory",
   "type": "module",
   "main": "dist/index.js",
@@ -42,7 +42,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.72.1",
-    "@intrect/openswarm": "^0.2.0",
+    "@intrect/openswarm": "^0.2.1",
     "@lancedb/lancedb": "^0.23.0",
     "@linear/sdk": "^19.0.0",
     "@types/blessed": "^0.1.27",
