@@ -356,28 +356,6 @@ src/
 
 ---
 
-## `@intrect/claude-driver` (npm 패키지)
-
-Claude CLI spawn and NDJSON streaming logic extracted from OpenSwarm as a standalone package. Use it in any project without pulling in OpenSwarm.
-
-```bash
-npm install @intrect/claude-driver
-```
-
-```ts
-import { run } from '@intrect/claude-driver';
-
-const result = await run({
-  prompt: 'Fix the bug in src/app.ts',
-  cwd: '/my/project',
-});
-console.log(result.response);
-console.log(result.cost); // "$0.03 | 1.2k in / 800 out | 12.3s"
-```
-
-소스: [`packages/claude-driver/`](packages/claude-driver/)
-
----
 
 ## Tech Stack
 
