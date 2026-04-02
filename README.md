@@ -443,6 +443,68 @@ Memory types: `belief`, `strategy`, `user_model`, `system_pattern`, `constraint`
 
 Background cognition: decay, consolidation, contradiction detection, and distillation (noise filtering).
 
+## `@openswarm/claude-driver` (npm 패키지)
+
+OpenSwarm의 Claude CLI 스폰 + 스트리밍 파싱 로직을 독립 패키지로 추출했습니다. 다른 프로젝트에서 OpenSwarm 없이 바로 사용할 수 있습니다.
+
+```bash
+npm install @openswarm/claude-driver
+```
+
+### 기본 사용법
+
+```ts
+import { run } from '@openswarm/claude-driver';
+
+const result = await run({
+  prompt: 'Fix the bug in src/app.ts',
+  cwd: '/my/project',
+});
+console.log(result.response);  // 어시스턴트 응답
+console.log(result.cost);      // "$0.03 | 1.2k in / 800 out | 12.3s"
+```
+
+### 어댑터 직접 사용 (mid-level)
+
+```ts
+import { spawnCli, ClaudeCliAdapter } from '@openswarm/claude-driver';
+
+const adapter = new ClaudeCliAdapter();
+const raw = await spawnCli(adapter, {
+  prompt: 'Explain this code',
+  cwd: '/my/project',
+  onLog: (line) => process.stdout.write(line),
+});
+```
+
+### 파서만 사용 (low-level)
+
+```ts
+import {
+  parseCliStreamChunk,
+  extractResultFromStreamJson,
+  extractCostFromStreamJson,
+} from '@openswarm/claude-driver';
+```
+
+### 공개 API
+
+| 모듈 | 내보내는 것 |
+|------|------------|
+| 고수준 | `run()`, `inferProviderFromModel()` |
+| 중간 수준 | `spawnCli()` |
+| 어댑터 | `ClaudeCliAdapter`, `CodexCliAdapter`, `getAdapter()`, `setDefaultAdapter()` |
+| 스트림 파서 | `parseCliStreamChunk()`, `extractResultFromStreamJson()` |
+| 비용 파서 | `extractCostFromStreamJson()`, `aggregateCosts()`, `formatCost()` |
+| 버퍼 | `SmartStreamBuffer` |
+
+- **런타임 의존성 0개** — ESM 전용, Node.js 20+
+- **타입 완전 지원** — TypeScript 타입 포함
+- **멀티 프로바이더** — Claude CLI와 Codex CLI 모두 지원
+- 소스: [`packages/claude-driver/`](packages/claude-driver/)
+
+---
+
 ## Tech Stack
 
 | Category | Technology |
