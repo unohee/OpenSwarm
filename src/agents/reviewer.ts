@@ -193,6 +193,7 @@ export async function runReviewer(options: ReviewerOptions): Promise<ReviewResul
       model: options.model,
       maxTurns: options.maxTurns,
       processContext: options.processContext,
+      systemPrompt: getPrompts().systemPrompt,
     });
 
     // Parse result via adapter

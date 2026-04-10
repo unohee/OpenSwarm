@@ -73,6 +73,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       maxTurns: options.maxTurns,
       onLog: options.onLog,
       processContext: options.processContext,
+      systemPrompt: getPrompts().systemPrompt,
     });
 
     // Parse result via adapter

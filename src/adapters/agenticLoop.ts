@@ -124,6 +124,11 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
       break;
     }
 
+    // 히스토리 압축 — 메시지가 많아지면 오래된 tool 결과를 요약으로 교체
+    if (turn > 0 && turn % COMPRESS_INTERVAL === 0) {
+      compressHistory(messages);
+    }
+
     // API 호출
     apiCallCount++;
     onLog?.(`▸ API call #${apiCallCount}${turn > 0 ? ` (tool turn ${turn})` : ''}`);
@@ -218,6 +223,66 @@ export function loopResultToCliResult(result: AgenticLoopResult): CliRunResult {
     stderr: '',
     durationMs: result.durationMs,
   };
+}
+
+// ============ 히스토리 압축 ============
+
+/** N턴마다 오래된 tool 결과를 압축 */
+const COMPRESS_INTERVAL = 4;
+/** 최근 N개 메시지는 유지 (system + user + 최근 tool 쌍) */
+const KEEP_RECENT = 6;
+/** tool result 압축 시 최대 길이 */
+const COMPRESSED_RESULT_MAX = 200;
+
+/**
+ * 오래된 tool call/result 쌍을 요약으로 교체.
+ * system + user 메시지는 항상 유지.
+ * 최근 KEEP_RECENT개 메시지는 원본 유지.
+ */
+function compressHistory(messages: ChatMessage[]): void {
+  // system(0~1) + user(1) + ... + recent(KEEP_RECENT)
+  // 압축 대상: system/user 뒤 ~ 최근 KEEP_RECENT 전
+  const headerCount = messages[0]?.role === 'system' ? 2 : 1;  // system + user or just user
+  const compressEnd = messages.length - KEEP_RECENT;
+
+  if (compressEnd <= headerCount) return;  // 압축할 게 없음
+
+  for (let i = headerCount; i < compressEnd; i++) {
+    const msg = messages[i];
+
+    // tool 결과 압축 — 긴 내용을 요약으로 교체
+    if (msg.role === 'tool' && msg.content.length > COMPRESSED_RESULT_MAX) {
+      const firstLine = msg.content.split('\n')[0].slice(0, 100);
+      const lineCount = msg.content.split('\n').length;
+      messages[i] = {
+        ...msg,
+        content: `${firstLine}... (${lineCount} lines, compressed)`,
+      };
+    }
+
+    // assistant의 tool_calls — arguments 압축
+    if (msg.role === 'assistant' && msg.tool_calls) {
+      for (const tc of msg.tool_calls) {
+        if (tc.function.arguments.length > COMPRESSED_RESULT_MAX) {
+          try {
+            const args = JSON.parse(tc.function.arguments);
+            // 핵심 필드만 유지
+            const summary: Record<string, unknown> = {};
+            for (const [k, v] of Object.entries(args)) {
+              if (typeof v === 'string' && v.length > 100) {
+                summary[k] = v.slice(0, 80) + '...(truncated)';
+              } else {
+                summary[k] = v;
+              }
+            }
+            tc.function.arguments = JSON.stringify(summary);
+          } catch {
+            // JSON 파싱 실패 — 그대로 유지
+          }
+        }
+      }
+    }
+  }
 }
 
 // ============ 헬퍼 ============

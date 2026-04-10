@@ -70,6 +70,7 @@ export class GptCliAdapter implements CliAdapter {
     const callApi = this.createApiCaller(accessToken, store, model);
 
     const loopOptions: AgenticLoopOptions = {
+      systemPrompt: options.systemPrompt,
       prompt: options.prompt,
       cwd: options.cwd ?? process.cwd(),
       model,

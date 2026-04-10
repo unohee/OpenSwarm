@@ -123,6 +123,7 @@ export class LocalModelAdapter implements CliAdapter {
     const callApi = this.createApiCaller(baseUrl, model);
 
     const loopOptions: AgenticLoopOptions = {
+      systemPrompt: options.systemPrompt,
       prompt: options.prompt,
       cwd: options.cwd ?? process.cwd(),
       model,

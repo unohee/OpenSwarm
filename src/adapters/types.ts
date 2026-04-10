@@ -39,6 +39,8 @@ export interface CliRunOptions {
   maxTurns?: number;
   onLog?: (line: string) => void;
   processContext?: ProcessContext;
+  /** 시스템 프롬프트 (GPT/Local 에이전틱 루프에서 사용) */
+  systemPrompt?: string;
 }
 
 /**
