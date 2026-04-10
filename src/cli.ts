@@ -167,6 +167,98 @@ program
     await import('./index.js');
   });
 
+// openswarm check
+
+program
+  .command('check')
+  .description('Check code registry for a file or show registry stats')
+  .argument('[filePath]', 'File path to inspect (relative to project root)')
+  .option('--stats', 'Show overall registry statistics')
+  .option('--deprecated', 'List all deprecated entities')
+  .option('--untested', 'List all untested entities')
+  .option('--high-risk', 'List all high-risk entities')
+  .option('--tag <tag>', 'List entities with a specific tag')
+  .option('--search <query>', 'Full-text search entities')
+  .option('--scan', 'Scan entire repository and sync to registry')
+  .option('--bs', 'Scan for BS patterns (bad code smells)')
+  .option('-v, --verbose', 'Verbose output (with --scan)')
+  .option('--project <id>', 'Filter by project ID')
+  .action(async (filePath: string | undefined, opts: {
+    stats?: boolean;
+    deprecated?: boolean;
+    untested?: boolean;
+    highRisk?: boolean;
+    tag?: string;
+    search?: string;
+    scan?: boolean;
+    bs?: boolean;
+    verbose?: boolean;
+    project?: string;
+  }) => {
+    const { handleCheck } = await import('./cli/checkHandler.js');
+    await handleCheck(filePath, opts);
+  });
+
+// openswarm check annotate <qualifiedName>
+
+const checkAnnotate = program
+  .command('annotate')
+  .description('Annotate a code entity in the registry')
+  .argument('<qualifiedName>', 'Entity qualified name (file::name) or search term')
+  .option('--deprecate [reason]', 'Mark as deprecated')
+  .option('--status <status>', 'Set status (active|experimental|planned|broken)')
+  .option('--tag <tag>', 'Add a tag (key or key=value)')
+  .option('--untag <tag>', 'Remove a tag')
+  .option('--note <text>', 'Add a note')
+  .option('--risk <level>', 'Set risk level (low|medium|high)')
+  .option('--warn <message>', 'Add a warning (format: severity/category: message)')
+  .action(async (qualifiedName: string, opts: {
+    deprecate?: string | boolean;
+    status?: string;
+    tag?: string;
+    untag?: string;
+    note?: string;
+    risk?: string;
+    warn?: string;
+  }) => {
+    const { handleAnnotate } = await import('./cli/checkHandler.js');
+    await handleAnnotate(qualifiedName, opts);
+  });
+
+// openswarm auth
+
+const authCmd = program
+  .command('auth')
+  .description('Manage OAuth authentication for providers');
+
+authCmd
+  .command('login')
+  .description('Login via OAuth (GPT)')
+  .option('--provider <provider>', 'Provider to authenticate', 'gpt')
+  .option('--client-id <clientId>', 'OAuth Client ID (or set OPENAI_CLIENT_ID env)')
+  .option('--port <port>', 'Callback server port', parseInt)
+  .action(async (opts: { provider: string; clientId?: string; port?: number }) => {
+    const { handleAuthLogin } = await import('./cli/authHandler.js');
+    await handleAuthLogin(opts.provider, opts);
+  });
+
+authCmd
+  .command('status')
+  .description('Show stored auth profiles')
+  .action(async () => {
+    const { handleAuthStatus } = await import('./cli/authHandler.js');
+    handleAuthStatus();
+  });
+
+authCmd
+  .command('logout')
+  .description('Remove stored auth tokens')
+  .option('--provider <provider>', 'Provider to remove', 'gpt')
+  .action(async (opts: { provider: string }) => {
+    const { handleAuthLogout } = await import('./cli/authHandler.js');
+    handleAuthLogout(opts.provider);
+  });
+
 // 서브커맨드 없이 `openswarm`만 입력 시 → TUI chat 실행
 
 program.action(async () => {
