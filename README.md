@@ -1,8 +1,12 @@
 # OpenSwarm
 
-> Autonomous AI agent orchestrator powered by Claude Code CLI
+[![npm version](https://img.shields.io/npm/v/@intrect/openswarm.svg)](https://www.npmjs.com/package/@intrect/openswarm)
+[![npm downloads](https://img.shields.io/npm/dm/@intrect/openswarm.svg)](https://www.npmjs.com/package/@intrect/openswarm)
+[![license](https://img.shields.io/npm/l/@intrect/openswarm.svg)](LICENSE)
 
-OpenSwarm orchestrates multiple Claude Code instances as autonomous agents. It picks up Linear issues, runs Worker/Reviewer pair pipelines to produce code changes, reports progress to Discord, and retains long-term memory via LanceDB vector embeddings.
+> Autonomous AI agent orchestrator — Claude, GPT, Codex, and local models (Ollama/LMStudio/llama.cpp)
+
+OpenSwarm orchestrates multiple AI agents as autonomous code workers. It picks up Linear issues, runs Worker/Reviewer pair pipelines, reports to Discord, and retains long-term memory via LanceDB. Supports Claude Code, OpenAI GPT, Codex, and **local open-source models** via Ollama, LMStudio, or llama.cpp.
 
 ## Quick Start
 
@@ -40,6 +44,17 @@ openswarm run "Fix the bug" -p ~/my-project   # Run a single task
 openswarm exec "Run tests" --local --pipeline # Execute via daemon
 openswarm init                   # Generate config.yaml scaffold
 openswarm validate               # Validate config.yaml
+
+# Code Registry & BS Detector
+openswarm check --scan           # Scan repo → register all entities
+openswarm check src/foo.ts       # File brief (entities, tests, risk)
+openswarm check --bs             # BS pattern scan (bad code smells)
+openswarm check --stats          # Registry statistics
+openswarm check --high-risk      # High-risk entities
+openswarm check --search "name"  # Full-text search
+openswarm annotate "funcName" --deprecate "reason"
+openswarm annotate "funcName" --tag "needs-refactor"
+openswarm annotate "funcName" --warn "error/security: SQL injection"
 ```
 
 ### `openswarm exec` options
@@ -104,15 +119,19 @@ LINEAR_TEAM_ID=your-linear-team-id
 ### CLI Adapter (Provider)
 
 ```yaml
-adapter: claude   # "claude" (default) or "codex"
+adapter: claude   # "claude" | "codex" | "gpt" | "local"
 ```
 
 Switch at runtime via Discord: `!provider codex` / `!provider claude`
 
-| Adapter | CLI Command | Models | Git Management |
-|---------|-------------|--------|----------------|
-| `claude` | `claude -p` | claude-sonnet-4, claude-haiku-4.5, claude-opus-4 | Manual (worker commits) |
-| `codex` | `codex exec` | o3, o4-mini | Auto (`--full-auto`) |
+| Adapter | Backend | Models | Auth |
+|---------|---------|--------|------|
+| `claude` | Claude Code CLI | sonnet-4, haiku-4.5, opus-4 | CLI auth |
+| `codex` | OpenAI Codex CLI | o3, o4-mini | CLI auth |
+| `gpt` | OpenAI API | gpt-4o, o3, gpt-4.1 | OAuth PKCE |
+| `local` | Ollama / LMStudio / llama.cpp | gemma4, llama3, mistral, qwen, etc. | None |
+
+Local models are auto-detected on standard ports (Ollama `:11434`, LMStudio `:1234`, llama.cpp `:8080`).
 
 Per-role adapter overrides:
 
@@ -198,7 +217,7 @@ docker compose up -d         # Docker
   │  └───┬────┘   └──────────┘   └────────┘   └─────────────┘  │
   │      │  ↕ StuckDetector                                      │
   │  ┌───┴────────────────────────────────────────────────────┐  │
-  │  │ CLI Adapters: Claude (`claude -p`) | Codex (`codex`)   │  │
+  │  │ Adapters: Claude | Codex | GPT | Local (Ollama/LMS)   │  │
   │  └────────────────────────────────────────────────────────┘  │
   └──────────────────────────────────────────────────────────────┘
            │                     │                     │
@@ -206,12 +225,20 @@ docker compose up -d         # Docker
   ┌──────────────┐  ┌──────────────────┐  ┌──────────────────┐
   │  Discord Bot │  │  Memory (LanceDB │  │  Knowledge Graph │
   │  (commands)  │  │  + Xenova E5)    │  │  (code analysis) │
-  └──────────────┘  └──────────────────┘  └──────────────────┘
+  └──────────────┘  └──────────────────┘  └────────┬─────────┘
+                                                    │
+                                           ┌────────┴─────────┐
+                                           │  Code Registry   │
+                                           │  (SQLite + FTS5) │
+                                           │  + BS Detector   │
+                                           └──────────────────┘
 ```
 
 ## Features
 
-- **Multi-Provider Adapters** — Pluggable CLI adapter system supporting **Claude Code** (`claude -p`) and **OpenAI Codex** (`codex exec`), with runtime provider switching via Discord command
+- **Multi-Provider Adapters** — Pluggable adapter system: **Claude Code**, **OpenAI GPT/Codex**, and **local models** (Ollama, LMStudio, llama.cpp) with runtime provider switching
+- **Code Registry** — SQLite-backed entity registry tracking every function/class/type across 8 languages, with complexity scoring, test mapping, and risk assessment
+- **BS Detector** — Built-in static analysis engine that detects bad code patterns (empty catch, hardcoded secrets, `as any`, etc.) with pipeline guard integration
 - **Autonomous Pipeline** — Cron-driven heartbeat fetches Linear issues, runs Worker/Reviewer pair loops, and updates issue state automatically
 - **Worker/Reviewer Pairs** — Multi-iteration code generation with automated review, testing, and documentation stages
 - **Decision Engine** — Scope validation, rate limiting, priority-based task selection, and workflow mapping
@@ -328,7 +355,7 @@ src/
 ├── cli/                     # CLI subcommand handlers
 │   └── promptHandler.ts     # exec command: daemon submit, auto-start, polling
 ├── core/                    # Config, service lifecycle, types, event hub
-├── adapters/                # CLI provider adapters (claude, codex), process registry
+├── adapters/                # CLI provider adapters (claude, codex, gpt, local), process registry
 ├── agents/                  # Worker, reviewer, tester, documenter, auditor
 │   ├── pairPipeline.ts      # Worker → Reviewer → Tester → Documenter pipeline
 │   ├── agentBus.ts          # Inter-agent message bus
@@ -337,6 +364,8 @@ src/
 ├── automation/              # Autonomous runner, cron scheduler, PR processor
 ├── memory/                  # LanceDB + Xenova embeddings cognitive memory
 ├── knowledge/               # Code knowledge graph (scanner, analyzer, graph)
+├── registry/                # Code entity registry, BS detector, entity scanner
+├── issues/                  # Local issue tracker (SQLite + GraphQL + Kanban UI)
 ├── discord/                 # Bot core, command handlers, pair session UI
 ├── linear/                  # Linear SDK wrapper, project updater
 ├── github/                  # GitHub CLI wrapper for CI monitoring
@@ -350,6 +379,8 @@ src/
 | Path | Description |
 |------|-------------|
 | `~/.openswarm/` | State directory (memory, codex, metrics, workflows) |
+| `~/.openswarm/registry.db` | Code entity registry (SQLite) |
+| `~/.openswarm/issues.db` | Local issue tracker (SQLite) |
 | `~/.claude/openswarm-*.json` | Pipeline history and task state |
 | `config.yaml` | Main configuration |
 | `dist/` | Compiled output |
@@ -364,7 +395,8 @@ src/
 | Runtime | Node.js 22+ (ESM) |
 | Language | TypeScript (strict mode) |
 | Build | tsc |
-| Agent Execution | Claude Code CLI (`claude -p`) or OpenAI Codex CLI (`codex exec`) |
+| Agent Execution | Claude Code, OpenAI GPT/Codex, Ollama/LMStudio/llama.cpp |
+| Local DB | better-sqlite3 (WAL mode, FTS5) |
 | Task Management | Linear SDK (`@linear/sdk`) |
 | Communication | Discord.js 14 |
 | Vector DB | LanceDB + Apache Arrow |
@@ -377,6 +409,14 @@ src/
 ---
 
 ## Changelog
+
+### v0.3.0
+- **Code Registry**: `openswarm check --scan` scans repo, registers 1000+ entities across 8 languages (TS, Python, Go, Rust, Java, C, C++, C#) with test mapping, complexity scoring, and risk assessment
+- **BS Detector**: `openswarm check --bs` — built-in static analysis for bad code patterns, pipeline guard integration
+- **Local Model Support**: Ollama, LMStudio, llama.cpp via single `local` adapter with auto-detection
+- **GPT Adapter**: OpenAI models via OAuth PKCE flow
+- **Local Issue Tracker**: SQLite + GraphQL + Kanban web UI at `:3847/issues`
+- **CLI**: `openswarm check`, `openswarm annotate` commands
 
 ### v0.2.2
 - `openswarm` without arguments now launches TUI chat directly
