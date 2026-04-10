@@ -13,6 +13,8 @@ import type {
   ReviewResult,
 } from './types.js';
 import { t } from '../locale/index.js';
+import { runAgenticLoop, loopResultToCliResult, type ChatMessage, type AgenticLoopOptions } from './agenticLoop.js';
+import type { ToolDefinition } from './tools.js';
 
 // 로컬 프로바이더 기본 URL 후보 (우선순위 순)
 const DEFAULT_ENDPOINTS = [
@@ -112,67 +114,33 @@ export class LocalModelAdapter implements CliAdapter {
     }
 
     const model = options.model ?? DEFAULT_MODEL;
-    const body = {
+    const baseUrl = this.activeUrl!;
+
+    // 도구 지원 여부 감지 (모델에 따라 다를 수 있음)
+    const supportsTools = await this.checkToolSupport(baseUrl, model);
+
+    // 에이전틱 루프로 실행
+    const callApi = this.createApiCaller(baseUrl, model);
+
+    const loopOptions: AgenticLoopOptions = {
+      prompt: options.prompt,
+      cwd: options.cwd ?? process.cwd(),
       model,
-      messages: [
-        { role: 'user' as const, content: options.prompt },
-      ],
-      temperature: 0.2,
-      stream: false,
+      callApi,
+      maxTurns: options.maxTurns ?? 15,
+      timeoutMs: options.timeoutMs || 300000,
+      onLog: options.onLog,
+      enableTools: supportsTools,
     };
 
     try {
-      const res = await fetch(`${this.activeUrl}/v1/chat/completions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-        signal: options.timeoutMs
-          ? AbortSignal.timeout(options.timeoutMs)
-          : undefined,
-      });
-
-      const durationMs = Date.now() - startTime;
-
-      if (!res.ok) {
-        const errText = await res.text().catch(() => '');
-
-        // 모델 없음 에러 시 사용 가능한 모델 목록 안내
-        if (res.status === 404 || errText.includes('not found')) {
-          const models = await this.listModels();
-          const modelList = models.length > 0
-            ? `Available: ${models.slice(0, 10).join(', ')}`
-            : 'No models loaded';
-          return {
-            exitCode: 1,
-            stdout: '',
-            stderr: `Model "${model}" not found on ${this.activeUrl}. ${modelList}`,
-            durationMs,
-          };
-        }
-
-        return {
-          exitCode: 1,
-          stdout: '',
-          stderr: `Local API error (${res.status}): ${errText.slice(0, 500)}`,
-          durationMs,
-        };
-      }
-
-      const data = (await res.json()) as OpenAICompatResponse;
-      const content = data.choices?.[0]?.message?.content ?? '';
-
+      const result = await runAgenticLoop(loopOptions);
       if (options.onLog) {
-        options.onLog(content.slice(0, 300));
+        const toolInfo = supportsTools ? `${result.toolCallCount} tool uses` : 'no tools';
+        options.onLog(`[Local] ${result.apiCallCount} API calls, ${toolInfo}, ${result.totalTokens} tokens`);
       }
-
-      return {
-        exitCode: 0,
-        stdout: content,
-        stderr: '',
-        durationMs: Date.now() - startTime,
-      };
+      return loopResultToCliResult(result);
     } catch (err) {
-      // 타임아웃 또는 네트워크 에러
       const message = err instanceof Error ? err.message : String(err);
       const isTimeout = message.includes('abort') || message.includes('timeout');
 
@@ -185,6 +153,86 @@ export class LocalModelAdapter implements CliAdapter {
         durationMs: Date.now() - startTime,
       };
     }
+  }
+
+  /**
+   * 모델의 tool_use 지원 여부 확인
+   * Ollama는 일부 모델만 지원 (gemma3, llama3.1+, mistral 등)
+   */
+  private async checkToolSupport(baseUrl: string, model: string): Promise<boolean> {
+    // 알려진 tool_use 지원 모델 패턴
+    const toolCapablePatterns = [
+      /^llama3\.[1-9]/,     // llama3.1+
+      /^gemma/,             // gemma 계열
+      /^mistral/,           // mistral
+      /^qwen/,              // qwen
+      /^command-r/,         // cohere command-r
+      /^firefunction/,      // fireworks
+      /^hermes/,            // hermes
+    ];
+
+    const modelLower = model.toLowerCase();
+    const knownCapable = toolCapablePatterns.some(p => p.test(modelLower));
+
+    if (knownCapable) return true;
+
+    // 알 수 없는 모델 → 1회 probe 시도
+    try {
+      const res = await fetch(`${baseUrl}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: 'user', content: 'hi' }],
+          tools: [{ type: 'function', function: { name: 'test', description: 'test', parameters: { type: 'object', properties: {} } } }],
+          max_tokens: 1,
+        }),
+        signal: AbortSignal.timeout(5000),
+      });
+      // 200이면 tool 지원, 에러면 미지원
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 로컬 API 호출 함수 생성 (에이전틱 루프에 주입)
+   */
+  private createApiCaller(baseUrl: string, model: string) {
+    return async (messages: ChatMessage[], tools: ToolDefinition[]) => {
+      const body: Record<string, unknown> = {
+        model,
+        messages,
+        temperature: 0.2,
+        stream: false,
+      };
+      if (tools.length > 0) {
+        body.tools = tools;
+      }
+
+      const res = await fetch(`${baseUrl}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+
+        if (res.status === 404 || errText.includes('not found')) {
+          const models = await this.listModels();
+          const modelList = models.length > 0
+            ? `Available: ${models.slice(0, 10).join(', ')}`
+            : 'No models loaded';
+          throw new Error(`Model "${model}" not found on ${baseUrl}. ${modelList}`);
+        }
+
+        throw new Error(`Local API error (${res.status}): ${errText.slice(0, 500)}`);
+      }
+
+      return (await res.json()) as OpenAICompatResponse;
+    };
   }
 
   parseWorkerOutput(raw: CliRunResult): WorkerResult {
@@ -202,8 +250,13 @@ export class LocalModelAdapter implements CliAdapter {
 interface OpenAICompatResponse {
   choices: Array<{
     message: {
-      content: string;
+      content: string | null;
       role: string;
+      tool_calls?: Array<{
+        id: string;
+        type: 'function';
+        function: { name: string; arguments: string };
+      }>;
     };
     finish_reason: string;
   }>;

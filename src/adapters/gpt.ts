@@ -1,6 +1,7 @@
 // ============================================
 // OpenSwarm - GPT CLI Adapter
-// Calls OpenAI Chat Completions API directly via OAuth token
+// Calls OpenAI Chat Completions API via OAuth token
+// Agentic tool loop 지원 (read/write/edit/search/bash)
 // ============================================
 
 import type {
@@ -13,6 +14,8 @@ import type {
 } from './types.js';
 import { AuthProfileStore, ensureValidToken } from '../auth/index.js';
 import { t } from '../locale/index.js';
+import { runAgenticLoop, loopResultToCliResult, type ChatMessage, type AgenticLoopOptions } from './agenticLoop.js';
+import type { ToolDefinition } from './tools.js';
 
 const OPENAI_API_BASE = 'https://api.openai.com/v1';
 const DEFAULT_MODEL = 'gpt-4o';
@@ -61,76 +64,89 @@ export class GptCliAdapter implements CliAdapter {
       };
     }
 
-    // 2. OpenAI API 호출
     const model = options.model ?? DEFAULT_MODEL;
-    const body = {
+
+    // 2. 에이전틱 루프로 실행 (도구 사용 가능)
+    const callApi = this.createApiCaller(accessToken, store, model);
+
+    const loopOptions: AgenticLoopOptions = {
+      prompt: options.prompt,
+      cwd: options.cwd ?? process.cwd(),
       model,
-      messages: [
-        { role: 'user' as const, content: options.prompt },
-      ],
-      temperature: 0.2,
-      max_tokens: 16384,
+      callApi,
+      maxTurns: options.maxTurns ?? 15,
+      timeoutMs: options.timeoutMs || 300000,
+      onLog: options.onLog,
+      enableTools: true,
     };
 
     try {
-      const res = await fetch(`${OPENAI_API_BASE}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(body),
-      });
-
-      const durationMs = Date.now() - startTime;
-
-      if (!res.ok) {
-        const errText = await res.text().catch(() => '');
-
-        // 401 → 토큰 갱신 후 1회 재시도
-        if (res.status === 401) {
-          try {
-            const newToken = await refreshAndRetry(store);
-            return await this.callApi(newToken, body, startTime, options.onLog);
-          } catch (retryErr) {
-            return {
-              exitCode: 1,
-              stdout: '',
-              stderr: `OpenAI API 401 after retry: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`,
-              durationMs: Date.now() - startTime,
-            };
-          }
-        }
-
-        return {
-          exitCode: 1,
-          stdout: '',
-          stderr: `OpenAI API error (${res.status}): ${errText.slice(0, 500)}`,
-          durationMs,
-        };
-      }
-
-      const data = (await res.json()) as OpenAIChatResponse;
-      const content = data.choices?.[0]?.message?.content ?? '';
-
+      const result = await runAgenticLoop(loopOptions);
       if (options.onLog) {
-        options.onLog(content.slice(0, 300));
+        options.onLog(`[GPT] ${result.apiCallCount} API calls, ${result.toolCallCount} tool uses, ${result.totalTokens} tokens`);
       }
-
-      return {
-        exitCode: 0,
-        stdout: content,
-        stderr: '',
-        durationMs: Date.now() - startTime,
-      };
+      return loopResultToCliResult(result);
     } catch (err) {
       return {
         exitCode: 1,
         stdout: '',
-        stderr: `OpenAI API request failed: ${err instanceof Error ? err.message : String(err)}`,
+        stderr: `GPT agentic loop failed: ${err instanceof Error ? err.message : String(err)}`,
         durationMs: Date.now() - startTime,
       };
     }
+  }
+
+  /**
+   * OpenAI API 호출 함수 생성 (에이전틱 루프에 주입)
+   * 401 시 토큰 갱신 + 1회 재시도 포함
+   */
+  private createApiCaller(
+    initialToken: string,
+    store: AuthProfileStore,
+    model: string,
+  ) {
+    let token = initialToken;
+    let retried = false;
+
+    return async (messages: ChatMessage[], tools: ToolDefinition[]) => {
+      const body: Record<string, unknown> = {
+        model,
+        messages,
+        temperature: 0.2,
+        max_tokens: 16384,
+      };
+      if (tools.length > 0) {
+        body.tools = tools;
+      }
+
+      const doCall = async (accessToken: string) => {
+        const res = await fetch(`${OPENAI_API_BASE}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(body),
+        });
+
+        if (!res.ok) {
+          const errText = await res.text().catch(() => '');
+
+          // 401 → 토큰 갱신 후 1회 재시도
+          if (res.status === 401 && !retried) {
+            retried = true;
+            token = await refreshAndRetry(store);
+            return doCall(token);
+          }
+
+          throw new Error(`OpenAI API error (${res.status}): ${errText.slice(0, 500)}`);
+        }
+
+        return (await res.json()) as OpenAIChatResponse;
+      };
+
+      return doCall(token);
+    };
   }
 
   parseWorkerOutput(raw: CliRunResult): WorkerResult {
@@ -143,45 +159,6 @@ export class GptCliAdapter implements CliAdapter {
     return extractReviewerResultJson(text) ?? extractReviewerFromText(text);
   }
 
-  private async callApi(
-    token: string,
-    body: Record<string, unknown>,
-    startTime: number,
-    onLog?: (line: string) => void,
-  ): Promise<CliRunResult> {
-    const res = await fetch(`${OPENAI_API_BASE}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
-
-    if (!res.ok) {
-      const errText = await res.text().catch(() => '');
-      return {
-        exitCode: 1,
-        stdout: '',
-        stderr: `OpenAI API error (${res.status}): ${errText.slice(0, 500)}`,
-        durationMs: Date.now() - startTime,
-      };
-    }
-
-    const data = (await res.json()) as OpenAIChatResponse;
-    const content = data.choices?.[0]?.message?.content ?? '';
-
-    if (onLog) {
-      onLog(content.slice(0, 300));
-    }
-
-    return {
-      exitCode: 0,
-      stdout: content,
-      stderr: '',
-      durationMs: Date.now() - startTime,
-    };
-  }
 }
 
 // OpenAI API response type
@@ -189,8 +166,13 @@ export class GptCliAdapter implements CliAdapter {
 interface OpenAIChatResponse {
   choices: Array<{
     message: {
-      content: string;
+      content: string | null;
       role: string;
+      tool_calls?: Array<{
+        id: string;
+        type: 'function';
+        function: { name: string; arguments: string };
+      }>;
     };
     finish_reason: string;
   }>;
