@@ -64,11 +64,21 @@ ${previousFeedback}
 
       if (context.registryBriefs && context.registryBriefs.length > 0) {
         parts.push('');
-        parts.push('### 파일 상태 (Code Registry)');
+        parts.push('### 파일 맵 (Code Registry — 이 파일들은 Read 불필요)');
         for (const brief of context.registryBriefs) {
-          parts.push(`- \`${brief.filePath}\`: ${brief.summary}`);
+          parts.push(`**${brief.filePath}** (${brief.summary})`);
           if (brief.highlights.length > 0) {
-            parts.push(`  ⚠️ ${brief.highlights.join(', ')}`);
+            parts.push(`⚠️ ${brief.highlights.join(', ')}`);
+          }
+          if (brief.entities && brief.entities.length > 0) {
+            for (const e of brief.entities) {
+              const sig = e.signature ? ` — ${e.signature}` : '';
+              const flags: string[] = [];
+              if (e.status !== 'active') flags.push(e.status);
+              if (!e.hasTests) flags.push('no test');
+              const flagStr = flags.length ? ` [${flags.join(', ')}]` : '';
+              parts.push(`  ${e.kind} ${e.name}${sig}${flagStr}`);
+            }
           }
         }
       }

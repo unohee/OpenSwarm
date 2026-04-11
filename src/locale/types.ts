@@ -402,6 +402,14 @@ export interface WorkerContext {
     filePath: string;
     summary: string;  // "5 entities, 1 deprecated, 2 untested"
     highlights: string[];  // deprecated/broken/critical warning 엔티티명
+    /** 파일 내 entity 목록 (Worker가 파일을 읽지 않고 구조 파악 가능) */
+    entities?: Array<{
+      kind: string;    // function, class, type, etc.
+      name: string;
+      signature?: string;  // 시그니처 (파라미터, 반환타입)
+      status: string;  // active, deprecated, broken
+      hasTests: boolean;
+    }>;
   }>;
   /** Draft Analyzer 사전 분석 결과 (Haiku) */
   draftAnalysis?: {

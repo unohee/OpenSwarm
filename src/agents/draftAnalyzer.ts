@@ -36,6 +36,13 @@ export interface RegistryBrief {
   filePath: string;
   summary: string;
   highlights: string[];
+  entities?: Array<{
+    kind: string;
+    name: string;
+    signature?: string;
+    status: string;
+    hasTests: boolean;
+  }>;
 }
 
 export interface DraftAnalyzerOptions {
@@ -95,10 +102,20 @@ function collectCodebaseState(
         if (critical.length > 0) highlights.push(`${e.name} (${critical.length} critical)`);
       }
 
+      // entity 목록 추가 — Worker가 파일을 읽지 않고 구조 파악 가능
+      const entities = brief.entities.slice(0, 15).map(e => ({
+        kind: e.kind,
+        name: e.name,
+        signature: e.signature?.slice(0, 80),
+        status: e.status,
+        hasTests: e.hasTests,
+      }));
+
       registrySnapshot.push({
         filePath: brief.filePath,
         summary: brief.summary,
         highlights,
+        entities,
       });
     }
 

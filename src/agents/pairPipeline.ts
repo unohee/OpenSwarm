@@ -391,7 +391,16 @@ export class PairPipeline extends EventEmitter {
                 if (critical.length > 0) highlights.push(`${e.name} (${critical.length} critical)`);
               }
 
-              briefs.push({ filePath: brief.filePath, summary: brief.summary, highlights });
+              // entity 목록 — Worker가 파일을 읽지 않고 구조 파악 (상위 15개)
+              const entities = brief.entities.slice(0, 15).map(e => ({
+                kind: e.kind,
+                name: e.name,
+                signature: e.signature?.slice(0, 80),
+                status: e.status,
+                hasTests: e.hasTests,
+              }));
+
+              briefs.push({ filePath: brief.filePath, summary: brief.summary, highlights, entities });
             }
 
             if (briefs.length > 0) {
