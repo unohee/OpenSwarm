@@ -167,6 +167,37 @@ program
     await import('./index.js');
   });
 
+// openswarm dash
+
+program
+  .command('dash')
+  .description('Open the web dashboard in a browser')
+  .option('-p, --port <port>', 'Port number', '3847')
+  .option('--no-open', 'Start server without opening browser')
+  .action(async (opts: { port: string; open: boolean }) => {
+    const port = parseInt(opts.port, 10);
+    const { startWebServer } = await import('./support/web.js');
+    await startWebServer(port);
+    console.log(`Dashboard running at http://localhost:${port}`);
+
+    if (opts.open) {
+      const { exec } = await import('node:child_process');
+      const url = `http://localhost:${port}`;
+      const cmd = process.platform === 'darwin' ? `open "${url}"`
+        : process.platform === 'win32' ? `start "${url}"`
+        : `xdg-open "${url}"`;
+      exec(cmd, (err) => {
+        if (err) console.log(`Open ${url} in your browser`);
+      });
+    }
+
+    // Keep process alive
+    process.on('SIGINT', () => {
+      console.log('\nDashboard stopped.');
+      process.exit(0);
+    });
+  });
+
 // openswarm check
 
 program
