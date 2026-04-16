@@ -144,6 +144,8 @@ export async function startWebServer(port: number = 3847): Promise<void> {
       if (origin && (
         origin.startsWith('http://localhost:') ||
         origin.startsWith('http://127.0.0.1:') ||
+        origin.startsWith('http://tauri.localhost') ||
+        origin.startsWith('https://tauri.localhost') ||
         origin.startsWith('http://100.') // Tailscale CGNAT range (100.64.0.0/10)
       )) {
         res.setHeader('Access-Control-Allow-Origin', origin);
