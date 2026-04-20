@@ -7,6 +7,19 @@
 
 > Autonomous AI agent orchestrator — Claude, GPT, Codex, and local models (Ollama/LMStudio/llama.cpp)
 
+## Sponsor
+
+OpenSwarm is developed and maintained in my spare time by a single author.
+If the project saves you time or money, please consider chipping in —
+it directly funds ongoing updates, bug fixes, and new adapters.
+
+[![Support on Ko-fi](https://img.shields.io/badge/Support%20on-Ko--fi-FF5E5B?logo=ko-fi&logoColor=white&style=for-the-badge)](https://ko-fi.com/unohee)
+
+One-off contributions are perfectly fine — there is no subscription
+tier and no feature is paywalled. Thank you.
+
+---
+
 OpenSwarm orchestrates multiple AI agents as autonomous code workers. It picks up Linear issues, runs Worker/Reviewer pair pipelines, reports to Discord, and retains long-term memory via LanceDB. Supports Claude Code, OpenAI GPT, Codex, and **local open-source models** via Ollama, LMStudio, or llama.cpp.
 
 ## Quick Start
@@ -442,19 +455,6 @@ src/
 - LanceDB cognitive memory
 - Web dashboard (port 3847)
 - Rich TUI chat interface
-
----
-
-## Sponsor
-
-OpenSwarm is developed and maintained in my spare time by a single author.
-If the project saves you time or money, please consider chipping in —
-it directly funds ongoing updates, bug fixes, and new adapters.
-
-[![Support on Ko-fi](https://img.shields.io/badge/Support%20on-Ko--fi-FF5E5B?logo=ko-fi&logoColor=white&style=for-the-badge)](https://ko-fi.com/unohee)
-
-One-off contributions are perfectly fine — there is no subscription
-tier and no feature is paywalled. Thank you.
 
 ---
 
