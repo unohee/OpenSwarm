@@ -19,6 +19,20 @@ import { broadcastEvent } from '../core/eventHub.js';
 
 const PERSIST_FILE = join(homedir(), '.claude', 'openswarm-monitors.json');
 const CHECK_TIMEOUT_MS = 30_000; // Individual check command timeout: 30 seconds
+const MAX_REGEX_LENGTH = 512;
+
+/**
+ * Safely compile a user-supplied pattern. Returns null on syntax error or
+ * oversize input so callers can skip matching instead of crashing.
+ */
+function safeCompileRegex(pattern: string | undefined): RegExp | null {
+  if (!pattern || pattern.length > MAX_REGEX_LENGTH) return null;
+  try {
+    return new RegExp(pattern);
+  } catch {
+    return null;
+  }
+}
 
 // State
 
@@ -67,8 +81,12 @@ function saveToDisk(): void {
 // Check Execution
 
 function executeCheck(command: string): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  // Monitor checkCommand is intentionally evaluated by a shell so operators can
+  // compose real-world probes (pipes, process substitution, jq filters, etc.).
+  // The API that registers monitors is gated by DISCORD_ALLOWED_USERS, so the
+  // input is trusted to the same degree as the rest of the service config.
   return new Promise((resolve) => {
-    const proc = execFile('bash', ['-c', command], {
+    const proc = execFile('bash', ['-c', command], { // lgtm[js/shell-command-injection-from-environment]
       timeout: CHECK_TIMEOUT_MS,
       maxBuffer: 1024 * 1024,
     }, (error, stdout, stderr) => {
@@ -98,10 +116,12 @@ function evaluateResult(
     }
 
     case 'output-regex': {
-      if (check.failurePattern && new RegExp(check.failurePattern).test(stdout)) {
+      const failureRe = safeCompileRegex(check.failurePattern);
+      if (failureRe && failureRe.test(stdout)) {
         return 'failed';
       }
-      if (new RegExp(check.successPattern).test(stdout)) {
+      const successRe = safeCompileRegex(check.successPattern);
+      if (successRe && successRe.test(stdout)) {
         return 'completed';
       }
       return 'running';
@@ -168,6 +188,16 @@ export function initMonitors(configs?: LongRunningMonitorConfig[]): void {
  * Register a monitor
  */
 export function registerMonitor(config: LongRunningMonitorConfig): LongRunningMonitor {
+  // Reject inputs that are clearly not well-formed even for a trusted caller.
+  if (
+    typeof config.checkCommand !== 'string' ||
+    config.checkCommand.length === 0 ||
+    config.checkCommand.length > 4096 ||
+    config.checkCommand.includes('\0')
+  ) {
+    throw new Error('registerMonitor: invalid checkCommand');
+  }
+
   const monitor: LongRunningMonitor = {
     ...config,
     checkInterval: config.checkInterval ?? 1,
@@ -265,7 +295,7 @@ export async function checkAllMonitors(): Promise<number> {
 
       checkedCount++;
     } catch (err) {
-      console.error(`[Monitor] Check failed for ${monitor.name}:`, err);
+      console.error('[Monitor] Check failed for %s:', monitor.name, err);
     }
   }
 

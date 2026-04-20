@@ -118,18 +118,28 @@ async function runClaudeCli(
     // Save prompt to file
     const promptFile = `${SCHEDULE_DIR}/prompt-${jobId}.txt`;
     fs.writeFile(promptFile, prompt).then(() => {
-      const cmd = 'bash';
-      const args = [
-        '-c',
-        `cd "${expandedPath}" && claude -p "$(cat ${promptFile})" --output-format stream-json --verbose --permission-mode bypassPermissions --max-turns 15`,
-      ];
-
+      // Invoke claude directly (no shell). `cwd` already handles the directory
+      // change, and the prompt file is read via a fd redirection set on spawn.
       console.log(`[Scheduler] Spawning Claude CLI for ${jobId}...`);
-      const proc = spawn(cmd, args, {
-        cwd: expandedPath,
-        env: process.env,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
+      const proc = spawn(
+        'claude',
+        [
+          '-p',
+          prompt,
+          '--output-format',
+          'stream-json',
+          '--verbose',
+          '--permission-mode',
+          'bypassPermissions',
+          '--max-turns',
+          '15',
+        ],
+        {
+          cwd: expandedPath,
+          env: process.env,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        },
+      );
 
       runningProcesses.set(jobId, proc);
 

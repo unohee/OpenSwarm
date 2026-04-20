@@ -300,7 +300,7 @@ export class PairPipeline extends EventEmitter {
       return this.buildResult(context, stages, startTime);
 
     } catch (error) {
-      console.error(`[${context.taskPrefix}] Error:`, error);
+      console.error('[%s] Error:', context.taskPrefix, error);
       agentPair.updateSessionStatus(session.id, 'failed');
       return {
         success: false,
