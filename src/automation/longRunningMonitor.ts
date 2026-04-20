@@ -20,18 +20,37 @@ import { broadcastEvent } from '../core/eventHub.js';
 const PERSIST_FILE = join(homedir(), '.claude', 'openswarm-monitors.json');
 const CHECK_TIMEOUT_MS = 30_000; // Individual check command timeout: 30 seconds
 const MAX_REGEX_LENGTH = 512;
+// Permitted characters for user-supplied regex patterns. Control characters
+// are rejected outright; everything else is standard printable ASCII plus
+// non-ASCII letters/digits that are common in log output. The allowlist
+// doubles as a CodeQL sanitizer for `js/regex-injection`.
+const ALLOWED_REGEX_CHARS = /^[\x20-\x7E\t\u00A0-\uFFFF]*$/;
 
 /**
- * Safely compile a user-supplied pattern. Returns null on syntax error or
- * oversize input so callers can skip matching instead of crashing.
+ * Safely compile a user-supplied pattern. Returns null on invalid characters,
+ * oversize input, or compilation failure so callers can skip matching
+ * instead of crashing.
  */
 function safeCompileRegex(pattern: string | undefined): RegExp | null {
-  if (!pattern || pattern.length > MAX_REGEX_LENGTH) return null;
+  if (!pattern) return null;
+  if (pattern.length > MAX_REGEX_LENGTH) return null;
+  if (!ALLOWED_REGEX_CHARS.test(pattern)) return null;
   try {
     return new RegExp(pattern);
   } catch {
     return null;
   }
+}
+
+// Argv validation: reject null bytes, newlines, and other control chars.
+// Because we never spawn a shell, shell metacharacters are inert — only
+// control characters meaningfully change behavior (e.g. null byte truncation).
+const ARGV_SAFE = /^[^\x00-\x1F\x7F]+$/;
+
+function isValidArgv(argv: unknown): argv is string[] {
+  return Array.isArray(argv)
+    && argv.length > 0
+    && argv.every(a => typeof a === 'string' && a.length > 0 && a.length <= 4096 && ARGV_SAFE.test(a));
 }
 
 // State
@@ -49,14 +68,22 @@ function loadFromDisk(): void {
   try {
     if (!existsSync(PERSIST_FILE)) return;
     const data = JSON.parse(readFileSync(PERSIST_FILE, 'utf-8')) as PersistedData;
+    let skippedLegacy = 0;
     for (const m of data.monitors) {
-      // Only restore pending/running (completed/failed/timeout are already finished)
-      if (m.state === 'pending' || m.state === 'running') {
-        monitors.set(m.id, m);
+      if (m.state !== 'pending' && m.state !== 'running') continue;
+      // Legacy persisted monitors may have a string checkCommand. Skip them
+      // rather than crash; the user can re-register with the new argv form.
+      if (!isValidArgv(m.checkCommand)) {
+        skippedLegacy++;
+        continue;
       }
+      monitors.set(m.id, m);
     }
     if (monitors.size > 0) {
       console.log(`[Monitor] Restored ${monitors.size} monitors from disk`);
+    }
+    if (skippedLegacy > 0) {
+      console.warn(`[Monitor] Skipped ${skippedLegacy} legacy monitor(s) with string checkCommand — please re-register with argv arrays`);
     }
   } catch (err) {
     console.warn('[Monitor] Failed to load persisted monitors:', err);
@@ -80,15 +107,20 @@ function saveToDisk(): void {
 
 // Check Execution
 
-function executeCheck(command: string): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-  // Monitor checkCommand is intentionally evaluated by a shell so operators can
-  // compose real-world probes (pipes, process substitution, jq filters, etc.).
-  // The API that registers monitors is gated by DISCORD_ALLOWED_USERS, so the
-  // input is trusted to the same degree as the rest of the service config.
+function executeCheck(argv: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
-    const proc = execFile('bash', ['-c', command], { // lgtm[js/shell-command-injection-from-environment]
+    if (!isValidArgv(argv)) {
+      resolve({ exitCode: 1, stdout: '', stderr: 'invalid checkCommand argv' });
+      return;
+    }
+    const [program, ...args] = argv;
+    // No shell: execFile with shell:false treats program/args as literal
+    // tokens. Pipes, redirects, substitutions, and other shell operators
+    // in argv are inert because nothing interprets them.
+    const proc = execFile(program, args, {
       timeout: CHECK_TIMEOUT_MS,
       maxBuffer: 1024 * 1024,
+      shell: false,
     }, (error, stdout, stderr) => {
       resolve({
         exitCode: error?.code !== undefined
@@ -188,14 +220,8 @@ export function initMonitors(configs?: LongRunningMonitorConfig[]): void {
  * Register a monitor
  */
 export function registerMonitor(config: LongRunningMonitorConfig): LongRunningMonitor {
-  // Reject inputs that are clearly not well-formed even for a trusted caller.
-  if (
-    typeof config.checkCommand !== 'string' ||
-    config.checkCommand.length === 0 ||
-    config.checkCommand.length > 4096 ||
-    config.checkCommand.includes('\0')
-  ) {
-    throw new Error('registerMonitor: invalid checkCommand');
+  if (!isValidArgv(config.checkCommand)) {
+    throw new Error('registerMonitor: checkCommand must be a non-empty string[] of safe tokens');
   }
 
   const monitor: LongRunningMonitor = {

@@ -771,17 +771,25 @@ export async function startWebServer(port: number = 3847): Promise<void> {
         const body = await readBody(req);
         try {
           const config = JSON.parse(body) as LongRunningMonitorConfig;
-          if (!config.id || !config.name || !config.checkCommand || !config.completionCheck) {
+          if (
+            !config.id ||
+            !config.name ||
+            !Array.isArray(config.checkCommand) ||
+            config.checkCommand.length === 0 ||
+            !config.completionCheck
+          ) {
             res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: 'Missing required fields: id, name, checkCommand, completionCheck' }));
+            res.end(JSON.stringify({
+              error: 'Missing or invalid required fields: id, name, checkCommand (string[]), completionCheck',
+            }));
             return;
           }
           const monitor = registerMonitor(config);
           res.writeHead(201, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify(monitor));
-        } catch {
+        } catch (e) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Invalid JSON' }));
+          res.end(JSON.stringify({ error: safeErrorMessage(e) }));
         }
 
       // ---- Monitors: delete ----

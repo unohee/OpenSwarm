@@ -109,11 +109,16 @@ autonomous:
         reviewer: claude-sonnet-4-20250514    # Sonnet reviews Sonnet
 
 # Long-running task monitoring (RunPod training, batch processing, etc.)
+#
+# checkCommand is a literal argv array — no shell is invoked, so pipes,
+# redirects, and substitutions do not work. Put shell logic in a script
+# you control and call that script instead (e.g. ["/opt/probe.sh", "arg"]).
+#
 # monitors:
 #   - id: runpod-training
 #     name: "LSTM model training"
 #     issueId: INT-456
-#     checkCommand: 'ssh runpod "tail -1 /workspace/train.log"'
+#     checkCommand: ["ssh", "runpod", "tail -1 /workspace/train.log"]
 #     completionCheck:
 #       type: output-regex
 #       successPattern: "Training finished"

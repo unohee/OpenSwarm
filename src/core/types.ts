@@ -350,8 +350,12 @@ export type CompletionCheck =
 export type LongRunningMonitorConfig = {
   id: string;
   name: string;
-  /** Bash command for status check */
-  checkCommand: string;
+  /**
+   * Argv-style command for status check. Executed via `execFile` without a
+   * shell — no pipes, redirects, or substitutions. If you need shell
+   * semantics, invoke a script you control: `["/opt/myprobe.sh", "arg"]`.
+   */
+  checkCommand: string[];
   completionCheck: CompletionCheck;
   /** Linear issue ID (comments on state change) */
   issueId?: string;

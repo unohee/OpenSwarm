@@ -215,7 +215,7 @@ const CompletionCheckSchema = z.discriminatedUnion('type', [
 const LongRunningMonitorConfigSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
-  checkCommand: z.string().min(1),
+  checkCommand: z.array(z.string().min(1)).min(1),
   completionCheck: CompletionCheckSchema,
   issueId: z.string().optional(),
   checkInterval: z.number().min(1).default(1),
