@@ -33,6 +33,39 @@ import { ISSUE_BOARD_HTML } from '../issues/issueBoardHtml.js';
 let server: ReturnType<typeof createServer> | null = null;
 let runnerRef: AutonomousRunner | undefined;
 
+// CORS origin allowlist — hostname-strict match (no substring/prefix pitfalls)
+function isAllowedOrigin(origin: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(origin);
+  } catch {
+    return false;
+  }
+  const { protocol, hostname } = url;
+  if (protocol !== 'http:' && protocol !== 'https:') return false;
+
+  // Exact hostname matches
+  if (hostname === 'localhost' || hostname === '127.0.0.1') return true;
+  if (hostname === 'tauri.localhost') return true;
+
+  // Tailscale CGNAT range: 100.64.0.0/10 → first octet 100, second 64–127
+  const tailscaleMatch = hostname.match(/^100\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/);
+  if (tailscaleMatch) {
+    const second = Number(tailscaleMatch[1]);
+    if (second >= 64 && second <= 127) return true;
+  }
+  return false;
+}
+
+// Never leak raw Error objects (which include stack traces in many runtimes)
+// or arbitrary thrown values to HTTP responses.
+function safeErrorMessage(err: unknown): string {
+  if (err instanceof Error && typeof err.message === 'string' && err.message) {
+    return err.message;
+  }
+  return 'Internal error';
+}
+
 // Exec task store (in-memory)
 
 interface ExecTaskEntry {
@@ -139,15 +172,9 @@ export async function startWebServer(port: number = 3847): Promise<void> {
     server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
       const url = req.url?.split('?')[0] || '/';
 
-      // CORS: allow localhost and Tailscale network
+      // CORS: allow localhost, Tauri webview, and Tailscale network
       const origin = req.headers.origin;
-      if (origin && (
-        origin.startsWith('http://localhost:') ||
-        origin.startsWith('http://127.0.0.1:') ||
-        origin.startsWith('http://tauri.localhost') ||
-        origin.startsWith('https://tauri.localhost') ||
-        origin.startsWith('http://100.') // Tailscale CGNAT range (100.64.0.0/10)
-      )) {
+      if (origin && isAllowedOrigin(origin)) {
         res.setHeader('Access-Control-Allow-Origin', origin);
         res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE');
       }
@@ -272,7 +299,7 @@ export async function startWebServer(port: number = 3847): Promise<void> {
           res.end(JSON.stringify(filtered.map(l => ({ path: l.path, name: l.name, pinned: pinnedProjects.has(l.path) }))));
         } catch (e) {
           res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: String(e) }));
+          res.end(JSON.stringify({ error: safeErrorMessage(e) }));
         }
 
       // ---- Pin project ----
@@ -348,7 +375,7 @@ export async function startWebServer(port: number = 3847): Promise<void> {
         } catch (error) {
           console.error('[Web] Failed to move issue to Todo:', error);
           res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: String(error) }));
+          res.end(JSON.stringify({ error: safeErrorMessage(error) }));
         }
 
       // ---- Heartbeat (manual trigger) ----
@@ -411,7 +438,7 @@ export async function startWebServer(port: number = 3847): Promise<void> {
           res.end(JSON.stringify(status));
         } catch (error) {
           res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: String(error) }));
+          res.end(JSON.stringify({ error: safeErrorMessage(error) }));
         }
 
       // ---- Trigger PR Processor ----
@@ -430,7 +457,7 @@ export async function startWebServer(port: number = 3847): Promise<void> {
           processor.processPRs().catch((e: Error) => console.error('[Web] PR Processor error:', e));
         } catch (error) {
           res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: String(error) }));
+          res.end(JSON.stringify({ error: safeErrorMessage(error) }));
         }
 
       // ---- CI Worker Status ----
@@ -442,7 +469,7 @@ export async function startWebServer(port: number = 3847): Promise<void> {
           res.end(JSON.stringify(status));
         } catch (error) {
           res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: String(error) }));
+          res.end(JSON.stringify({ error: safeErrorMessage(error) }));
         }
 
       // ---- Stuck/Failed Issues ----
@@ -455,7 +482,7 @@ export async function startWebServer(port: number = 3847): Promise<void> {
         } catch (error) {
           console.error('[Web] Failed to fetch stuck issues:', error);
           res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: String(error) }));
+          res.end(JSON.stringify({ error: safeErrorMessage(error) }));
         }
 
       // ---- Chat history ----
@@ -633,7 +660,7 @@ export async function startWebServer(port: number = 3847): Promise<void> {
           res.end(JSON.stringify({ ok: true }));
         } catch (e) {
           res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: String(e) }));
+          res.end(JSON.stringify({ error: safeErrorMessage(e) }));
         }
 
       // ---- Service control: restart ----
@@ -648,7 +675,7 @@ export async function startWebServer(port: number = 3847): Promise<void> {
           res.end(JSON.stringify({ ok: true }));
         } catch (e) {
           res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: String(e) }));
+          res.end(JSON.stringify({ error: safeErrorMessage(e) }));
         }
 
       // ---- Knowledge Graph: project health ----
@@ -676,7 +703,7 @@ export async function startWebServer(port: number = 3847): Promise<void> {
             }
           } catch (e) {
             res.writeHead(500, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: String(e) }));
+            res.end(JSON.stringify({ error: safeErrorMessage(e) }));
           }
         }
 
@@ -701,7 +728,7 @@ export async function startWebServer(port: number = 3847): Promise<void> {
           res.end(JSON.stringify(result));
         } catch (e) {
           res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: String(e) }));
+          res.end(JSON.stringify({ error: safeErrorMessage(e) }));
         }
 
       // ---- Knowledge Graph: trigger scan ----
