@@ -4,7 +4,7 @@
 // ============================================
 
 import { readFile, writeFile, mkdir, readdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { KnowledgeGraph } from './graph.js';
 import { SerializedGraphSchema } from './types.js';
@@ -14,6 +14,17 @@ import type { SerializedGraph } from './types.js';
 
 const STORE_DIR = join(homedir(), '.openswarm', 'knowledge-graph');
 
+// Resolve `<STORE_DIR>/<slug>.json`, rejecting anything that escapes STORE_DIR.
+// Protects against traversal even if a caller forgets to sanitize projectSlug.
+function resolveGraphPath(projectSlug: string): string {
+  const candidate = resolve(STORE_DIR, `${projectSlug}.json`);
+  const prefix = STORE_DIR.endsWith(sep) ? STORE_DIR : STORE_DIR + sep;
+  if (!candidate.startsWith(prefix)) {
+    throw new Error(`Invalid projectSlug: ${projectSlug}`);
+  }
+  return candidate;
+}
+
 // Store Operations
 
 /**
@@ -21,7 +32,7 @@ const STORE_DIR = join(homedir(), '.openswarm', 'knowledge-graph');
  */
 export async function saveGraph(graph: KnowledgeGraph): Promise<void> {
   await mkdir(STORE_DIR, { recursive: true });
-  const filePath = join(STORE_DIR, `${graph.projectSlug}.json`);
+  const filePath = resolveGraphPath(graph.projectSlug);
   const serialized = graph.serialize();
   await writeFile(filePath, JSON.stringify(serialized, null, 2), 'utf-8');
   console.log(`[KnowledgeStore] Saved graph: ${graph.projectSlug} (${graph.nodeCount} nodes, ${graph.edgeCount} edges)`);
@@ -31,13 +42,18 @@ export async function saveGraph(graph: KnowledgeGraph): Promise<void> {
  * Load graph from JSON file
  */
 export async function loadGraph(projectSlug: string): Promise<KnowledgeGraph | null> {
-  const filePath = join(STORE_DIR, `${projectSlug}.json`);
+  let filePath: string;
+  try {
+    filePath = resolveGraphPath(projectSlug);
+  } catch {
+    return null;
+  }
   try {
     const content = await readFile(filePath, 'utf-8');
     const raw = JSON.parse(content);
     const parsed = SerializedGraphSchema.safeParse(raw);
     if (!parsed.success) {
-      console.warn(`[KnowledgeStore] Invalid graph data for ${projectSlug}:`, parsed.error.message);
+      console.warn('[KnowledgeStore] Invalid graph data for %s:', projectSlug, parsed.error.message);
       return null;
     }
     return KnowledgeGraph.deserialize(parsed.data);
@@ -65,7 +81,12 @@ export async function listGraphs(): Promise<string[]> {
  * Delete graph
  */
 export async function deleteGraph(projectSlug: string): Promise<void> {
-  const filePath = join(STORE_DIR, `${projectSlug}.json`);
+  let filePath: string;
+  try {
+    filePath = resolveGraphPath(projectSlug);
+  } catch {
+    return;
+  }
   try {
     const { unlink } = await import('node:fs/promises');
     await unlink(filePath);
@@ -79,7 +100,12 @@ export async function deleteGraph(projectSlug: string): Promise<void> {
  * Load graph summary info (without full deserialization)
  */
 export async function loadGraphSummary(projectSlug: string): Promise<SerializedGraph | null> {
-  const filePath = join(STORE_DIR, `${projectSlug}.json`);
+  let filePath: string;
+  try {
+    filePath = resolveGraphPath(projectSlug);
+  } catch {
+    return null;
+  }
   try {
     const content = await readFile(filePath, 'utf-8');
     const raw = JSON.parse(content);

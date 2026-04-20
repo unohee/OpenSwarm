@@ -129,15 +129,15 @@ export async function scanAndCache(
     try {
       exportRepoGraph(graph, projectPath);
     } catch (e) {
-      console.warn(`[Knowledge] GraphQL export failed for ${slug}:`, e);
+      console.warn('[Knowledge] GraphQL export failed for %s:', slug, e);
     }
 
     // Save insights to cognitive memory (async, ignore failures)
-    saveGraphInsights(projectPath).catch((e) => console.warn(`[Knowledge] Failed to save graph insights for ${slug}:`, e));
+    saveGraphInsights(projectPath).catch((e) => console.warn('[Knowledge] Failed to save graph insights for %s:', slug, e));
 
     return graph;
   } catch (err) {
-    console.error(`[Knowledge] Scan failed: ${slug}`, err);
+    console.error('[Knowledge] Scan failed: %s', slug, err);
     // On failure, try returning cached graph
     const cached = await getGraph(slug);
     if (cached) return cached;
@@ -175,12 +175,12 @@ export async function refreshGraph(projectPath: string): Promise<KnowledgeGraph 
     try {
       exportRepoGraph(cached, projectPath);
     } catch (e) {
-      console.warn(`[Knowledge] GraphQL export failed for ${slug}:`, e);
+      console.warn('[Knowledge] GraphQL export failed for %s:', slug, e);
     }
 
     return cached;
   } catch (err) {
-    console.warn(`[Knowledge] Incremental update failed: ${slug}`, err);
+    console.warn('[Knowledge] Incremental update failed: %s', slug, err);
     return cached;
   }
 }
