@@ -47,10 +47,62 @@ function safeCompileRegex(pattern: string | undefined): RegExp | null {
 // control characters meaningfully change behavior (e.g. null byte truncation).
 const ARGV_SAFE = /^[^\x00-\x1F\x7F]+$/;
 
+// Program allowlist for monitor checks. Anything outside this list — or any
+// absolute path outside of the user's own directories — is rejected before
+// it reaches `execFile`, so a misconfigured monitor cannot spawn arbitrary
+// binaries. Extend `ALLOWED_PROGRAMS` deliberately when a new probe is
+// genuinely needed.
+const ALLOWED_PROGRAMS = new Set([
+  'curl',
+  'wget',
+  'ssh',
+  'jq',
+  'grep',
+  'awk',
+  'sed',
+  'cat',
+  'tail',
+  'head',
+  'nvidia-smi',
+  'kubectl',
+  'docker',
+  'podman',
+]);
+
+function isAllowedAbsolutePath(program: string): boolean {
+  if (!program.startsWith('/') && !program.startsWith('~/')) return false;
+  // Resolve `~` via HOME so absolute-path comparisons are meaningful.
+  const home = homedir();
+  const resolved = program.startsWith('~/') ? home + program.slice(1) : program;
+  const allowedPrefixes = [
+    '/usr/local/bin/',
+    '/usr/local/sbin/',
+    '/opt/',
+    `${home}/bin/`,
+    `${home}/.local/bin/`,
+    `${home}/scripts/`,
+    `${home}/.openswarm/monitors/`,
+  ];
+  return allowedPrefixes.some(p => resolved.startsWith(p));
+}
+
+function isAllowedProgram(program: string): boolean {
+  // Reject anything that could be interpreted as a path-shell construct or
+  // contain separators we haven't validated.
+  if (program.includes('..')) return false;
+  // Bare program name (no slash) → must appear in the allowlist. We look it
+  // up via PATH at exec time, which is the standard behaviour.
+  if (!program.includes('/')) return ALLOWED_PROGRAMS.has(program);
+  // Otherwise it must be an absolute path (or `~/...`) into a known location.
+  return isAllowedAbsolutePath(program);
+}
+
 function isValidArgv(argv: unknown): argv is string[] {
-  return Array.isArray(argv)
-    && argv.length > 0
-    && argv.every(a => typeof a === 'string' && a.length > 0 && a.length <= 4096 && ARGV_SAFE.test(a));
+  if (!Array.isArray(argv) || argv.length === 0) return false;
+  if (!argv.every(a => typeof a === 'string' && a.length > 0 && a.length <= 4096 && ARGV_SAFE.test(a))) {
+    return false;
+  }
+  return isAllowedProgram(argv[0] as string);
 }
 
 // State
@@ -113,7 +165,17 @@ function executeCheck(argv: string[]): Promise<{ exitCode: number; stdout: strin
       resolve({ exitCode: 1, stdout: '', stderr: 'invalid checkCommand argv' });
       return;
     }
-    const [program, ...args] = argv;
+    const [rawProgram, ...args] = argv;
+    // Double-check the program against the allowlist at the call site so the
+    // flow into `execFile` cannot receive anything unvetted even if
+    // `isValidArgv` were bypassed. The resolved program is always either a
+    // bare name from ALLOWED_PROGRAMS or an absolute path under a trusted
+    // prefix.
+    if (!isAllowedProgram(rawProgram)) {
+      resolve({ exitCode: 1, stdout: '', stderr: 'program not in allowlist' });
+      return;
+    }
+    const program = rawProgram;
     // No shell: execFile with shell:false treats program/args as literal
     // tokens. Pipes, redirects, substitutions, and other shell operators
     // in argv are inert because nothing interprets them.
