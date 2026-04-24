@@ -43,6 +43,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.72.1",
+    "@intrect/cxt": "^0.1.0",
     "@intrect/openswarm": "^0.2.1",
     "@lancedb/lancedb": "^0.23.0",
     "@linear/sdk": "^19.0.0",
