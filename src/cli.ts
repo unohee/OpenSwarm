@@ -166,10 +166,72 @@ program
 
 program
   .command('start')
-  .description('Start the full daemon (requires config.yaml with Discord + Linear)')
+  .description('Start the full daemon in the background (use --foreground to stay attached)')
+  .option('-F, --foreground', 'Run in the foreground instead of detaching (for debugging / LaunchAgent)')
+  .action(async (opts: { foreground?: boolean }) => {
+    if (opts.foreground) {
+      // Dynamic import triggers the top-level main() in index.ts
+      await import('./index.js');
+      return;
+    }
+
+    const { startDaemon } = await import('./cli/daemon.js');
+    try {
+      const { pid, logFile } = startDaemon();
+      console.log(`OpenSwarm started in background (pid ${pid}).`);
+      console.log(`  logs:    ${logFile}`);
+      console.log(`  stop:    openswarm stop`);
+      console.log(`  status:  openswarm status`);
+    } catch (err) {
+      console.error(`Failed to start: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+// openswarm stop
+
+program
+  .command('stop')
+  .description('Stop the background daemon (sends SIGTERM)')
+  .option('-t, --timeout <ms>', 'Max time to wait for graceful shutdown (default 10000)', '10000')
+  .action(async (opts: { timeout: string }) => {
+    const timeoutMs = parseInt(opts.timeout, 10);
+    const { stopDaemon } = await import('./cli/daemon.js');
+    try {
+      const stopped = await stopDaemon(Number.isFinite(timeoutMs) ? timeoutMs : 10_000);
+      if (!stopped) {
+        console.log('OpenSwarm is not running.');
+        return;
+      }
+      console.log('OpenSwarm stopped.');
+    } catch (err) {
+      console.error(`Failed to stop: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+// openswarm status
+
+program
+  .command('status')
+  .description('Report daemon status (pid, uptime, log path)')
   .action(async () => {
-    // Dynamic import triggers the top-level main() in index.ts
-    await import('./index.js');
+    const { getDaemonStatus } = await import('./cli/daemon.js');
+    const status = getDaemonStatus();
+    if (!status.running) {
+      console.log('OpenSwarm is not running.');
+      console.log(`  pid file: ${status.pidFile}`);
+      console.log(`  log file: ${status.logFile}`);
+      return;
+    }
+    const uptime = status.uptimeSeconds ?? 0;
+    const h = Math.floor(uptime / 3600);
+    const m = Math.floor((uptime % 3600) / 60);
+    const s = uptime % 60;
+    console.log(`OpenSwarm is running.`);
+    console.log(`  pid:    ${status.pid}`);
+    console.log(`  uptime: ${h}h ${m}m ${s}s`);
+    console.log(`  logs:   ${status.logFile}`);
   });
 
 // openswarm dash
