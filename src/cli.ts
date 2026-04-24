@@ -4,12 +4,17 @@
 // `openswarm run`, `openswarm init`, `openswarm validate`, `openswarm chat`, `openswarm start`
 
 import { Command } from 'commander';
-import { writeFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { writeFileSync, existsSync, readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { runCli } from './runners/cliRunner.js';
 import { loadConfig, validateConfig, generateSampleConfig } from './core/config.js';
 
-const VERSION = '0.1.0';
+// Read version from package.json so it stays in sync with the published package.
+// cli.js lives at <pkg>/dist/cli.js, so package.json is one directory up.
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8')) as { version: string };
+const VERSION = pkg.version;
 
 const program = new Command();
 
