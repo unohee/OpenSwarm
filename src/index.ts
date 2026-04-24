@@ -12,12 +12,28 @@ dns.setDefaultResultOrder('ipv4first');
 delete process.env['CLAUDECODE'];
 delete process.env['CLAUDE_CODE_ENTRYPOINT'];
 
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { loadConfig, validateConfig } from './core/config.js';
 import { startService, stopService } from './core/service.js';
 
+// index.js lives at <pkg>/dist/index.js → package.json is one level up.
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8')) as { version: string };
+const VERSION = pkg.version;
+
 async function main(): Promise<void> {
+  // Render a fixed-width banner (41 chars inside the box) with the current version.
+  const title = `🤖 OpenSwarm v${VERSION}`;
+  const INNER_WIDTH = 40;
+  // '🤖' counts as 2 display columns in most terminals, so pad assuming width = length + 1.
+  const visualLen = title.length + 1;
+  const padTotal = Math.max(0, INNER_WIDTH - visualLen);
+  const padLeft = Math.floor(padTotal / 2);
+  const padRight = padTotal - padLeft;
   console.log('╔════════════════════════════════════════╗');
-  console.log('║         🤖 OpenSwarm v0.1.0         ║');
+  console.log(`║${' '.repeat(padLeft)}${title}${' '.repeat(padRight)}║`);
   console.log('║   Autonomous Claude Code Orchestrator  ║');
   console.log('╚════════════════════════════════════════╝');
   console.log('');

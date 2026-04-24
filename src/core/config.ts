@@ -12,11 +12,31 @@ import { setTimeWindowConfig, DEFAULT_TIME_WINDOW } from '../support/timeWindow.
 
 // Constants
 
-const CONFIG_PATHS = [
-  join(process.cwd(), 'config.yaml'),
-  join(process.cwd(), 'config.yml'),
-  join(process.cwd(), 'config.json'),
-];
+const CONFIG_FILENAMES = ['config.yaml', 'config.yml', 'config.json'] as const;
+
+// Directories searched for config, in priority order.
+// 1. $OPENSWARM_CONFIG — explicit file path (highest priority, handled separately).
+// 2. process.cwd() — project-local overrides (existing behavior).
+// 3. ~/.config/openswarm — XDG-style user config (preferred daemon location).
+// 4. ~/.openswarm — legacy home fallback.
+function getConfigSearchDirs(): string[] {
+  const home = homedir();
+  return [
+    process.cwd(),
+    join(home, '.config', 'openswarm'),
+    join(home, '.openswarm'),
+  ];
+}
+
+function getConfigSearchPaths(): string[] {
+  const paths: string[] = [];
+  for (const dir of getConfigSearchDirs()) {
+    for (const name of CONFIG_FILENAMES) {
+      paths.push(join(dir, name));
+    }
+  }
+  return paths;
+}
 
 const DEFAULT_HEARTBEAT_INTERVAL = 30 * 60 * 1000; // 30 minutes
 const DEFAULT_GITHUB_CHECK_INTERVAL = 5 * 60 * 1000; // 5 minutes
@@ -330,10 +350,25 @@ export function expandPath(path: string, resolveRelative = false): string {
 // Config Loading
 
 /**
- * Find configuration file
+ * Find configuration file.
+ *
+ * Resolution order:
+ *   1. $OPENSWARM_CONFIG env var (explicit file path override)
+ *   2. ./config.{yaml,yml,json}           (project-local)
+ *   3. ~/.config/openswarm/config.{…}     (XDG user config)
+ *   4. ~/.openswarm/config.{…}            (legacy home fallback)
  */
 function findConfigFile(): string | null {
-  for (const path of CONFIG_PATHS) {
+  const envOverride = process.env.OPENSWARM_CONFIG;
+  if (envOverride && envOverride.length > 0) {
+    if (existsSync(envOverride)) {
+      return envOverride;
+    }
+    // Surface a clear error rather than silently falling through — user asked for this file.
+    throw new Error(`OPENSWARM_CONFIG points to a file that does not exist: ${envOverride}`);
+  }
+
+  for (const path of getConfigSearchPaths()) {
     if (existsSync(path)) {
       return path;
     }
@@ -449,8 +484,10 @@ export function loadConfig(customPath?: string): SwarmConfig {
   const configPath = customPath ?? findConfigFile();
 
   if (!configPath) {
+    const searched = getConfigSearchPaths().map((p) => `  - ${p}`).join('\n');
     throw new Error(
-      `Config file not found. Create one of: ${CONFIG_PATHS.join(', ')}`
+      `Config file not found. Searched:\n${searched}\n` +
+      `Create one of the above, or set $OPENSWARM_CONFIG to an explicit file path.`
     );
   }
 
