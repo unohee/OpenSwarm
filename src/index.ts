@@ -7,6 +7,15 @@
 import dns from 'node:dns';
 dns.setDefaultResultOrder('ipv4first');
 
+// Load .env before anything else — config.yaml uses ${LINEAR_API_KEY} etc.
+// and would otherwise silently disable integrations when the daemon is
+// launched from a non-interactive shell without those vars exported.
+import { loadEnvFile } from './core/envFile.js';
+const envLoad = loadEnvFile();
+if (envLoad.path !== null) {
+  console.log(`Loaded env from: ${envLoad.path} (${envLoad.loadedKeys.length} keys)`);
+}
+
 // Strip Claude Code session markers so child processes (worker, planner) can launch Claude CLI
 // Without this, running the service from inside a Claude Code session blocks all CLI spawns.
 delete process.env['CLAUDECODE'];
