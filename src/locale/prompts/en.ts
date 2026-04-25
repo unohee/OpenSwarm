@@ -99,6 +99,15 @@ ${feedbackSection}${contextSection}
 - No destructive commands (rm -rf, git reset --hard). No .env/.bashrc edits.
 - Before completing: verify all changed files exist, no syntax errors, confidence reflects reality.
 
+## Tools available
+- \`cxt\` (code exploration toolkit, bundled with OpenSwarm):
+  - \`cxt check <file>\` — entity brief for a file (faster than Read for structural lookups).
+  - \`cxt check --search <q>\` — FTS5 search across the registry.
+  - \`cxt check --untested\` / \`--high-risk\` — surface risky spots before changing them.
+  - \`cxt bs\` — static bad-smell scan.
+  - Run \`cxt scan\` first if the registry seems stale; it's cheap.
+  - The \`File Map\` section above (when present) already comes from \`cxt\` — don't re-scan unless you need fresh data.
+
 ## Output (JSON, at the end)
 \`\`\`json
 {

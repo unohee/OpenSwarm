@@ -9,6 +9,7 @@ import type { TaskItem } from '../orchestration/decisionEngine.js';
 import { type CostInfo, extractCostFromStreamJson, formatCost } from './costTracker.js';
 import { t, getPrompts } from '../locale/index.js';
 import type { ImpactAnalysis } from '../knowledge/types.js';
+import { buildWorkerEnv } from '../adapters/envPath.js';
 
 // Types
 
@@ -156,7 +157,7 @@ async function runClaudeCli(
       {
         shell: false,
         cwd: '/tmp',   // Neutral dir — no project .claude/ settings loaded
-        env: process.env,
+        env: buildWorkerEnv(process.env),
         stdio: ['ignore', 'pipe', 'pipe'],
       }
     );

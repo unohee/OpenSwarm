@@ -146,9 +146,15 @@ export async function startService(config: SwarmConfig): Promise<void> {
   if (config.autonomous?.enabled) {
     console.log('[Service] Autonomous mode auto-start enabled');
 
-    // Register Linear fetcher
+    // Register Linear fetcher.
+    // Uses slim mode: each issue costs 1 resolver call (project) instead of 3
+    // (project + comments + labels). With ~200 issues per HB and 4 HBs/hour
+    // that drops API usage from ~2400/hr to ~800/hr, well under Linear's
+    // 3500/hr cap. Comment-based task-state hydration is sacrificed on this
+    // path — it can be re-added with a targeted per-issue resolve for the
+    // subset we actually pick up.
     autonomous.setLinearFetcher(async () => {
-      const issues = await linear.getMyIssues({ timeoutMs: 90000 });
+      const issues = await linear.getMyIssues({ slim: true, timeoutMs: 90000 });
       const { linearIssueToTask } = await import('../orchestration/decisionEngine.js');
       return issues.map((issue: any) => {
         updateTaskLinearState(issue.id, issue.state);

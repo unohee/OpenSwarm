@@ -7,16 +7,26 @@
 import dns from 'node:dns';
 dns.setDefaultResultOrder('ipv4first');
 
+// Load .env before anything else — config.yaml uses ${LINEAR_API_KEY} etc.
+// and would otherwise silently disable integrations when the daemon is
+// launched from a non-interactive shell without those vars exported.
+import { loadEnvFile } from './core/envFile.js';
+const envLoad = loadEnvFile();
+if (envLoad.path !== null) {
+  console.log(`Loaded env from: ${envLoad.path} (${envLoad.loadedKeys.length} keys)`);
+}
+
 // Strip Claude Code session markers so child processes (worker, planner) can launch Claude CLI
 // Without this, running the service from inside a Claude Code session blocks all CLI spawns.
 delete process.env['CLAUDECODE'];
 delete process.env['CLAUDE_CODE_ENTRYPOINT'];
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, unlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig, validateConfig } from './core/config.js';
 import { startService, stopService } from './core/service.js';
+import { DAEMON_PATHS } from './cli/daemon.js';
 
 // index.js lives at <pkg>/dist/index.js → package.json is one level up.
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -59,9 +69,13 @@ async function main(): Promise<void> {
   console.log('');
 
   // Signal handlers
+  const isDaemon = process.env.OPENSWARM_DAEMON === '1';
   const shutdown = async (signal: string): Promise<void> => {
     console.log(`\nReceived ${signal}, shutting down...`);
     await stopService();
+    if (isDaemon) {
+      try { unlinkSync(DAEMON_PATHS.PID_FILE); } catch { /* ignore */ }
+    }
     process.exit(0);
   };
 

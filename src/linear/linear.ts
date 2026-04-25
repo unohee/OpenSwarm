@@ -38,6 +38,74 @@ function teamFilter() {
   return { id: { in: teamIds } };
 }
 
+/**
+ * Page size when fetching issues across all configured teams. Linear's
+ * default page cap is 50 — 100 is the largest value that consistently
+ * returns; bumping to 250 triggered intermittent 502s from the Linear
+ * gateway on wider queries.
+ *
+ * A prior revision tried per-team fan-out to guarantee a per-team quota, but
+ * firing ~12 parallel `issues()` calls tripped a 90s timeout inside the
+ * Linear SDK / HTTP keepalive path — one wider query is both simpler and
+ * actually faster end-to-end.
+ */
+const FETCH_PAGE_SIZE = 100;
+
+async function fetchIssuesForStates(
+  linear: LinearClient,
+  stateNames: string[],
+  extraFilter: Record<string, unknown> = {},
+): Promise<{ nodes: Array<Awaited<ReturnType<LinearClient['issues']>>['nodes'][number]> }> {
+  const ids = teamIds.length > 0 ? teamIds : (teamId ? [teamId] : []);
+
+  // Single-team / no-team fallback uses the shared filter path.
+  if (ids.length <= 1) {
+    const res = await withRateLimit('linear', async () =>
+      linear.issues({
+        filter: { ...extraFilter, team: teamFilter(), state: { name: { in: stateNames } } },
+        first: FETCH_PAGE_SIZE,
+      }),
+    );
+    return { nodes: res.nodes };
+  }
+
+  // Multi-team: issue one `in: [...]` query rather than fanning out, but run a
+  // second query *only if* the first page filled up — that's the signal that
+  // some team's issues may have been truncated. This bounds the request count
+  // to at most 1 + teams when the result set is actually wide.
+  const primary = await withRateLimit('linear', async () =>
+    linear.issues({
+      filter: { ...extraFilter, team: { id: { in: ids } }, state: { name: { in: stateNames } } },
+      first: FETCH_PAGE_SIZE,
+    }),
+  );
+
+  if (primary.nodes.length < FETCH_PAGE_SIZE) {
+    return { nodes: primary.nodes };
+  }
+
+  // First page was saturated → fall back to per-team fan-out so no team is starved.
+  // Dedup by issue id when concatenating.
+  const pages = await Promise.all(
+    ids.map((tid) =>
+      withRateLimit('linear', async () =>
+        linear.issues({
+          filter: { ...extraFilter, team: { id: { eq: tid } }, state: { name: { in: stateNames } } },
+          first: FETCH_PAGE_SIZE,
+        }),
+      ),
+    ),
+  );
+  const seen = new Set<string>();
+  const merged: typeof primary.nodes = [];
+  for (const node of [...primary.nodes, ...pages.flatMap((p) => p.nodes)]) {
+    if (seen.has(node.id)) continue;
+    seen.add(node.id);
+    merged.push(node);
+  }
+  return { nodes: merged };
+}
+
 // Daily issue creation limit
 const DAILY_ISSUE_LIMIT = 10;
 let dailyIssueCount = 0;
@@ -306,32 +374,21 @@ export async function getMyIssues(
   console.log(`[Linear] Fetching issues for ${cacheKey}`);
   const linear = getClient();
 
-  const baseFilter: any = {
-    team: teamFilter(),
-  };
-
-  // Add label filter if agentLabel is provided
-  if (agentLabel) {
-    baseFilter.labels = { name: { eq: agentLabel } };
-  }
-
   // Wrap with timeout
   const fetchIssues = async (): Promise<LinearIssueInfo[]> => {
     // Slim mode: query each state separately to avoid lazy resolver calls for issue.state
     // Full mode: combined query then resolve per-issue
     const result: LinearIssueInfo[] = [];
 
-    if (slim) {
-      // Separate queries per state → tag each issue without resolver calls
-      // Build a project ID→info cache to avoid per-issue project resolver calls
-      const todoFilter = { ...baseFilter, state: { name: { in: ['Todo'] } } };
-      const inProgressFilter = { ...baseFilter, state: { name: { in: ['In Progress', 'In Review'] } } };
-      const backlogFilter = { ...baseFilter, state: { name: { in: ['Backlog'] } } };
+    const extraFilter: Record<string, unknown> = {};
+    if (agentLabel) extraFilter.labels = { name: { eq: agentLabel } };
 
+    if (slim) {
+      // Separate queries per state → tag each issue without resolver calls.
       const [todoIssues, inProgressIssues, backlogIssues] = await Promise.all([
-        withRateLimit('linear', async () => linear.issues({ filter: todoFilter, first: 50 })),
-        withRateLimit('linear', async () => linear.issues({ filter: inProgressFilter, first: 50 })),
-        withRateLimit('linear', async () => linear.issues({ filter: backlogFilter, first: 50 })),
+        fetchIssuesForStates(linear, ['Todo'], extraFilter),
+        fetchIssuesForStates(linear, ['In Progress', 'In Review'], extraFilter),
+        fetchIssuesForStates(linear, ['Backlog'], extraFilter),
       ]);
 
       const withState = [
@@ -375,11 +432,9 @@ export async function getMyIssues(
     }
 
     // Full mode: fetch executable + backlog, then resolve per-issue
-    const executableFilter = { ...baseFilter, state: { name: { in: ['Todo', 'In Progress', 'In Review'] } } };
-    const backlogFilter = { ...baseFilter, state: { name: { in: ['Backlog'] } } };
     const [executableIssues, backlogIssues] = await Promise.all([
-      withRateLimit('linear', async () => linear.issues({ filter: executableFilter, first: 50 })),
-      withRateLimit('linear', async () => linear.issues({ filter: backlogFilter, first: 50 })),
+      fetchIssuesForStates(linear, ['Todo', 'In Progress', 'In Review'], extraFilter),
+      fetchIssuesForStates(linear, ['Backlog'], extraFilter),
     ]);
 
     {

@@ -76,13 +76,29 @@ export class AutonomousRunner {
   // Explicitly enabled project paths (allow-list; empty = nothing runs)
   private enabledProjects = new Set<string>();
 
+  /**
+   * macOS (APFS default) and Windows have case-insensitive filesystems by
+   * default, so `/Users/x/dev/AnalogModeling` and `/Users/x/dev/analogModeling`
+   * refer to the same directory. Do the enabled-set comparison in a case-
+   * insensitive way on those platforms so UI-captured casing doesn't
+   * mismatch Linear's project-name casing.
+   */
+  private get pathsCaseInsensitive(): boolean {
+    return process.platform === 'darwin' || process.platform === 'win32';
+  }
+
+  private normalizePath(p: string): string {
+    return this.pathsCaseInsensitive ? p.toLowerCase() : p;
+  }
+
   /** Check if a resolved path is under any enabled project */
   private isProjectEnabled(resolvedPath: string): boolean {
     if (this.enabledProjects.size === 0) return false;
-    if (this.enabledProjects.has(resolvedPath)) return true;
-    // Check if resolvedPath is a subdirectory of any enabled project
+    const needle = this.normalizePath(resolvedPath);
     for (const enabled of this.enabledProjects) {
-      if (resolvedPath.startsWith(enabled + '/')) return true;
+      const hay = this.normalizePath(enabled);
+      if (hay === needle) return true;
+      if (needle.startsWith(hay + '/')) return true;
     }
     return false;
   }

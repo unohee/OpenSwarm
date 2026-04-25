@@ -298,9 +298,14 @@ export function getTaskReadiness(task: TaskItem): {
     : state?.dependencyIssueIds || [];
 
   if (state?.execution.status === 'decomposed') {
-    // If Linear state was manually changed back to actionable, allow re-execution
+    // If Linear state was manually changed back to actionable, allow re-execution.
+    // `In Review` is treated as actionable too — reviewer feedback on a
+    // decomposed task should get picked up rather than ignored.
     const linearState = task.linearState || state.linearState;
-    const reactivated = linearState === 'Todo' || linearState === 'In Progress';
+    const reactivated =
+      linearState === 'Todo' ||
+      linearState === 'In Progress' ||
+      linearState === 'In Review';
     if (!reactivated) {
       return {
         ready: false,

@@ -100,6 +100,15 @@ ${feedbackSection}${contextSection}
 - 파괴적 명령(rm -rf, git reset --hard) 금지. .env/.bashrc 수정 금지.
 - 완료 전: 모든 변경 파일 존재 확인, 구문 오류 없음 확인, confidence 정확히 설정.
 
+## 사용 가능한 도구
+- \`cxt\` (OpenSwarm 내장 Code eXploration Toolkit):
+  - \`cxt check <file>\` — 파일 엔티티 브리프 (구조 파악용, Read보다 빠름).
+  - \`cxt check --search <q>\` — FTS5 기반 전역 검색.
+  - \`cxt check --untested\` / \`--high-risk\` — 수정 전에 위험 포인트 먼저 확인.
+  - \`cxt bs\` — 정적 bad smell 스캔.
+  - 레지스트리가 오래됐으면 \`cxt scan\` 먼저 (저렴함).
+  - 위 \`파일 맵\` 섹션이 있으면 이미 \`cxt\` 결과 — 새로 스캔할 필요 없음.
+
 ## Output (JSON, 마지막에 출력)
 \`\`\`json
 {
