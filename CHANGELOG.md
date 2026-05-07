@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.4 — 2026-05-07
+
+### Security
+
+- Re-publish of 0.4.3 to ensure the `protobufjs` `^7.5.5` override (CVE-2026-41242 / GHSA-xq3m-2v4x-88gg, critical RCE, CVSS 9.8) is actually present in the npm tarball. The override was merged into `main` for 0.4.3 but was not included in the package that reached npm. No code changes beyond the version bump; the override entry already lives in `package.json`.
+
 ## 0.4.3 — 2026-05-07
 
 ### Fixed
