@@ -74,5 +74,8 @@
   },
   "engines": {
     "node": ">=22"
+  },
+  "overrides": {
+    "protobufjs": "^7.5.5"
   }
 }
