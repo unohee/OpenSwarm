@@ -3,7 +3,7 @@
 // ============================================
 
 import { readFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { z } from 'zod';
 import YAML from 'yaml';
@@ -341,7 +341,6 @@ export function expandPath(path: string, resolveRelative = false): string {
     return join(homedir(), path.slice(2));
   }
   if (resolveRelative) {
-    const { resolve } = require('node:path') as typeof import('node:path');
     return resolve(path);
   }
   return path;

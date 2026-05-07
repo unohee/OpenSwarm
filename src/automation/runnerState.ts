@@ -3,7 +3,7 @@
 // Task state persistence + project info query
 // ============================================
 
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { TaskItem } from '../orchestration/decisionEngine.js';
@@ -52,7 +52,6 @@ let paceState: PaceState | null = null;
 function ensurePaceDir(): void {
   const dir = join(homedir(), '.openswarm');
   if (!existsSync(dir)) {
-    const { mkdirSync } = require('node:fs') as typeof import('node:fs');
     mkdirSync(dir, { recursive: true });
   }
 }
