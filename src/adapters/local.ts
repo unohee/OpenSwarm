@@ -26,8 +26,17 @@ const DEFAULT_ENDPOINTS = [
 const DEFAULT_MODEL = 'gemma3:4b';
 const HEALTH_CHECK_TIMEOUT_MS = 2000;
 
+export interface LocalModelAdapterOptions {
+  name?: string;
+  endpoints?: string[];
+  defaultModel?: string;
+  apiKey?: string;
+  logPrefix?: string;
+  noServerMessage?: string;
+}
+
 export class LocalModelAdapter implements CliAdapter {
-  readonly name = 'local';
+  readonly name: string;
 
   readonly capabilities: AdapterCapabilities = {
     supportsStreaming: false,
@@ -40,6 +49,20 @@ export class LocalModelAdapter implements CliAdapter {
   // 활성 서버 URL (isAvailable에서 감지, run에서 사용)
   private activeUrl: string | null = null;
   private configuredUrl: string | null = null;
+  private readonly endpoints: string[];
+  private readonly defaultModel: string;
+  private readonly apiKey?: string;
+  private readonly logPrefix: string;
+  private readonly noServerMessage: string;
+
+  constructor(options: LocalModelAdapterOptions = {}) {
+    this.name = options.name ?? 'local';
+    this.endpoints = options.endpoints ?? DEFAULT_ENDPOINTS;
+    this.defaultModel = options.defaultModel ?? DEFAULT_MODEL;
+    this.apiKey = options.apiKey;
+    this.logPrefix = options.logPrefix ?? 'Local';
+    this.noServerMessage = options.noServerMessage ?? 'No local model server found. Start Ollama, LMStudio, or llama.cpp server first.';
+  }
 
   /** config.yaml에서 baseUrl을 주입받을 때 사용 */
   setBaseUrl(url: string): void {
@@ -48,12 +71,13 @@ export class LocalModelAdapter implements CliAdapter {
 
   async isAvailable(): Promise<boolean> {
     const candidates = this.configuredUrl
-      ? [this.configuredUrl, ...DEFAULT_ENDPOINTS]
-      : DEFAULT_ENDPOINTS;
+      ? [this.configuredUrl, ...this.endpoints]
+      : this.endpoints;
 
     for (const url of candidates) {
       try {
         const res = await fetch(`${url}/v1/models`, {
+          headers: this.buildHeaders(),
           signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS),
         });
         if (res.ok) {
@@ -81,6 +105,7 @@ export class LocalModelAdapter implements CliAdapter {
 
     try {
       const res = await fetch(`${this.activeUrl}/v1/models`, {
+        headers: this.buildHeaders(),
         signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS),
       });
       if (!res.ok) return [];
@@ -106,14 +131,14 @@ export class LocalModelAdapter implements CliAdapter {
         return {
           exitCode: 1,
           stdout: '',
-          stderr: 'No local model server found. Start Ollama, LMStudio, or llama.cpp server first.\n' +
-            `Checked: ${(this.configuredUrl ? [this.configuredUrl, ...DEFAULT_ENDPOINTS] : DEFAULT_ENDPOINTS).join(', ')}`,
+          stderr: `${this.noServerMessage}\n` +
+            `Checked: ${(this.configuredUrl ? [this.configuredUrl, ...this.endpoints] : this.endpoints).join(', ')}`,
           durationMs: Date.now() - startTime,
         };
       }
     }
 
-    const model = options.model ?? DEFAULT_MODEL;
+    const model = options.model ?? this.defaultModel;
     const baseUrl = this.activeUrl!;
 
     // 도구 지원 여부 감지 (모델에 따라 다를 수 있음)
@@ -138,7 +163,7 @@ export class LocalModelAdapter implements CliAdapter {
       const result = await runAgenticLoop(loopOptions);
       if (options.onLog) {
         const toolInfo = supportsTools ? `${result.toolCallCount} tool uses` : 'no tools';
-        options.onLog(`[Local] ${result.apiCallCount} API calls, ${toolInfo}, ${result.totalTokens} tokens`);
+        options.onLog(`[${this.logPrefix}] ${result.apiCallCount} API calls, ${toolInfo}, ${result.totalTokens} tokens`);
       }
       return loopResultToCliResult(result);
     } catch (err) {
@@ -181,7 +206,7 @@ export class LocalModelAdapter implements CliAdapter {
     try {
       const res = await fetch(`${baseUrl}/v1/chat/completions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: this.buildHeaders(),
         body: JSON.stringify({
           model,
           messages: [{ role: 'user', content: 'hi' }],
@@ -214,7 +239,7 @@ export class LocalModelAdapter implements CliAdapter {
 
       const res = await fetch(`${baseUrl}/v1/chat/completions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: this.buildHeaders(),
         body: JSON.stringify(body),
       });
 
@@ -234,6 +259,14 @@ export class LocalModelAdapter implements CliAdapter {
 
       return (await res.json()) as OpenAICompatResponse;
     };
+  }
+
+  private buildHeaders(): Record<string, string> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (this.apiKey) {
+      headers.Authorization = `Bearer ${this.apiKey}`;
+    }
+    return headers;
   }
 
   parseWorkerOutput(raw: CliRunResult): WorkerResult {

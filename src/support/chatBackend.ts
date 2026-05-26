@@ -56,6 +56,10 @@ export const CHAT_MODEL_ALIASES: Record<AdapterName, Record<string, string>> = {
     'phi': 'phi4:latest',
     'starcoder': 'starcoder2:7b',
   },
+  lmstudio: {
+    local: process.env.LMSTUDIO_MODEL ?? 'local-model',
+    lmstudio: process.env.LMSTUDIO_MODEL ?? 'local-model',
+  },
 };
 
 export function inferProviderFromModel(model?: string): AdapterName {
@@ -71,6 +75,7 @@ export function getDefaultChatModel(provider: AdapterName): string {
   if (provider === 'codex') return 'gpt-5-codex';
   if (provider === 'gpt') return 'gpt-4o';
   if (provider === 'local') return 'gemma3:4b';
+  if (provider === 'lmstudio') return process.env.LMSTUDIO_MODEL ?? 'local-model';
   return 'claude-sonnet-4-5-20250929';
 }
 

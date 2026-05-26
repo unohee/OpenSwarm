@@ -124,7 +124,7 @@ LINEAR_TEAM_ID=your-linear-team-id
 ### CLI Adapter (Provider)
 
 ```yaml
-adapter: claude   # "claude" | "codex" | "gpt" | "local"
+adapter: claude   # "claude" | "codex" | "gpt" | "local" | "lmstudio"
 ```
 
 Switch at runtime via Discord: `!provider codex` / `!provider claude`
@@ -135,8 +135,9 @@ Switch at runtime via Discord: `!provider codex` / `!provider claude`
 | `codex` | OpenAI Codex CLI | o3, o4-mini | CLI auth |
 | `gpt` | OpenAI API | gpt-4o, o3, gpt-4.1 | OAuth PKCE |
 | `local` | Ollama / LMStudio / llama.cpp | gemma4, llama3, mistral, qwen, etc. | None |
+| `lmstudio` | LM Studio OpenAI-compatible API | loaded LM Studio model (`LMSTUDIO_MODEL`) | Optional API key |
 
-Local models are auto-detected on standard ports (Ollama `:11434`, LMStudio `:1234`, llama.cpp `:8080`).
+Local models are auto-detected on standard ports (Ollama `:11434`, LMStudio `:1234`, llama.cpp `:8080`). Use `lmstudio` for a dedicated LM Studio endpoint (`LMSTUDIO_BASE_URL`, default `http://localhost:1234`).
 
 Per-role adapter overrides:
 

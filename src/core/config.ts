@@ -40,7 +40,7 @@ function getConfigSearchPaths(): string[] {
 
 const DEFAULT_HEARTBEAT_INTERVAL = 30 * 60 * 1000; // 30 minutes
 const DEFAULT_GITHUB_CHECK_INTERVAL = 5 * 60 * 1000; // 5 minutes
-const AdapterNameSchema = z.enum(['claude', 'codex', 'gpt']);
+const AdapterNameSchema = z.enum(['claude', 'codex', 'gpt', 'local', 'lmstudio']);
 
 // Zod Schemas
 
@@ -591,8 +591,10 @@ export function generateSampleConfig(): string {
 # Environment variables use \${VAR_NAME} or \${VAR_NAME:-default} format
 
 # Default CLI adapter for worker/reviewer stages
-# Options: claude, codex, gpt
+# Options: claude, codex, gpt, local, lmstudio
 # For GPT: run \`openswarm auth login --provider gpt\` first
+# For LM Studio: start Local Server and set LMSTUDIO_BASE_URL/LMSTUDIO_MODEL if needed
+#   If LMSTUDIO_MODEL is unset, the lmstudio adapter auto-selects the first loaded model.
 adapter: claude
 
 discord:

@@ -19,12 +19,14 @@ export { ClaudeCliAdapter } from './claude.js';
 export { CodexCliAdapter } from './codex.js';
 export { GptCliAdapter } from './gpt.js';
 export { LocalModelAdapter } from './local.js';
+export { LmStudioAdapter } from './lmstudio.js';
 export { registerProcess, getProcess, getAllProcesses, killProcess, startHealthChecker, stopHealthChecker } from './processRegistry.js';
 
 import { ClaudeCliAdapter } from './claude.js';
 import { CodexCliAdapter } from './codex.js';
 import { GptCliAdapter } from './gpt.js';
 import { LocalModelAdapter } from './local.js';
+import { LmStudioAdapter } from './lmstudio.js';
 import type { AdapterName, CliAdapter } from './types.js';
 
 const adapters: Record<string, CliAdapter> = {
@@ -32,6 +34,7 @@ const adapters: Record<string, CliAdapter> = {
   codex: new CodexCliAdapter(),
   gpt: new GptCliAdapter(),
   local: new LocalModelAdapter(),
+  lmstudio: new LmStudioAdapter(),
 };
 
 let defaultAdapter: AdapterName = 'claude';

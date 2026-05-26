@@ -3,9 +3,12 @@
 # Copy this file to config.yaml to use
 
 # Default CLI adapter for worker/reviewer stages
-# Options: claude, codex, gpt, local
+# Options: claude, codex, gpt, local, lmstudio
 # For GPT: run `openswarm auth login --provider gpt` first
 # For local: start Ollama, LMStudio, or llama.cpp server
+# For lmstudio: start LM Studio Local Server (default http://localhost:1234)
+#   Optional env: LMSTUDIO_BASE_URL, LMSTUDIO_MODEL, LMSTUDIO_API_KEY
+#   If LMSTUDIO_MODEL is unset, the adapter auto-selects the first loaded model.
 adapter: claude
 
 discord:
