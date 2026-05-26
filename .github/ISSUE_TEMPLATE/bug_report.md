@@ -27,8 +27,9 @@ What actually happened.
 ## Environment
 
 - OS:
-- Python version:
-- OpenSwarm version/commit:
+- Node.js version (`node -v`):
+- OpenSwarm version (`openswarm --version`) or commit:
+- Adapter(s) in use (Claude / GPT / Codex / Ollama / LMStudio / llama.cpp):
 
 ## Logs / Screenshots
 

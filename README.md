@@ -3,20 +3,11 @@
 [![npm version](https://img.shields.io/npm/v/@intrect/openswarm.svg)](https://www.npmjs.com/package/@intrect/openswarm)
 [![npm downloads](https://img.shields.io/npm/dm/@intrect/openswarm.svg)](https://www.npmjs.com/package/@intrect/openswarm)
 [![license](https://img.shields.io/npm/l/@intrect/openswarm.svg)](LICENSE)
-[![ko-fi](https://img.shields.io/badge/Ko--fi-support-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/unohee)
+[![GitHub Discussions](https://img.shields.io/github/discussions/unohee/OpenSwarm?logo=github&label=discussions)](https://github.com/unohee/OpenSwarm/discussions)
 
 > Autonomous AI agent orchestrator — Claude, GPT, Codex, and local models (Ollama/LMStudio/llama.cpp)
 
-## Sponsor
-
-OpenSwarm is developed and maintained in my spare time by a single author.
-If the project saves you time or money, please consider chipping in —
-it directly funds ongoing updates, bug fixes, and new adapters.
-
-[![Support on Ko-fi](https://img.shields.io/badge/Support%20on-Ko--fi-FF5E5B?logo=ko-fi&logoColor=white&style=for-the-badge)](https://ko-fi.com/unohee)
-
-One-off contributions are perfectly fine — there is no subscription
-tier and no feature is paywalled. Thank you.
+> 💬 **Help shape OpenSwarm.** Share feature ideas, vote on the roadmap, and ask questions in [**GitHub Discussions**](https://github.com/unohee/OpenSwarm/discussions). The roadmap is built in the open — your feedback decides what ships next.
 
 ---
 

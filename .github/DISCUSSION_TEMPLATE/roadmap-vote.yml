@@ -1,0 +1,63 @@
+title: "[Roadmap] "
+labels: ["roadmap"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template to **nominate a feature for the upcoming roadmap**.
+
+        - One feature per discussion. If you have multiple ideas, open separate discussions.
+        - The community can upvote with 👍 reactions. The maintainer reviews top-voted items each cycle.
+        - For free-form ideas, use the **Idea** template instead.
+
+  - type: input
+    id: title_line
+    attributes:
+      label: One-line summary
+      description: A short headline for the feature (e.g., "Add a Gemini adapter").
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Why it matters
+      description: What does this unlock? Who benefits, and how?
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope sketch
+      description: What is the minimum viable version? What is explicitly out of scope?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: How important is this to you?
+      options:
+        - "Blocking — I cannot use OpenSwarm without it"
+        - "High — I would use this often"
+        - "Medium — Nice to have"
+        - "Low — Just an idea"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: willingness
+    attributes:
+      label: Contribution
+      options:
+        - label: I would be willing to help implement this (PR, design review, or testing).
+        - label: I can provide test cases or example workloads.
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing roadmap discussions to confirm this is not already proposed.
+          required: true

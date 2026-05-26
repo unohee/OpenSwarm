@@ -1,5 +1,14 @@
 blank_issues_enabled: false
 contact_links:
-  - name: Contributing Guidelines
+  - name: 💡 Feature ideas & roadmap
+    url: https://github.com/unohee/OpenSwarm/discussions/new?category=ideas
+    about: Have an idea or want to nominate a feature for the roadmap? Start a Discussion so the community can weigh in.
+  - name: 🙏 Usage questions (Q&A)
+    url: https://github.com/unohee/OpenSwarm/discussions/new?category=q-a
+    about: Not sure if it's a bug? Ask in Discussions Q&A first — it keeps the issue tracker focused.
+  - name: 🗳️ Roadmap polls
+    url: https://github.com/unohee/OpenSwarm/discussions/categories/polls
+    about: Vote on upcoming features in the Polls category.
+  - name: 📖 Contributing Guidelines
     url: https://github.com/unohee/OpenSwarm/blob/main/CONTRIBUTING.md
     about: Read the contributing guidelines before opening an issue.
