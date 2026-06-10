@@ -40,7 +40,7 @@ function getConfigSearchPaths(): string[] {
 
 const DEFAULT_HEARTBEAT_INTERVAL = 30 * 60 * 1000; // 30 minutes
 const DEFAULT_GITHUB_CHECK_INTERVAL = 5 * 60 * 1000; // 5 minutes
-const AdapterNameSchema = z.enum(['claude', 'codex', 'gpt', 'local', 'lmstudio']);
+const AdapterNameSchema = z.enum(['codex', 'gpt', 'local', 'lmstudio', 'openrouter']);
 
 // Zod Schemas
 
@@ -98,10 +98,10 @@ const PairModeConfigSchema = z.object({
 }).optional();
 
 const ModelConfigSchema = z.object({
-  /** Worker agent model */
-  worker: z.string().default('claude-sonnet-4-5-20250929'),
-  /** Reviewer agent model */
-  reviewer: z.string().default('claude-sonnet-4-5-20250929'),
+  /** Worker agent model — lightweight tier (see DefaultRolesConfigSchema). */
+  worker: z.string().default('z-ai/glm-4.7-flash'),
+  /** Reviewer agent model — frontier quality gate. */
+  reviewer: z.string().default('openai/gpt-5'),
 }).optional();
 
 /** Per-role configuration schema */
@@ -122,16 +122,27 @@ const RoleConfigSchema = z.object({
 
 /** Default roles configuration schema */
 const DefaultRolesConfigSchema = z.object({
+  // Worker = lightweight tier. Benchmark (benchmarks/modelSelect.ts, L0–L3 coding
+  // tasks) ranked z-ai/glm-4.7-flash #1: 100% pass, $0.0021/pass (cheapest), and
+  // 2759 tok/s under ZDR via DeepInfra — ~5× faster than the next candidate. It is
+  // a non-thinking model, so it wastes no reasoning tokens on mechanical edits.
+  // On repeated failure it escalates to the frontier (gpt-5).
   worker: RoleConfigSchema.default({
     enabled: true,
-    model: 'claude-haiku-4-5-20251001',
+    model: 'z-ai/glm-4.7-flash',
     timeoutMs: 0,
-    escalateModel: 'claude-sonnet-4-5-20250929',
-    escalateAfterIteration: 3,
+    escalateModel: 'openai/gpt-5',
+    // Escalate on the 2nd attempt, not the 3rd. With maxIterations=3, a threshold
+    // of 3 only kicks in on the final pass — too late to help. Retrying the exact
+    // same model after a failure rarely changes the outcome; switch models sooner.
+    escalateAfterIteration: 2,
   }),
+  // Reviewer = frontier tier, never cheaped out. A weak reviewer that wrongly
+  // approves (bug slips through) or wrongly rejects (worker loops) costs MORE than
+  // the model price difference. The quality gate stays on gpt-5.
   reviewer: RoleConfigSchema.default({
     enabled: true,
-    model: 'claude-haiku-4-5-20251001',
+    model: 'openai/gpt-5',
     timeoutMs: 0,
   }),
   tester: RoleConfigSchema.optional(),
@@ -174,8 +185,11 @@ const DecompositionConfigSchema = z.object({
   dailyLimit: z.number().min(1).max(100).default(20).optional(),
   /** Auto-move to backlog if too complex or failing (default: true) */
   autoBacklog: z.boolean().default(true).optional(),
-  /** Planner model */
-  plannerModel: z.string().default('claude-sonnet-4-5-20250929'),
+  /**
+   * Planner model — frontier tier. Decomposition is high-leverage: a bad split
+   * pollutes every downstream worker, so we never cheap out here.
+   */
+  plannerModel: z.string().default('openai/gpt-5'),
   /** Planner timeout (ms) - default 600000 (10min) */
   plannerTimeoutMs: z.number().min(60000).default(600000),
 }).optional();
@@ -271,7 +285,7 @@ const CIWorkerConfigSchema = z.object({
 }).optional();
 
 const RawConfigSchema = z.object({
-  adapter: AdapterNameSchema.default('claude'),
+  adapter: AdapterNameSchema.default('codex'),
   language: z.enum(['en', 'ko']).default('en'),
   discord: DiscordConfigSchema,
   linear: LinearConfigSchema,
@@ -591,11 +605,13 @@ export function generateSampleConfig(): string {
 # Environment variables use \${VAR_NAME} or \${VAR_NAME:-default} format
 
 # Default CLI adapter for worker/reviewer stages
-# Options: claude, codex, gpt, local, lmstudio
-# For GPT: run \`openswarm auth login --provider gpt\` first
-# For LM Studio: start Local Server and set LMSTUDIO_BASE_URL/LMSTUDIO_MODEL if needed
-#   If LMSTUDIO_MODEL is unset, the lmstudio adapter auto-selects the first loaded model.
-adapter: claude
+# Options: codex, openrouter, lmstudio, local, gpt
+# - codex:      OpenAI Codex via PKCE login (openswarm auth login --provider codex)
+# - openrouter: OpenRouter API key (OPENROUTER_API env var or openswarm auth login --provider openrouter)
+# - lmstudio:   LM Studio local server (set LMSTUDIO_BASE_URL / LMSTUDIO_MODEL)
+# - local:      Ollama local models (ollama pull <model>)
+# - gpt:        OpenAI Chat API via OAuth (openswarm auth login --provider gpt)
+adapter: codex
 
 discord:
   token: \${DISCORD_TOKEN}

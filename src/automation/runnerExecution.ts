@@ -329,7 +329,7 @@ export async function decomposeTask(
       projectPath,
       projectName: task.linearProject?.name,
       targetMinutes,
-      model: ctx.plannerModel ?? 'claude-sonnet-4-5-20250929',
+      model: ctx.plannerModel ?? 'claude-opus-4-7',
       timeoutMs: ctx.plannerTimeoutMs ?? 600000,
       onLog: (line: string) => broadcastEvent({ type: 'log', data: { taskId, stage: 'decompose', line } }),
       impactAnalysis: impactAnalysis ?? undefined,

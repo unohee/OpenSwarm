@@ -30,7 +30,6 @@ type Session = {
   provider: AdapterName;
   model: string;
   messages: Message[];
-  claudeSessionId?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -56,7 +55,6 @@ async function loadSession(id: string): Promise<Session | null> {
     provider,
     model: raw.model || getDefaultChatModel(provider),
     messages: Array.isArray(raw.messages) ? raw.messages : [],
-    claudeSessionId: raw.claudeSessionId,
     createdAt: raw.createdAt || new Date().toISOString(),
     updatedAt: raw.updatedAt || new Date().toISOString(),
   };
@@ -85,16 +83,11 @@ async function chat(session: Session, userMessage: string): Promise<void> {
       prompt: userMessage,
       provider: session.provider,
       model: session.model,
-      sessionId: session.provider === 'claude' ? session.claudeSessionId : undefined,
       onText: (text, isThinking) => {
         if (!isThinking) process.stdout.write(text);
       },
     });
     process.stdout.write('\n\n');
-
-    if (session.provider === 'claude' && result.sessionId) {
-      session.claudeSessionId = result.sessionId;
-    }
 
     if (result.response) {
       session.messages.push({ role: 'assistant', content: result.response });
@@ -126,7 +119,6 @@ async function handleCommand(
     case 'clear':
     case 'c':
       session.messages = [];
-      session.claudeSessionId = undefined;
       console.log(`${GREEN}Conversation cleared.${RESET}`);
       return 'handled';
 
@@ -149,9 +141,8 @@ async function handleCommand(
           for (const s of sessions.slice(-10)) {
             const data = await loadSession(s);
             const msgCount = data?.messages.length ?? 0;
-            const hasResume = data?.claudeSessionId ? ' (resumable)' : '';
             const provider = data?.provider ?? inferProvider(undefined, data?.model);
-            console.log(`  ${CYAN}${s}${RESET} ${msgCount} msgs ${DIM}[${provider}]${RESET}${hasResume}`);
+            console.log(`  ${CYAN}${s}${RESET} ${msgCount} msgs ${DIM}[${provider}]${RESET}`);
           }
         }
         return 'handled';
@@ -170,16 +161,11 @@ async function handleCommand(
       const next = args[0];
       if (!next) {
         console.log(`${BOLD}Provider:${RESET} ${session.provider}`);
-        console.log(`${DIM}  claude | codex${RESET}`);
+        console.log(`${DIM}  codex | openrouter | lmstudio | local | gpt${RESET}`);
         return 'handled';
       }
-      if (next !== 'claude' && next !== 'codex') {
-        console.log(`${RED}Unknown provider: ${next}${RESET}`);
-        return 'handled';
-      }
-      session.provider = next;
-      session.model = getDefaultChatModel(next);
-      session.claudeSessionId = undefined;
+      session.provider = next as AdapterName;
+      session.model = getDefaultChatModel(session.provider);
       console.log(`${GREEN}Provider: ${session.provider}${RESET}`);
       console.log(`${GREEN}Model: ${session.model}${RESET}`);
       return 'handled';
@@ -190,17 +176,16 @@ async function handleCommand(
       if (!newModel) {
         console.log(`${BOLD}Provider:${RESET} ${session.provider}`);
         console.log(`${BOLD}Model:${RESET} ${session.model}`);
-        if (session.provider === 'claude') {
-          console.log(`${DIM}  sonnet → claude-sonnet-4-5-20250929${RESET}`);
-          console.log(`${DIM}  haiku  → claude-haiku-4-5-20251001${RESET}`);
-          console.log(`${DIM}  opus   → claude-opus-4-6${RESET}`);
+        if (session.provider === 'openrouter') {
+          console.log(`${DIM}  sonnet → anthropic/claude-sonnet-4${RESET}`);
+          console.log(`${DIM}  gemini → google/gemini-2.5-pro${RESET}`);
+          console.log(`${DIM}  gpt-5  → openai/gpt-5${RESET}`);
         } else {
           console.log(`${DIM}  codex  → gpt-5-codex${RESET}`);
         }
         return 'handled';
       }
       session.model = resolveChatModel(newModel, session.provider);
-      session.claudeSessionId = undefined;
       console.log(`${GREEN}Model: ${session.model}${RESET}`);
       return 'handled';
     }
@@ -211,7 +196,6 @@ async function handleCommand(
       console.log(`${BOLD}Provider:${RESET} ${session.provider}`);
       console.log(`${BOLD}Model:${RESET} ${session.model}`);
       console.log(`${BOLD}Messages:${RESET} ${session.messages.length}`);
-      console.log(`${BOLD}Claude resume:${RESET} ${session.claudeSessionId ? 'active' : 'none'}`);
       return 'handled';
 
     case 'help':
@@ -222,7 +206,7 @@ ${BOLD}Commands:${RESET}
   ${CYAN}/clear${RESET}            Clear conversation
   ${CYAN}/save [name]${RESET}      Save session
   ${CYAN}/load [name]${RESET}      List/load sessions
-  ${CYAN}/provider [id]${RESET}    Change provider (claude/codex)
+  ${CYAN}/provider [id]${RESET}    Change provider (codex/openrouter/lmstudio/local/gpt)
   ${CYAN}/model [id]${RESET}       Change model
   ${CYAN}/info${RESET}             Session info
   ${CYAN}/exit${RESET}             Exit (Ctrl+D)

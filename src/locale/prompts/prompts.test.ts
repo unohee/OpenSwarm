@@ -43,11 +43,13 @@ describe('buildWorkerPrompt', () => {
     expect(result).toContain('Session expires too fast');
   });
 
-  it('contains output format JSON block', () => {
+  it('does not force a JSON success block (git diff is the success signal)', () => {
     const result = enPrompts.buildWorkerPrompt(base);
-    expect(result).toContain('"success"');
-    expect(result).toContain('"filesChanged"');
-    expect(result).toContain('"confidencePercent"');
+    // JSON is now optional, only for flagging a halt/low-confidence.
+    expect(result).toContain('no JSON is needed');
+    expect(result).toContain('haltReason');
+    // The success path is "stop calling tools and summarize", not a JSON block.
+    expect(result).toContain('success signal');
   });
 
   it('contains rules section', () => {
@@ -147,6 +149,36 @@ describe('buildWorkerPrompt', () => {
       },
     });
     expect(result).toContain('no need to Read these files');
+  });
+
+  it('with repoMemories: renders repository knowledge with pitfall/pattern tags', () => {
+    const result = enPrompts.buildWorkerPrompt({
+      ...base,
+      context: {
+        repoMemories: [
+          { type: 'system_pattern', title: 'Solved: auth refactor', content: 'Changed src/auth.ts using token rotation.' },
+          { type: 'constraint', title: 'Review rejection: session fix', content: 'Do not bypass session validation in middleware.' },
+        ],
+      },
+    });
+    expect(result).toContain('Repository Knowledge');
+    expect(result).toContain('✓ pattern');
+    expect(result).toContain('⚠️ PITFALL');
+    expect(result).toContain('token rotation');
+    expect(result).toContain('avoid repeating past mistakes');
+  });
+
+  it('repoMemories alone is enough to render the Code Context section', () => {
+    const result = enPrompts.buildWorkerPrompt({
+      ...base,
+      context: {
+        repoMemories: [
+          { type: 'fact', title: 'Build', content: 'Use pnpm, not npm.' },
+        ],
+      },
+    });
+    expect(result).toContain('Code Context');
+    expect(result).toContain('pnpm');
   });
 });
 

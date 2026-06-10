@@ -1,0 +1,54 @@
+I cannot run more tools due to the tool budget being exhausted. I'll proceed with the final answer based on the current analysis.FILES TOUCHED
+- None
+
+COMMANDS RUN
+- None
+
+ROOT CAUSE
+- The recursive walk and the “expand modules” flow both support ignore-paths, but there’s a mismatch in how the paths are formed and when filtering is applied, which causes patterns to be missed in common scenarios.
+- Specifically:
+  1) In PyLinter._discover_files (pylint/lint/pylinter.py), directories are filtered using _is_ignored_file(root, …, ignore_paths). This checks the directory path (e.g. src\gen), not its contents. If the user has a regex such as ^src/gen/.*$ (typical: match all files under src/gen), it does not match the directory itself (src\gen) and the subtree is not pruned.
+     - This is OK only if the second-stage filtering catches the files themselves.
+  2) After recursive discovery, PyLinter._iterate_file_descrs -> _expand_files (pylint/lint/pylinter.py -> pylint/lint/expand_modules.py) applies ignore-paths again per element. That should normally catch files like src\gen\about.py against ^src/gen/.*$.
+  3) The regression appears when the starting point is the current directory “.” with --recursive=y. os.walk('.') yields roots like '.' and './src', and files like './src/gen/about.py'. These have a “./” prefix, so a user regex such as ^src/gen/.*$ (based on docs and examples) won’t match './src/gen/about.py' (leading ‘./’ prevents ^src/... from matching). The ignore-paths option is documented to work with normalized paths (Posix/Windows), but it does not handle this “./” prefix case. As a result, ignore-paths are effectively ignored when running recursively from the current directory, which is exactly what the failing test (TestRunTC::test_ignore_path_recursive_current_dir) exercises.
+- Secondary issue: In PyLinter.open(), _ignore_paths is populated from self.linter.config.ignore_paths instead of self.config.ignore_paths (pylint/lint/pylinter.py:1014). While PyLinter usually has self.linter == self for checkers, this is fragile and inconsistent with other uses of self.config. It risks _ignore_paths being stale/incorrect in some contexts.
+
+FIX PLAN
+1) Normalize discovered file paths to remove a leading “./” so that user-provided ignore-paths which anchor at the start of the path (e.g. ^src/...) will match consistently when running from the current directory.
+   - File: pylint/lint/pylinter.py
+   - Function: _discover_files
+   - Change: Before yielding roots and file paths from os.walk, normalize the produced paths by stripping a leading “./” and “.\\” (Windows) to a consistent relative form.
+     - Pseudocode modification inside the os.walk loop:
+       - After computing ‘root’, add:
+         - if root.startswith("./"): root = root[2:]
+         - if root.startswith(".\\"): root = root[2:]
+       - When yielding files, ensure you normalize the join similarly:
+         - path = os.path.join(root, file)
+         - if path.startswith("./") or path.startswith(".\\"): strip the prefix
+       - This ensures elements passed to ignore matching start with the project-relative directory (e.g. src/...) instead of ./src/..., letting ^src/... patterns match.
+   - Also consider normalizing input arguments similarly at the beginning of _discover_files (for “something”): if something == "." or something starts with "./" or ".\\", strip the prefix before passing to os.walk.
+
+2) Ensure _ignore_paths is read from the correct config namespace consistently.
+   - File: pylint/lint/pylinter.py
+   - Function: open
+   - Change line assigning _ignore_paths:
+     - Replace: self._ignore_paths = self.linter.config.ignore_paths
+     - With: self._ignore_paths = self.config.ignore_paths
+   - This removes reliance on self.linter and keeps behavior consistent with other references (e.g. self.config.ignore_paths used in _discover_files).
+
+3) Optional safety enhancement: In expand_modules (pylint/lint/expand_modules.py), when evaluating whether to ignore an element, we currently use the provided element string as-is. To align behavior across both flows, we can normalize a leading “./” (or “.\\”) before matching, in case other call paths also feed elements with such prefixes.
+   - File: pylint/lint/expand_modules.py
+   - Function: expand_modules
+   - Change at the top of the for-loop over files_or_modules:
+     - Before computing basename and calling _is_ignored_file, add:
+       - if something.startswith("./") or something.startswith(".\\"): something = something[2:]
+   - This is defensive and ensures consistency even if other entrypoints yield “./”-prefixed paths.
+
+Rationale
+- This directly addresses why ignore-paths work when the target path is “src/...” but fail when the run is initiated from “.” with --recursive=y.
+- It keeps ignore-pattern semantics intact (still matching start-of-string), but makes the internal paths consistent with user expectations and documentation.
+- Correcting self._ignore_paths source prevents subtle bugs and matches how other config values are retrieved.
+
+Uncertainties
+- Path normalization and platform behavior: While stripping “./” and “.\\” is safe for relative paths, ensure there’s no case where absolute paths are fed (those should remain untouched). The proposed checks only strip when the string literal begins with those prefixes.
+- Tests depend on relative-path matching; confirm no tests assert that “./” should be preserved in diagnostics. We’re only normalizing for matching/selection, not for reporting, so this should be fine.

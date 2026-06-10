@@ -14,7 +14,6 @@ import {
   setRetryTime,
   clearRetryTime,
   formatRetryTime,
-  getDailyCompletedCount,
   getDailyPaceInfo,
   recordProjectCompletion,
   canProjectAcceptTask,
@@ -30,7 +29,7 @@ import {
 } from '../orchestration/decisionEngine.js';
 // ExecutorResult used via execution.reportExecutionResult
 import { checkWorkAllowed } from '../support/timeWindow.js';
-import { saveCognitiveMemory } from '../memory/index.js';
+import { recordTaskOutcome } from '../memory/repoKnowledge.js';
 import * as linear from '../linear/index.js';
 import { updateProjectAfterTask } from '../linear/projectUpdater.js';
 import { TaskScheduler, initScheduler } from '../orchestration/taskScheduler.js';
@@ -224,13 +223,15 @@ export class AutonomousRunner {
           console.error(`[Scheduler] Failed to update issue state:`, err);
         }
 
-        try {
-          await saveCognitiveMemory('strategy',
-            `Pipeline execution succeeded: "${task.title}"`,
-            { confidence: 0.9, derivedFrom: task.issueId }
-          );
-        } catch (memErr) {
-          console.warn(`[Scheduler] Memory save failed (non-critical):`, memErr);
+        // Accumulate repo-scoped knowledge — recalled and injected into the worker prompt of the next similar task
+        const projectPath = result.taskContext?.projectPath;
+        if (projectPath) {
+          await recordTaskOutcome(projectPath, {
+            taskTitle: task.title,
+            derivedFrom: task.issueIdentifier ?? task.issueId,
+            workerResult: result.workerResult,
+            iterations: result.iterations,
+          });
         }
       }
 
@@ -260,6 +261,15 @@ export class AutonomousRunner {
       if (task.issueId && result.finalStatus === 'rejected') {
         const feedback = result.reviewResult?.feedback || 'No feedback provided';
         const rejectionCount = incrementRejection(task.issueId, feedback);
+
+        // Store the rejection reason as a repo pitfall (constraint) — blocks repeating the same mistake
+        if (result.taskContext?.projectPath) {
+          await recordTaskOutcome(result.taskContext.projectPath, {
+            taskTitle: task.title,
+            derivedFrom: task.issueIdentifier ?? task.issueId,
+            rejectionFeedback: feedback,
+          });
+        }
 
         console.log(`[Scheduler] Task rejected (${rejectionCount}/3): ${taskCtx} ${task.title}`);
         console.log(`[Scheduler] Rejection reason: ${feedback}`);
@@ -403,41 +413,27 @@ export class AutonomousRunner {
     return filtered;
   }
 
-  /** Schedule next heartbeat with pace-aware cooldown */
+  /**
+   * Trigger the next heartbeat as soon as possible.
+   *
+   * Historically this used a "pace-aware cooldown" that grew quadratically
+   * with daily completion count (ratio² × 3 multiplier) on top of a 30-minute
+   * baseline — the swarm would slow itself down dramatically after a few
+   * tasks. That was removed by user request: the cron schedule
+   * (`config.heartbeatSchedule`) is now the only knob, and between cron
+   * ticks we re-fire immediately when a task wraps up so the next backlog
+   * item starts without artificial dead time.
+   */
   private _nextHeartbeatTimer: ReturnType<typeof setTimeout> | null = null;
   private scheduleNextHeartbeat(): void {
-    if (this._nextHeartbeatTimer) return; // already scheduled
-
-    const isTurbo = this.getTurboMode();
-
-    // Turbo: 5min flat, no progressive slowdown
-    if (isTurbo) {
-      const turboCooldown = 5 * 60_000; // 5min
-      console.log(`[AutonomousRunner] TURBO: next heartbeat in 5min`);
-      this._nextHeartbeatTimer = setTimeout(() => {
-        this._nextHeartbeatTimer = null;
-        void this.heartbeat();
-      }, turboCooldown);
-      return;
-    }
-
-    // Normal: progressive slowdown based on 5h window usage
-    const perProjectCap = this.config.dailyTaskCap ?? 6;
-    const globalCap = Math.max(this.enabledProjects.size, 3) * perProjectCap;
-    const baseCooldown = this.config.interTaskCooldownMs ?? 1_800_000; // 30min default
-    const totalInWindow = getDailyCompletedCount();
-
-    // Progressive slowdown: ratio² × 3 multiplier
-    const ratio = totalInWindow / globalCap;
-    const multiplier = 1 + (ratio * ratio * 3);
-    const adjustedCooldown = Math.round(baseCooldown * multiplier);
-
-    const cooldownMin = Math.round(adjustedCooldown / 60_000);
-    console.log(`[AutonomousRunner] Scheduling next heartbeat in ${cooldownMin}min (5h window: ${totalInWindow}/${globalCap}, multiplier: ${multiplier.toFixed(2)}x)`);
+    if (this._nextHeartbeatTimer) return; // already queued
+    // Fire on the next event-loop tick so the current scheduler callback
+    // returns first (avoids re-entrant heartbeat() while still in `completed`
+    // handlers).
     this._nextHeartbeatTimer = setTimeout(() => {
       this._nextHeartbeatTimer = null;
       void this.heartbeat();
-    }, adjustedCooldown);
+    }, 0);
   }
 
   private async runAvailableTasks(): Promise<void> {
@@ -461,7 +457,7 @@ export class AutonomousRunner {
       return {
         worker: {
           enabled: true,
-          model: this.config.workerModel || 'claude-sonnet-4-5-20250929',
+          model: this.config.workerModel || 'claude-sonnet-4-6',
           timeoutMs: this.config.workerTimeoutMs ?? 0,
         },
         reviewer: {
@@ -474,7 +470,7 @@ export class AutonomousRunner {
 
     // Apply per-project overrides
     const base = this.config.defaultRoles || {
-      worker: { enabled: true, model: 'claude-sonnet-4-5-20250929', timeoutMs: 0 },
+      worker: { enabled: true, model: 'claude-sonnet-4-6', timeoutMs: 0 },
       reviewer: { enabled: true, model: 'claude-haiku-4-5-20251001', timeoutMs: 0 },
     };
 
@@ -620,20 +616,12 @@ export class AutonomousRunner {
         console.log(`[AutonomousRunner] Quota warning: ${quotaCheck.utilization.toFixed(0)}% utilization`);
       }
 
-      // 1.6 Pace gate — per-project 5h rolling window
-      const isTurbo = this.getTurboMode();
-      const perProjectCap = isTurbo ? 20 : (this.config.dailyTaskCap ?? 6);
-      const totalInWindow = getDailyCompletedCount();
-      // 전역 상한: 프로젝트 수 × per-project cap (안전장치)
-      const globalCap = Math.max(this.enabledProjects.size, 3) * perProjectCap;
-      if (totalInWindow >= globalCap) {
-        console.log(`[AutonomousRunner] Global pace limit: ${totalInWindow}/${globalCap} tasks in 5h window — skipping`);
-        this.syslog(`⏸ Global pace: ${totalInWindow}/${globalCap} (5h window)`);
-        broadcastEvent({ type: 'log', data: { taskId: 'system', stage: 'pace', line: `⏸ Global pace: ${totalInWindow}/${globalCap}` } });
-        return;
-      }
-      const modeLabel = isTurbo ? 'TURBO' : 'Normal';
-      this.syslog(`✓ Pace: ${totalInWindow}/${globalCap} global, ${perProjectCap}/project [${modeLabel}]`);
+      // 1.6 Pace gate (removed)
+      // The 5h rolling window cap (globalCap = projects × dailyTaskCap) and
+      // turbo-mode multiplier used to gate heartbeat here. Both were removed
+      // by user request: speed is now governed only by the cron schedule and
+      // the Linear API rate limiter, not by an internal completion cap.
+      this.syslog(`✓ Pace: unrestricted (cron only)`);
 
       // 2. Fetch tasks from Linear
       this.syslog('⟳ Fetching tasks from Linear...');
@@ -946,13 +934,13 @@ export class AutonomousRunner {
           await execution.reconcileCompletionState(task);
           console.log(`[AutonomousRunner] Issue ${task.issueId} marked as Done`);
 
-          try {
-            await saveCognitiveMemory('strategy',
-              `Pair execution succeeded: "${task.title}"`,
-              { confidence: 0.9, derivedFrom: task.issueId }
-            );
-          } catch (memErr) {
-            console.warn(`[AutonomousRunner] Memory save failed (non-critical):`, memErr);
+          if (result.taskContext?.projectPath) {
+            await recordTaskOutcome(result.taskContext.projectPath, {
+              taskTitle: task.title,
+              derivedFrom: task.issueIdentifier ?? task.issueId,
+              workerResult: result.workerResult,
+              iterations: result.iterations,
+            });
           }
         } else if (result.finalStatus === 'rejected') {
           // Change to Blocked on review rejection
@@ -1090,19 +1078,19 @@ export class AutonomousRunner {
   }
 
   getAdapterSummary() {
-    const defaultAdapter = this.config.defaultAdapter ?? 'claude';
+    const defaultAdapter = this.config.defaultAdapter ?? 'codex';
     const defaultRoles = this.config.defaultRoles;
 
     return {
       defaultAdapter,
       worker: {
         adapter: defaultRoles?.worker?.adapter ?? defaultAdapter,
-        model: defaultRoles?.worker?.model ?? this.config.workerModel ?? 'claude-sonnet-4-5-20250929',
+        model: defaultRoles?.worker?.model ?? this.config.workerModel ?? 'gpt-5-codex',
         enabled: defaultRoles?.worker?.enabled !== false,
       },
       reviewer: {
         adapter: defaultRoles?.reviewer?.adapter ?? defaultAdapter,
-        model: defaultRoles?.reviewer?.model ?? this.config.reviewerModel ?? 'claude-haiku-4-5-20251001',
+        model: defaultRoles?.reviewer?.model ?? this.config.reviewerModel ?? 'gpt-5-codex',
         enabled: defaultRoles?.reviewer?.enabled !== false,
       },
       tester: defaultRoles?.tester ? {
@@ -1133,7 +1121,7 @@ export class AutonomousRunner {
       }
 
       if (isClaudeModel) return current;
-      if (role === 'reviewer') return 'claude-sonnet-4-20250514';
+      if (role === 'reviewer') return 'claude-sonnet-4-6';
       return 'claude-haiku-4-5-20251001';
     };
 

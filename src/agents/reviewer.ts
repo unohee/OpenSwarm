@@ -17,7 +17,7 @@ export interface ReviewerOptions {
   workerResult: WorkerResult;
   projectPath: string;
   timeoutMs?: number;
-  model?: string;              // Claude model (default: claude-sonnet-4-5-20250929)
+  model?: string;              // Model ID (default: adapter default)
   maxTurns?: number;           // Max agentic turns per CLI invocation
   adapterName?: AdapterName;
   processContext?: ProcessContext;

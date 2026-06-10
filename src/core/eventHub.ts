@@ -23,7 +23,43 @@ export type HubEvent =
   | { type: 'task:queued'; data: { taskId: string; title: string; projectPath: string; issueIdentifier?: string } }
   | { type: 'task:started'; data: { taskId: string; title: string; issueIdentifier?: string } }
   | { type: 'task:completed'; data: { taskId: string; success: boolean; duration: number } }
-  | { type: 'pipeline:stage'; data: { taskId: string; stage: string; status: 'start' | 'complete' | 'fail'; model?: string; inputTokens?: number; outputTokens?: number; costUsd?: number } }
+  | { type: 'pipeline:stage'; data: {
+      taskId: string;
+      stage: string;
+      status: 'start' | 'complete' | 'fail';
+      model?: string;
+      inputTokens?: number;
+      outputTokens?: number;
+      costUsd?: number;
+      durationMs?: number;
+      // What the agent actually produced — populated for `status: 'complete'`.
+      summary?: string;
+      filesChanged?: string[];
+      filesChangedCount?: number;
+      commands?: string[];
+      commandsCount?: number;
+      decision?: 'approve' | 'revise' | 'reject';
+      feedback?: string;
+      issues?: string[];
+      issuesCount?: number;
+      suggestionsCount?: number;
+      // Tester
+      passed?: number;
+      failed?: number;
+      coverage?: number;
+      failedTests?: string[];
+      // Documenter
+      changelogEntry?: string;
+      // Auditor
+      bsScore?: number;
+      criticalCount?: number;
+      warningCount?: number;
+      // Worker confidence-gate
+      confidencePercent?: number;
+      haltReason?: string;
+      // Errors
+      error?: string;
+    } }
   | { type: 'pipeline:iteration'; data: { taskId: string; iteration: number } }
   | { type: 'pipeline:escalation'; data: { taskId: string; iteration: number; fromModel?: string; toModel: string } }
   | { type: 'log'; data: { taskId: string; stage: string; line: string } }

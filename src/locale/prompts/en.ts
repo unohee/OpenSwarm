@@ -27,10 +27,20 @@ Apply the above feedback and make corrections.
 `
       : '';
 
-    // 코드 컨텍스트 섹션 (draftAnalysis + impactAnalysis + registryBriefs)
+    // Code context section (draftAnalysis + impactAnalysis + registryBriefs + repoMemories)
     let contextSection = '';
-    if (context?.draftAnalysis || context?.impactAnalysis || context?.registryBriefs?.length) {
+    if (context?.draftAnalysis || context?.impactAnalysis || context?.registryBriefs?.length || context?.repoMemories?.length) {
       const parts: string[] = ['## Code Context (auto-generated)'];
+
+      if (context.repoMemories && context.repoMemories.length > 0) {
+        parts.push('');
+        parts.push('### Repository Knowledge (learned from past tasks in this repo)');
+        for (const m of context.repoMemories) {
+          const tag = m.type === 'constraint' ? '⚠️ PITFALL' : '✓ pattern';
+          parts.push(`- [${tag}] **${m.title}**: ${m.content}`);
+        }
+        parts.push('Use this knowledge to skip re-discovery and avoid repeating past mistakes.');
+      }
 
       if (context.draftAnalysis) {
         const da = context.draftAnalysis;
@@ -100,25 +110,24 @@ ${feedbackSection}${contextSection}
 - Before completing: verify all changed files exist, no syntax errors, confidence reflects reality.
 
 ## Tools available
-- \`cxt\` (code exploration toolkit, bundled with OpenSwarm):
-  - \`cxt check <file>\` — entity brief for a file (faster than Read for structural lookups).
-  - \`cxt check --search <q>\` — FTS5 search across the registry.
-  - \`cxt check --untested\` / \`--high-risk\` — surface risky spots before changing them.
-  - \`cxt bs\` — static bad-smell scan.
-  - Run \`cxt scan\` first if the registry seems stale; it's cheap.
-  - The \`File Map\` section above (when present) already comes from \`cxt\` — don't re-scan unless you need fresh data.
+Use search_files (ripgrep) + read_file as your primary navigation. They're always available and cheapest.
 
-## Output (JSON, at the end)
+Optional: \`cxt\` (code registry, only if this repo already has one — do NOT run \`cxt scan\` to create one):
+  - \`cxt check <file>\` / \`cxt check --search <q>\` — entity briefs / FTS5 search, faster than Read for structure.
+  - If a \`File Map\` section appears above, it already came from \`cxt\` — don't re-scan.
+  - If \`cxt\` errors with "no registry" or similar, just use search_files/read_file instead — don't retry cxt.
+
+## Done? Just do the work.
+Use the tools to actually edit files and run commands. File changes are detected
+from git directly — you do NOT need to prove success with a JSON block. When the
+task is complete, stop calling tools and write a short plain-text summary of what
+you did and any caveats.
+
+If (and only if) you want to flag low confidence or a blocker, end with this JSON:
 \`\`\`json
-{
-  "success": true,
-  "summary": "What YOU did (1-2 sentences, not reviewer feedback)",
-  "filesChanged": ["full paths of files edited/written"],
-  "commands": ["bash commands executed"],
-  "confidencePercent": 85
-}
+{ "success": false, "confidencePercent": 40, "haltReason": "why you're stuck" }
 \`\`\`
-Set confidencePercent below 60 if uncertain. filesChanged must include all edited files (full paths).
+Otherwise no JSON is needed — finishing without an error IS the success signal.
 
 `;
   },

@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { CodexCliAdapter } from './codex.js';
+import { describe, it, expect, vi } from 'vitest';
+import { CodexCliAdapter, coerceCodexModel } from './codex.js';
 
 describe('CodexCliAdapter', () => {
   const adapter = new CodexCliAdapter();
@@ -16,6 +16,37 @@ describe('CodexCliAdapter', () => {
     expect(command).toContain('--full-auto');
     expect(command).toContain('--skip-git-repo-check');
     expect(command).toContain("-m 'gpt-5-codex'");
+  });
+
+  it('substitutes a claude model with the codex default and warns', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { command } = adapter.buildCommand({
+        prompt: '/tmp/prompt.txt',
+        cwd: '/tmp/project',
+        model: 'claude-sonnet-4-20250514',
+      });
+      // Should not pass the claude model through to the codex CLI.
+      expect(command).not.toContain('claude-sonnet');
+      expect(command).toContain("-m 'gpt-5-codex'");
+      // Warning emitted at least once for this model name.
+      const messages = warn.mock.calls.map((c) => String(c[0]));
+      expect(messages.some((m) => m.includes('claude-sonnet-4-20250514'))).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('coerceCodexModel passes OpenAI model names through unchanged', () => {
+    expect(coerceCodexModel('gpt-5-codex')).toBe('gpt-5-codex');
+    expect(coerceCodexModel('o3')).toBe('o3');
+    expect(coerceCodexModel('gpt-4o')).toBe('gpt-4o');
+  });
+
+  it('coerceCodexModel rewrites every claude-* variant', () => {
+    expect(coerceCodexModel('claude-opus-4-6')).toBe('gpt-5-codex');
+    expect(coerceCodexModel('claude-haiku-4-5-20251001')).toBe('gpt-5-codex');
+    expect(coerceCodexModel('Claude-Sonnet-4')).toBe('gpt-5-codex');
   });
 
   it('parses worker output from codex json events', () => {

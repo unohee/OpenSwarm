@@ -6,37 +6,53 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>OpenSwarm :: Supervisor</title>
   <style>
+    /*
+     * Design tokens — adapted from VEGA (GitHub Dark inspired).
+     * Legacy variable names are preserved so the rest of the stylesheet keeps
+     * working unchanged; only the values shifted to a calmer, more readable
+     * palette while keeping the semantic intent (--green = primary action,
+     * --amber = warning, --red = destructive, --dim = secondary text).
+     */
     :root {
-      --bg:        #0a0c0a;
-      --bg2:       #0d100d;
-      --bg3:       #111411;
-      --green:     #00ff41;
-      --green-dim: #003a00;
-      --green-mid: #00aa00;
-      --green-lo:  #005500;
-      --cyan:      #00ccdd;
-      --cyan-dim:  #003344;
-      --amber:     #ffaa00;
-      --red:       #ff3333;
-      --white:     #ccddcc;
-      --dim:       #445544;
-      --border:    #1a2a1a;
-      --border2:   #0d1a0d;
+      --bg:        #0d1117;   /* page background */
+      --bg2:       #161b22;   /* surface (cards, header) */
+      --bg3:       #1c2128;   /* surface raised (hover) */
+      --green:     #58a6ff;   /* primary accent (was matrix green) */
+      --green-dim: rgba(88, 166, 255, 0.12);
+      --green-mid: #58a6ff;
+      --green-lo:  #30363d;
+      --cyan:      #79c0ff;
+      --cyan-dim:  rgba(121, 192, 255, 0.14);
+      --amber:     #d29922;
+      --red:       #f85149;
+      --white:     #c9d1d9;   /* primary text */
+      --dim:       #8b949e;   /* muted text */
+      --border:    #30363d;
+      --border2:   rgba(48, 54, 61, 0.55);
+      --radius-sm: 6px;
+      --radius-md: 8px;
+      --radius-lg: 12px;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { height: 100%; overflow: hidden; }
     body {
-      font-family: 'Cascadia Code', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
       background: var(--bg);
       color: var(--white);
-      font-size: 13px;
-      line-height: 1.4;
+      font-size: 14px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+    /* Monospace contexts (logs, paths, IDs) still use a mono stack */
+    code, pre, .mono, .log-line, .repo-item-path, .scan-path-row .path, .issue-id {
+      font-family: "SF Mono", "JetBrains Mono", "Fira Code", Consolas, monospace;
     }
 
     /* ===== SCROLLBAR ===== */
-    ::-webkit-scrollbar { width: 4px; }
-    ::-webkit-scrollbar-track { background: var(--bg); }
-    ::-webkit-scrollbar-thumb { background: var(--green-lo); border-radius: 2px; }
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--dim); }
 
     /* ===== HEADER ===== */
     header {
@@ -70,17 +86,21 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     #sse-status.disconnected { border-color: var(--red); color: var(--red); }
     .btn {
       font-family: inherit;
-      font-size: 10px;
-      padding: 2px 10px;
-      background: transparent;
-      border: 1px solid var(--green-lo);
-      color: var(--green-mid);
+      font-size: 11px;
+      font-weight: 500;
+      padding: 4px 12px;
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--white);
       cursor: pointer;
-      letter-spacing: 0.1em;
-      transition: all 0.15s;
+      letter-spacing: 0.04em;
+      transition: border-color 0.15s, background 0.15s, color 0.15s;
     }
     .btn:hover:not(:disabled) { border-color: var(--green); color: var(--green); background: var(--green-dim); }
     .btn:disabled { opacity: 0.4; cursor: default; }
+    .btn.primary { background: var(--green); border-color: var(--green); color: #0d1117; font-weight: 600; }
+    .btn.primary:hover:not(:disabled) { opacity: 0.88; background: var(--green); color: #0d1117; }
     .btn-active { border-color: var(--amber); color: var(--amber); }
     .btn-active:hover:not(:disabled) { background: #332200; border-color: var(--amber); }
     .btn-danger { border-color: #551111; color: var(--red); }
@@ -312,22 +332,58 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     .proc-kill:hover { background: #220000; border-color: var(--red); }
 
     /* ===== PIPELINE ===== */
+    .stage-block {
+      border-bottom: 1px solid var(--border2);
+    }
     .stage-row {
       display: flex; align-items: center; gap: 6px;
-      padding: 3px 0; border-bottom: 1px solid var(--border2);
+      padding: 4px 8px;
       font-size: 11px;
+      cursor: pointer;
+      transition: background 0.12s;
+    }
+    .stage-row:hover { background: var(--bg3); }
+    .stage-row.has-details::after {
+      content: "›"; color: var(--dim); margin-left: 4px;
+      transition: transform 0.15s;
+    }
+    .stage-block.expanded .stage-row.has-details::after {
+      transform: rotate(90deg); display: inline-block;
     }
     .sdot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; background: var(--dim); }
     .sdot.start  { background: var(--amber); }
     .sdot.complete { background: var(--green); }
     .sdot.fail   { background: var(--red); }
     .sname { color: var(--white); min-width: 70px; }
-    .srepo { color: var(--green-lo); font-size: 9px; min-width: 50px; max-width: 90px; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .srepo { color: var(--dim); font-size: 10px; min-width: 50px; max-width: 90px; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .stask { color: var(--cyan); font-size: 10px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ssummary {
+      color: var(--white); font-size: 11px; flex: 2;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      opacity: 0.85;
+    }
     .selapsed { color: var(--amber); font-size: 9px; flex-shrink: 0; min-width: 36px; text-align: right; }
     .smodel { color: var(--dim); font-size: 9px; flex-shrink: 0; min-width: 56px; text-align: right; }
     .stokens { color: var(--amber); font-size: 9px; flex-shrink: 0; min-width: 80px; text-align: right; white-space: nowrap; }
-    .sstatus { margin-left: auto; font-size: 9px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.06em; flex-shrink: 0; }
+    .sstatus { font-size: 9px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.06em; flex-shrink: 0; }
+    /* Expanded details */
+    .stage-details {
+      display: none;
+      padding: 8px 14px 10px 22px;
+      background: rgba(0,0,0,0.18);
+      font-size: 11px;
+      color: var(--white);
+      border-top: 1px dashed var(--border2);
+    }
+    .stage-block.expanded .stage-details { display: block; }
+    .stage-details .sd-line { display: flex; gap: 8px; padding: 1px 0; align-items: baseline; }
+    .stage-details .sd-key { color: var(--dim); font-size: 10px; min-width: 70px; text-transform: uppercase; letter-spacing: 0.06em; }
+    .stage-details .sd-val { color: var(--white); font-size: 11px; flex: 1; word-break: break-all; }
+    .stage-details ul { margin: 2px 0 4px 14px; padding: 0; }
+    .stage-details li { font-family: "SF Mono", "JetBrains Mono", monospace; font-size: 10px; color: var(--cyan); padding: 1px 0; }
+    .sd-decision-approve { color: var(--green); font-weight: 600; }
+    .sd-decision-revise  { color: var(--amber); font-weight: 600; }
+    .sd-decision-reject  { color: var(--red); font-weight: 600; }
 
     /* ===== LOG TAB BAR ===== */
     .log-tab-bar {
@@ -632,27 +688,51 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     </div>
 
     <!-- REPO PICKER OVERLAY -->
-    <div id="repo-picker" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:100;align-items:center;justify-content:center">
-      <div style="background:#0d100d;border:1px solid #1a2a1a;width:500px;max-height:70vh;display:flex;flex-direction:column">
-        <div style="padding:8px 12px;border-bottom:1px solid #1a2a1a;display:flex;align-items:center;gap:8px">
-          <span style="color:#00aa00;font-size:11px;text-transform:uppercase;letter-spacing:.1em">ADD REPOSITORY</span>
-          <button onclick="closeRepoPicker()" style="margin-left:auto;background:transparent;border:none;color:#445544;cursor:pointer;font-size:14px">✕</button>
+    <div id="repo-picker" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.65);backdrop-filter:blur(4px);z-index:100;align-items:center;justify-content:center">
+      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);width:560px;max-height:75vh;display:flex;flex-direction:column;box-shadow:0 10px 32px rgba(0,0,0,0.5)">
+        <div style="padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px">
+          <span style="color:var(--white);font-size:13px;font-weight:600;letter-spacing:.04em">Add repository</span>
+          <button onclick="closeRepoPicker()" style="margin-left:auto;background:transparent;border:none;color:var(--dim);cursor:pointer;font-size:18px;line-height:1;padding:0 4px;border-radius:4px" onmouseover="this.style.color='var(--white)'" onmouseout="this.style.color='var(--dim)'">✕</button>
         </div>
-        <div style="padding:6px 12px;border-bottom:1px solid #1a2a1a">
-          <input id="repo-search" type="text" placeholder="filter repositories..."
-            style="width:100%;background:transparent;border:none;outline:none;font-family:inherit;font-size:12px;color:#00ff41;caret-color:#00ff41"
+        <div style="padding:10px 18px;border-bottom:1px solid var(--border2)">
+          <input id="repo-search" type="text" placeholder="Filter repositories…"
+            style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);outline:none;font-family:inherit;font-size:13px;color:var(--white);padding:7px 10px;caret-color:var(--green)"
             oninput="filterRepos(this.value)" onkeydown="if(event.key==='Escape')closeRepoPicker()">
         </div>
-        <div id="repo-picker-list" style="overflow-y:auto;flex:1;padding:4px 0"></div>
-        <div id="scan-paths-section" style="border-top:1px solid #1a2a1a;padding:8px 12px">
-          <div style="color:#00aa00;font-size:10px;text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px">SCAN PATHS</div>
+        <div id="repo-picker-list" style="overflow-y:auto;flex:1;padding:6px 0"></div>
+        <div id="scan-paths-section" style="border-top:1px solid var(--border);padding:12px 18px;background:rgba(13,17,23,0.4)">
+          <div style="color:var(--dim);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px">Scan paths</div>
           <div id="scan-paths-list"></div>
-          <div style="display:flex;gap:4px;margin-top:6px">
-            <input id="scan-path-input" type="text" placeholder="/path/to/scan"
-              style="flex:1;background:transparent;border:1px solid #1a2a1a;outline:none;font-family:inherit;font-size:11px;color:#00ff41;padding:3px 6px;caret-color:#00ff41"
-              onkeydown="if(event.key==='Enter')addScanPath()">
-            <button class="btn" style="font-size:9px;padding:1px 6px" onclick="addScanPath()">+ ADD</button>
+          <div style="display:flex;gap:6px;margin-top:10px">
+            <button class="btn" style="flex:1;justify-content:center" onclick="openFolderBrowser()">📁 Browse for folder…</button>
+            <button class="btn" style="font-size:11px" onclick="toggleManualPathInput()" title="Type a path manually">⌨</button>
           </div>
+          <div id="manual-path-row" style="display:none;gap:6px;margin-top:6px">
+            <input id="scan-path-input" type="text" placeholder="/absolute/path/to/scan"
+              style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);outline:none;font-family:inherit;font-size:12px;color:var(--white);padding:5px 8px;caret-color:var(--green)"
+              onkeydown="if(event.key==='Enter')addScanPath()">
+            <button class="btn primary" style="font-size:11px" onclick="addScanPath()">Add</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- FOLDER BROWSER OVERLAY (native-style picker, server-side fs) -->
+    <div id="folder-browser" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.65);backdrop-filter:blur(4px);z-index:110;align-items:center;justify-content:center">
+      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);width:620px;max-height:80vh;display:flex;flex-direction:column;box-shadow:0 10px 32px rgba(0,0,0,0.5)">
+        <div style="padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px">
+          <span style="color:var(--white);font-size:13px;font-weight:600;letter-spacing:.04em">Choose folder to scan</span>
+          <button onclick="closeFolderBrowser()" style="margin-left:auto;background:transparent;border:none;color:var(--dim);cursor:pointer;font-size:18px;line-height:1;padding:0 4px;border-radius:4px" onmouseover="this.style.color='var(--white)'" onmouseout="this.style.color='var(--dim)'">✕</button>
+        </div>
+        <div style="padding:10px 18px;border-bottom:1px solid var(--border2);display:flex;align-items:center;gap:6px">
+          <button class="btn" id="fb-up" style="font-size:11px;padding:3px 10px" onclick="folderBrowserUp()" title="Parent directory">↑ Up</button>
+          <input id="fb-path" type="text" readonly
+            style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);outline:none;font-family:'SF Mono',monospace;font-size:12px;color:var(--white);padding:5px 10px">
+        </div>
+        <div id="fb-list" style="overflow-y:auto;flex:1;padding:4px 0"></div>
+        <div style="padding:12px 18px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end">
+          <button class="btn" onclick="closeFolderBrowser()">Cancel</button>
+          <button class="btn primary" id="fb-select" onclick="folderBrowserSelect()">Select this folder</button>
         </div>
       </div>
     </div>
@@ -1384,9 +1464,13 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     }
     function shortModel(name) {
       if (!name) return "";
+      // Order matters: most specific suffix first so 'sonnet-4-6' isn't
+      // captured by the generic 'sonnet-4' fallback below.
+      if (name.includes("opus-4-7")) return "opus-4.7";
+      if (name.includes("opus-4-6")) return "opus-4.6";
+      if (name.includes("sonnet-4-6")) return "sonnet-4.6";
       if (name.includes("sonnet-4-5")) return "sonnet-4.5";
       if (name.includes("haiku-4-5")) return "haiku-4.5";
-      if (name.includes("opus-4-6")) return "opus-4.6";
       if (name.includes("opus-4")) return "opus-4";
       if (name.includes("sonnet-4")) return "sonnet-4";
       var parts = name.split("-");
@@ -1398,12 +1482,73 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       if (n >= 1000) return (n / 1000).toFixed(1) + "k";
       return String(n);
     }
+    function buildStageDetails(r) {
+      // Builds the expanded "what did the worker actually do" panel for
+      // a pipeline:stage payload. Returns "" when there's nothing to show.
+      const lines = [];
+      function addLine(key, valHtml) {
+        lines.push(
+          "<div class=\\"sd-line\\"><div class=\\"sd-key\\">" + escapeHtml(key) + "</div>" +
+          "<div class=\\"sd-val\\">" + valHtml + "</div></div>"
+        );
+      }
+      function addList(key, items) {
+        const ul = items.map(function(s) { return "<li>" + escapeHtml(String(s)) + "</li>"; }).join("");
+        lines.push(
+          "<div class=\\"sd-line\\"><div class=\\"sd-key\\">" + escapeHtml(key) + "</div>" +
+          "<div class=\\"sd-val\\"><ul>" + ul + "</ul></div></div>"
+        );
+      }
+
+      if (r.summary) addLine("Summary", escapeHtml(r.summary));
+      if (r.decision) {
+        const cls = "sd-decision-" + r.decision;
+        addLine("Decision", "<span class=\\"" + cls + "\\">" + escapeHtml(r.decision.toUpperCase()) + "</span>");
+      }
+      if (r.feedback) addLine("Feedback", escapeHtml(r.feedback));
+      if (Array.isArray(r.filesChanged) && r.filesChanged.length > 0) {
+        const label = "Files (" + (r.filesChangedCount || r.filesChanged.length) + ")";
+        addList(label, r.filesChanged);
+      }
+      if (Array.isArray(r.commands) && r.commands.length > 0) {
+        const label = "Commands (" + (r.commandsCount || r.commands.length) + ")";
+        addList(label, r.commands);
+      }
+      if (Array.isArray(r.issues) && r.issues.length > 0) {
+        const label = "Issues (" + (r.issuesCount || r.issues.length) + ")";
+        addList(label, r.issues);
+      }
+      if (Array.isArray(r.failedTests) && r.failedTests.length > 0) {
+        addList("Failed tests", r.failedTests);
+      }
+      if (r.passed != null || r.failed != null) {
+        addLine("Tests", escapeHtml((r.passed || 0) + " passed, " + (r.failed || 0) + " failed" + (r.coverage != null ? " — coverage " + r.coverage + "%" : "")));
+      }
+      if (r.confidencePercent != null) addLine("Confidence", escapeHtml(r.confidencePercent + "%"));
+      if (r.haltReason) addLine("Halt", escapeHtml(r.haltReason));
+      if (r.bsScore != null) addLine("BS score", escapeHtml(String(r.bsScore)));
+      if (r.criticalCount || r.warningCount) {
+        addLine("Audit", escapeHtml((r.criticalCount || 0) + " critical, " + (r.warningCount || 0) + " warnings"));
+      }
+      if (r.changelogEntry) addLine("Changelog", escapeHtml(r.changelogEntry));
+      if (r.durationMs != null) addLine("Duration", escapeHtml((r.durationMs / 1000).toFixed(1) + "s"));
+      if (r.error) {
+        addLine("Error", "<span style=\\"color:var(--red)\\">" + escapeHtml(r.error) + "</span>");
+      }
+      return lines.join("");
+    }
+
+    function toggleStageDetails(idx) {
+      const block = document.querySelector("[data-stage-idx=\\"" + idx + "\\"]");
+      if (block) block.classList.toggle("expanded");
+    }
+
     function renderStages() {
       const el = document.getElementById("stage-list");
       const cnt = document.getElementById("stage-count");
       if (!stageRows.length) { el.innerHTML = "<div class=\\"empty\\">no pipeline events</div>"; return; }
       if (cnt) cnt.textContent = stageRows.length + "/" + MAX_STAGE;
-      el.innerHTML = stageRows.slice().reverse().map(r => {
+      el.innerHTML = stageRows.slice().reverse().map((r, i) => {
         const info = r.taskId ? taskTitleMap.get(r.taskId) : null;
         let taskLabel = "";
         if (info) {
@@ -1413,10 +1558,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         } else if (r.taskId) {
           taskLabel = r.taskId.slice(0, 8);
         }
-        // repo name from projectPath
         const projPath = r.taskId ? taskProjectMap.get(r.taskId) : null;
         const repoName = projPath ? projPath.split("/").pop() : "";
-        // elapsed time
         const startTs = r.taskId ? taskStartMap.get(r.taskId) : null;
         let elapsed = "";
         if (startTs) {
@@ -1425,23 +1568,48 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           else if (sec < 3600) elapsed = Math.floor(sec / 60) + "m" + (sec % 60) + "s";
           else elapsed = Math.floor(sec / 3600) + "h" + Math.floor((sec % 3600) / 60) + "m";
         }
-        // model/token info (only on complete)
-        var modelStr = r.model ? shortModel(r.model) : "";
-        var tokenStr = "";
+        const modelStr = r.model ? shortModel(r.model) : "";
+        let tokenStr = "";
         if (r.inputTokens || r.outputTokens) {
           tokenStr = fmtTokens(r.inputTokens) + "/" + fmtTokens(r.outputTokens);
           if (r.costUsd != null) tokenStr += " $" + r.costUsd.toFixed(2);
         }
+
+        // Inline summary on the row itself, so the user sees *what* happened
+        // without having to expand.
+        let inlineSummary = "";
+        if (r.decision) {
+          const cls = "sd-decision-" + r.decision;
+          inlineSummary = "<span class=\\"" + cls + "\\">" + escapeHtml(r.decision.toUpperCase()) + "</span>" +
+            (r.feedback ? " · " + escapeHtml(r.feedback.slice(0, 80)) : "");
+        } else if (r.summary) {
+          inlineSummary = escapeHtml(r.summary);
+          if (r.filesChangedCount > 0) inlineSummary += " · " + r.filesChangedCount + " files";
+        } else if (r.passed != null || r.failed != null) {
+          inlineSummary = "✓ " + (r.passed || 0) + "  ✗ " + (r.failed || 0);
+        } else if (r.error) {
+          inlineSummary = "<span style=\\"color:var(--red)\\">" + escapeHtml(r.error.slice(0, 120)) + "</span>";
+        }
+
+        const detailsHtml = buildStageDetails(r);
+        const hasDetails = detailsHtml.length > 0;
+        const rowClass = "stage-row" + (hasDetails ? " has-details" : "");
+        const onclick = hasDetails ? " onclick=\\"toggleStageDetails(" + i + ")\\"" : "";
+
         return (
-          "<div class=\\"stage-row\\">" +
-          "<div class=\\"sdot " + (r.status || "") + "\\"></div>" +
-          "<div class=\\"srepo\\">" + escapeHtml(repoName) + "</div>" +
-          "<div class=\\"sname\\">" + escapeHtml(r.stage) + "</div>" +
-          "<div class=\\"stask\\" title=\\"" + escapeAttr(r.taskId || "") + "\\">" + escapeHtml(taskLabel) + "</div>" +
-          "<div class=\\"smodel\\">" + escapeHtml(modelStr) + "</div>" +
-          "<div class=\\"stokens\\">" + escapeHtml(tokenStr) + "</div>" +
-          "<div class=\\"selapsed\\">" + elapsed + "</div>" +
-          "<div class=\\"sstatus\\">" + (r.status || "") + "</div>" +
+          "<div class=\\"stage-block\\" data-stage-idx=\\"" + i + "\\">" +
+            "<div class=\\"" + rowClass + "\\"" + onclick + ">" +
+              "<div class=\\"sdot " + (r.status || "") + "\\"></div>" +
+              "<div class=\\"srepo\\">" + escapeHtml(repoName) + "</div>" +
+              "<div class=\\"sname\\">" + escapeHtml(r.stage) + "</div>" +
+              "<div class=\\"stask\\" title=\\"" + escapeAttr(r.taskId || "") + "\\">" + escapeHtml(taskLabel) + "</div>" +
+              "<div class=\\"ssummary\\">" + inlineSummary + "</div>" +
+              "<div class=\\"smodel\\">" + escapeHtml(modelStr) + "</div>" +
+              "<div class=\\"stokens\\">" + escapeHtml(tokenStr) + "</div>" +
+              "<div class=\\"selapsed\\">" + elapsed + "</div>" +
+              "<div class=\\"sstatus\\">" + (r.status || "") + "</div>" +
+            "</div>" +
+            (hasDetails ? "<div class=\\"stage-details\\">" + detailsHtml + "</div>" : "") +
           "</div>"
         );
       }).join("");
@@ -1786,11 +1954,11 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       list.innerHTML = rows.length > 0 ? rows.join("") : "<div style=\\"color:#334433;font-size:10px\\">no scan paths configured</div>";
     }
 
-    async function addScanPath() {
+    async function addScanPath(explicitPath) {
       const input = document.getElementById("scan-path-input");
-      const path = input.value.trim();
+      const path = (explicitPath ?? input.value).trim();
       if (!path) return;
-      input.value = "";
+      if (!explicitPath) input.value = "";
       try {
         await fetch("/api/scan-paths", {
           method: "POST",
@@ -1805,6 +1973,91 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       } catch(e) {
         console.error("addScanPath error:", e);
       }
+    }
+
+    function toggleManualPathInput() {
+      const row = document.getElementById("manual-path-row");
+      if (!row) return;
+      if (row.style.display === "none" || row.style.display === "") {
+        row.style.display = "flex";
+        const input = document.getElementById("scan-path-input");
+        if (input) input.focus();
+      } else {
+        row.style.display = "none";
+      }
+    }
+
+    // ---- Folder Browser (native-style picker via /api/fs/list) ----
+    var folderBrowserCurrent = null;
+    var folderBrowserParent = null;
+
+    async function openFolderBrowser(startPath) {
+      const modal = document.getElementById("folder-browser");
+      if (!modal) return;
+      modal.style.display = "flex";
+      await loadFolderBrowser(startPath || "~/dev");
+    }
+
+    function closeFolderBrowser() {
+      const modal = document.getElementById("folder-browser");
+      if (modal) modal.style.display = "none";
+    }
+
+    async function loadFolderBrowser(path) {
+      const list = document.getElementById("fb-list");
+      const pathEl = document.getElementById("fb-path");
+      const upBtn = document.getElementById("fb-up");
+      const selectBtn = document.getElementById("fb-select");
+      if (!list || !pathEl) return;
+      list.innerHTML = "<div style=\\"padding:18px;color:var(--dim);font-size:12px;text-align:center\\">Loading…</div>";
+      try {
+        const res = await fetch("/api/fs/list?path=" + encodeURIComponent(path));
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          list.innerHTML = "<div style=\\"padding:18px;color:var(--red);font-size:12px;text-align:center\\">" + escapeHtml(err.error || ("HTTP " + res.status)) + "</div>";
+          return;
+        }
+        const data = await res.json();
+        folderBrowserCurrent = data.path;
+        folderBrowserParent = data.parent;
+        pathEl.value = data.path;
+        if (upBtn) upBtn.disabled = !data.parent;
+        if (selectBtn) selectBtn.textContent = "Select \\"" + (data.name || data.path) + "\\"";
+
+        const dirs = (data.entries || []).filter(function(e) { return e.isDir; });
+        if (dirs.length === 0) {
+          list.innerHTML = "<div style=\\"padding:18px;color:var(--dim);font-size:12px;text-align:center\\">No subfolders</div>";
+          return;
+        }
+        list.innerHTML = dirs.map(function(e) {
+          return "<div class=\\"fb-row\\" data-name=\\"" + escapeAttr(e.name) + "\\" onclick=\\"folderBrowserEnter(this.getAttribute('data-name'))\\"" +
+            " style=\\"padding:7px 18px;cursor:pointer;font-size:13px;color:var(--white);display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border2);transition:background .12s\\"" +
+            " onmouseover=\\"this.style.background='var(--bg3)'\\" onmouseout=\\"this.style.background=''\\">" +
+            "<span style=\\"color:var(--green)\\">📁</span>" +
+            "<span>" + escapeHtml(e.name) + "</span>" +
+            "</div>";
+        }).join("");
+      } catch (e) {
+        list.innerHTML = "<div style=\\"padding:18px;color:var(--red);font-size:12px;text-align:center\\">" + escapeHtml(String(e)) + "</div>";
+      }
+    }
+
+    function folderBrowserEnter(name) {
+      if (!folderBrowserCurrent || !name) return;
+      // Join via the server side by sending the absolute path of the child
+      const sep = folderBrowserCurrent.endsWith("/") ? "" : "/";
+      loadFolderBrowser(folderBrowserCurrent + sep + name);
+    }
+
+    function folderBrowserUp() {
+      if (folderBrowserParent) loadFolderBrowser(folderBrowserParent);
+    }
+
+    async function folderBrowserSelect() {
+      if (!folderBrowserCurrent) return;
+      const picked = folderBrowserCurrent;
+      closeFolderBrowser();
+      await addScanPath(picked);
     }
 
     async function removeScanPath(path) {

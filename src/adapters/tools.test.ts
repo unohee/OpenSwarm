@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { TOOL_DEFINITIONS, executeTool, ToolCall } from './tools.js';
+import { TOOL_DEFINITIONS, executeTool, createReadCache, ToolCall } from './tools.js';
 
 // Check if rg binary is available (not just a shell function wrapper)
 let hasRg = false;
@@ -264,7 +264,8 @@ describe('Path validation', () => {
       TMP_DIR,
     );
     expect(result.is_error).toBe(true);
-    expect(result.content).toContain('Path outside project');
+    // 거부 메시지는 모델 자가수정을 돕도록 안내형 — "outside the project root" 포함.
+    expect(result.content).toContain('outside the project root');
   });
 
   it('allows paths under /tmp', async () => {
@@ -278,5 +279,128 @@ describe('Path validation', () => {
     );
     expect(result.is_error).toBe(false);
     expect(result.content).toContain('ok');
+  });
+});
+
+// ──────────────────────────────────────────────
+// 3. ReadCache — token-saving read deduplication
+// ──────────────────────────────────────────────
+
+describe('ReadCache', () => {
+  it('returns cached content marked unchanged on a repeated read', async () => {
+    const filePath = path.join(TMP_DIR, 'cache-a.txt');
+    await fs.writeFile(filePath, 'hello\nworld\n');
+    const cache = createReadCache();
+
+    const first = await executeTool(makeCall('read_file', { path: filePath }), TMP_DIR, cache);
+    expect(first.content).toContain('hello');
+    expect(first.content).not.toContain('unchanged');
+
+    const second = await executeTool(makeCall('read_file', { path: filePath }), TMP_DIR, cache);
+    expect(second.content).toContain('unchanged since last read');
+    expect(second.content).toContain('hello'); // still carries the content
+  });
+
+  it('invalidates the cache after edit_file so the next read is fresh', async () => {
+    const filePath = path.join(TMP_DIR, 'cache-b.txt');
+    await fs.writeFile(filePath, 'foo = 1\n');
+    const cache = createReadCache();
+
+    await executeTool(makeCall('read_file', { path: filePath }), TMP_DIR, cache);
+    await executeTool(
+      makeCall('edit_file', { path: filePath, old_string: 'foo = 1', new_string: 'foo = 2' }),
+      TMP_DIR,
+      cache,
+    );
+
+    const afterEdit = await executeTool(makeCall('read_file', { path: filePath }), TMP_DIR, cache);
+    expect(afterEdit.content).not.toContain('unchanged');
+    expect(afterEdit.content).toContain('foo = 2');
+  });
+
+  it('edit_file returns the resulting region so a re-read is unnecessary', async () => {
+    const filePath = path.join(TMP_DIR, 'cache-c.txt');
+    await fs.writeFile(filePath, 'line1\ntarget\nline3\n');
+    const cache = createReadCache();
+
+    const edit = await executeTool(
+      makeCall('edit_file', { path: filePath, old_string: 'target', new_string: 'fixed' }),
+      TMP_DIR,
+      cache,
+    );
+    expect(edit.is_error).toBe(false);
+    expect(edit.content).toContain('Resulting region');
+    expect(edit.content).toContain('fixed');
+  });
+
+  it('caches by path+range so different offsets are not confused', async () => {
+    const filePath = path.join(TMP_DIR, 'cache-d.txt');
+    await fs.writeFile(filePath, Array.from({ length: 20 }, (_, i) => `line${i + 1}`).join('\n') + '\n');
+    const cache = createReadCache();
+
+    const head = await executeTool(makeCall('read_file', { path: filePath, offset: 0, limit: 5 }), TMP_DIR, cache);
+    const tail = await executeTool(makeCall('read_file', { path: filePath, offset: 10, limit: 5 }), TMP_DIR, cache);
+    // Different range → not served from cache
+    expect(tail.content).not.toContain('unchanged');
+    expect(head.content).toContain('line1');
+    expect(tail.content).toContain('line11');
+  });
+});
+
+// ──────────────────────────────────────────────
+// ToolExecOptions — verification harness protection
+// ──────────────────────────────────────────────
+
+describe('ToolExecOptions', () => {
+  it('edit_file refuses protected files with guidance back to source code', async () => {
+    const filePath = path.join(TMP_DIR, 'run_tests.sh');
+    await fs.writeFile(filePath, '#!/bin/bash\necho ok\n');
+
+    const res = await executeTool(
+      makeCall('edit_file', { path: filePath, old_string: 'echo ok', new_string: 'echo hacked' }),
+      TMP_DIR,
+      undefined,
+      { protectedFiles: ['run_tests.sh'] },
+    );
+    expect(res.is_error).toBe(true);
+    expect(res.content).toContain('PROTECTED');
+    expect(await fs.readFile(filePath, 'utf-8')).toContain('echo ok');
+  });
+
+  it('write_file refuses protected files', async () => {
+    const filePath = path.join(TMP_DIR, 'run_tests.sh');
+    const res = await executeTool(
+      makeCall('write_file', { path: filePath, content: 'overwritten' }),
+      TMP_DIR,
+      undefined,
+      { protectedFiles: ['run_tests.sh'] },
+    );
+    expect(res.is_error).toBe(true);
+    expect(res.content).toContain('PROTECTED');
+  });
+
+  it('edit_file still works on non-protected files when protection is active', async () => {
+    const filePath = path.join(TMP_DIR, 'source.py');
+    await fs.writeFile(filePath, 'x = 1\n');
+    const res = await executeTool(
+      makeCall('edit_file', { path: filePath, old_string: 'x = 1', new_string: 'x = 2' }),
+      TMP_DIR,
+      undefined,
+      { protectedFiles: ['run_tests.sh'] },
+    );
+    expect(res.is_error).toBe(false);
+    expect(await fs.readFile(filePath, 'utf-8')).toContain('x = 2');
+  });
+
+  it('bash reports TIMEOUT explicitly instead of a silent failure', async () => {
+    const res = await executeTool(
+      makeCall('bash', { command: 'sleep 5' }),
+      TMP_DIR,
+      undefined,
+      { bashTimeoutMs: 300 },
+    );
+    expect(res.is_error).toBe(true);
+    expect(res.content).toContain('TIMEOUT');
+    expect(res.content).toContain('NOT evidence');
   });
 });

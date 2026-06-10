@@ -8,7 +8,7 @@ import type { WorkerResult, ReviewResult } from '../agents/agentPair.js';
 // Re-export for convenience
 export type { WorkerResult, ReviewResult };
 
-export type AdapterName = 'claude' | 'codex' | 'gpt' | 'local' | 'lmstudio';
+export type AdapterName = 'codex' | 'gpt' | 'local' | 'lmstudio' | 'openrouter';
 
 /**
  * Raw result from a CLI process execution
@@ -41,6 +41,25 @@ export interface CliRunOptions {
   processContext?: ProcessContext;
   /** 시스템 프롬프트 (GPT/Local 에이전틱 루프에서 사용) */
   systemPrompt?: string;
+  /**
+   * 추론(reasoning) 토큰 비활성화 요청 (OpenRouter). 기계적 실행 역할(worker 등)은
+   * 추론이 불필요하므로 토큰 낭비를 막는다. 모델이 추론 강제(thinking 전용)면
+   * OpenRouter가 거부할 수 있으나, 그런 모델은 경량 역할에 쓰지 않는다.
+   */
+  disableReasoning?: boolean;
+  /**
+   * 수정 필수 작업의 no-edit 종료 가드 횟수 (agenticLoop). 모델이 edit/write 없이
+   * 끝내려 하면 N회까지 되민다. 기본 0(비활성).
+   */
+  nudgeMaxOnNoEdit?: number;
+  /**
+   * Verification-harness file protection (agenticLoop → tools). Files in this
+   * list reject edit_file/write_file — prevents the model from suspecting and
+   * rewriting the verification script when tests fail.
+   */
+  protectedFiles?: string[];
+  /** bash tool timeout in ms (default 30s). Raise for docker-based tests that take minutes. */
+  bashTimeoutMs?: number;
 }
 
 /**

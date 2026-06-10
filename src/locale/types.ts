@@ -419,6 +419,12 @@ export interface WorkerContext {
     suggestedApproach: string;
     projectStats?: string;
   };
+  /** Repo knowledge accumulated from past tasks (memory/repoKnowledge.recallRepoKnowledge) */
+  repoMemories?: Array<{
+    type: string;     // system_pattern (success pattern) | constraint (pitfall) | fact ...
+    title: string;
+    content: string;
+  }>;
 }
 
 export interface PromptTemplates {

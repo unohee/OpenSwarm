@@ -19,7 +19,7 @@ export interface WorkerOptions {
   projectPath: string;
   previousFeedback?: string;   // Previous feedback from Reviewer (for revisions)
   timeoutMs?: number;
-  model?: string;              // Claude model (default: claude-sonnet-4-5-20250929)
+  model?: string;              // Model ID (default: adapter default)
   maxTurns?: number;           // Max agentic turns per CLI invocation
   adapterName?: AdapterName;
   issueIdentifier?: string;    // Linear issue ID (e.g., INT-123)
@@ -28,6 +28,12 @@ export interface WorkerOptions {
   processContext?: ProcessContext;
   /** 코드 컨텍스트 (impact analysis + registry briefs) */
   workerContext?: WorkerContext;
+  /** no-edit 종료 가드 횟수 — 수정 필수 작업에서 모델이 edit 없이 끝내면 N회 되밂 */
+  nudgeMaxOnNoEdit?: number;
+  /** Verification-harness file protection — listed files reject edit/write */
+  protectedFiles?: string[];
+  /** bash tool timeout in ms — raise for slow verification such as docker-based tests */
+  bashTimeoutMs?: number;
 }
 
 // Prompts
@@ -74,12 +80,22 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       onLog: options.onLog,
       processContext: options.processContext,
       systemPrompt: getPrompts().systemPrompt,
+      // Worker is a mechanical execution role — file edits, not deep reasoning.
+      // Disable reasoning tokens to cut cost/latency (no-op on non-thinking models).
+      disableReasoning: true,
+      nudgeMaxOnNoEdit: options.nudgeMaxOnNoEdit,
+      protectedFiles: options.protectedFiles,
+      bashTimeoutMs: options.bashTimeoutMs,
     });
 
     // Parse result via adapter
     const parsedResult = adapter.parseWorkerOutput(raw);
 
-    // Extract actually changed files via Git diff (independent of LLM report)
+    // Git diff is the source of truth for "did real work happen" — independent of
+    // whether the model emitted a well-formed JSON success block. LLMs are weak at
+    // structured output, so we never let a missing/malformed JSON block alone mark
+    // a task as failed when the working tree actually changed (VEGA-style: real
+    // signal over self-report).
     if (isGitRepo && snapshotHash) {
       const gitChangedFiles = await gitTracker.getChangedFilesSinceSnapshot(cwd, snapshotHash);
 
@@ -92,6 +108,17 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
           ...parsedResult.filesChanged,
         ]);
         parsedResult.filesChanged = Array.from(mergedFiles);
+
+        // Real file changes + no explicit error signal → treat as success even if
+        // the model never produced a JSON block. Only an explicit error/halt in the
+        // output should keep success=false here.
+        if (!parsedResult.success && !parsedResult.error && !parsedResult.haltReason) {
+          console.log('[Worker] Promoting to success: git changes present, no error signal');
+          parsedResult.success = true;
+          if (!parsedResult.summary || parsedResult.summary === t('common.fallback.noSummary')) {
+            parsedResult.summary = `Modified ${gitChangedFiles.length} file(s): ${gitChangedFiles.slice(0, 5).join(', ')}`;
+          }
+        }
       } else if (parsedResult.filesChanged.length === 0) {
         console.log('[Worker] No file changes detected by Git or LLM');
       }
@@ -103,7 +130,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
     console.error(`[Worker] Execution failed: ${errMsg}`);
     // Log stderr hint if available (CLI spawn errors often contain useful info)
     if (error instanceof Error && error.message.includes('code')) {
-      console.error(`[Worker] CLI exited with non-zero code — check claude CLI availability and permissions`);
+      console.error(`[Worker] CLI exited with non-zero code — check adapter auth and permissions`);
     }
     return {
       success: false,

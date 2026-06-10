@@ -79,6 +79,9 @@ export class GptCliAdapter implements CliAdapter {
       timeoutMs: options.timeoutMs || 300000,
       onLog: options.onLog,
       enableTools: true,
+      nudgeMaxOnNoEdit: options.nudgeMaxOnNoEdit,
+      protectedFiles: options.protectedFiles,
+      bashTimeoutMs: options.bashTimeoutMs,
     };
 
     try {
@@ -221,16 +224,19 @@ function extractWorkerResultJson(text: string): WorkerResult | null {
 }
 
 function extractWorkerFromText(text: string): WorkerResult {
-  const hasError = /error|fail|exception|cannot/i.test(text);
-  const hasSuccess = /success|completed|done|finished/i.test(text);
+  // Only an explicit failure phrase marks the run as failed. Loose words like
+  // "error" or "fail" appear in normal coding prose ("error handling", "the
+  // failing test") and used to cause false negatives. git-diff promotion in
+  // worker.ts is the real success signal; this is just the non-repo fallback.
+  const failed = isExplicitFailure(text);
 
   return {
-    success: !hasError || hasSuccess,
+    success: !failed,
     summary: extractSummary(text),
     filesChanged: [],
     commands: [],
     output: text,
-    error: hasError ? extractErrorMessage(text) : undefined,
+    error: failed ? extractErrorMessage(text) : undefined,
   };
 }
 
@@ -295,6 +301,14 @@ function findJsonObject(text: string, marker: string): string | null {
     }
   }
   return null;
+}
+
+// Detect a real failure declaration, not incidental "error"/"fail" prose.
+// Matches explicit statements like "failed to", "unable to", "could not",
+// "cannot complete", or an explicit JSON success:false.
+function isExplicitFailure(text: string): boolean {
+  if (/"success"\s*:\s*false/i.test(text)) return true;
+  return /\b(failed to|unable to|could not|couldn['’]t|cannot (?:complete|finish|proceed|continue)|giving up|abort(?:ed|ing))\b/i.test(text);
 }
 
 function extractSummary(text: string): string {

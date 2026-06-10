@@ -1,0 +1,42 @@
+ROOT CAUSE
+- Location: pylint/checkers/misc.py, class EncodingChecker, method open()
+- Mechanism: The regex built for fixme detection appends a trailing word boundary (\b): 
+  - If notes_rgx is set: r"#\s*({notes}|{self.config.notes_rgx})\b"
+  - Else: r"#\s*({notes})\b"
+- Why it fails: \b matches only between a word char [A-Za-z0-9_] and a non-word char. For tags that are entirely punctuation (e.g., "???"), the character before and after the tag are non-word characters, so \b does not match. As a result, comments like "# ???: no" never satisfy the pattern, and no W0511 is emitted.
+- Evidence:
+  - misc.py lines 119–129 show regex construction with \b.
+  - process_tokens uses self._fixme_pattern.search("#" + comment_text.lower()), anchoring the tag at the start of the comment. The only delimiter check is the trailing \b, which blocks punctuation-only tags.
+  - Tests explicitly assert not matching mid-line tags and not matching "Todoist" (which relies on the boundary after the tag). Replacing \b with a non-word-or-EOL lookahead preserves these behaviors.
+
+FIX PLAN
+- File: pylint/checkers/misc.py
+- Function: EncodingChecker.open()
+- Change: Replace the trailing word boundary \b with a lookahead that ensures the next character is a non-word character or end-of-line. This keeps current behavior for alphanumeric tags and enables punctuation-only tags.
+
+Concrete edit:
+- Current:
+  - if self.config.notes_rgx:
+      regex_string = rf"#\s*({notes}|{self.config.notes_rgx})\b"
+    else:
+      regex_string = rf"#\s*({notes})\b"
+- Replace with:
+  - if self.config.notes_rgx:
+      regex_string = rf"#\s*({notes}|{self.config.notes_rgx})(?=\W|$)"
+    else:
+      regex_string = rf"#\s*({notes})(?=\W|$)"
+- Rationale:
+  - (?=\W|$) accepts punctuation-only tags (e.g., "???", "C++") because the following char is typically punctuation or EOL.
+  - It still prevents false positives like "Todoist" because the next char after "TODO" is a word char, failing the lookahead.
+  - Behavior for default tags (FIXME/XXX/TODO) remains unchanged relative to \b.
+
+Reports
+- Files modified: none
+- Commands run:
+  - search_files: pattern="fixme" in ".", glob="**/*"
+  - search_files: pattern="class .*Fixme" in ".", glob="**/*.py"
+  - search_files: pattern="fixme" in "pylint/checkers", glob="**/*.py"
+  - read_file: "pylint/checkers/misc.py"
+  - read_file: "tests/checkers/unittest_misc.py"
+  - search_files: pattern="non_alphanumeric_codetag" in "tests", glob="**/*"
+  - search_files: pattern="non_alphanumeric|punctuation|codetag|notes-rgx" in "tests", glob="**/*"

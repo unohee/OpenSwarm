@@ -139,12 +139,62 @@ export interface ToolResult {
   is_error: boolean;
 }
 
+/**
+ * 루프 단위 read 캐시. 같은 작업 루프 안에서 동일 파일을 반복 read하면
+ * (모델이 edit 후 "고쳐졌나?" 확인하려 재read하는 패턴) 디스크를 다시 읽지 않고
+ * 캐시된 내용 + "변경 없음" 힌트를 반환해 토큰·턴 낭비를 줄인다.
+ * edit_file/write_file 성공 시 해당 경로를 무효화해 stale read를 막는다.
+ */
+export interface ReadCache {
+  store: Map<string, string>;
+}
+
+export function createReadCache(): ReadCache {
+  return { store: new Map() };
+}
+
+/** 캐시에서 한 파일의 모든 범위 엔트리를 제거 (edit/write 후 stale 방지) */
+function invalidateCache(cache: ReadCache | undefined, filePath: string): void {
+  if (!cache) return;
+  for (const key of cache.store.keys()) {
+    if (key.startsWith(`${filePath}#`)) cache.store.delete(key);
+  }
+}
+
+/**
+ * Tool execution options — verification-harness protection.
+ * Found in SWE hybrid runs: the implementer model misattributed test failures
+ * to the verification script (run_tests.sh) and edited the script itself five
+ * times, destroying verification integrity. Protected files reject edit/write.
+ * The bash timeout is also configurable — the 30s default dies silently on
+ * docker-based test runs (minutes), which made models conclude "the
+ * environment is broken".
+ */
+export interface ToolExecOptions {
+  /** Filenames (matched by path suffix) for which edit_file/write_file are refused */
+  protectedFiles?: string[];
+  /** bash tool timeout (default DEFAULT_BASH_TIMEOUT_MS) */
+  bashTimeoutMs?: number;
+}
+
+const DEFAULT_BASH_TIMEOUT_MS = 30000;
+
+function isProtected(resolved: string, protectedFiles?: string[]): boolean {
+  if (!protectedFiles?.length) return false;
+  return protectedFiles.some((p) => resolved === p || resolved.endsWith(`/${p}`));
+}
+
 /** 프로젝트 경로 내로 접근을 제한하는 경로 검증 */
 function validatePath(filePath: string, cwd: string): string {
   const resolved = path.resolve(cwd, filePath);
   // cwd 하위이거나, /tmp 하위만 허용
   if (!resolved.startsWith(cwd) && !resolved.startsWith('/tmp')) {
-    throw new Error(`Path outside project: ${resolved} (cwd: ${cwd})`);
+    // 모델이 자가수정하도록 안내 — 그냥 거부만 하면 같은 실수를 반복한다.
+    throw new Error(
+      `Path "${filePath}" is outside the project root (${cwd}). ` +
+      `Use a path relative to the project root instead, e.g. "." for the whole project or "src/...". ` +
+      `Do not use "/" or absolute paths outside ${cwd}.`,
+    );
   }
   return resolved;
 }
@@ -155,6 +205,8 @@ function validatePath(filePath: string, cwd: string): string {
 export async function executeTool(
   toolCall: ToolCall,
   cwd: string,
+  cache?: ReadCache,
+  execOptions?: ToolExecOptions,
 ): Promise<ToolResult> {
   const { name, arguments: argsJson } = toolCall.function;
   const callId = toolCall.id;
@@ -165,28 +217,59 @@ export async function executeTool(
     switch (name) {
       case 'read_file': {
         const filePath = validatePath(args.path, cwd);
-        const content = await fs.readFile(filePath, 'utf-8');
-        const lines = content.split('\n');
         const offset = args.offset ?? 0;
         const limit = args.limit ?? 500;
+        const cacheKey = `${filePath}#${offset}:${limit}`;
+
+        // 같은 루프에서 이미 같은 범위를 읽었으면 디스크 재접근 없이 캐시 반환.
+        // 모델에게 "변경 없음"을 알려 추가 확인 read를 유도하지 않는다.
+        if (cache?.store.has(cacheKey)) {
+          return {
+            tool_call_id: callId,
+            content: `(unchanged since last read — cached)\n${cache.store.get(cacheKey)!}`,
+            is_error: false,
+          };
+        }
+
+        const content = await fs.readFile(filePath, 'utf-8');
+        const lines = content.split('\n');
         const slice = lines.slice(offset, offset + limit);
         const numbered = slice.map((line, i) => `${offset + i + 1}\t${line}`).join('\n');
         const truncated = lines.length > offset + limit
           ? `\n... (${lines.length - offset - limit} more lines)`
           : '';
-        return { tool_call_id: callId, content: numbered + truncated, is_error: false };
+        const result = numbered + truncated;
+        cache?.store.set(cacheKey, result);
+        return { tool_call_id: callId, content: result, is_error: false };
       }
 
       case 'write_file': {
         const filePath = validatePath(args.path, cwd);
+        if (isProtected(filePath, execOptions?.protectedFiles)) {
+          return {
+            tool_call_id: callId,
+            content: `PROTECTED: ${args.path} is part of the verification harness and must not be modified. ` +
+              `If tests fail, the cause is in the SOURCE code (or your fix) — debug from the test output instead.`,
+            is_error: true,
+          };
+        }
         // 디렉토리 자동 생성
         await fs.mkdir(path.dirname(filePath), { recursive: true });
         await fs.writeFile(filePath, args.content, 'utf-8');
+        invalidateCache(cache, filePath);
         return { tool_call_id: callId, content: `Written: ${filePath}`, is_error: false };
       }
 
       case 'edit_file': {
         const filePath = validatePath(args.path, cwd);
+        if (isProtected(filePath, execOptions?.protectedFiles)) {
+          return {
+            tool_call_id: callId,
+            content: `PROTECTED: ${args.path} is part of the verification harness and must not be modified. ` +
+              `If tests fail, the cause is in the SOURCE code (or your fix) — debug from the test output instead.`,
+            is_error: true,
+          };
+        }
         const original = await fs.readFile(filePath, 'utf-8');
         const occurrences = original.split(args.old_string).length - 1;
         if (occurrences === 0) {
@@ -197,7 +280,21 @@ export async function executeTool(
         }
         const updated = original.replace(args.old_string, args.new_string);
         await fs.writeFile(filePath, updated, 'utf-8');
-        return { tool_call_id: callId, content: `Edited: ${filePath}`, is_error: false };
+        invalidateCache(cache, filePath);
+        // Return the changed region so the model can verify without a re-read.
+        // Locate the edit via old_string's position in the ORIGINAL (guaranteed
+        // unique above) — indexOf(new_string) on the updated text could match an
+        // earlier pre-existing occurrence and show the wrong region.
+        const newLines = updated.split('\n');
+        const editLine = original.slice(0, original.indexOf(args.old_string)).split('\n').length - 1;
+        const from = Math.max(0, editLine - 3);
+        const to = Math.min(newLines.length, editLine + args.new_string.split('\n').length + 3);
+        const snippet = newLines.slice(from, to).map((l, i) => `${from + i + 1}\t${l}`).join('\n');
+        return {
+          tool_call_id: callId,
+          content: `Edited: ${filePath}\nResulting region:\n${snippet}`,
+          is_error: false,
+        };
       }
 
       case 'search_files': {
@@ -228,7 +325,7 @@ export async function executeTool(
         try {
           const { stdout, stderr } = await execFileAsync('bash', ['-c', command], {
             cwd,
-            timeout: 30000,
+            timeout: execOptions?.bashTimeoutMs ?? DEFAULT_BASH_TIMEOUT_MS,
             maxBuffer: 1024 * 512,
             env: process.env,
           });
@@ -236,12 +333,35 @@ export async function executeTool(
           // 출력이 너무 길면 잘라냄
           return {
             tool_call_id: callId,
-            content: output.length > 8000 ? output.slice(0, 8000) + '\n... (truncated)' : output,
+            content: output.length > 8000 ? output.slice(0, 8000) + '\n... (truncated)' : output || '(no output, exit 0)',
             is_error: false,
           };
         } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          return { tool_call_id: callId, content: `Command failed: ${msg.slice(0, 2000)}`, is_error: true };
+          // exit code != 0 → execFile이 throw. 하지만 grep/find 등은 "매치 없음"으로
+          // exit 1을 내며 이건 정상이다. 실제 stdout/stderr + exit code를 모델에게 줘서
+          // "no match"인지 진짜 에러인지 스스로 판단하게 한다(이게 없으면 같은 명령 반복).
+          const e = err as { code?: number; stdout?: string; stderr?: string; message?: string; killed?: boolean; signal?: string };
+          const out = (e.stdout ?? '') + (e.stderr ? `\n[stderr] ${e.stderr}` : '');
+          const code = typeof e.code === 'number' ? e.code : '?';
+          // Make timeout kills explicit — a silent no-output failure leads the
+          // model to conclude "the verification environment is broken" and start
+          // dismantling the harness (observed in SWE runs).
+          if (e.killed && e.signal) {
+            const limit = execOptions?.bashTimeoutMs ?? DEFAULT_BASH_TIMEOUT_MS;
+            return {
+              tool_call_id: callId,
+              content: `TIMEOUT: command exceeded ${Math.round(limit / 1000)}s and was killed (${e.signal}). ` +
+                `The command may simply be slow — this is NOT evidence that the environment or script is broken. ` +
+                `Partial output:\n${out.slice(0, 2000) || '(none)'}`,
+              is_error: true,
+            };
+          }
+          const body = out.trim()
+            ? `exit ${code}:\n${out.slice(0, 4000)}`
+            : `exit ${code} (no output) — likely no matches or a non-fatal nonzero exit, not necessarily an error.`;
+          // exit 1 + 출력 없음은 보통 무해(grep no-match) → is_error를 false로 둬 모델이 안 헤매게.
+          const benign = e.code === 1 && !out.trim();
+          return { tool_call_id: callId, content: body, is_error: !benign };
         }
       }
 
@@ -260,6 +380,8 @@ export async function executeTool(
 export async function executeToolCalls(
   toolCalls: ToolCall[],
   cwd: string,
+  cache?: ReadCache,
+  execOptions?: ToolExecOptions,
 ): Promise<ToolResult[]> {
-  return Promise.all(toolCalls.map(tc => executeTool(tc, cwd)));
+  return Promise.all(toolCalls.map(tc => executeTool(tc, cwd, cache, execOptions)));
 }

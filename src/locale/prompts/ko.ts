@@ -28,10 +28,20 @@ ${previousFeedback}
 `
       : '';
 
-    // 코드 컨텍스트 섹션 (draftAnalysis + impactAnalysis + registryBriefs)
+    // Code context section (draftAnalysis + impactAnalysis + registryBriefs + repoMemories)
     let contextSection = '';
-    if (context?.draftAnalysis || context?.impactAnalysis || context?.registryBriefs?.length) {
+    if (context?.draftAnalysis || context?.impactAnalysis || context?.registryBriefs?.length || context?.repoMemories?.length) {
       const parts: string[] = ['## 코드 컨텍스트 (자동 생성)'];
+
+      if (context.repoMemories && context.repoMemories.length > 0) {
+        parts.push('');
+        parts.push('### 저장소 지식 (이 repo의 과거 작업에서 학습)');
+        for (const m of context.repoMemories) {
+          const tag = m.type === 'constraint' ? '⚠️ 함정' : '✓ 패턴';
+          parts.push(`- [${tag}] **${m.title}**: ${m.content}`);
+        }
+        parts.push('이 지식을 활용해 재탐색을 건너뛰고 과거 실수를 반복하지 마라.');
+      }
 
       if (context.draftAnalysis) {
         const da = context.draftAnalysis;
@@ -101,25 +111,23 @@ ${feedbackSection}${contextSection}
 - 완료 전: 모든 변경 파일 존재 확인, 구문 오류 없음 확인, confidence 정확히 설정.
 
 ## 사용 가능한 도구
-- \`cxt\` (OpenSwarm 내장 Code eXploration Toolkit):
-  - \`cxt check <file>\` — 파일 엔티티 브리프 (구조 파악용, Read보다 빠름).
-  - \`cxt check --search <q>\` — FTS5 기반 전역 검색.
-  - \`cxt check --untested\` / \`--high-risk\` — 수정 전에 위험 포인트 먼저 확인.
-  - \`cxt bs\` — 정적 bad smell 스캔.
-  - 레지스트리가 오래됐으면 \`cxt scan\` 먼저 (저렴함).
-  - 위 \`파일 맵\` 섹션이 있으면 이미 \`cxt\` 결과 — 새로 스캔할 필요 없음.
+주 탐색은 search_files(ripgrep) + read_file. 항상 쓸 수 있고 가장 저렴하다.
 
-## Output (JSON, 마지막에 출력)
+선택: \`cxt\` (코드 레지스트리, 이미 있는 repo에서만 — \`cxt scan\`으로 새로 만들지 말 것):
+  - \`cxt check <file>\` / \`cxt check --search <q>\` — 엔티티 브리프 / FTS5 검색, 구조 파악은 Read보다 빠름.
+  - 위 \`파일 맵\` 섹션이 있으면 이미 \`cxt\` 결과 — 새로 스캔 금지.
+  - \`cxt\`가 "no registry" 류 에러를 내면 그냥 search_files/read_file 사용 — cxt 재시도 금지.
+
+## 완료? 그냥 작업하면 된다.
+도구로 실제 파일을 수정하고 명령을 실행하라. 파일 변경은 git에서 직접 감지하므로
+JSON 블록으로 성공을 증명할 필요가 없다. 작업이 끝나면 도구 호출을 멈추고, 무엇을
+했는지와 주의사항을 짧은 평문으로 요약하라.
+
+낮은 확신이나 블로커를 알릴 때만(그럴 때만) 마지막에 이 JSON을 붙여라:
 \`\`\`json
-{
-  "success": true,
-  "summary": "내가 수행한 작업 (1-2문장, 리뷰어 피드백 복사 금지)",
-  "filesChanged": ["Edit/Write한 파일 전체 경로"],
-  "commands": ["실행한 bash 명령어"],
-  "confidencePercent": 85
-}
+{ "success": false, "confidencePercent": 40, "haltReason": "막힌 이유" }
 \`\`\`
-불확실하면 confidencePercent 60 미만. filesChanged에 변경한 모든 파일 포함 (전체 경로).
+그 외에는 JSON 불필요 — 에러 없이 끝내는 것 자체가 성공 신호다.
 
 `;
   },

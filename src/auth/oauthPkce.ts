@@ -13,9 +13,16 @@ import { AuthProfileStore, type AuthProfile } from './oauthStore.js';
 const OPENAI_AUTH_ENDPOINT = 'https://auth.openai.com/oauth/authorize';
 const OPENAI_TOKEN_ENDPOINT = 'https://auth.openai.com/oauth/token';
 const DEFAULT_CALLBACK_PORT = 1455;
-const DEFAULT_SCOPES = 'openid profile email offline_access model.request';
-const LOGIN_TIMEOUT_MS = 120_000; // 2분
+const DEFAULT_SCOPES = 'openid profile email offline_access';
+const LOGIN_TIMEOUT_MS = 120_000; // 2 minutes
 const PROFILE_KEY = 'openai-gpt:default';
+
+// Public OAuth client_id used by the official @openai/codex CLI.
+// Reusing it lets `openswarm auth login --provider gpt` work out of the box for
+// any ChatGPT Plus/Pro/Team user without provisioning a custom OAuth app.
+// Override with `--client-id` or the OPENAI_CLIENT_ID env var if needed.
+export const DEFAULT_OPENAI_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
+const OAUTH_ORIGINATOR = 'openswarm';
 
 // PKCE helpers
 
@@ -59,7 +66,7 @@ export interface OAuthFlowResult {
 }
 
 export interface OAuthFlowOptions {
-  clientId: string;
+  clientId?: string;
   port?: number;
   scopes?: string;
 }
@@ -68,16 +75,25 @@ export interface OAuthFlowOptions {
  * OAuth 2.1 PKCE 흐름 실행.
  * 로컬 HTTP 서버에서 callback을 받고, token을 교환하여 저장한다.
  */
-export async function runOAuthPkceFlow(options: OAuthFlowOptions): Promise<OAuthFlowResult> {
-  const { clientId, port = DEFAULT_CALLBACK_PORT, scopes = DEFAULT_SCOPES } = options;
-  const redirectUri = `http://127.0.0.1:${port}/auth/callback`;
+export async function runOAuthPkceFlow(options: OAuthFlowOptions = {}): Promise<OAuthFlowResult> {
+  const {
+    clientId = DEFAULT_OPENAI_CLIENT_ID,
+    port = DEFAULT_CALLBACK_PORT,
+    scopes = DEFAULT_SCOPES,
+  } = options;
+  // Must be exactly "http://localhost:1455/auth/callback" — this is the value
+  // registered on the public Codex OAuth client. Using 127.0.0.1 instead
+  // triggers Hydra's authorize_hydra_invalid_request error.
+  const redirectUri = `http://localhost:${port}/auth/callback`;
 
   // 1. PKCE 생성
   const codeVerifier = generateCodeVerifier();
   const codeChallenge = generateCodeChallenge(codeVerifier);
   const state = generateState();
 
-  // 2. Authorization URL 구성
+  // 2. Authorization URL 구성.
+  // The simplified_flow + id_token_add_organizations params mirror the official
+  // codex CLI so the ChatGPT side recognises this as a first-party desktop login.
   const authParams = new URLSearchParams({
     response_type: 'code',
     client_id: clientId,
@@ -86,6 +102,9 @@ export async function runOAuthPkceFlow(options: OAuthFlowOptions): Promise<OAuth
     code_challenge_method: 'S256',
     scope: scopes,
     state,
+    id_token_add_organizations: 'true',
+    codex_cli_simplified_flow: 'true',
+    originator: OAUTH_ORIGINATOR,
   });
   const authUrl = `${OPENAI_AUTH_ENDPOINT}?${authParams.toString()}`;
 
@@ -223,7 +242,10 @@ export async function runOAuthPkceFlow(options: OAuthFlowOptions): Promise<OAuth
 /**
  * OAuth 로그인 → 토큰 저장 (온보딩 전체 흐름)
  */
-export async function loginAndSaveProfile(clientId: string, port?: number): Promise<void> {
+export async function loginAndSaveProfile(
+  clientId: string = DEFAULT_OPENAI_CLIENT_ID,
+  port?: number,
+): Promise<void> {
   const result = await runOAuthPkceFlow({ clientId, port });
 
   const profile: AuthProfile = {

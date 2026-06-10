@@ -1,0 +1,56 @@
+{
+  "results": [
+    {
+      "model": "z-ai/glm-4.7-flash",
+      "taskId": "L0-fix-multiply",
+      "rep": 1,
+      "passed": true,
+      "reason": "multiply=a*b, add intact",
+      "toolCalls": 4,
+      "apiCalls": 5,
+      "promptTokens": 6383,
+      "completionTokens": 1596,
+      "costUsd": 0.00102138,
+      "durationMs": 6091
+    },
+    {
+      "model": "z-ai/glm-4.7-flash",
+      "taskId": "L2-rename-across-files",
+      "rep": 1,
+      "passed": true,
+      "reason": "def + import + call all renamed",
+      "toolCalls": 7,
+      "apiCalls": 6,
+      "promptTokens": 9778,
+      "completionTokens": 2444,
+      "costUsd": 0.00156428,
+      "durationMs": 8043
+    },
+    {
+      "model": "z-ai/glm-4.7-flash",
+      "taskId": "L5-merge-intervals",
+      "rep": 1,
+      "passed": true,
+      "reason": "test passed (executed)",
+      "toolCalls": 4,
+      "apiCalls": 4,
+      "promptTokens": 6058,
+      "completionTokens": 1515,
+      "costUsd": 0.00096948,
+      "durationMs": 5993
+    }
+  ],
+  "aggs": [
+    {
+      "model": "z-ai/glm-4.7-flash",
+      "runs": 3,
+      "passes": 3,
+      "passRate": 1,
+      "avgCostUsd": 0.0011850466666666667,
+      "costPerPass": 0.0011850466666666667,
+      "avgToolCalls": 5,
+      "avgDurationMs": 6709
+    }
+  ],
+  "baseline": "z-ai/glm-4.7-flash"
+}

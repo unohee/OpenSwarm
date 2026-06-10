@@ -50,7 +50,7 @@ export interface DraftAnalyzerOptions {
   taskDescription: string;
   projectPath: string;
   projectId?: string;
-  /** Haiku 모델명 (기본: claude-haiku-4-5-20251001) */
+  /** Fast model for draft analysis (default: gpt-5-codex) */
   model?: string;
   /** 타임아웃 (기본: 30초 — Haiku는 빠름) */
   timeoutMs?: number;
@@ -283,8 +283,8 @@ export async function runDraftAnalysis(options: DraftAnalyzerOptions): Promise<D
     onLog?.(`[Draft] Registry: ${codeContext.projectStats}`);
   }
 
-  // 3. Haiku 의도 분석 (API, ~3초)
-  const model = options.model ?? 'claude-haiku-4-5-20251001';
+  // 3. Fast model draft analysis (~3s)
+  const model = options.model ?? 'gpt-5-codex';
   const prompt = buildDraftPrompt(options, codeContext, impactAnalysis);
 
   let haikuResult: Partial<DraftAnalysis> = {
@@ -295,7 +295,7 @@ export async function runDraftAnalysis(options: DraftAnalyzerOptions): Promise<D
   };
 
   try {
-    const adapter = getAdapter('claude');
+    const adapter = getAdapter();
     const raw = await spawnCli(adapter, {
       prompt,
       cwd: '/tmp',  // 중립 디렉토리 (Planner와 동일)

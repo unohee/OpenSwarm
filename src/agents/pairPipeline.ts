@@ -19,6 +19,7 @@ import * as agentPair from './agentPair.js';
 import { runGuards, type GuardsRunResult } from './pipelineGuards.js';
 import { hasRepoSnapshot, scanAndCache, analyzeIssue } from '../knowledge/index.js';
 import { getRegistryStore } from '../registry/sqliteStore.js';
+import { recallRepoKnowledge } from '../memory/repoKnowledge.js';
 import type { WorkerContext } from '../locale/types.js';
 import * as workerAgent from './worker.js';
 import * as reviewerAgent from './reviewer.js';
@@ -412,7 +413,19 @@ export class PairPipeline extends EventEmitter {
         }
       }
 
-      if (!wc.impactAnalysis && !wc.registryBriefs && !wc.draftAnalysis) return undefined;
+      // Recall repo knowledge accumulated from past tasks — the core loop that
+      // makes the worker understand this repo better over time (non-blocking on failure)
+      const memories = await recallRepoKnowledge(
+        context.projectPath,
+        context.task.title,
+        context.task.description || '',
+      );
+      if (memories.length > 0) {
+        wc.repoMemories = memories;
+        console.log(`[Pipeline] Recalled ${memories.length} repo memories for context`);
+      }
+
+      if (!wc.impactAnalysis && !wc.registryBriefs && !wc.draftAnalysis && !wc.repoMemories) return undefined;
       return wc;
     } catch (err) {
       console.warn('[Pipeline] Worker context collection failed (non-blocking):', err);
@@ -672,6 +685,8 @@ export class PairPipeline extends EventEmitter {
         inputTokens: costInfo?.inputTokens,
         outputTokens: costInfo?.outputTokens,
         costUsd: costInfo?.costUsd,
+        durationMs: stageResult.duration,
+        ...summarizeStageResult(stage, result),
       } });
       return stageResult;
 
@@ -691,7 +706,11 @@ export class PairPipeline extends EventEmitter {
 
       console.log(`[${prefix}] ${stage} failed (${(stageResult.duration / 1000).toFixed(1)}s)`);
       this.emit('stage:fail', { stage, result: stageResult, context, error });
-      broadcastEvent({ type: 'pipeline:stage', data: { taskId: context.task.id, stage, status: 'fail' } });
+      broadcastEvent({ type: 'pipeline:stage', data: {
+        taskId: context.task.id, stage, status: 'fail',
+        durationMs: stageResult.duration,
+        error: error instanceof Error ? error.message : String(error),
+      } });
       return stageResult;
     }
   }
@@ -781,7 +800,7 @@ export class PairPipeline extends EventEmitter {
 
       // ========== WORKER (with escalation) ==========
       const workerCfg = this.config.roles?.worker;
-      const escalateThreshold = workerCfg?.escalateAfterIteration ?? 3;
+      const escalateThreshold = workerCfg?.escalateAfterIteration ?? 2;
       const escalateModel = workerCfg?.escalateModel;
       const shouldEscalate = context.currentIteration >= escalateThreshold && !!escalateModel;
       const baseWorkerModel = this.getModelForRole('worker', context.task);
@@ -1143,6 +1162,103 @@ export function createPipelineFromConfig(
 }
 
 // Helpers
+
+/**
+ * Extract a worker-readable summary of what the agent did during a stage so
+ * the dashboard can display "wrote 4 files / approved / reviewed N issues"
+ * instead of just "stage=worker status=complete".
+ *
+ * Returns a plain object suitable for inclusion in the SSE `pipeline:stage`
+ * broadcast payload. Fields are optional — missing ones are simply omitted.
+ */
+function summarizeStageResult(
+  stage: PipelineStage,
+  result: WorkerResult | ReviewResult | TesterResult | DocumenterResult | AuditorResult | SkillDocumenterResult,
+): Record<string, unknown> {
+  // Cap arrays/strings before broadcasting so a chatty agent cannot blow up
+  // the SSE channel with a 10MB stage event.
+  const MAX_FILES = 12;
+  const MAX_COMMANDS = 8;
+  const SUMMARY_CAP = 240;
+  const FEEDBACK_CAP = 480;
+  const cap = (s: string | undefined, n: number): string | undefined =>
+    s == null ? undefined : (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+
+  switch (stage) {
+    case 'worker': {
+      const r = result as WorkerResult;
+      return {
+        summary: cap(r.summary, SUMMARY_CAP),
+        filesChanged: Array.isArray(r.filesChanged) ? r.filesChanged.slice(0, MAX_FILES) : undefined,
+        filesChangedCount: r.filesChanged?.length ?? 0,
+        commands: Array.isArray(r.commands) ? r.commands.slice(0, MAX_COMMANDS) : undefined,
+        commandsCount: r.commands?.length ?? 0,
+        confidencePercent: r.confidencePercent,
+        haltReason: r.haltReason,
+        error: r.error ? cap(r.error, FEEDBACK_CAP) : undefined,
+      };
+    }
+
+    case 'reviewer': {
+      const r = result as ReviewResult;
+      return {
+        decision: r.decision,
+        feedback: cap(r.feedback, FEEDBACK_CAP),
+        issuesCount: r.issues?.length ?? 0,
+        issues: Array.isArray(r.issues) ? r.issues.slice(0, MAX_COMMANDS) : undefined,
+        suggestionsCount: r.suggestions?.length ?? 0,
+      };
+    }
+
+    case 'tester': {
+      const r = result as TesterResult;
+      return {
+        passed: r.testsPassed,
+        failed: r.testsFailed,
+        coverage: r.coverage,
+        failedTests: Array.isArray(r.failedTests) ? r.failedTests.slice(0, MAX_FILES) : undefined,
+        error: r.error ? cap(r.error, FEEDBACK_CAP) : undefined,
+      };
+    }
+
+    case 'documenter': {
+      const r = result as DocumenterResult;
+      return {
+        summary: cap(r.summary, SUMMARY_CAP),
+        filesChanged: Array.isArray(r.updatedFiles) ? r.updatedFiles.slice(0, MAX_FILES) : undefined,
+        filesChangedCount: r.updatedFiles?.length ?? 0,
+        changelogEntry: cap(r.changelogEntry, SUMMARY_CAP),
+        error: r.error ? cap(r.error, FEEDBACK_CAP) : undefined,
+      };
+    }
+
+    case 'auditor': {
+      const r = result as AuditorResult;
+      return {
+        summary: cap(r.summary, SUMMARY_CAP),
+        bsScore: r.bsScore,
+        criticalCount: r.criticalCount,
+        warningCount: r.warningCount,
+        issues: Array.isArray(r.issues) ? r.issues.slice(0, MAX_COMMANDS) : undefined,
+        issuesCount: r.issues?.length ?? 0,
+        error: r.error ? cap(r.error, FEEDBACK_CAP) : undefined,
+      };
+    }
+
+    case 'skill-documenter': {
+      const r = result as SkillDocumenterResult;
+      return {
+        summary: cap(r.summary, SUMMARY_CAP),
+        filesChanged: Array.isArray(r.updatedFiles) ? r.updatedFiles.slice(0, MAX_FILES) : undefined,
+        filesChangedCount: r.updatedFiles?.length ?? 0,
+        error: r.error ? cap(r.error, FEEDBACK_CAP) : undefined,
+      };
+    }
+
+    default:
+      return {};
+  }
+}
 
 // Re-export formatting functions (extracted to pipelineFormat.ts)
 export { formatPipelineResult, formatPipelineResultEmbed } from './pipelineFormat.js';

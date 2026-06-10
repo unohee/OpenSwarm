@@ -52,8 +52,8 @@ export async function startService(config: SwarmConfig): Promise<void> {
   initLocale(config.language);
 
   // Default CLI adapter
-  setDefaultAdapter(config.adapter ?? 'claude');
-  console.log(`🛠️ CLI adapter: ${config.adapter ?? 'claude'}`);
+  setDefaultAdapter(config.adapter ?? 'codex');
+  console.log(`🛠️ CLI adapter: ${config.adapter ?? 'codex'}`);
 
   // Rate limiter initialization
   console.log('⚡ Initializing rate limiters...');

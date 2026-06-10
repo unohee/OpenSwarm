@@ -71,5 +71,10 @@ models/
 # Trash
 trash/
 
+# Local experiments & SWE-bench evaluation artifacts
+testing/
+logs/run_evaluation/
+openswarm.orb-*.json
+
 # Subprojects
 openclaw/

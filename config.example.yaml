@@ -3,8 +3,11 @@
 # Copy this file to config.yaml to use
 
 # Default CLI adapter for worker/reviewer stages
-# Options: claude, codex, gpt, local, lmstudio
-# For GPT: run `openswarm auth login --provider gpt` first
+# Options: claude, codex, gpt, local, lmstudio, openrouter
+# For GPT: run `openswarm auth login --provider gpt`
+#   (uses the public Codex OAuth client by default — no extra config needed)
+# For OpenRouter: run `openswarm auth login --provider openrouter`
+#   (PKCE browser flow → stores a sk-or-* API key; falls back to manual paste)
 # For local: start Ollama, LMStudio, or llama.cpp server
 # For lmstudio: start LM Studio Local Server (default http://localhost:1234)
 #   Optional env: LMSTUDIO_BASE_URL, LMSTUDIO_MODEL, LMSTUDIO_API_KEY
@@ -52,7 +55,7 @@ autonomous:
   decomposition:
     enabled: true                    # Enable decomposition
     thresholdMinutes: 30             # Decompose if estimated time exceeds this
-    plannerModel: claude-sonnet-4-20250514  # Planner model
+    plannerModel: claude-opus-4-7    # Planner model (Opus for deep decomposition)
 
   # Per-role settings
   # Hybrid config: Claude for complex coding, local model for review/docs ($0)
@@ -60,15 +63,15 @@ autonomous:
     worker:
       enabled: true
       adapter: claude
-      model: claude-sonnet-4-20250514         # Sonnet for coding tasks
-      escalateModel: claude-opus-4-6          # On failure: Opus
+      model: claude-sonnet-4-6         # Sonnet for coding tasks
+      escalateModel: claude-opus-4-7          # On failure: Opus
       escalateAfterIteration: 3
       timeoutMs: 1800000  # 30 minutes
     reviewer:
       enabled: true
       adapter: local                          # Local model — free, 7s response
       model: gemma-4-e4b-it                   # Gemma 4 e4b via LMStudio
-      escalateModel: claude-sonnet-4-20250514 # Spot check: Sonnet reviews after N revisions
+      escalateModel: claude-sonnet-4-6 # Spot check: Sonnet reviews after N revisions
       escalateAfterIteration: 3               # Escalate from 3rd iteration
       timeoutMs: 60000    # 1 minute (local models are slower)
     tester:
@@ -108,8 +111,8 @@ autonomous:
     - name: deep-engineering
       minMinutes: 16
       roles:
-        worker: claude-sonnet-4-20250514      # Sonnet for complex work
-        reviewer: claude-sonnet-4-20250514    # Sonnet reviews Sonnet
+        worker: claude-sonnet-4-6      # Sonnet for complex work
+        reviewer: claude-sonnet-4-6    # Sonnet reviews Sonnet
 
 # Long-running task monitoring (RunPod training, batch processing, etc.)
 #

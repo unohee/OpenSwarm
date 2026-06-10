@@ -1,0 +1,7 @@
+[
+  {
+    "instance_id": "pylint-dev__pylint-7080",
+    "model_name_or_path": "openswarm",
+    "model_patch": "diff --git a/pylint/lint/expand_modules.py b/pylint/lint/expand_modules.py\nindex 5cacc037..886bd87e 100644\n--- a/pylint/lint/expand_modules.py\n+++ b/pylint/lint/expand_modules.py\n@@ -51,12 +51,13 @@ def _is_ignored_file(\n     ignore_list: list[str],\n     ignore_list_re: list[Pattern[str]],\n     ignore_list_paths_re: list[Pattern[str]],\n+    is_directory: bool = False,\n ) -> bool:\n     basename = os.path.basename(element)\n     return (\n         basename in ignore_list\n         or _is_in_ignore_list_re(basename, ignore_list_re)\n-        or _is_in_ignore_list_re(element, ignore_list_paths_re)\n+        or _is_in_ignore_list_re(element if is_directory else basename, ignore_list_paths_re)\n     )\n \n \ndiff --git a/pylint/lint/pylinter.py b/pylint/lint/pylinter.py\nindex e2bbf061..6320f0c9 100644\n--- a/pylint/lint/pylinter.py\n+++ b/pylint/lint/pylinter.py\n@@ -602,6 +602,7 @@ class PyLinter(\n                         self.config.ignore,\n                         self.config.ignore_patterns,\n                         self.config.ignore_paths,\n+                        is_directory=True,\n                     ):\n                         skip_subtrees.append(root)\n                         continue\n"
+  }
+]

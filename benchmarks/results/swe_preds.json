@@ -1,0 +1,7 @@
+[
+  {
+    "instance_id": "psf__requests-2317",
+    "model_name_or_path": "openswarm",
+    "model_patch": "diff --git a/requests/sessions.py b/requests/sessions.py\nindex d701ff2..7015eba 100644\n--- a/requests/sessions.py\n+++ b/requests/sessions.py\n@@ -425,6 +425,8 @@ class Session(SessionRedirectMixin):\n             If Tuple, ('cert', 'key') pair.\n         \"\"\"\n \n+        if isinstance(method, bytes):\n+            method = method.decode('utf-8')\n         method = builtin_str(method)\n \n         # Create the Request.\n"
+  }
+]

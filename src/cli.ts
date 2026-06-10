@@ -335,11 +335,12 @@ const authCmd = program
 
 authCmd
   .command('login')
-  .description('Login via OAuth (GPT)')
-  .option('--provider <provider>', 'Provider to authenticate', 'gpt')
-  .option('--client-id <clientId>', 'OAuth Client ID (or set OPENAI_CLIENT_ID env)')
+  .description('Login via OAuth/PKCE (gpt, openrouter)')
+  .option('--provider <provider>', 'Provider to authenticate (gpt | openrouter)', 'gpt')
+  .option('--client-id <clientId>', 'GPT only: override OAuth Client ID (defaults to the public Codex client)')
+  .option('--api-key <apiKey>', 'OpenRouter only: skip browser flow and store this sk-or-* key directly')
   .option('--port <port>', 'Callback server port', parseInt)
-  .action(async (opts: { provider: string; clientId?: string; port?: number }) => {
+  .action(async (opts: { provider: string; clientId?: string; apiKey?: string; port?: number }) => {
     const { handleAuthLogin } = await import('./cli/authHandler.js');
     await handleAuthLogin(opts.provider, opts);
   });
@@ -355,7 +356,7 @@ authCmd
 authCmd
   .command('logout')
   .description('Remove stored auth tokens')
-  .option('--provider <provider>', 'Provider to remove', 'gpt')
+  .option('--provider <provider>', 'Provider to remove (gpt | openrouter)', 'gpt')
   .action(async (opts: { provider: string }) => {
     const { handleAuthLogout } = await import('./cli/authHandler.js');
     handleAuthLogout(opts.provider);

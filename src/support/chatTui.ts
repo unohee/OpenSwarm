@@ -43,7 +43,6 @@ type Session = {
   provider: AdapterName;
   model: string;
   messages: Message[];
-  claudeSessionId?: string;
   totalCost: number;
   totalTokens: number;
   createdAt: string;
@@ -113,14 +112,12 @@ async function callChatModel(
   prompt: string,
   provider: AdapterName,
   model: string,
-  sessionId: string | undefined,
   onStream: (text: string, isThinking: boolean) => void,
 ): Promise<{ response: string; sessionId: string; cost: number; tokens: number }> {
   const result = await runChatCompletion({
     prompt,
     provider,
     model,
-    sessionId: provider === 'claude' ? sessionId : undefined,
     timeoutMs: 180000,
     onText: onStream,
   });
@@ -584,8 +581,10 @@ async function loadTasksData(box: blessed.Widgets.BoxElement) {
       const [icon, color] = statusMap[ev.status] || ['○', '#718096'];
 
       let model = '';
-      if (ev.model?.includes('sonnet-4-5')) model = 'sonnet-4.5';
+      if (ev.model?.includes('sonnet-4-6')) model = 'sonnet-4.6';
+      else if (ev.model?.includes('sonnet-4-5')) model = 'sonnet-4.5';
       else if (ev.model?.includes('haiku-4-5')) model = 'haiku-4.5';
+      else if (ev.model?.includes('opus-4-7')) model = 'opus-4.7';
       else if (ev.model?.includes('opus-4')) model = 'opus-4';
       else if (ev.model) model = ev.model.split('-').pop() || '';
       model = model.padEnd(12).slice(0, 12);
@@ -825,8 +824,7 @@ async function sendMessage(state: AppState, ui: ReturnType<typeof createUI>, mes
       message,
       state.session.provider,
       state.session.model,
-      state.session.claudeSessionId,
-      (chunk, isThinking) => {
+        (chunk, isThinking) => {
         // Handle thinking notification (show/resume spinner)
         if (isThinking) {
           if (spinnerStopped) {
@@ -875,10 +873,6 @@ async function sendMessage(state: AppState, ui: ReturnType<typeof createUI>, mes
     if (!spinnerStopped) {
       stopSpinner(ui, spinnerData);
       spinnerStopped = true;
-    }
-
-    if (state.session.provider === 'claude' && result.sessionId) {
-      state.session.claudeSessionId = result.sessionId;
     }
 
     // Update session stats
@@ -961,7 +955,6 @@ async function handleCommand(
     case 'clear':
     case 'c':
       state.session.messages = [];
-      state.session.claudeSessionId = undefined;
       state.session.totalCost = 0;
       state.session.totalTokens = 0;
       ui.chatLog.setContent('');
@@ -979,14 +972,14 @@ async function handleCommand(
       if (!next) {
         ui.chatLog.log(`  {bold}Current provider:{/bold} {#c084fc-fg}${state.session.provider}{/}`);
         ui.chatLog.log('  {#718096-fg}Available providers:{/}');
-        ui.chatLog.log('    {#a0aec0-fg}claude{/}');
         ui.chatLog.log('    {#a0aec0-fg}codex{/}');
-      } else if (next !== 'claude' && next !== 'codex') {
-        ui.chatLog.log(`  {#ef4444-fg}Unknown provider: ${next}{/}`);
+        ui.chatLog.log('    {#a0aec0-fg}openrouter{/}');
+        ui.chatLog.log('    {#a0aec0-fg}lmstudio{/}');
+        ui.chatLog.log('    {#a0aec0-fg}local{/}');
+        ui.chatLog.log('    {#a0aec0-fg}gpt{/}');
       } else {
-        state.session.provider = next;
-        state.session.model = getDefaultChatModel(next);
-        state.session.claudeSessionId = undefined;
+        state.session.provider = next as AdapterName;
+        state.session.model = getDefaultChatModel(state.session.provider);
         ui.chatLog.log(`  {#34d399-fg}✓ Provider changed to {bold}${next}{/bold}{/}`);
         ui.chatLog.log(`  {#34d399-fg}✓ Model changed to {bold}${state.session.model}{/bold}{/}`);
         updateStatusBar(state, ui);
@@ -1005,16 +998,15 @@ async function handleCommand(
         ui.chatLog.log(`  {bold}Current model:{/bold} {#60a5fa-fg}${shortenChatModel(state.session.model)}{/}`);
         ui.chatLog.log('');
         ui.chatLog.log('  {#718096-fg}Available models:{/}');
-        if (state.session.provider === 'claude') {
-          ui.chatLog.log('    {#a0aec0-fg}sonnet{/}  {#718096-fg}→{/} claude-sonnet-4-5');
-          ui.chatLog.log('    {#a0aec0-fg}haiku{/}   {#718096-fg}→{/} claude-haiku-4-5');
-          ui.chatLog.log('    {#a0aec0-fg}opus{/}    {#718096-fg}→{/} claude-opus-4-6');
+        if (state.session.provider === 'openrouter') {
+          ui.chatLog.log('    {#a0aec0-fg}sonnet{/}  {#718096-fg}→{/} anthropic/claude-sonnet-4');
+          ui.chatLog.log('    {#a0aec0-fg}gemini{/}  {#718096-fg}→{/} google/gemini-2.5-pro');
+          ui.chatLog.log('    {#a0aec0-fg}gpt-5{/}   {#718096-fg}→{/} openai/gpt-5');
         } else {
           ui.chatLog.log('    {#a0aec0-fg}codex{/}   {#718096-fg}→{/} gpt-5-codex');
         }
       } else {
         state.session.model = resolveChatModel(newModel, state.session.provider);
-        state.session.claudeSessionId = undefined;
         const shortName = shortenChatModel(state.session.model);
         ui.chatLog.log(`  {#34d399-fg}✓ Model changed to {bold}${shortName}{/bold}{/}`);
         updateStatusBar(state, ui);

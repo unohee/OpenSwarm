@@ -1,0 +1,41 @@
+ROOT CAUSE
+- Where: pylint/reporters/text.py, TextReporter.on_set_current_module.
+- What goes wrong: The failed fix replaced the regex-based field scan with string.Formatter().parse() and then rebuilt self._fixed_template by concatenating:
+  - literal parts as returned by parse()
+  - valid fields re-inserted as {field_name[!conversion][:format_spec]}.
+- Why it breaks: string.Formatter().parse() returns literal_text with escaped braces already unescaped. For example, the template '{{ "Category": "{category}" }}' is parsed with literal_text = '{ "Category": "' (single brace) before the field and '" }' (single brace) after. The fix appended those literals verbatim, so self._fixed_template contains single braces that are not escape-escaped. When write_message later calls self._fixed_template.format(**self_dict), str.format treats the leading single '{' as the start of a new replacement field and tries to look up a key named ' "Category"', leading to KeyError: ' "Category"'. This matches the observed failure.
+
+FIX PLAN
+- File: pylint/reporters/text.py
+- Function: TextReporter.on_set_current_module
+- Change: When rebuilding _fixed_template from string.Formatter().parse(template), re-escape braces in literal segments before appending them. Keep the existing handling for known/unknown fields and the conversion/format_spec reconstitution.
+
+Concrete patch outline:
+- At top of file (imports), ensure:
+  import string
+- In on_set_current_module, replace the current regex logic with:
+
+  formatter = string.Formatter()
+  parts: list[str] = []
+  for literal, field_name, format_spec, conversion in formatter.parse(template):
+      # Re-escape braces in literals so a later .format() won’t re-interpret them
+      if literal:
+          parts.append(literal.replace("{", "{{").replace("}", "}}"))
+      if field_name is None:
+          continue  # no field here (covers escaped braces)
+      if field_name not in MESSAGE_FIELDS:
+          warnings.warn(
+              f"Don't recognize the argument '{field_name}' in the --msg-template. "
+              "Are you sure it is supported on the current version of pylint?"
+          )
+          continue  # drop unknown fields entirely, as before
+      conv = f"!{conversion}" if conversion else ""
+      spec = f":{format_spec}" if format_spec else ""
+      parts.append("{" + field_name + conv + spec + "}")
+  self._fixed_template = "".join(parts)
+
+- Rationale: parse() collapses '{{' and '}}' into '{' and '}' in literal_text. Re-escaping them when reconstructing ensures the final template is safe for str.format(), preventing spurious field parsing and the KeyError.
+
+Reports:
+- Files modified: none
+- Commands run: none

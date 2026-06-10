@@ -6,6 +6,7 @@
 import { readdir, stat } from 'fs/promises';
 import { join, basename } from 'path';
 import { expandPath } from '../core/config.js';
+import { loadRepoMetadata, RepoMetadataError } from './repoMetadata.js';
 
 // Types
 
@@ -243,7 +244,36 @@ export async function mapLinearProject(
   // Scan local projects
   const localProjects = await scanLocalProjects(basePaths);
 
-  // Attempt matching
+  // 1) Explicit mapping via openswarm.json wins over any fuzzy match.
+  //    Walk every local project, read its openswarm.json (if present), and
+  //    pick the one whose linear.projectId matches.
+  for (const project of localProjects) {
+    let meta;
+    try {
+      meta = await loadRepoMetadata(project.path);
+    } catch (err) {
+      if (err instanceof RepoMetadataError) {
+        console.warn(`[ProjectMapper] ${err.message}`);
+      }
+      continue;
+    }
+    if (meta?.linear?.projectId === linearProjectId) {
+      const mapping: ProjectMapping = {
+        linearProjectId,
+        linearProjectName,
+        localPath: project.path,
+        confidence: 1,
+        lastVerified: Date.now(),
+      };
+      mappingCache.set(linearProjectId, mapping);
+      console.log(
+        `[ProjectMapper] Explicit mapping: ${linearProjectName} → ${project.path} (openswarm.json)`,
+      );
+      return project.path;
+    }
+  }
+
+  // 2) Fall back to fuzzy name matching for repos without metadata.
   const match = findBestMatch(linearProjectName, localProjects);
 
   if (match) {

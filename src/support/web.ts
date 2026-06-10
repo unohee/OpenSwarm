@@ -4,7 +4,8 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { writeFileSync, readFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { readdir, stat } from 'node:fs/promises';
+import { join, resolve as resolvePath, dirname, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { execFile } from 'node:child_process';
 import { getChatHistory } from '../discord/index.js';
@@ -389,15 +390,17 @@ export async function startWebServer(port: number = 3847): Promise<void> {
       } else if (url === '/api/provider' && req.method === 'POST') {
         const body = await readBody(req);
         try {
-          const { provider } = JSON.parse(body) as { provider: 'claude' | 'codex' };
-          if (provider !== 'claude' && provider !== 'codex') {
+          const { provider } = JSON.parse(body) as { provider: string };
+          const VALID_PROVIDERS = ['codex', 'gpt', 'local', 'lmstudio', 'openrouter'] as const;
+          if (!VALID_PROVIDERS.includes(provider as typeof VALID_PROVIDERS[number])) {
             res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: 'Invalid provider' }));
+            res.end(JSON.stringify({ error: `Invalid provider. Valid: ${VALID_PROVIDERS.join(', ')}` }));
             return;
           }
 
-          setDefaultAdapter(provider);
-          runnerRef?.switchProvider(provider);
+          const validProvider = provider as typeof VALID_PROVIDERS[number];
+          setDefaultAdapter(validProvider);
+          runnerRef?.switchProvider(validProvider);
           broadcastEvent({
             type: 'log',
             data: { taskId: 'system', stage: 'provider', line: `Provider switched to ${provider}` },
@@ -564,7 +567,7 @@ export async function startWebServer(port: number = 3847): Promise<void> {
           ? '## Relevant Past Discussions\n' + memories.map(m => `- ${m.content.replace(/^Q: |^A: /g, '')}`).join('\n')
           : '';
 
-        const provider = runnerRef?.getAdapterSummary().defaultAdapter ?? 'claude';
+        const provider = runnerRef?.getAdapterSummary().defaultAdapter ?? 'codex';
         const model = runnerRef?.getAdapterSummary().worker?.model ?? getDefaultChatModel(provider);
 
         const contextPrompt = [
@@ -868,6 +871,51 @@ export async function startWebServer(port: number = 3847): Promise<void> {
         saveReposConfig();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
+
+      // ---- Filesystem browse (folder picker) ----
+      // GET /api/fs/list?path=<absolute or ~/...>
+      // Returns: { path, parent, entries: [{name, isDir}] } — dotfiles excluded, dirs first.
+      } else if (url.startsWith('/api/fs/list') && req.method === 'GET') {
+        try {
+          const qs = url.split('?')[1] ?? '';
+          const params = new URLSearchParams(qs);
+          const requested = params.get('path')?.trim();
+          const startPath = requested && requested.length > 0
+            ? requested
+            : homedir();
+          const expanded = startPath.startsWith('~')
+            ? join(homedir(), startPath.slice(1))
+            : startPath;
+          const absolute = resolvePath(expanded);
+
+          const st = await stat(absolute);
+          if (!st.isDirectory()) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Not a directory', path: absolute }));
+            return;
+          }
+
+          const raw = await readdir(absolute, { withFileTypes: true });
+          const entries = raw
+            .filter((d) => !d.name.startsWith('.'))
+            .map((d) => ({ name: d.name, isDir: d.isDirectory() }))
+            .sort((a, b) => {
+              if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+              return a.name.localeCompare(b.name);
+            });
+
+          const parent = dirname(absolute);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            path: absolute,
+            parent: parent === absolute ? null : parent,
+            name: basename(absolute) || absolute,
+            entries,
+          }));
+        } catch (e) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: safeErrorMessage(e) }));
+        }
 
       // ---- Claude Code Quota ----
       } else if (url === '/api/quota' && req.method === 'GET') {

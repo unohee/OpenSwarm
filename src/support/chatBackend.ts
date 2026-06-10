@@ -1,10 +1,7 @@
 import { spawn } from 'node:child_process';
 import { writeFile, unlink } from 'node:fs/promises';
 import type { AdapterName } from '../adapters/index.js';
-import { getAdapter } from '../adapters/index.js';
-import { getDefaultAdapterName } from '../adapters/index.js';
-import { extractResultFromStreamJson } from '../agents/cliStreamParser.js';
-import { extractCostFromStreamJson } from './costTracker.js';
+import { getAdapter, getDefaultAdapterName } from '../adapters/index.js';
 
 export interface ChatCompletionOptions {
   prompt: string;
@@ -26,11 +23,6 @@ export interface ChatCompletionResult {
 }
 
 export const CHAT_MODEL_ALIASES: Record<AdapterName, Record<string, string>> = {
-  claude: {
-    sonnet: 'claude-sonnet-4-5-20250929',
-    haiku: 'claude-haiku-4-5-20251001',
-    opus: 'claude-opus-4-6',
-  },
   codex: {
     codex: 'gpt-5-codex',
     gpt5: 'gpt-5-codex',
@@ -60,15 +52,28 @@ export const CHAT_MODEL_ALIASES: Record<AdapterName, Record<string, string>> = {
     local: process.env.LMSTUDIO_MODEL ?? 'local-model',
     lmstudio: process.env.LMSTUDIO_MODEL ?? 'local-model',
   },
+  openrouter: {
+    // Short aliases — full IDs (e.g. 'anthropic/claude-sonnet-4') pass through unchanged.
+    sonnet: 'anthropic/claude-sonnet-4',
+    opus: 'anthropic/claude-opus-4',
+    haiku: 'anthropic/claude-haiku-4-5',
+    'gpt-4o': 'openai/gpt-4o',
+    'gpt-5': 'openai/gpt-5',
+    'o4-mini': 'openai/o4-mini',
+    gemini: 'google/gemini-2.5-pro',
+    kimi: 'moonshotai/kimi-k2',
+    glm: 'z-ai/glm-4.6',
+  },
 };
 
 export function inferProviderFromModel(model?: string): AdapterName {
   if (!model) return getDefaultAdapterName();
   if (model.includes('codex')) return 'codex';
   if (model.startsWith('gpt-') || model.startsWith('o3') || model.startsWith('o4')) return 'gpt';
+  if (model.includes('/')) return 'openrouter';
   // 로컬 모델 패턴: ollama 태그 형식 (name:tag) 또는 알려진 오픈소스 모델
   if (model.includes(':') || /^(gemma|llama|mistral|codestral|qwen|deepseek|phi|starcoder)/i.test(model)) return 'local';
-  return 'claude';
+  return getDefaultAdapterName();
 }
 
 export function getDefaultChatModel(provider: AdapterName): string {
@@ -76,7 +81,8 @@ export function getDefaultChatModel(provider: AdapterName): string {
   if (provider === 'gpt') return 'gpt-4o';
   if (provider === 'local') return 'gemma3:4b';
   if (provider === 'lmstudio') return process.env.LMSTUDIO_MODEL ?? 'local-model';
-  return 'claude-sonnet-4-5-20250929';
+  if (provider === 'openrouter') return 'openai/gpt-5';
+  return 'gpt-5-codex';
 }
 
 export function resolveChatModel(input: string | undefined, provider: AdapterName): string {
@@ -86,9 +92,8 @@ export function resolveChatModel(input: string | undefined, provider: AdapterNam
 }
 
 export function shortenChatModel(model: string): string {
-  if (model.startsWith('claude-')) {
-    return model.replace('claude-', '').replace(/-\d{8}$/, '');
-  }
+  // OpenRouter: "anthropic/claude-sonnet-4" → "claude-sonnet-4"
+  if (model.includes('/')) return model.split('/').pop() ?? model;
   return model;
 }
 
@@ -140,28 +145,13 @@ export async function runChatCompletion(options: ChatCompletionOptions): Promise
           if (!line) continue;
           try {
             const event = JSON.parse(line);
-            if (provider === 'claude') {
-              if (event.session_id && !capturedSessionId) {
-                capturedSessionId = event.session_id;
-              }
-              if (event.type === 'assistant' && event.message?.content) {
-                for (const block of event.message.content) {
-                  if (block.type === 'text' && block.text) {
-                    startedStreaming = true;
-                    options.onText?.(block.text, false);
-                    resetThinkingTimer();
-                  }
-                }
-              }
-            } else {
-              if (event.type === 'item.completed' && event.item?.type === 'agent_message' && typeof event.item.text === 'string') {
-                startedStreaming = true;
-                options.onText?.(event.item.text, false);
-                resetThinkingTimer();
-              }
-              if (event.type === 'item.completed' && event.item?.type === 'reasoning') {
-                options.onText?.('', true);
-              }
+            if (event.type === 'item.completed' && event.item?.type === 'agent_message' && typeof event.item.text === 'string') {
+              startedStreaming = true;
+              options.onText?.(event.item.text, false);
+              resetThinkingTimer();
+            }
+            if (event.type === 'item.completed' && event.item?.type === 'reasoning') {
+              options.onText?.('', true);
             }
           } catch {
             // Ignore malformed lines.
@@ -197,11 +187,9 @@ export async function runChatCompletion(options: ChatCompletionOptions): Promise
           return;
         }
 
-        const response = provider === 'claude'
-          ? extractClaudeChatResponse(stdout)
-          : extractCodexChatResponse(stdout);
-        const cost = provider === 'claude' ? extractCostFromStreamJson(stdout)?.costUsd : undefined;
-        const tokens = provider === 'claude' ? extractClaudeTokens(stdout) : undefined;
+        const response = extractCodexChatResponse(stdout);
+        const cost = undefined;
+        const tokens = undefined;
 
         resolve({
           response: response || '[No response]',
@@ -228,30 +216,6 @@ export async function runChatCompletion(options: ChatCompletionOptions): Promise
   }
 }
 
-function extractClaudeChatResponse(stdout: string): string {
-  const resultText = extractResultFromStreamJson(stdout);
-  if (resultText?.trim()) return resultText.trim();
-
-  const assistantTexts: string[] = [];
-  for (const line of stdout.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    try {
-      const event = JSON.parse(trimmed);
-      if (event.type === 'assistant' && event.message?.content) {
-        for (const block of event.message.content) {
-          if (block.type === 'text' && block.text?.trim()) {
-            assistantTexts.push(block.text.trim());
-          }
-        }
-      }
-    } catch {
-      // Ignore malformed lines.
-    }
-  }
-  return assistantTexts.join('\n\n').trim();
-}
-
 function extractCodexChatResponse(stdout: string): string {
   let lastMessage = '';
   for (const line of stdout.split('\n')) {
@@ -269,18 +233,4 @@ function extractCodexChatResponse(stdout: string): string {
   return lastMessage;
 }
 
-function extractClaudeTokens(stdout: string): number | undefined {
-  for (const line of stdout.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    try {
-      const event = JSON.parse(trimmed);
-      if (event.type === 'result') {
-        return (event.input_tokens ?? 0) + (event.output_tokens ?? 0);
-      }
-    } catch {
-      // Ignore malformed lines.
-    }
-  }
-  return undefined;
-}
+

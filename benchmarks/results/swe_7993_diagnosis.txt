@@ -1,0 +1,55 @@
+ROOT CAUSE
+- Location: pylint/reporters/text.py, TextReporter.on_set_current_module
+- Code:
+  - Extracts fields from the user-supplied --msg-template using regex: r"\{(.+?)(:.*)?\}"
+  - For each match, warns if not in MESSAGE_FIELDS and removes it via re.sub.
+- Failure mechanism:
+  - The regex does not account for escaped braces used to output literal braces in str.format (i.e., “{{ … }}”).
+  - Given template: '{{ "Category": "{category}" }}'
+    - The regex incorrectly matches the entire '{ "Category": "{category}" }' as a “field” and treats '"Category": "{category}"' as the field name.
+    - This triggers the warning “Don't recognize the argument '{ "Category"'” and then strips chunks of the template, leaving only stray quotes and braces, producing the observed broken output:
+      " }
+      ...
+- Why it regressed:
+  - Older Pylint (1.7) didn’t pre-parse the template to validate fields; Python’s str.format handled double braces correctly.
+  - Since 2.x, template validation via the naive regex misinterprets escaped braces.
+
+FIX PLAN
+- File: pylint/reporters/text.py
+- Function: TextReporter.on_set_current_module
+- Changes:
+  1) Import string at top of file: import string
+  2) Replace the regex-based extraction and removal logic with Python’s formatter parser to properly handle escaped braces and real fields.
+
+Concrete patch description (pseudocode-level exactness):
+- Remove:
+  - arguments = re.findall(r"\{(.+?)(:.*)?\}", template)
+  - for argument in arguments:
+      if argument[0] not in MESSAGE_FIELDS:
+          warnings.warn(...)
+          template = re.sub(r"\{" + argument[0] + r"(:.*?)?\}", "", template)
+  - self._fixed_template = template
+- Add:
+  - formatter = string.Formatter()
+  - parts = []
+  - for literal, field_name, format_spec, conversion in formatter.parse(template):
+      - parts.append(literal)
+      - if field_name is None:
+          - continue  # no field here (also covers escaped braces which are returned as literals)
+      - if field_name not in MESSAGE_FIELDS:
+          - warnings.warn(f"Don't recognize the argument '{field_name}' in the --msg-template. Are you sure it is supported on the current version of pylint?")
+          - continue  # drop unknown fields by inserting nothing
+      - conv = f"!{conversion}" if conversion else ""
+      - spec = f":{format_spec}" if format_spec else ""
+      - parts.append("{" + field_name + conv + spec + "}")
+  - self._fixed_template = "".join(parts)
+
+Notes:
+- Using string.Formatter().parse correctly ignores escaped double braces and yields actual field names (e.g., 'category') without false positives.
+- Preserves format specs and optional conversion flags if users supply them.
+- Continues to warn and drop unknown fields, preserving existing behavior and tests like test_template_option_non_existing.
+- This should also address the failing tests around header/template handling (e.g., tests/reporters/unittest_reporting.py::test_template_option_with_header) by preventing false field detection in strings containing literals with braces.
+
+Reports
+- Files modified: none
+- Commands run: none

@@ -3,45 +3,132 @@
 // `openswarm auth login/status/logout`
 // ============================================
 
+import { createInterface } from 'node:readline';
 import { AuthProfileStore } from '../auth/index.js';
-import { loginAndSaveProfile } from '../auth/oauthPkce.js';
+import {
+  loginAndSaveProfile,
+  DEFAULT_OPENAI_CLIENT_ID,
+} from '../auth/oauthPkce.js';
+import {
+  loginAndSaveOpenRouterProfile,
+  saveOpenRouterApiKey,
+} from '../auth/openrouterPkce.js';
 
-const DEFAULT_CLIENT_ID = process.env.OPENAI_CLIENT_ID ?? '';
+type Provider = 'gpt' | 'openrouter';
+
+const PROFILE_KEYS: Record<Provider, string> = {
+  gpt: 'openai-gpt:default',
+  openrouter: 'openrouter:default',
+};
+
+const VALID_PROVIDERS: Provider[] = ['gpt', 'openrouter'];
+
+function assertProvider(provider: string): asserts provider is Provider {
+  if (!VALID_PROVIDERS.includes(provider as Provider)) {
+    console.error(
+      `지원하지 않는 provider: "${provider}". 지원: ${VALID_PROVIDERS.join(', ')}`,
+    );
+    process.exit(1);
+  }
+}
+
+export interface AuthLoginOpts {
+  clientId?: string;
+  port?: number;
+  /** OpenRouter: PKCE 없이 직접 입력받은 API key */
+  apiKey?: string;
+}
 
 /**
- * GPT OAuth 로그인 흐름 실행
+ * 로그인 흐름 (provider별 분기)
  */
-export async function handleAuthLogin(provider: string, opts: { clientId?: string; port?: number }): Promise<void> {
-  if (provider !== 'gpt') {
-    console.error(`지원하지 않는 provider: "${provider}". 현재 "gpt"만 지원합니다.`);
-    process.exit(1);
-  }
-
-  const clientId = opts.clientId ?? DEFAULT_CLIENT_ID;
-  if (!clientId) {
-    console.error('OpenAI Client ID가 필요합니다.');
-    console.error('환경변수 OPENAI_CLIENT_ID를 설정하거나 --client-id 옵션을 사용하세요.');
-    console.error('');
-    console.error('  export OPENAI_CLIENT_ID="your-client-id"');
-    console.error('  openswarm auth login --provider gpt');
-    console.error('');
-    console.error('또는:');
-    console.error('  openswarm auth login --provider gpt --client-id "your-client-id"');
-    process.exit(1);
-  }
+export async function handleAuthLogin(
+  provider: string,
+  opts: AuthLoginOpts,
+): Promise<void> {
+  assertProvider(provider);
 
   try {
-    await loginAndSaveProfile(clientId, opts.port);
-    console.log('');
-    console.log('GPT 어댑터를 사용하려면 config.yaml에서 adapter를 변경하세요:');
-    console.log('  adapter: gpt');
-    console.log('');
-    console.log('또는 CLI에서 직접 실행:');
-    console.log('  openswarm run "your task" --model gpt-4o');
+    if (provider === 'gpt') {
+      const clientId =
+        opts.clientId ?? process.env.OPENAI_CLIENT_ID ?? DEFAULT_OPENAI_CLIENT_ID;
+      await loginAndSaveProfile(clientId, opts.port);
+      printGptPostLoginHint();
+    } else {
+      await loginOpenRouter(opts);
+      printOpenRouterPostLoginHint();
+    }
   } catch (err) {
-    console.error(`OAuth 로그인 실패: ${err instanceof Error ? err.message : String(err)}`);
+    console.error(`로그인 실패: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
   }
+}
+
+async function loginOpenRouter(opts: AuthLoginOpts): Promise<void> {
+  // 1) Explicit --api-key wins.
+  if (opts.apiKey) {
+    saveOpenRouterApiKey(opts.apiKey);
+    console.log(`[Auth] OpenRouter API key 저장 완료: ${PROFILE_KEYS.openrouter}`);
+    return;
+  }
+
+  // 2) OPENROUTER_API_KEY env (headless / CI).
+  const envKey = process.env.OPENROUTER_API_KEY?.trim();
+  if (envKey) {
+    saveOpenRouterApiKey(envKey);
+    console.log(
+      `[Auth] OPENROUTER_API_KEY 환경 변수에서 키를 저장했습니다: ${PROFILE_KEYS.openrouter}`,
+    );
+    return;
+  }
+
+  // 3) PKCE browser flow (primary path).
+  try {
+    await loginAndSaveOpenRouterProfile(opts.port);
+    return;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[Auth] PKCE 흐름 실패: ${message}`);
+    console.error('[Auth] API 키 직접 입력으로 전환합니다.');
+  }
+
+  // 4) Interactive API-key fallback when PKCE could not complete.
+  const manualKey = await promptForApiKey();
+  saveOpenRouterApiKey(manualKey);
+  console.log(`[Auth] OpenRouter API key 저장 완료: ${PROFILE_KEYS.openrouter}`);
+}
+
+function promptForApiKey(): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    rl.question('OpenRouter API key (sk-or-...): ', (answer) => {
+      rl.close();
+      const trimmed = answer.trim();
+      if (!trimmed) {
+        reject(new Error('빈 키가 입력되었습니다.'));
+        return;
+      }
+      resolve(trimmed);
+    });
+  });
+}
+
+function printGptPostLoginHint(): void {
+  console.log('');
+  console.log('GPT 어댑터를 사용하려면 config.yaml에서 adapter를 변경하세요:');
+  console.log('  adapter: gpt');
+  console.log('');
+  console.log('또는 CLI에서 직접 실행:');
+  console.log('  openswarm run "your task" --model gpt-4o');
+}
+
+function printOpenRouterPostLoginHint(): void {
+  console.log('');
+  console.log('OpenRouter 어댑터를 사용하려면 config.yaml에서 adapter를 변경하세요:');
+  console.log('  adapter: openrouter');
+  console.log('');
+  console.log('또는 CLI에서 직접 실행 (모델은 provider/model 형식):');
+  console.log('  openswarm run "your task" --model anthropic/claude-sonnet-4');
 }
 
 /**
@@ -54,7 +141,9 @@ export function handleAuthStatus(): void {
 
   if (keys.length === 0) {
     console.log('저장된 인증 프로필이 없습니다.');
-    console.log('로그인: openswarm auth login --provider gpt');
+    console.log('로그인:');
+    console.log('  openswarm auth login --provider gpt');
+    console.log('  openswarm auth login --provider openrouter');
     return;
   }
 
@@ -63,14 +152,17 @@ export function handleAuthStatus(): void {
 
   for (const key of keys) {
     const p = profiles[key];
-    const expired = Date.now() > p.expires;
-    const expiresAt = new Date(p.expires).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' });
-    const status = expired ? '만료됨' : '유효';
+    const isApiKey = p.type === 'apiKey';
+    const expired = !isApiKey && Date.now() > p.expires;
+    const expiresAt = isApiKey
+      ? '∞ (API key)'
+      : `${new Date(p.expires).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })} (${expired ? '만료됨' : '유효'})`;
 
     console.log(`  ${key}`);
     console.log(`    Provider:   ${p.provider}`);
+    console.log(`    Type:       ${p.type}`);
     console.log(`    Token:      ${maskToken(p.access)}`);
-    console.log(`    Expires:    ${expiresAt} (${status})`);
+    console.log(`    Expires:    ${expiresAt}`);
     if (p.accountId) {
       console.log(`    Account:    ${p.accountId}`);
     }
@@ -82,12 +174,9 @@ export function handleAuthStatus(): void {
  * 인증 프로필 삭제
  */
 export function handleAuthLogout(provider: string): void {
-  if (provider !== 'gpt') {
-    console.error(`지원하지 않는 provider: "${provider}". 현재 "gpt"만 지원합니다.`);
-    process.exit(1);
-  }
+  assertProvider(provider);
 
-  const profileKey = 'openai-gpt:default';
+  const profileKey = PROFILE_KEYS[provider];
   const store = new AuthProfileStore();
 
   if (store.deleteProfile(profileKey)) {

@@ -39,7 +39,8 @@ export class CodexCliAdapter implements CliAdapter {
 
   buildCommand(options: CliRunOptions): { command: string; args: string[] } {
     const promptFile = options.prompt;
-    const modelFlag = options.model ? ` -m ${shellEscape(options.model)}` : '';
+    const resolvedModel = options.model ? coerceCodexModel(options.model) : undefined;
+    const modelFlag = resolvedModel ? ` -m ${shellEscape(resolvedModel)}` : '';
     const cmd = `cat ${shellEscape(promptFile)} | codex exec --json --full-auto --skip-git-repo-check${modelFlag}`;
     return { command: cmd, args: [] };
   }
@@ -75,6 +76,36 @@ export class CodexCliAdapter implements CliAdapter {
 
 function shellEscape(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * Codex (ChatGPT account mode) only accepts OpenAI-family models. When a
+ * pipeline role was configured with a Claude model and the operator later
+ * switched the global adapter to `codex`, the CLI returns:
+ *   400 invalid_request_error: The 'claude-...' model is not supported when
+ *   using Codex with a ChatGPT account.
+ *
+ * Rather than letting the request fail, transparently substitute the Codex
+ * default and log a warning so the operator can see what happened and either
+ * fix their config or accept the substitution.
+ */
+const CODEX_DEFAULT_MODEL = 'gpt-5-codex';
+const warnedAboutModel = new Set<string>();
+
+export function coerceCodexModel(requested: string): string {
+  if (!isClaudeModel(requested)) return requested;
+  if (!warnedAboutModel.has(requested)) {
+    warnedAboutModel.add(requested);
+    console.warn(
+      `[CodexAdapter] '${requested}' is a Claude model and is not accepted by codex with a ChatGPT account. ` +
+        `Substituting '${CODEX_DEFAULT_MODEL}'. Set worker/reviewer model explicitly in config.yaml to silence this.`,
+    );
+  }
+  return CODEX_DEFAULT_MODEL;
+}
+
+function isClaudeModel(name: string): boolean {
+  return /^claude[-_]/i.test(name);
 }
 
 function extractCodexMessageText(output: string): string {
@@ -270,8 +301,10 @@ function extractWorkerResultJson(text: string): WorkerResult | null {
 }
 
 function extractWorkerFromText(text: string): WorkerResult {
-  const hasError = /error|fail|exception|cannot/i.test(text);
-  const hasSuccess = /success|completed|done|finished/i.test(text);
+  // Only an explicit failure phrase marks the run as failed. Loose "error"/"fail"
+  // words appear in normal coding prose; git-diff promotion in worker.ts is the
+  // real success signal.
+  const failed = isExplicitFailure(text);
 
   const filePatterns = [
     /(?:changed?|modified?|created?|updated?):\s*(.+\.(?:ts|js|py|json|yaml|yml|md))/gi,
@@ -299,13 +332,19 @@ function extractWorkerFromText(text: string): WorkerResult {
   }
 
   return {
-    success: !hasError || hasSuccess,
+    success: !failed,
     summary: extractSummary(text),
     filesChanged: filesChanged.slice(0, 10),
     commands: commands.slice(0, 10),
     output: text,
-    error: hasError ? extractErrorMessage(text) : undefined,
+    error: failed ? extractErrorMessage(text) : undefined,
   };
+}
+
+// Detect a real failure declaration, not incidental "error"/"fail" prose (see gpt.ts).
+function isExplicitFailure(text: string): boolean {
+  if (/"success"\s*:\s*false/i.test(text)) return true;
+  return /\b(failed to|unable to|could not|couldn['’]t|cannot (?:complete|finish|proceed|continue)|giving up|abort(?:ed|ing))\b/i.test(text);
 }
 
 function extractSummary(text: string): string {

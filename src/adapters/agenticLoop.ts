@@ -1,13 +1,48 @@
 // ============================================
 // OpenSwarm - Agentic Tool Loop
 // Created: 2026-04-11
-// Purpose: GPT/Local 어댑터에 Claude CLI와 동등한 도구 사용 능력을 부여하는
-//          범용 에이전틱 루프 엔진.
+// Purpose: Codex/OpenRouter/Local 어댑터용 범용 에이전틱 루프 엔진.
 //          OpenAI function calling 포맷 기반.
+//          VEGA token_count.py 패턴 이식 — 토큰 기반 히스토리 압축.
 // ============================================
 
-import { TOOL_DEFINITIONS, executeToolCalls, type ToolCall, type ToolResult, type ToolDefinition } from './tools.js';
+import { TOOL_DEFINITIONS, executeToolCalls, createReadCache, type ToolCall, type ToolResult, type ToolDefinition } from './tools.js';
 import type { CliRunResult } from './types.js';
+
+// ============ 토큰 카운팅 (VEGA token_count.py 이식) ============
+
+// cl100k_base 근사: 한국어 0.78t/char, 영어 0.27t/char
+function countTokensApprox(text: string): number {
+  if (!text) return 0;
+  const hangul = [...text].filter(c => c >= '가' && c <= '힣').length;
+  const korRatio = hangul / Math.max(1, text.length);
+  const rate = 0.78 * korRatio + 0.27 * (1 - korRatio);
+  return Math.ceil(text.length * rate);
+}
+
+function countMessageTokens(messages: ChatMessage[]): number {
+  let total = 0;
+  for (const m of messages) {
+    const content = typeof m.content === 'string' ? m.content : '';
+    total += countTokensApprox(content);
+    total += 4; // role overhead
+    if ('tool_calls' in m && m.tool_calls) {
+      for (const tc of m.tool_calls) {
+        total += countTokensApprox(tc.function.arguments) + countTokensApprox(tc.function.name) + 8;
+      }
+    }
+  }
+  return total;
+}
+
+// 도구 결과 길이 제한: 너무 작게 자르면 모델이 파일 절반만 보고 잘못 수정한다.
+// 코딩 작업에 맞춰 넉넉히 보존(2500자), 초과 시 앞 1500 + 뒤 700자 유지.
+function truncateToolResult(content: string, maxLen = 2500): string {
+  if (content.length <= maxLen) return content;
+  const head = content.slice(0, 1500);
+  const tail = content.slice(-700);
+  return `${head}\n...[${content.length - 2200} chars truncated]...\n${tail}`;
+}
 
 // ============ 타입 ============
 
@@ -55,7 +90,7 @@ export interface AgenticLoopOptions {
   model: string;
   /** API 호출 함수 (어댑터별로 주입) */
   callApi: (messages: ChatMessage[], tools: ToolDefinition[]) => Promise<ChatCompletionResponse>;
-  /** 최대 도구 사용 턴 수 (기본: 15) */
+  /** 최대 도구 사용 턴 수 (기본: 20) */
   maxTurns?: number;
   /** 전체 타임아웃 (ms, 기본: 300000) */
   timeoutMs?: number;
@@ -63,6 +98,23 @@ export interface AgenticLoopOptions {
   onLog?: (line: string) => void;
   /** 도구 사용 허용 여부 (기본: true) */
   enableTools?: boolean;
+  /** 토큰 기반 압축 트리거 임계값 (기본: 24000) */
+  compactTokenThreshold?: number;
+  /** 이 메시지 수를 넘어야 압축 후보 (VEGA compact_threshold, 기본: 24) */
+  compactAfterMessages?: number;
+  /** 압축 시 항상 원본 유지할 최근 메시지 수 (VEGA keep_recent, 기본: 8) */
+  keepRecentMessages?: number;
+  /**
+   * 수정이 필수인 작업의 no-edit 종료 가드. 모델이 edit/write 도구를 한 번도 안 쓰고
+   * 최종 텍스트로 끝내려 하면 "아직 수정 안 했다, 계속하라"고 N회까지 되민다.
+   * 경량 모델(gemini 등)이 탐색만 하고 일찍 결론 내는 패턴 차단 (SWE 하이브리드에서 발견).
+   * 기본 0 (비활성) — 수정 없는 작업(진단·분석)도 정상이므로 옵트인.
+   */
+  nudgeMaxOnNoEdit?: number;
+  /** Verification-harness files for which edit/write are refused (see tools.ts ToolExecOptions) */
+  protectedFiles?: string[];
+  /** bash tool timeout — docker-based tests need minutes (default 30s) */
+  bashTimeoutMs?: number;
 }
 
 /** 루프 실행 결과 */
@@ -95,10 +147,19 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
     prompt,
     cwd,
     callApi,
-    maxTurns = 15,
+    maxTurns = 20,
     timeoutMs = 300000,
     onLog,
     enableTools = true,
+    // 긴 작업(SWE-bench급 실전 repo)에서 압축이 너무 일찍·자주 터지면 모델이 읽은
+    // 파일 컨텍스트를 잃고 같은 파일을 반복 read하다 수정에 도달 못 한다(무한 탐색).
+    // 현대 모델 컨텍스트(128k+)에 맞춰 임계를 넉넉히, 최근 보존 블록도 늘린다.
+    compactTokenThreshold = 60000,
+    compactAfterMessages = 60,
+    keepRecentMessages = 16,
+    nudgeMaxOnNoEdit = 0,
+    protectedFiles,
+    bashTimeoutMs,
   } = options;
 
   const startTime = Date.now();
@@ -109,10 +170,21 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
   if (systemPrompt) {
     messages.push({ role: 'system', content: systemPrompt });
   }
-  messages.push({ role: 'user', content: prompt });
+  // 작업 루트(cwd)를 명시 — 모델이 모르면 '/'나 repo명 같은 절대경로를 추측해
+  // 경로 검증(project 밖 접근)에 막힌다. 실전 repo(pylint 등)에서 search_files가
+  // 전부 차단되던 결함(SWE-bench에서 발견). 도구는 이 루트 기준 상대경로를 쓰라고 안내.
+  const cwdNote =
+    `# Working directory\n` +
+    `Your project root is: ${cwd}\n` +
+    `All file tools operate within this root. Use paths relative to it (e.g. "src/foo.ts" or ".") ` +
+    `or absolute paths under this root. Do NOT use "/" or a bare repo name — those are outside the project and will be rejected.\n\n`;
+  messages.push({ role: 'user', content: cwdNote + prompt });
 
   const tools = enableTools ? TOOL_DEFINITIONS : [];
+  const readCache = createReadCache(); // 루프 단위 read 캐시 (중복 read 차단)
   let toolCallCount = 0;
+  let editToolCount = 0; // edit_file/write_file 호출 수 (no-edit 가드용)
+  let nudgesUsed = 0;
   let apiCallCount = 0;
   let totalTokens = 0;
   let finalText = '';
@@ -124,9 +196,17 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
       break;
     }
 
-    // 매 턴 히스토리 압축 — 이전 턴의 tool call/result를 1줄 요약으로 교체
-    if (turn >= 2) {
-      compactPriorTurns(messages);
+    // 히스토리 압축 — VEGA compaction.py 패턴 이식.
+    // 트리거: 메시지 수가 compactAfterMessages를 넘고 + 토큰이 임계값 초과일 때만.
+    // 과거에는 turn>=2부터 매 턴 무조건 압축해 모델이 방금 읽은 파일·작업 맥락을
+    // 즉시 잃고 헛돌았다(루프 재발). 이제 정말 길어질 때만 압축하고, 압축해도
+    // 최근 keepRecentMessages 블록은 원본 유지한다.
+    if (messages.length > compactAfterMessages) {
+      const msgTokens = countMessageTokens(messages);
+      if (msgTokens > compactTokenThreshold) {
+        onLog?.(`📦 Compacting history (${messages.length} msgs, ${msgTokens} tokens > ${compactTokenThreshold})`);
+        compactPriorTurns(messages, keepRecentMessages);
+      }
     }
 
     // API 호출
@@ -158,6 +238,21 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
 
     // 도구 호출이 없으면 최종 응답
     if (!assistantMsg.tool_calls || assistantMsg.tool_calls.length === 0) {
+      // no-edit 종료 가드 — 수정 필수 작업인데 edit/write를 한 번도 안 하고 끝내려 하면
+      // 되밀어 계속하게 한다(경량 모델의 조기 결론 패턴 차단).
+      if (editToolCount === 0 && nudgesUsed < nudgeMaxOnNoEdit) {
+        nudgesUsed++;
+        onLog?.(`↩ No-edit guard: model tried to finish without editing (nudge ${nudgesUsed}/${nudgeMaxOnNoEdit})`);
+        messages.push({ role: 'assistant', content: assistantMsg.content ?? '' });
+        messages.push({
+          role: 'user',
+          content:
+            'You have not modified any files yet, but this task REQUIRES code changes. ' +
+            'Do not conclude with analysis only. Apply the fix now with edit_file, then verify. ' +
+            'Continue working.',
+        });
+        continue;
+      }
       finalText = assistantMsg.content ?? '';
       break;
     }
@@ -188,19 +283,50 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
       }
     }
 
-    const results: ToolResult[] = await executeToolCalls(toolCalls, cwd);
+    const results: ToolResult[] = await executeToolCalls(toolCalls, cwd, readCache, { protectedFiles, bashTimeoutMs });
     toolCallCount += toolCalls.length;
+    // Count only SUCCESSFUL edits — a model whose edit_file calls all fail
+    // (old_string not found, protected file) has not modified anything, and
+    // counting attempts would let it slip past the no-edit guard.
+    editToolCount += toolCalls.filter((tc, i) =>
+      (tc.function.name === 'edit_file' || tc.function.name === 'write_file') && !results[i]?.is_error,
+    ).length;
 
-    // 도구 결과를 메시지에 추가
+    // 도구 결과를 메시지에 추가 (길이 초과 시 자동 truncate)
     for (const result of results) {
+      const content = truncateToolResult(result.content);
       messages.push({
         role: 'tool',
         tool_call_id: result.tool_call_id,
-        content: result.content,
+        content,
       });
       if (result.is_error) {
-        onLog?.(`  ✖ ${result.content.slice(0, 100)}`);
+        onLog?.(`  ✖ ${content.slice(0, 100)}`);
       }
+    }
+  }
+
+  // Final answer turn — maxTurns/타임아웃으로 끊겼는데 모델이 최종 텍스트를 못 낸 경우,
+  // 도구 없이 마지막 1회 호출로 결론을 강제한다. 이게 없으면 진단·분석형 작업이
+  // 끝까지 도구만 호출하다 빈 결과("(no summary)")로 끝난다 — SWE 하이브리드 진단
+  // 단계에서 발견된 결함.
+  if (!finalText && apiCallCount > 0) {
+    onLog?.('▸ Final answer turn (no tools) — loop ended without a final message');
+    messages.push({
+      role: 'user',
+      content:
+        'Tool budget exhausted. Based on everything you have learned above, give your final ' +
+        'answer NOW as plain text. Do not request any more tools.',
+    });
+    try {
+      const response = await callApi(messages, []);
+      if (response.usage) {
+        totalTokens += response.usage.prompt_tokens + response.usage.completion_tokens;
+      }
+      apiCallCount++;
+      finalText = response.choices?.[0]?.message?.content ?? '';
+    } catch (err) {
+      onLog?.(`✖ Final answer turn failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -225,78 +351,71 @@ export function loopResultToCliResult(result: AgenticLoopResult): CliRunResult {
   };
 }
 
-// ============ 히스토리 압축 ============
+// ============ 히스토리 압축 (VEGA compaction.py 패턴 이식) ============
 
 /**
- * 최근 1턴(assistant + tool results)만 원본 유지.
- * 그 이전 턴의 assistant+tool 쌍을 1줄 요약 assistant 메시지로 교체.
+ * 이전 턴(assistant+tool 쌍)을 요약 1줄로 교체.
+ * OpenAI API 제약: tool 메시지는 직전 assistant의 tool_call_id와 대응해야 하므로
+ * 오래된 assistant+tool 쌍은 텍스트 요약으로 대체해 API 오류를 방지.
  *
- * 구조 변환:
- *   [system, user, asst(tool_calls), tool, tool, asst(tool_calls), tool, ...]
- *   → [system, user, asst("Prior: read_file→ok, edit→ok"), asst(latest_tool_calls), tool, ...]
- *
- * OpenAI API 제약: tool 메시지는 직전 assistant의 tool_call_id와 대응해야 함.
- * 따라서 오래된 tool 메시지는 삭제하고, 해당 assistant도 일반 텍스트로 교체.
+ * 보존 기준 (VEGA keep_recent): 최근 keepRecent개 메시지 블록은 항상 원본 유지.
+ * tool 메시지는 직전 assistant의 tool_call_id와 짝이 맞아야 하므로, 보존 경계는
+ * keepRecent 지점 이후 첫 assistant로 정렬해 짝이 깨진 tool 메시지가 남지 않게 한다.
+ * 기존 [Prior turns compacted] 요약이 있으면 새 요약에 합산 후 교체.
+ * (테스트를 위해 export — 외부에서 직접 호출할 일은 없음)
  */
-function compactPriorTurns(messages: ChatMessage[]): void {
+export function compactPriorTurns(messages: ChatMessage[], keepRecent = 8): void {
   const headerCount = messages[0]?.role === 'system' ? 2 : 1;
 
-  // 마지막 assistant+tool 블록의 시작 인덱스 찾기
-  let lastAssistantIdx = -1;
-  for (let i = messages.length - 1; i >= headerCount; i--) {
-    if (messages[i].role === 'assistant') {
-      lastAssistantIdx = i;
-      break;
-    }
+  // 최근 keepRecent개 메시지는 보존 — 압축 상한 인덱스 산출
+  let boundary = Math.max(headerCount, messages.length - keepRecent);
+  // 보존 경계를 assistant 시작점으로 정렬 (orphan tool 메시지 방지)
+  while (boundary < messages.length && messages[boundary].role === 'tool') {
+    boundary++;
   }
-  if (lastAssistantIdx <= headerCount) return; // 압축할 이전 턴이 없음
+  if (boundary <= headerCount) return;
 
-  // headerCount ~ lastAssistantIdx 사이의 모든 assistant+tool 쌍을 요약
   const summaryParts: string[] = [];
   const toRemove: number[] = [];
 
-  for (let i = headerCount; i < lastAssistantIdx; i++) {
+  for (let i = headerCount; i < boundary; i++) {
     const msg = messages[i];
 
-    if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
-      // tool call 요약: "read_file(src/foo.ts), edit_file(src/foo.ts)"
-      const callSummaries = msg.tool_calls.map(tc => {
-        try {
-          const args = JSON.parse(tc.function.arguments);
-          const key = args.path || args.pattern || args.command;
-          const short = typeof key === 'string' ? key.slice(0, 50) : '';
-          return `${tc.function.name}(${short})`;
-        } catch {
-          return tc.function.name;
-        }
-      });
-      summaryParts.push(callSummaries.join(', '));
+    if (msg.role === 'assistant') {
+      if (msg.tool_calls && msg.tool_calls.length > 0) {
+        const calls = msg.tool_calls.map(tc => {
+          try {
+            const args = JSON.parse(tc.function.arguments);
+            const key = args.path || args.pattern || args.command;
+            const short = typeof key === 'string' ? key.slice(0, 40) : '';
+            return `${tc.function.name}(${short})`;
+          } catch {
+            return tc.function.name;
+          }
+        });
+        summaryParts.push(calls.join(', '));
+      } else {
+        // 기존 compacted 요약이면 내용 그대로 흡수, 아니면 어시스턴트 설명 텍스트 보존
+        const text = (msg.content ?? '').trim();
+        if (text) summaryParts.push(text.startsWith('[Prior') ? text : `note: ${text.slice(0, 200)}`);
+      }
       toRemove.push(i);
     } else if (msg.role === 'tool') {
-      // tool result → 성공/실패만 기록
       const ok = !msg.content.startsWith('BLOCKED') && !msg.content.startsWith('Tool error');
-      const firstLine = msg.content.split('\n')[0].slice(0, 60);
-      summaryParts.push(ok ? `→ok` : `→err: ${firstLine}`);
-      toRemove.push(i);
-    } else if (msg.role === 'assistant' && !msg.tool_calls) {
-      // 일반 assistant 메시지 — 첫 줄만 유지
-      const short = (msg.content ?? '').split('\n')[0].slice(0, 80);
-      if (short) summaryParts.push(`note: ${short}`);
+      const firstLine = msg.content.split('\n')[0].slice(0, 50);
+      summaryParts.push(ok ? '→ok' : `→err: ${firstLine}`);
       toRemove.push(i);
     }
   }
 
   if (toRemove.length === 0) return;
 
-  // 요약 메시지 생성
   const summaryText = `[Prior turns compacted] ${summaryParts.join(' | ')}`;
 
-  // 역순으로 제거 (인덱스 안정성)
   for (let i = toRemove.length - 1; i >= 0; i--) {
     messages.splice(toRemove[i], 1);
   }
 
-  // header 직후에 요약 삽입
   messages.splice(headerCount, 0, {
     role: 'assistant',
     content: summaryText,

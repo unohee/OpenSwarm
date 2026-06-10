@@ -157,6 +157,9 @@ export class LocalModelAdapter implements CliAdapter {
       timeoutMs: options.timeoutMs || 300000,
       onLog: options.onLog,
       enableTools: supportsTools,
+      nudgeMaxOnNoEdit: options.nudgeMaxOnNoEdit,
+      protectedFiles: options.protectedFiles,
+      bashTimeoutMs: options.bashTimeoutMs,
     };
 
     try {
@@ -328,16 +331,17 @@ function extractWorkerResultJson(text: string): WorkerResult | null {
 }
 
 function extractWorkerFromText(text: string): WorkerResult {
-  const hasError = /error|fail|exception|cannot/i.test(text);
-  const hasSuccess = /success|completed|done|finished/i.test(text);
+  // Only an explicit failure phrase marks the run as failed (see gpt.ts).
+  // git-diff promotion in worker.ts is the real success signal.
+  const failed = isExplicitFailure(text);
 
   return {
-    success: !hasError || hasSuccess,
+    success: !failed,
     summary: extractSummary(text),
     filesChanged: [],
     commands: [],
     output: text,
-    error: hasError ? extractErrorMessage(text) : undefined,
+    error: failed ? extractErrorMessage(text) : undefined,
   };
 }
 
@@ -395,6 +399,12 @@ function findJsonObject(text: string, marker: string): string | null {
     }
   }
   return null;
+}
+
+// Detect a real failure declaration, not incidental "error"/"fail" prose (see gpt.ts).
+function isExplicitFailure(text: string): boolean {
+  if (/"success"\s*:\s*false/i.test(text)) return true;
+  return /\b(failed to|unable to|could not|couldn['’]t|cannot (?:complete|finish|proceed|continue)|giving up|abort(?:ed|ing))\b/i.test(text);
 }
 
 function extractSummary(text: string): string {

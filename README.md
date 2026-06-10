@@ -124,7 +124,7 @@ LINEAR_TEAM_ID=your-linear-team-id
 ### CLI Adapter (Provider)
 
 ```yaml
-adapter: claude   # "claude" | "codex" | "gpt" | "local" | "lmstudio"
+adapter: claude   # "claude" | "codex" | "gpt" | "openrouter" | "local" | "lmstudio"
 ```
 
 Switch at runtime via Discord: `!provider codex` / `!provider claude`
@@ -134,8 +134,11 @@ Switch at runtime via Discord: `!provider codex` / `!provider claude`
 | `claude` | Claude Code CLI | sonnet-4, haiku-4.5, opus-4 | CLI auth |
 | `codex` | OpenAI Codex CLI | o3, o4-mini | CLI auth |
 | `gpt` | OpenAI API | gpt-4o, o3, gpt-4.1 | OAuth PKCE |
+| `openrouter` | OpenRouter API (native agentic loop) | any OpenRouter model — gpt-5, gemini-2.5-flash, deepseek, glm, qwen, … | OAuth PKCE or `OPENROUTER_API` |
 | `local` | Ollama / LMStudio / llama.cpp | gemma4, llama3, mistral, qwen, etc. | None |
 | `lmstudio` | LM Studio OpenAI-compatible API | loaded LM Studio model (`LMSTUDIO_MODEL`) | Optional API key |
+
+The `openrouter` adapter runs OpenSwarm's own agentic tool loop (read/search/edit/bash with verification guards), enables ZDR (`data_collection: deny`) for non-OpenAI models, and applies Anthropic prompt caching automatically.
 
 Local models are auto-detected on standard ports (Ollama `:11434`, LMStudio `:1234`, llama.cpp `:8080`). Use `lmstudio` for a dedicated LM Studio endpoint (`LMSTUDIO_BASE_URL`, default `http://localhost:1234`).
 
@@ -242,13 +245,15 @@ docker compose up -d         # Docker
 
 ## Features
 
-- **Multi-Provider Adapters** — Pluggable adapter system: **Claude Code**, **OpenAI GPT/Codex**, and **local models** (Ollama, LMStudio, llama.cpp) with runtime provider switching
+- **Multi-Provider Adapters** — Pluggable adapter system: **Claude Code**, **OpenAI GPT/Codex**, **OpenRouter** (any model, native agentic loop), and **local models** (Ollama, LMStudio, llama.cpp) with runtime provider switching
 - **Code Registry** — SQLite-backed entity registry tracking every function/class/type across 8 languages, with complexity scoring, test mapping, and risk assessment
 - **BS Detector** — Built-in static analysis engine that detects bad code patterns (empty catch, hardcoded secrets, `as any`, etc.) with pipeline guard integration
 - **Autonomous Pipeline** — Cron-driven heartbeat fetches Linear issues, runs Worker/Reviewer pair loops, and updates issue state automatically
 - **Worker/Reviewer Pairs** — Multi-iteration code generation with automated review, testing, and documentation stages
 - **Decision Engine** — Scope validation, rate limiting, priority-based task selection, and workflow mapping
 - **Cognitive Memory** — LanceDB vector store with Xenova/multilingual-e5-base embeddings for long-term recall across sessions
+- **Repo Knowledge Loop** — workers learn each repository over time: task outcomes (success patterns, review-rejection pitfalls) are stored per-repo and recalled into the next worker prompt
+- **SWE-bench Verified** — the agentic harness solves real SWE-bench Lite issues, graded by the official harness; hybrid mode (frontier diagnosis + lightweight implementer) resolved 3/3 attempted instances ([benchmarks/RUBRIC.md](benchmarks/RUBRIC.md))
 - **Knowledge Graph** — Static code analysis, dependency mapping, impact analysis, and file-level conflict detection across concurrent tasks
 - **Discord Control** — Full command interface for monitoring, task dispatch, scheduling, provider switching, and pair session management
 - **Rich TUI Chat** — Claude Code inspired terminal interface with tabs, streaming responses, and geek-themed loading messages
@@ -285,6 +290,23 @@ Hybrid retrieval: `0.55 × similarity + 0.20 × importance + 0.15 × recency + 0
 Memory types: `belief` · `strategy` · `user_model` · `system_pattern` · `constraint`
 
 Background: decay, consolidation, contradiction detection, distillation.
+
+**Repo knowledge loop** — every completed task writes repo-scoped knowledge
+(success → `system_pattern` with files changed + approach, review rejection →
+`constraint` pitfall), and the next task on the same repo recalls the most
+relevant entries into the worker prompt as a "Repository Knowledge" section.
+Workers get better at a codebase the more they work on it.
+
+### Benchmarks (L0–L6)
+
+`benchmarks/` contains a difficulty ladder for routing models by measured
+capability — synthetic L0–L5 tasks with deterministic grading, and L6 = real
+GitHub issues (SWE-bench Lite) solved by the OpenSwarm harness and graded by
+the official swebench harness. Headline: **hybrid mode** (frontier read-only
+diagnosis + lightweight implementer with a verification loop) resolved 3/3
+attempted instances that every single lightweight model had failed. See
+[benchmarks/RUBRIC.md](benchmarks/RUBRIC.md) for the rubric, measured results,
+and the harness defects the benchmark uncovered.
 
 ---
 

@@ -10,11 +10,21 @@ import { homedir } from 'node:os';
 // Types
 
 export interface AuthProfile {
-  type: 'oauth';
+  /**
+   * oauth: short-lived access_token + refresh_token (e.g. ChatGPT Codex)
+   * apiKey: long-lived bearer token, no refresh flow (e.g. OpenRouter sk-or-*)
+   */
+  type: 'oauth' | 'apiKey';
   provider: string;
   access: string;
+  /** Empty string when `type === 'apiKey'` (no refresh available). */
   refresh: string;
-  expires: number; // ms timestamp
+  /**
+   * ms timestamp at which `access` expires.
+   * For `type === 'apiKey'` this is set to Number.MAX_SAFE_INTEGER (never expires).
+   */
+  expires: number;
+  /** OAuth client_id for the issuer. Empty string for plain API keys. */
   clientId: string;
   accountId?: string;
 }
@@ -91,6 +101,11 @@ export async function ensureValidToken(store: AuthProfileStore, profileKey: stri
   const profile = store.getProfile(profileKey);
   if (!profile) {
     throw new Error(`Auth profile "${profileKey}" not found. Run: openswarm auth login --provider gpt`);
+  }
+
+  // API keys never expire and have no refresh flow.
+  if (profile.type === 'apiKey') {
+    return profile.access;
   }
 
   const now = Date.now();

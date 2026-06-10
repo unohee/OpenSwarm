@@ -16,7 +16,7 @@ import {
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import type { SwarmEvent, AgentStatus } from '../core/types.js';
-import { extractCostFromJson, formatCost } from '../support/costTracker.js';
+import { getAdapter, spawnCli } from '../adapters/index.js';
 import * as memory from '../memory/index.js';
 import { t, getPrompts, getDateLocale } from '../locale/index.js';
 
@@ -660,8 +660,8 @@ export async function handleChat(msg: Message): Promise<void> {
 
     console.log(`[OpenSwarm] History context: ${channelHistoryMap.get(channelId)?.length ?? 0} messages`);
 
-    // Run Claude CLI
-    const { result: response, toolCalls } = await runClaude(prompt, { cwd: projectPath || undefined });
+    // Run via adapter
+    const { result: response, toolCalls } = await runWithAdapter(prompt, { cwd: projectPath || undefined });
 
     if (typingInterval) clearInterval(typingInterval);
 
@@ -696,127 +696,31 @@ export async function handleChat(msg: Message): Promise<void> {
   }
 }
 
-// Currently running OpenSwarm Claude process
-let currentClaudeProcess: ReturnType<typeof spawn> | null = null;
-
 /**
- * Run Claude CLI
+ * Run via the default adapter (codex / openrouter / lmstudio / local)
  */
-async function runClaude(
+async function runWithAdapter(
   prompt: string,
-  options?: { cwd?: string }
+  options?: { cwd?: string },
 ): Promise<{ result: string; toolCalls: string[] }> {
-  if (currentClaudeProcess) {
-    console.log('[Claude CLI] Killing previous process...');
-    currentClaudeProcess.kill('SIGKILL');
-    currentClaudeProcess = null;
-  }
+  const adapter = getAdapter();
+  const cwd = options?.cwd ?? process.cwd();
+  console.log(`[Adapter:${adapter.name}] Starting in ${cwd}...`);
 
-  const workingDir = options?.cwd || process.cwd();
-
-  return new Promise((resolve, reject) => {
-    console.log(`[Claude CLI] Starting in ${workingDir}...`);
-    const proc = spawn('claude', [
-      '-p', prompt,
-      '--output-format', 'json',
-      '--permission-mode', 'bypassPermissions',
-    ], {
-      shell: false,
-      cwd: workingDir,
-      env: process.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-
-    currentClaudeProcess = proc;
-
-    let stdout = '';
-    let stderr = '';
-
-    proc.stdout?.on('data', (data) => { stdout += data.toString(); });
-    proc.stderr?.on('data', (data) => { stderr += data.toString(); });
-
-    proc.on('close', (code) => {
-      currentClaudeProcess = null;
-      if (code !== 0 && code !== null) {
-        console.error('[Claude CLI] Error:', stderr.slice(0, 200));
-        reject(new Error(`Claude CLI failed with code ${code}`));
-        return;
-      }
-      resolve(parseClaudeJson(stdout));
-    });
-
-    proc.on('error', (err) => {
-      currentClaudeProcess = null;
-      reject(new Error(`Claude CLI spawn error: ${err.message}`));
-    });
+  const raw = await spawnCli(adapter, {
+    prompt,
+    cwd,
+    timeoutMs: 120_000,
+    maxTurns: 10,
   });
+
+  const workerResult = adapter.parseWorkerOutput(raw);
+  const toolCalls = workerResult.commands ?? [];
+  return { result: workerResult.summary ?? raw.stdout.trim(), toolCalls };
 }
 
-// Destructive command patterns
-const DESTRUCTIVE_PATTERNS = [
-  /\brm\s+(-[rf]+\s+)*.*(-[rf]+|--recursive|--force)/i,
-  /\bgit\s+(reset\s+--hard|clean\s+-[fd])/i,
-  /\b(drop|truncate)\s+(database|table)/i,
-  /\bchmod\s+777/i,
-  /\bdd\s+if=/i,
-  />\s*\/dev\/sd[a-z]/i,
-];
 
-/**
- * Parse Claude JSON output
- */
-function parseClaudeJson(output: string): { result: string; toolCalls: string[] } {
-  const toolCalls: string[] = [];
 
-  // Extract cost
-  const costInfo = extractCostFromJson(output);
-  if (costInfo) {
-    console.log(`[Discord] Claude cost: ${formatCost(costInfo)}`);
-  }
-
-  try {
-    const match = output.match(/\[[\s\S]*\]/);
-    if (!match) return { result: output.trim() || t('common.fallback.noResponse'), toolCalls };
-
-    const arr = JSON.parse(match[0]);
-    let result = t('common.fallback.noResponse');
-
-    for (const item of arr) {
-      if (item.type === 'tool_use') {
-        const toolName = item.name || 'unknown';
-        let toolSummary = toolName;
-
-        if (toolName === 'Bash' && item.input?.command) {
-          const cmd = item.input.command.slice(0, 80);
-          toolSummary = `Bash: \`${cmd}${item.input.command.length > 80 ? '...' : ''}\``;
-
-          for (const pattern of DESTRUCTIVE_PATTERNS) {
-            if (pattern.test(item.input.command)) {
-              toolSummary = `⛔ BLOCKED: ${cmd}`;
-              console.warn(`[OpenSwarm] Destructive command detected: ${item.input.command}`);
-              break;
-            }
-          }
-        } else if (['Read', 'Write', 'Edit'].includes(toolName) && item.input?.file_path) {
-          const path = item.input.file_path.split('/').slice(-2).join('/');
-          toolSummary = `${toolName}: \`${path}\``;
-        } else if (toolName === 'Grep' && item.input?.pattern) {
-          toolSummary = `Grep: \`${item.input.pattern}\``;
-        }
-
-        toolCalls.push(toolSummary);
-      }
-
-      if (item.type === 'result' && item.result) {
-        result = item.result;
-      }
-    }
-
-    return { result, toolCalls };
-  } catch {
-    return { result: output.trim() || t('common.fallback.noResponse'), toolCalls };
-  }
-}
 
 /**
  * Split message

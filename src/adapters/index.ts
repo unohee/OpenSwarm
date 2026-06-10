@@ -15,32 +15,32 @@ export type {
 } from './types.js';
 
 export { spawnCli } from './base.js';
-export { ClaudeCliAdapter } from './claude.js';
 export { CodexCliAdapter } from './codex.js';
 export { GptCliAdapter } from './gpt.js';
 export { LocalModelAdapter } from './local.js';
 export { LmStudioAdapter } from './lmstudio.js';
+export { OpenRouterCliAdapter } from './openrouter.js';
 export { registerProcess, getProcess, getAllProcesses, killProcess, startHealthChecker, stopHealthChecker } from './processRegistry.js';
 
-import { ClaudeCliAdapter } from './claude.js';
 import { CodexCliAdapter } from './codex.js';
 import { GptCliAdapter } from './gpt.js';
 import { LocalModelAdapter } from './local.js';
 import { LmStudioAdapter } from './lmstudio.js';
+import { OpenRouterCliAdapter } from './openrouter.js';
 import type { AdapterName, CliAdapter } from './types.js';
 
 const adapters: Record<string, CliAdapter> = {
-  claude: new ClaudeCliAdapter(),
   codex: new CodexCliAdapter(),
   gpt: new GptCliAdapter(),
   local: new LocalModelAdapter(),
   lmstudio: new LmStudioAdapter(),
+  openrouter: new OpenRouterCliAdapter(),
 };
 
-let defaultAdapter: AdapterName = 'claude';
+let defaultAdapter: AdapterName = 'codex';
 
 /**
- * Get an adapter by name. Defaults to 'claude'.
+ * Get an adapter by name. Defaults to 'codex'.
  */
 export function getAdapter(name: string = defaultAdapter): CliAdapter {
   const adapter = adapters[name];
