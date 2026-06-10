@@ -459,7 +459,7 @@ agents:
   // ============================================
 
   describe('Zod schema validation', () => {
-    it('should reject config without required discord token', () => {
+    it('should disable Discord integration when token is missing (standalone mode)', () => {
       const yamlContent = `
 language: en
 discord:
@@ -475,10 +475,12 @@ agents:
       vi.mocked(existsSync).mockReturnValue(true);
       vi.mocked(readFileSync).mockReturnValue(yamlContent);
 
-      expect(() => loadConfig('/tmp/config.yaml')).toThrow('Config validation failed');
+      const config = loadConfig('/tmp/config.yaml');
+      expect(config.discordToken).toBe('');
+      expect(config.linearTeamId).toBe('test-team-id');
     });
 
-    it('should reject config without required linear team ID', () => {
+    it('should disable Linear integration when team ID is missing (standalone mode)', () => {
       const yamlContent = `
 language: en
 discord:
@@ -494,7 +496,9 @@ agents:
       vi.mocked(existsSync).mockReturnValue(true);
       vi.mocked(readFileSync).mockReturnValue(yamlContent);
 
-      expect(() => loadConfig('/tmp/config.yaml')).toThrow('Config validation failed');
+      const config = loadConfig('/tmp/config.yaml');
+      expect(config.linearTeamId).toBe('');
+      expect(config.discordToken).toBe('test-token');
     });
 
     it('should reject config without at least one agent', () => {
