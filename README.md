@@ -3,15 +3,18 @@
 [![npm version](https://img.shields.io/npm/v/@intrect/openswarm.svg)](https://www.npmjs.com/package/@intrect/openswarm)
 [![npm downloads](https://img.shields.io/npm/dm/@intrect/openswarm.svg)](https://www.npmjs.com/package/@intrect/openswarm)
 [![license](https://img.shields.io/npm/l/@intrect/openswarm.svg)](LICENSE)
+[![SWE-bench Lite](https://img.shields.io/badge/SWE--bench_Lite-hybrid_3%2F3_resolved-2ea44f)](benchmarks/RUBRIC.md)
 [![GitHub Discussions](https://img.shields.io/github/discussions/unohee/OpenSwarm?logo=github&label=discussions)](https://github.com/unohee/OpenSwarm/discussions)
 
-> Autonomous AI agent orchestrator — Claude, GPT, Codex, and local models (Ollama/LMStudio/llama.cpp)
+> Autonomous AI agent orchestrator — Claude, GPT, Codex, **OpenRouter (any model)**, and local models (Ollama/LMStudio/llama.cpp)
 
 > 💬 **Help shape OpenSwarm.** Share feature ideas, vote on the roadmap, and ask questions in [**GitHub Discussions**](https://github.com/unohee/OpenSwarm/discussions). The roadmap is built in the open — your feedback decides what ships next.
 
 ---
 
-OpenSwarm orchestrates multiple AI agents as autonomous code workers. It picks up Linear issues, runs Worker/Reviewer pair pipelines, reports to Discord, and retains long-term memory via LanceDB. Supports Claude Code, OpenAI GPT, Codex, and **local open-source models** via Ollama, LMStudio, or llama.cpp.
+OpenSwarm orchestrates multiple AI agents as autonomous code workers. It picks up Linear issues, runs Worker/Reviewer pair pipelines, reports to Discord, and retains long-term memory via LanceDB. Workers run on Claude Code, OpenAI GPT, Codex, **any OpenRouter model**, or **local open-source models** (Ollama, LMStudio, llama.cpp) — with cost-aware routing measured on an L0–L6 benchmark ladder.
+
+**Verified on real GitHub issues**: the agentic harness solves SWE-bench Lite instances graded by the official harness. Hybrid mode — a frontier model diagnoses read-only, a lightweight model implements with a verification loop — resolved **3/3 attempted instances** that every single lightweight model had failed, at a fraction of frontier-only cost. Workers also **learn each repository over time**: task outcomes are stored as per-repo knowledge and recalled into future prompts. ([benchmark rubric & results](benchmarks/RUBRIC.md))
 
 ## Quick Start
 
