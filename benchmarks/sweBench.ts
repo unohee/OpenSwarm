@@ -174,6 +174,9 @@ async function solveOne(inst: SweInstance, model: string): Promise<{ pred: Recor
         model: diagModel,
         timeoutMs: 900_000,
         maxTurns: 50,
+        // Benchmark integrity — no web tools, or the model could just search up
+        // the instance's GitHub issue / gold patch instead of diagnosing.
+        webTools: false,
         onLog: process.env.SWE_VERBOSE ? (l) => console.log(`    [diag] ${l}`) : () => {},
       });
       // 진단자가 실수로 수정했어도 구현 단계는 깨끗한 베이스에서 시작
@@ -214,6 +217,8 @@ async function solveOne(inst: SweInstance, model: string): Promise<{ pred: Recor
       // run_tests.sh = docker cp + in-container pytest — the 30s default times
       // out into a silent no-output failure the model reads as a broken env.
       bashTimeoutMs: 240_000,
+      // Benchmark integrity — no web search of the gold patch / GitHub issue.
+      webTools: false,
       onLog: process.env.SWE_VERBOSE ? (l) => console.log(`    ${l}`) : () => {},
     });
 

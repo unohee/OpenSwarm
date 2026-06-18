@@ -7,6 +7,7 @@
 // ============================================
 
 import { TOOL_DEFINITIONS, executeToolCalls, createReadCache, type ToolCall, type ToolResult, type ToolDefinition } from './tools.js';
+import { WEB_TOOL_DEFINITIONS } from './webTools.js';
 import type { CliRunResult } from './types.js';
 
 // ============ 토큰 카운팅 (VEGA token_count.py 이식) ============
@@ -115,6 +116,8 @@ export interface AgenticLoopOptions {
   protectedFiles?: string[];
   /** bash tool timeout — docker-based tests need minutes (default 30s) */
   bashTimeoutMs?: number;
+  /** Expose web_fetch + web_search tools (default true). Disabled e.g. for SWE-bench integrity. */
+  webTools?: boolean;
 }
 
 /** 루프 실행 결과 */
@@ -160,6 +163,7 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
     nudgeMaxOnNoEdit = 0,
     protectedFiles,
     bashTimeoutMs,
+    webTools = true,
   } = options;
 
   const startTime = Date.now();
@@ -180,7 +184,9 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
     `or absolute paths under this root. Do NOT use "/" or a bare repo name — those are outside the project and will be rejected.\n\n`;
   messages.push({ role: 'user', content: cwdNote + prompt });
 
-  const tools = enableTools ? TOOL_DEFINITIONS : [];
+  const tools = enableTools
+    ? (webTools ? [...TOOL_DEFINITIONS, ...WEB_TOOL_DEFINITIONS] : TOOL_DEFINITIONS)
+    : [];
   const readCache = createReadCache(); // 루프 단위 read 캐시 (중복 read 차단)
   let toolCallCount = 0;
   let editToolCount = 0; // edit_file/write_file 호출 수 (no-edit 가드용)

@@ -60,6 +60,8 @@ export interface CliRunOptions {
   protectedFiles?: string[];
   /** bash tool timeout in ms (default 30s). Raise for docker-based tests that take minutes. */
   bashTimeoutMs?: number;
+  /** Expose web_fetch + web_search tools (default true). Set false for SWE-bench integrity. */
+  webTools?: boolean;
 }
 
 /**

@@ -34,6 +34,8 @@ export interface WorkerOptions {
   protectedFiles?: string[];
   /** bash tool timeout in ms — raise for slow verification such as docker-based tests */
   bashTimeoutMs?: number;
+  /** Expose web_fetch + web_search tools (default true). Set false for SWE-bench integrity. */
+  webTools?: boolean;
 }
 
 // Prompts
@@ -86,6 +88,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       nudgeMaxOnNoEdit: options.nudgeMaxOnNoEdit,
       protectedFiles: options.protectedFiles,
       bashTimeoutMs: options.bashTimeoutMs,
+      webTools: options.webTools,
     });
 
     // Parse result via adapter

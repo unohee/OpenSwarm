@@ -160,6 +160,7 @@ export class LocalModelAdapter implements CliAdapter {
       nudgeMaxOnNoEdit: options.nudgeMaxOnNoEdit,
       protectedFiles: options.protectedFiles,
       bashTimeoutMs: options.bashTimeoutMs,
+      webTools: options.webTools,
     };
 
     try {

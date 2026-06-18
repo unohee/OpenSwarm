@@ -9,6 +9,7 @@ import fs from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
+import { webFetch, webSearch } from './webTools.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -392,6 +393,16 @@ export async function executeTool(
           const benign = e.code === 1 && !out.trim();
           return { tool_call_id: callId, content: body, is_error: !benign };
         }
+      }
+
+      case 'web_fetch': {
+        const text = await webFetch(args.url);
+        return { tool_call_id: callId, content: text, is_error: text.startsWith('Invalid URL') || text.startsWith('Fetch ') };
+      }
+
+      case 'web_search': {
+        const text = await webSearch(args.query, args.max_results);
+        return { tool_call_id: callId, content: text, is_error: text.startsWith('Search failed') || text.startsWith('Invalid query') };
       }
 
       default:
