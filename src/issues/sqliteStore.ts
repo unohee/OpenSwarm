@@ -497,14 +497,19 @@ export class SqliteIssueStore implements IIssueStore {
   }
 
   getEvents(issueId: string, limit = 50): IssueEvent[] {
+    // rowid DESC is the tiebreaker: created_at is ms-precision TEXT, so events
+    // written in the same millisecond (e.g. createIssue's 'created' + an
+    // immediate addEvent) would otherwise order non-deterministically. rowid is
+    // monotonic with insertion order, so the newest event always sorts first.
     return (this.db.prepare(
-      'SELECT * FROM issue_events WHERE issue_id = ? ORDER BY created_at DESC LIMIT ?'
+      'SELECT * FROM issue_events WHERE issue_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?'
     ).all(issueId, limit) as any[]).map(this.rowToEvent);
   }
 
   getRecentEvents(limit = 20): IssueEvent[] {
+    // rowid DESC tiebreaker for same-millisecond created_at — see getEvents.
     return (this.db.prepare(
-      'SELECT * FROM issue_events ORDER BY created_at DESC LIMIT ?'
+      'SELECT * FROM issue_events ORDER BY created_at DESC, rowid DESC LIMIT ?'
     ).all(limit) as any[]).map(this.rowToEvent);
   }
 

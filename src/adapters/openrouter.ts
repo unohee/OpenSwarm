@@ -13,22 +13,22 @@ import type {
   ReviewResult,
 } from './types.js';
 import { AuthProfileStore, ensureValidToken } from '../auth/index.js';
-import { t } from '../locale/index.js';
 import {
   runAgenticLoop,
   loopResultToCliResult,
   type ChatMessage,
   type AgenticLoopOptions,
 } from './agenticLoop.js';
+import { parseWorkerResult, parseReviewerResult } from './resultParsing.js';
 import type { ToolDefinition } from './tools.js';
 
 const OPENROUTER_API_BASE = 'https://openrouter.ai/api/v1';
 const DEFAULT_MODEL = 'openai/gpt-5';
 const PROFILE_KEY = 'openrouter:default';
 
-/** OPENROUTER_API env var → immediate API key (no PKCE needed). */
+/** OPENROUTER_API_KEY env var (legacy: OPENROUTER_API) → immediate API key (no PKCE needed). */
 function getEnvApiKey(): string | undefined {
-  return process.env.OPENROUTER_API?.trim() || undefined;
+  return process.env.OPENROUTER_API_KEY?.trim() || process.env.OPENROUTER_API?.trim() || undefined;
 }
 
 // Attribution headers — OpenRouter surfaces these in its analytics UI so
@@ -67,7 +67,7 @@ export class OpenRouterCliAdapter implements CliAdapter {
   async run(options: CliRunOptions): Promise<CliRunResult> {
     const startTime = Date.now();
 
-    // Prefer OPENROUTER_API env var (e.g. sourced from VEGA .env)
+    // Prefer OPENROUTER_API_KEY env var (auto-loaded from .env by the CLI entrypoint)
     let apiKey: string | undefined = getEnvApiKey();
     if (!apiKey) {
       const store = new AuthProfileStore();
@@ -77,7 +77,7 @@ export class OpenRouterCliAdapter implements CliAdapter {
         return {
           exitCode: 1,
           stdout: '',
-          stderr: `Auth error: ${err instanceof Error ? err.message : String(err)}. Set OPENROUTER_API env var or run: openswarm auth login --provider openrouter`,
+          stderr: `Auth error: ${err instanceof Error ? err.message : String(err)}. Set OPENROUTER_API_KEY env var or run: openswarm auth login --provider openrouter`,
           durationMs: Date.now() - startTime,
         };
       }
@@ -120,11 +120,11 @@ export class OpenRouterCliAdapter implements CliAdapter {
   }
 
   parseWorkerOutput(raw: CliRunResult): WorkerResult {
-    return extractWorkerResultJson(raw.stdout) ?? extractWorkerFromText(raw.stdout);
+    return parseWorkerResult(raw.stdout);
   }
 
   parseReviewerOutput(raw: CliRunResult): ReviewResult {
-    return extractReviewerResultJson(raw.stdout) ?? extractReviewerFromText(raw.stdout);
+    return parseReviewerResult(raw.stdout);
   }
 }
 
@@ -240,120 +240,5 @@ export function applyPromptCaching(messages: ChatMessage[], model: string): unkn
 
 // ----- Worker/Reviewer output parsing (mirrors gpt.ts) -----
 
-function extractWorkerResultJson(text: string): WorkerResult | null {
-  const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
-  const jsonStr = jsonMatch?.[1] ?? findJsonObject(text, '"success"');
-  if (!jsonStr) return null;
-
-  try {
-    const parsed = JSON.parse(jsonStr);
-    return {
-      success: Boolean(parsed.success),
-      summary: parsed.summary || t('common.fallback.noSummary'),
-      filesChanged: Array.isArray(parsed.filesChanged) ? parsed.filesChanged : [],
-      commands: Array.isArray(parsed.commands) ? parsed.commands : [],
-      output: text,
-      error: parsed.error,
-      confidencePercent:
-        typeof parsed.confidencePercent === 'number' ? parsed.confidencePercent : undefined,
-      haltReason: parsed.haltReason || undefined,
-    };
-  } catch {
-    return null;
-  }
-}
-
-function extractWorkerFromText(text: string): WorkerResult {
-  // Only an explicit failure phrase marks the run as failed (see gpt.ts).
-  // git-diff promotion in worker.ts is the real success signal.
-  const failed = isExplicitFailure(text);
-
-  return {
-    success: !failed,
-    summary: extractSummary(text),
-    filesChanged: [],
-    commands: [],
-    output: text,
-    error: failed ? extractErrorMessage(text) : undefined,
-  };
-}
-
-function extractReviewerResultJson(text: string): ReviewResult | null {
-  const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
-  const jsonStr = jsonMatch?.[1] ?? findJsonObject(text, '"decision"');
-  if (!jsonStr) return null;
-
-  try {
-    const parsed = JSON.parse(jsonStr);
-    const decision =
-      parsed.decision === 'approve' || parsed.decision === 'reject' ? parsed.decision : 'revise';
-    return {
-      decision,
-      feedback:
-        typeof parsed.feedback === 'string' ? parsed.feedback : t('common.fallback.noSummary'),
-      issues: Array.isArray(parsed.issues)
-        ? parsed.issues.filter((v: unknown): v is string => typeof v === 'string')
-        : [],
-      suggestions: Array.isArray(parsed.suggestions)
-        ? parsed.suggestions.filter((v: unknown): v is string => typeof v === 'string')
-        : [],
-    };
-  } catch {
-    return null;
-  }
-}
-
-function extractReviewerFromText(text: string): ReviewResult {
-  const lower = text.toLowerCase();
-  const decision = lower.includes('approve')
-    ? 'approve'
-    : lower.includes('reject')
-      ? 'reject'
-      : 'revise';
-  return {
-    decision,
-    feedback: extractSummary(text),
-    issues: [],
-    suggestions: [],
-  };
-}
-
-function findJsonObject(text: string, marker: string): string | null {
-  const idx = text.indexOf(marker);
-  if (idx < 0) return null;
-
-  const start = text.lastIndexOf('{', idx);
-  if (start < 0) return null;
-
-  let depth = 0;
-  for (let i = start; i < text.length; i++) {
-    if (text[i] === '{') depth++;
-    if (text[i] === '}') {
-      depth--;
-      if (depth === 0) {
-        return text.slice(start, i + 1);
-      }
-    }
-  }
-  return null;
-}
-
-// Detect a real failure declaration, not incidental "error"/"fail" prose (see gpt.ts).
-function isExplicitFailure(text: string): boolean {
-  if (/"success"\s*:\s*false/i.test(text)) return true;
-  return /\b(failed to|unable to|could not|couldn['’]t|cannot (?:complete|finish|proceed|continue)|giving up|abort(?:ed|ing))\b/i.test(text);
-}
-
-function extractSummary(text: string): string {
-  const lines = text.split('\n').filter((l) => l.trim().length > 10);
-  if (lines.length === 0) return t('common.fallback.noSummary');
-  const summary = lines[0].trim();
-  return summary.length > 200 ? `${summary.slice(0, 200)}...` : summary;
-}
-
-function extractErrorMessage(text: string): string {
-  const errorMatch = text.match(/(?:error|exception|failed?):\s*(.+)/i);
-  if (errorMatch) return errorMatch[1].slice(0, 200);
-  const lines = text.split('\n').filter((l) => /error|fail/i.test(l));
-  return lines.length > 0 ? lines[0].slice(0, 200) : 'Unknown error';
-}
+// Worker/Reviewer output parsing lives in ./resultParsing.ts (shared with the
+// gpt, local, and codex adapters — INT-1441).

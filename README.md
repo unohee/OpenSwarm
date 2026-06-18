@@ -137,7 +137,7 @@ Switch at runtime via Discord: `!provider codex` / `!provider claude`
 | `claude` | Claude Code CLI | sonnet-4, haiku-4.5, opus-4 | CLI auth |
 | `codex` | OpenAI Codex CLI | o3, o4-mini | CLI auth |
 | `gpt` | OpenAI API | gpt-4o, o3, gpt-4.1 | OAuth PKCE |
-| `openrouter` | OpenRouter API (native agentic loop) | any OpenRouter model — gpt-5, gemini-2.5-flash, deepseek, glm, qwen, … | OAuth PKCE or `OPENROUTER_API` |
+| `openrouter` | OpenRouter API (native agentic loop) | any OpenRouter model — gpt-5, gemini-2.5-flash, deepseek, glm, qwen, … | OAuth PKCE or `OPENROUTER_API_KEY` |
 | `local` | Ollama / LMStudio / llama.cpp | gemma4, llama3, mistral, qwen, etc. | None |
 | `lmstudio` | LM Studio OpenAI-compatible API | loaded LM Studio model (`LMSTUDIO_MODEL`) | Optional API key |
 

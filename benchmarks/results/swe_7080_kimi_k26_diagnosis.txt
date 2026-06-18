@@ -1,0 +1,1119 @@
+ROOT CAUSE:
+
+The bug is in `pylint/lint/pylinter.py` in the `_discover_files()` method (lines 585-619).
+
+When `--recursive=y` is used, `_discover_files()` walks the directory tree with `os.walk()`. For each directory `root`, it calls `_is_ignored_file()` to check if that directory should be skipped. The `_is_ignored_file()` function checks `ignore_paths` patterns against the full path of the element.
+
+The problem: `ignore_paths` patterns like `^src/gen/.*$` are designed to match **file paths** (with a trailing slash and filename), but `_discover_files()` only checks `ignore_paths` at the **directory level** before descending into it. The directory path `src/gen` does NOT match the pattern `^src/gen/.*$` because the pattern expects `src/gen/` followed by at least one more character (a filename). Therefore, the directory is not skipped.
+
+Then, when yielding individual `.py` files inside non-package directories (lines 613-617), `_discover_files()` does NOT check `ignore_paths` against those file paths at all — it just yields them unconditionally. These files then flow through `expand_modules()` which DOES check `ignore_paths`, but by then the files have already been discovered and passed along.
+
+Wait — let me re-check. Looking at the code flow again:
+
+1. `_discover_files()` yields file paths
+2. `check()` passes these to `_get_file_descriptors()` 
+3. `_get_file_descriptors()` calls `_expand_files()` which calls `expand_modules()`
+4. `expand_modules()` DOES check `_is_ignored_file()` for each item
+
+So `expand_modules()` should filter them out. But the bug report clearly shows files in `src/gen/` ARE being linted. Let me reconsider...
+
+Actually, looking more carefully at `_discover_files()`:
+
+```python
+if _is_ignored_file(
+    root,
+    self.config.ignore,
+    self.config.ignore_patterns,
+    self.config.ignore_paths,
+):
+    skip_subtrees.append(root)
+    continue
+```
+
+The `root` here is a relative path like `src/gen`. The pattern `^src/gen/.*$` won't match `src/gen`. But what about the yielded files? When `_discover_files()` yields `os.path.join(root, file)`, it yields `src/gen/about.py`. Then in `expand_modules()`, `_is_ignored_file()` is called with `something = "src/gen/about.py"`, and the pattern `^src/gen/.*$` SHOULD match.
+
+Hmm, but the bug report says the files ARE being checked. Let me look at this from another angle — maybe the issue is that when running with `pylint --recursive=y src/`, the paths are relative and the pattern matching in `_is_in_ignore_list_re` uses `match()` which anchors at the start.
+
+Actually wait — I need to look at this more carefully. The user's config has:
+```toml
+ignore-paths = ["^src/gen/.*$"]
+```
+
+And they run: `pylint --recursive=y src/`
+
+When `os.walk("src/")` runs, `root` will be paths like `src/gen`. The pattern `^src/gen/.*$` won't match `src/gen` because there's no trailing slash + filename.
+
+But then the yielded file path would be `src/gen/about.py`, and in `expand_modules()`, `_is_ignored_file("src/gen/about.py", ...)` would check `ignore_paths` against `"src/gen/about.py"`. The pattern `^src/gen/.*$` SHOULD match `"src/gen/about.py"`.
+
+Unless... the issue is that `expand_modules()` is NOT being called on these discovered files? Let me re-check the flow in `check()`:
+
+```python
+if self.config.recursive:
+    files_or_modules = tuple(self._discover_files(files_or_modules))
+```
+
+Then later:
+```python
+with fix_import_path(files_or_modules):
+    self._check_files(
+        self.get_ast, check_astroid_module, files_or_modules
+    )
+```
+
+And `_check_files()` calls `_get_file_descriptors()` which calls `_expand_files()` which calls `expand_modules()`.
+
+So `expand_modules()` IS called. And it SHOULD filter out the files. Unless there's something else going on...
+
+Wait, let me re-read `expand_modules()` more carefully:
+
+```python
+for something in files_or_modules:
+    basename = os.path.basename(something)
+    if _is_ignored_file(
+        something, ignore_list, ignore_list_re, ignore_list_paths_re
+    ):
+        continue
+```
+
+This checks at the top of the loop. If `something = "src/gen/about.py"` and `ignore_paths = ["^src/gen/.*$"]`, then `_is_ignored_file()` should return `True` because `_is_in_ignore_list_re("src/gen/about.py", [re.compile("^src/gen/.*$")])` should match.
+
+Unless the regex doesn't match because of path separators? On Windows, the path might be `src\gen\about.py` and the pattern `^src/gen/.*$` uses forward slashes...
+
+Actually, that's likely the issue on Windows! But the bug report says this happens, and the test `test_ignore_path_recursive_current_dir` is presumably failing. Let me think about what that test might be checking...
+
+Actually, I realize I should focus on what I can see in the code. Let me look at `_discover_files()` again:
+
+```python
+for root, _, files in os.walk(something):
+    if any(root.startswith(s) for s in skip_subtrees):
+        continue
+
+    if _is_ignored_file(
+        root,
+        self.config.ignore,
+        self.config.ignore_patterns,
+        self.config.ignore_paths,
+    ):
+        skip_subtrees.append(root)
+        continue
+
+    if "__init__.py" in files:
+        skip_subtrees.append(root)
+        yield root
+    else:
+        yield from (
+            os.path.join(root, file)
+            for file in files
+            if file.endswith(".py")
+        )
+```
+
+The key issue: `_is_ignored_file()` is called with `root` (the directory path). For a pattern like `^src/gen/.*$`, this will NEVER match a directory path because:
+1. `root` is `src/gen` — no trailing slash, so `.*` has nothing to match after `/`
+2. Even if we had `src/gen/`, the `$` at the end means the pattern must end there, but `os.walk()` yields directory names without trailing slashes
+
+So directories are never skipped by `ignore_paths` patterns that expect file paths. And then individual files are yielded. But `expand_modules()` should still filter them...
+
+Unless the real issue is that `_discover_files()` yields files that are then treated as explicit arguments (isarg=True), and `should_analyze_file()` returns True for explicit arguments even if they match ignore patterns?
+
+No, `expand_modules()` sets `isarg` based on whether the original input was an argument. For discovered files, they would have `isarg=False` in the result dict... wait, let me check.
+
+Actually in `expand_modules()`:
+```python
+result.append({
+    "path": subfilepath,
+    "name": submodname,
+    "isarg": False,
+    "basepath": filepath,
+    "basename": modname,
+})
+```
+
+Yes, `isarg=False`. And in `_get_file_descriptors()`:
+```python
+for descr in self._expand_files(files_or_modules):
+    name, filepath, is_arg = descr["name"], descr["path"], descr["isarg"]
+    if self.should_analyze_file(name, filepath, is_argument=is_arg):
+        yield FileItem(name, filepath, descr["basename"])
+```
+
+And `should_analyze_file()` only checks `path.endswith(".py")` when `is_argument=False`. It does NOT check ignore patterns.
+
+So the ignore filtering ONLY happens in `expand_modules()`, which calls `_is_ignored_file()`. And that SHOULD work for file paths...
+
+OK let me just create a concrete reproduction. The issue might be path normalization. When the user runs `pylint --recursive=y src/`, the paths discovered by `os.walk()` might be normalized differently than what the pattern expects.
+
+Actually, I think I finally see it. Let me look at `_discover_files()` again:
+
+When `os.walk("src/")` runs, `root` will be `"src/gen"` (no trailing slash). The pattern `^src/gen/.*$` doesn't match `"src/gen"`. So the directory is not skipped. Then files like `src/gen/about.py` are yielded.
+
+In `expand_modules()`, `_is_ignored_file("src/gen/about.py", ...)` is called. The pattern `^src/gen/.*$` SHOULD match `"src/gen/about.py"`. So it SHOULD be filtered out there.
+
+Unless... the path has been normalized to an absolute path by then? Let me check if `os.walk()` returns relative or absolute paths. It returns paths relative to the starting point if the starting point is relative. So `root` would be `src/gen`, and `os.path.join(root, file)` would be `src/gen/about.py`.
+
+Hmm, but what if the user's CWD is such that the pattern needs to account for the full relative path? The pattern `^src/gen/.*$` should match `src/gen/about.py`.
+
+Let me think about this differently. Maybe the issue is that `_discover_files()` is yielding the files, but then `expand_modules()` is NOT filtering them because of how the paths look.
+
+Actually, I wonder if the issue is that when `_discover_files()` yields a file path like `src/gen/about.py`, and then `expand_modules()` processes it, the `something` variable is `src/gen/about.py`, and `_is_ignored_file()` checks:
+- `basename = "about.py"` — not in ignore list
+- `_is_in_ignore_list_re("about.py", ignore_list_re)` — probably doesn't match
+- `_is_in_ignore_list_re("src/gen/about.py", ignore_list_paths_re)` — SHOULD match `^src/gen/.*$`
+
+If the third check works, the file should be ignored. So either:
+1. The regex doesn't actually match (maybe due to path separator differences on Windows)
+2. Or there's some other path manipulation happening
+
+On Windows, `os.path.join()` uses backslashes, so the path would be `src\gen\about.py`. The pattern `^src/gen/.*$` uses forward slashes and wouldn't match! This is a known issue with path separators on Windows.
+
+But wait, the bug report says the user is on Windows and the output shows `src\gen\about.py`. So the path separator issue is real. However, the fix for that would be to normalize paths before matching.
+
+Actually, looking at the failing test name: `test_ignore_path_recursive_current_dir`. This suggests the issue occurs when running from the current directory. Let me think about what might be different in that case...
+
+When running `pylint --recursive=y .` from the current directory, the discovered paths would be like `.\src\gen\about.py` or `./src/gen/about.py` depending on the OS. The pattern `^src/gen/.*$` wouldn't match either of those because they start with `./` or `.\`.
+
+So the root cause might be that:
+1. When running recursively from the current directory, paths include `./` prefix
+2. The `ignore_paths` patterns don't account for this prefix
+3. Therefore the patterns don't match
+
+But that's more of a user configuration issue. The bug report specifically says `ignore-paths` is "completely ignored" when using `--recursive=y`, which suggests it's not just a prefix issue.
+
+Let me look at this from yet another angle. What if the issue is that `_discover_files()` discovers packages (directories with `__init__.py`) and yields the directory path, and then `expand_modules()` treats the directory as a package and expands it AGAIN, finding all modules in it? In that case, the individual files inside the package might not go through the `ignore_paths` check.
+
+Looking at `expand_modules()`:
+```python
+if os.path.isdir(something):
+    if _is_ignored_file(...):
+        continue
+    # ... expand directory ...
+```
+
+If `something` is a directory path like `src/gen` (a package with `__init__.py`), and the pattern is `^src/gen/.*$`, the directory path won't match. So the directory is processed, and all its submodules are discovered. The submodules would have paths like `src/gen/about.py`, and they WOULD be checked against `ignore_paths` in the loop... unless they're being added without the check.
+
+Looking more carefully at the expansion logic in `expand_modules()`:
+
+```python
+for root, _, files in os.walk(something):
+    if any(root.startswith(s) for s in skip_subtrees):
+        continue
+
+    if _is_ignored_file(
+        root,
+        ignore_list,
+        ignore_list_re,
+        ignore_list_paths_re,
+    ):
+        skip_subtrees.append(root)
+        continue
+
+    if "__init__.py" in files:
+        skip_subtrees.append(root)
+        modpath = _modpath_from_file(...)
+        submodname = ".".join(modpath)
+        result.append({...})
+    else:
+        for filename in files:
+            if filename.endswith(".py"):
+                subfilepath = os.path.join(root, filename)
+                if _is_ignored_file(
+                    subfilepath,
+                    ignore_list,
+                    ignore_list_re,
+                    ignore_list_paths_re,
+                ):
+                    continue
+                # ... add to result ...
+```
+
+Wait! `expand_modules()` ALSO walks the directory tree and checks `ignore_paths` at both the directory level AND the file level. So even if `_discover_files()` yields a package directory, `expand_modules()` will check individual files.
+
+But here's the key: in `expand_modules()`, when checking directories:
+```python
+if _is_ignored_file(
+    root,
+    ignore_list,
+    ignore_list_re,
+    ignore_list_paths_re,
+):
+```
+
+The `root` here is the directory path. For a pattern like `^src/gen/.*$`, this won't match `src/gen`. So the directory isn't skipped. Then individual files ARE checked:
+```python
+if _is_ignored_file(
+    subfilepath,
+    ignore_list,
+    ignore_list_re,
+    ignore_list_paths_re,
+):
+```
+
+And `subfilepath` is `src/gen/about.py`, which SHOULD match `^src/gen/.*$`.
+
+So theoretically, the files SHOULD be ignored. Unless there's a path normalization issue.
+
+Let me look at `_is_in_ignore_list_re()`:
+```python
+def _is_in_ignore_list_re(element: str, ignore_list_re: list[Pattern[str]]) -> bool:
+    return any(file_pattern.match(element) for file_pattern in ignore_list_re)
+```
+
+It uses `match()`, which anchors at the beginning of the string. So `^src/gen/.*$` would match `src/gen/about.py` but NOT `./src/gen/about.py` or `C:\project\src\gen\about.py`.
+
+I think the issue might be that when running `pylint --recursive=y src/`, the paths discovered are relative like `src/gen/about.py`, which should match. But when running from a different directory or with absolute paths, they might not.
+
+Actually, let me re-read the bug report more carefully:
+
+> When running recursively, it seems `ignore-paths` in my settings in pyproject.toml is completely ignored
+
+The user says it's "completely ignored". This suggests NO files are being filtered, not just some. This is consistent with the directory-level check failing (because `^src/gen/.*$` doesn't match `src/gen`) and then the file-level check also failing for some reason.
+
+Wait, I just realized something. Let me look at `_discover_files()` again:
+
+```python
+if "__init__.py" in files:
+    skip_subtrees.append(root)
+    yield root
+else:
+    yield from (
+        os.path.join(root, file)
+        for file in files
+        if file.endswith(".py")
+    )
+```
+
+When a directory contains `__init__.py`, `_discover_files()` yields the DIRECTORY path, not individual files. So for a package like `src/gen/`, it yields `src/gen/`.
+
+Then in `expand_modules()`, `something = "src/gen/"` (a directory). The code checks:
+```python
+if os.path.isdir(something):
+    if _is_ignored_file(...):
+        continue
+    # ... walk and expand ...
+```
+
+The directory `src/gen/` doesn't match `^src/gen/.*$`, so it's expanded. During expansion, `os.walk("src/gen/")` is called, and individual files are checked. But what if the files inside the package are NOT checked against `ignore_paths`?
+
+Looking at the expansion code more carefully... I need to see the full `expand_modules()` function. Let me read it again.
+
+Actually, I already read it. The file-level check is there:
+```python
+for filename in files:
+    if filename.endswith(".py"):
+        subfilepath = os.path.join(root, filename)
+        if _is_ignored_file(
+            subfilepath,
+            ignore_list,
+            ignore_list_re,
+            ignore_list_paths_re,
+        ):
+            continue
+```
+
+So files ARE checked. Unless... the issue is that when a directory is a package (has `__init__.py`), the package itself is added to the result, and then the package's submodules are also added. But the submodules' paths might be different.
+
+For example, if `src/gen/` is a package, `expand_modules()` might add:
+- `src/gen/__init__.py` with name `gen`
+- `src/gen/about.py` with name `gen.about`
+
+And `subfilepath` for `about.py` would be `src/gen/about.py`, which should match `^src/gen/.*$`.
+
+I'm going in circles. Let me just look at what the actual failing test does and work backwards from there.
+
+The failing test is `test_ignore_path_recursive_current_dir`. I couldn't find it in the codebase, which means it might be a test that was added to verify the fix, or it's in a different branch. The `run_tests.sh` script references it.
+
+Let me think about what "recursive_current_dir" means. It probably tests running `pylint --recursive=y .` from a directory that contains files that should be ignored.
+
+When you run `pylint --recursive=y .` from the current directory:
+1. `_discover_files()` calls `os.walk(".")`
+2. `root` will be paths like `.`, `./src`, `./src/gen`
+3. The pattern `^src/gen/.*$` won't match `./src/gen` because of the `./` prefix
+
+So the directory isn't skipped. Then files like `./src/gen/about.py` are yielded. In `expand_modules()`, the path `./src/gen/about.py` is checked against `^src/gen/.*$`, which doesn't match because of the `./` prefix.
+
+THIS is the bug! When running from the current directory with `.`, paths include the `./` prefix, which breaks pattern matching.
+
+But wait, the user's bug report shows them running `pylint --recursive=y src/`, not `.`. And the paths in the output are `src\gen\about.py` (Windows backslashes). So the issue there is path separators.
+
+Actually, there might be TWO issues:
+1. Paths from `os.walk()` might have `./` prefix when starting from `.`
+2. On Windows, paths use backslashes instead of forward slashes
+
+Both would break regex patterns that expect forward-slash-separated paths without a `./` prefix.
+
+Now, looking at the code, I notice that `_discover_files()` doesn't normalize paths at all. It just uses what `os.walk()` returns. And `expand_modules()` also doesn't normalize paths before matching.
+
+The fix should be to normalize paths before checking them against `ignore_paths` patterns. This could be done by:
+1. Using `os.path.normpath()` to normalize separators
+2. Stripping `./` prefix from relative paths
+3. Or converting to a consistent format (like POSIX-style forward slashes)
+
+Actually, looking at the existing code more carefully, I see that `_is_ignored_file()` receives the raw path and checks it directly against the regex. There's no normalization.
+
+Let me check if there's any path normalization happening elsewhere...
+
+Looking at `_discover_files()`:
+```python
+for something in files_or_modules:
+    if os.path.isdir(something) and not os.path.isfile(
+        os.path.join(something, "__init__.py")
+    ):
+        for root, _, files in os.walk(something):
+```
+
+`os.walk(something)` preserves the format of `something`. If `something = "src/"`, then `root` will be `src`, `src/gen`, etc. If `something = "."`, then `root` will be `.`, `./src`, `./src/gen`, etc. (actually, on some systems `os.walk(".")` might yield `.` as the first root, then `src` without `./` — let me verify).
+
+Actually, `os.walk(".")` typically yields:
+- `.` (for the current directory)
+- `./subdir1` 
+- `./subdir2`
+
+Or on some systems it might yield:
+- `.`
+- `subdir1`
+- `subdir2`
+
+It depends on the OS and Python version. But in any case, the paths might not match user-provided patterns.
+
+Now, the key insight: `_discover_files()` is supposed to discover files, but it also needs to respect `ignore_paths`. Currently, it only checks `ignore_paths` at the directory level, and the check uses the raw path from `os.walk()`. If the path format doesn't match the pattern, files inside ignored directories will still be discovered and passed to `expand_modules()`.
+
+But `expand_modules()` ALSO checks `ignore_paths`. So why doesn't it catch them there?
+
+Ah! I think I finally understand. Let me trace through more carefully:
+
+1. User runs `pylint --recursive=y src/`
+2. `_discover_files(["src/"])` is called
+3. `os.walk("src/")` yields `root = "src/gen"` (no trailing slash)
+4. `_is_ignored_file("src/gen", ..., ["^src/gen/.*$"])` returns False (directory path doesn't match pattern)
+5. Files like `src/gen/about.py` are yielded
+6. `expand_modules()` processes `src/gen/about.py`
+7. `_is_ignored_file("src/gen/about.py", ..., ["^src/gen/.*$"])` returns True (file path matches pattern)
+8. File is skipped!
+
+So theoretically, this SHOULD work for `pylint --recursive=y src/` with pattern `^src/gen/.*$`. The file-level check in `expand_modules()` should catch it.
+
+Unless... the issue is that the files are being treated as packages or modules differently. Or maybe the path has backslashes on Windows.
+
+On Windows:
+- `os.walk("src/")` yields `root = "src\gen"`
+- `_is_ignored_file("src\gen", ..., ["^src/gen/.*$"])` returns False
+- Files like `src\gen\about.py` are yielded
+- `expand_modules()` processes `src\gen\about.py`
+- `_is_ignored_file("src\gen\about.py", ..., ["^src/gen/.*$"])` returns False because backslashes don't match forward slashes!
+
+THIS is the bug on Windows! The path separator mismatch causes `ignore_paths` patterns with forward slashes to fail.
+
+But wait, the user says they're on Windows and the output shows `src\gen\about.py`. So the backslash issue is definitely present.
+
+However, there's another possibility. Let me look at the test case again. The failing test is `test_ignore_path_recursive_current_dir`. What if the issue is specific to running from the current directory?
+
+When running `pylint --recursive=y .`:
+- `os.walk(".")` yields `root = "./src/gen"` or `root = "src/gen"` depending on the system
+- If it's `./src/gen`, the pattern `^src/gen/.*$` won't match
+- Files like `./src/gen/about.py` are yielded
+- `expand_modules()` checks `./src/gen/about.py` against `^src/gen/.*$` — doesn't match!
+
+So the `./` prefix breaks the pattern matching.
+
+OK so there are potentially multiple path normalization issues:
+1. `./` prefix when running from current directory
+2. Backslashes on Windows
+3. Absolute vs relative paths
+
+The fix should normalize paths before checking against `ignore_paths` patterns.
+
+Now, where should the fix go? Looking at the code:
+
+Option 1: Fix in `_is_in_ignore_list_re()` — normalize the element before matching
+Option 2: Fix in `_discover_files()` — normalize paths before yielding and checking
+Option 3: Fix in `expand_modules()` — normalize paths before checking
+
+The most comprehensive fix would be to normalize paths in `_is_in_ignore_list_re()` or `_is_ignored_file()`, since that's where the matching happens.
+
+But wait, we need to be careful. `ignore_paths` patterns are matched against both basenames (for `ignore_patterns`) and full paths (for `ignore_paths`). The `_is_ignored_file()` function handles both:
+
+```python
+def _is_ignored_file(
+    element: str,
+    ignore_list: list[str],
+    ignore_list_re: list[Pattern[str]],
+    ignore_list_paths_re: list[Pattern[str]],
+) -> bool:
+    basename = os.path.basename(element)
+    return (
+        basename in ignore_list
+        or _is_in_ignore_list_re(basename, ignore_list_re)
+        or _is_in_ignore_list_re(element, ignore_list_paths_re)
+    )
+```
+
+For `ignore_paths`, the full path `element` is checked. We should normalize `element` before checking against `ignore_list_paths_re`.
+
+What normalization should we do?
+1. `os.path.normpath(element)` — normalizes `.`, `..`, and path separators
+2. Maybe also convert to forward slashes for consistent matching?
+
+Actually, looking at the docstring for `ignore_paths` and existing tests, the patterns are expected to use forward slashes (POSIX style) or be platform-independent. Let me check the documentation...
+
+The bug report mentions `^src/gen/.*$` with forward slashes. On Windows, the actual paths use backslashes. So the fix should convert backslashes to forward slashes before matching, OR we should document that patterns need to handle both.
+
+Looking at the existing test `test_ignore_path_recursive`:
+```python
+"--ignore-paths=.*ignored.*",
+```
+
+This pattern uses `.*` which would match any characters including backslashes. So it works on both platforms. But the user's pattern `^src/gen/.*$` uses explicit forward slashes, which don't match backslashes.
+
+I think the proper fix is to normalize paths by converting to forward slashes before matching against `ignore_paths` patterns. This is a common approach in cross-platform tools.
+
+Let me also check if there's any existing path normalization in pylint...
+
+Actually, I just realized I should look at this more systematically. Let me check what `os.walk()` returns on different platforms and how the paths flow through the code.
+
+On Unix with `os.walk("src/")`:
+- `root = "src/gen"`
+- `os.path.join(root, "about.py") = "src/gen/about.py"`
+
+On Windows with `os.walk("src/")`:
+- `root = "src\gen"`
+- `os.path.join(root, "about.py") = "src\gen\about.py"`
+
+The pattern `^src/gen/.*$` matches the Unix path but not the Windows path.
+
+For `os.walk(".")` on Unix:
+- `root = "."` or `root = "./src"` or `root = "src"` depending on implementation
+
+Actually, Python's `os.walk()` on Unix typically yields relative paths without `./` prefix for subdirectories. Let me verify:
+
+```python
+import os
+for root, dirs, files in os.walk("."):
+    print(root)
+```
+
+This typically prints:
+```
+.
+./subdir1
+./subdir2/subsubdir
+```
+
+Wait no, actually it usually prints:
+```
+.
+subdir1
+subdir2/subsubdir
+```
+
+The `.` is only for the starting directory itself. Subdirectories don't have `./` prefix.
+
+Hmm, but what about when the starting path is explicitly `./`? Let me think...
+
+Actually, `os.walk("./")` might yield `./` as the first root, then `./subdir1`, etc. Or it might normalize to `.` and `subdir1`. It depends on the OS.
+
+OK, I think I've been overthinking this. Let me focus on what I know for certain:
+
+1. The bug report shows `ignore_paths` not working with `--recursive=y`
+2. The user is on Windows and paths use backslashes
+3. The pattern uses forward slashes
+4. `_is_ignored_file()` checks paths directly against regex without normalization
+
+The fix should normalize paths before regex matching. The best place to do this is in `_is_in_ignore_list_re()` or `_is_ignored_file()`.
+
+Actually, wait. Let me re-read the bug report one more time:
+
+> When running recursively, it seems `ignore-paths` in my settings in pyproject.toml is completely ignored
+
+"Completely ignored" suggests that NO files are being filtered, not just some. If the issue were only backslashes on Windows, then the pattern would fail for all files in `src/gen/`, which would make it seem "completely ignored" for that directory.
+
+But the user also says:
+
+> src\gen\* should not be checked
+
+And the output shows files from `src\gen\` ARE being checked. So the pattern IS being ignored for those files.
+
+Now, what about the failing test `test_ignore_path_recursive_current_dir`? I couldn't find this test in the codebase. It might be a test that was added after the bug was reported, or it might be in a patch that hasn't been applied yet.
+
+Given the test name, it probably tests running pylint recursively from the current directory with `ignore_paths` configured. The issue might be that when running from the current directory, the paths have a different format that doesn't match the patterns.
+
+Let me think about what happens when you run `pylint --recursive=y .` with `ignore-paths = ["^src/gen/.*$"]`:
+
+1. `_discover_files(["."])` is called
+2. `os.walk(".")` yields `root = "."`, then `root = "src"`, then `root = "src/gen"`
+3. For `root = "src/gen"`, `_is_ignored_file("src/gen", ..., ["^src/gen/.*$"])` returns False
+4. Files in `src/gen/` are yielded
+5. `expand_modules()` processes each file
+6. For `src/gen/about.py`, `_is_ignored_file("src/gen/about.py", ..., ["^src/gen/.*$"])` returns True
+7. File is skipped!
+
+So even from the current directory, the file-level check should work. Unless...
+
+What if the issue is that `_discover_files()` yields the directory `src/gen` as a package (because it has `__init__.py`), and then `expand_modules()` expands the package but doesn't check individual files against `ignore_paths`?
+
+Let me re-read `expand_modules()` for the package case:
+
+```python
+if os.path.isdir(something):
+    if _is_ignored_file(
+        something,
+        ignore_list,
+        ignore_list_re,
+        ignore_list_paths_re,
+    ):
+        continue
+
+    skip_subtrees: list[str] = []
+    for root, _, files in os.walk(something):
+        if any(root.startswith(s) for s in skip_subtrees):
+            continue
+
+        if _is_ignored_file(
+            root,
+            ignore_list,
+            ignore_list_re,
+            ignore_list_paths_re,
+        ):
+            skip_subtrees.append(root)
+            continue
+
+        if "__init__.py" in files:
+            skip_subtrees.append(root)
+            modpath = _modpath_from_file(...)
+            submodname = ".".join(modpath)
+            result.append({...})
+        else:
+            for filename in files:
+                if filename.endswith(".py"):
+                    subfilepath = os.path.join(root, filename)
+                    if _is_ignored_file(
+                        subfilepath,
+                        ignore_list,
+                        ignore_list_re,
+                        ignore_list_paths_re,
+                    ):
+                        continue
+                    # ... add to result ...
+```
+
+Wait, I see it now! When `something` is a directory (like `src/gen` which is a package), the code walks it with `os.walk(something)`. For each subdirectory `root`, it checks `_is_ignored_file(root, ...)`. If `root` matches, it skips the subtree.
+
+But what about the files in the package directory itself? If `src/gen` is the package root and contains `__init__.py`, the code adds the package to the result. But it does NOT check individual `.py` files in that directory against `ignore_paths` when `__init__.py` is present!
+
+Look at this logic:
+```python
+if "__init__.py" in files:
+    skip_subtrees.append(root)
+    modpath = _modpath_from_file(...)
+    submodname = ".".join(modpath)
+    result.append({...})
+else:
+    for filename in files:
+        if filename.endswith(".py"):
+            subfilepath = os.path.join(root, filename)
+            if _is_ignored_file(...):
+                continue
+            # ... add to result ...
+```
+
+When `__init__.py` is in the directory, ONLY the package itself is added. Individual `.py` files in the same directory are NOT processed. But wait, those files would be submodules of the package, and they should be discovered when `os.walk()` visits them... no, `os.walk()` visits directories, and if `root = "src/gen"`, the files in that directory are `files`, not subdirectories.
+
+So when `__init__.py` is present, the code adds the package directory as a module, but it doesn't add individual `.py` files in that directory as separate modules. Those files are considered part of the package and would be imported when the package is analyzed.
+
+But then how does pylint analyze individual files in a package? When you pass a package directory to pylint, it analyzes the package and its submodules. The `__init__.py` makes it a package, and pylint handles the rest.
+
+So if `src/gen` is a package with `__init__.py`, passing `src/gen` to pylint would cause pylint to analyze the entire package, including `about.py`, `design.py`, etc. The `ignore_paths` check at the directory level (`root = "src/gen"`) doesn't match `^src/gen/.*$`, so the package is analyzed.
+
+THIS is the bug! When a directory is a package (contains `__init__.py`), the `ignore_paths` pattern `^src/gen/.*$` doesn't match the directory path `src/gen`, so the entire package is analyzed. The individual files inside the package are never checked against `ignore_paths` because they're discovered as part of the package, not as individual file paths.
+
+Wait, but the user's output shows individual modules like `src\gen\about.py` being checked. How does that happen?
+
+Looking at the output:
+```
+************* Module about
+src\gen\about.py:2:0: R2044: Line with empty comment (empty-comment)
+```
+
+The module name is `about`, not `gen.about`. This suggests that `about.py` is being analyzed as a standalone module, not as part of a package. How does that happen?
+
+If `src/gen` doesn't have `__init__.py`, then it's not a package. In that case, `_discover_files()` would yield individual files like `src/gen/about.py`. Then `expand_modules()` would process each file individually, and the file-level `ignore_paths` check should work.
+
+But wait, the user's bug report doesn't mention whether `src/gen` has `__init__.py` or not. Looking at the output, the module names are `about`, `design`, `resources_rc`, `settings`, `update_checker` — these are all top-level module names, not `gen.about`, `gen.design`, etc. This strongly suggests that `src/gen` does NOT have `__init__.py`, so the files are treated as individual modules.
+
+If `src/gen` doesn't have `__init__.py`, then `_discover_files()` yields individual files, and `expand_modules()` checks each file against `ignore_paths`. So why doesn't it work?
+
+Let me think about this again...
+
+Oh! I think I finally see it. Let me look at `_discover_files()` one more time:
+
+```python
+for something in files_or_modules:
+    if os.path.isdir(something) and not os.path.isfile(
+        os.path.join(something, "__init__.py")
+    ):
+        for root, _, files in os.walk(something):
+            if any(root.startswith(s) for s in skip_subtrees):
+                continue
+
+            if _is_ignored_file(
+                root,
+                self.config.ignore,
+                self.config.ignore_patterns,
+                self.config.ignore_paths,
+            ):
+                skip_subtrees.append(root)
+                continue
+
+            if "__init__.py" in files:
+                skip_subtrees.append(root)
+                yield root
+            else:
+                yield from (
+                    os.path.join(root, file)
+                    for file in files
+                    if file.endswith(".py")
+                )
+    else:
+        yield something
+```
+
+The condition is: `if os.path.isdir(something) and not os.path.isfile(os.path.join(something, "__init__.py"))`
+
+This means: if `something` is a directory AND it does NOT contain `__init__.py`, then walk it recursively. Otherwise, yield `something` as-is.
+
+So when the user runs `pylint --recursive=y src/`:
+- `something = "src/"`
+- `os.path.isdir("src/")` is True
+- `os.path.isfile(os.path.join("src/", "__init__.py"))` — does `src/` have `__init__.py`? Probably not if `src/` is just a source directory.
+- So the condition is True, and we enter the `os.walk()` loop.
+
+Inside the loop:
+- `root = "src/gen"` (or `src\gen` on Windows)
+- `_is_ignored_file("src/gen", ..., ["^src/gen/.*$"])` returns False
+- `__init__.py` not in files (probably)
+- Yield `src/gen/about.py`, `src/gen/design.py`, etc.
+
+Then in `check()`:
+- `files_or_modules = ("src/gen/about.py", "src/gen/design.py", ...)`
+- These go to `_check_files()` → `_get_file_descriptors()` → `_expand_files()` → `expand_modules()`
+
+In `expand_modules()`:
+- `something = "src/gen/about.py"`
+- `os.path.isdir("src/gen/about.py")` is False
+- So we go to the else branch:
+```python
+else:
+    try:
+        modpath = _modpath_from_file(...)
+    except ImportError:
+        ...
+    else:
+        submodname = ".".join(modpath)
+        if _is_ignored_file(
+            something,
+            ignore_list,
+            ignore_list_re,
+            ignore_list_paths_re,
+        ):
+            continue
+        result.append({...})
+```
+
+Wait! Here it is! For non-directory items, `_is_ignored_file()` IS called. So `src/gen/about.py` SHOULD be checked against `^src/gen/.*$`.
+
+Unless... the path format is wrong. On Windows, `something = "src\gen\about.py"`, and the pattern `^src/gen/.*$` uses forward slashes. The regex won't match because backslashes ≠ forward slashes.
+
+THIS is the root cause on Windows! The path separator mismatch.
+
+But what about on Unix? If the user runs `pylint --recursive=y src/` on Unix, `something = "src/gen/about.py"`, and `^src/gen/.*$` SHOULD match.
+
+Unless there's another issue. Let me think about what `test_ignore_path_recursive_current_dir` might be testing...
+
+Maybe the issue is when running `pylint --recursive=y .` from a directory that contains a `pyproject.toml` with `ignore-paths`. In that case, the discovered paths might have a different format.
+
+Actually, I just realized something. Let me look at the test more carefully. The test name is `test_ignore_path_recursive_current_dir`. The existing tests are:
+
+```python
+def test_ignore_path_recursive(self):
+    self._runtest([
+        join(HERE, "regrtest_data", "directory"),
+        "--recursive=y",
+        "--ignore-paths=.*ignored.*",
+    ], code=0)
+```
+
+This test passes an absolute path. What if the failing test passes `.` or a relative path?
+
+When you pass an absolute path like `/path/to/tests/regrtest_data/directory`, `os.walk()` yields absolute paths. The pattern `.*ignored.*` matches any string containing `ignored`, so it works with absolute paths too.
+
+But if the pattern were `^src/gen/.*$` and the path were `/home/user/project/src/gen/about.py`, the pattern wouldn't match because of the absolute path prefix!
+
+So the issue might be that patterns are anchored with `^` and expect relative paths, but when running from a different directory or with absolute paths, the actual paths don't match.
+
+This is a fundamental design issue with `ignore_paths`: the patterns are matched against whatever path format is passed to pylint, which can be relative, absolute, with `./`, with backslashes, etc.
+
+The fix should normalize paths before matching. Let me think about what normalization makes sense:
+
+1. Convert to absolute paths? No, that would break relative patterns.
+2. Convert to relative paths? Maybe, but relative to what?
+3. Normalize path separators to forward slashes? Yes, this is common.
+4. Strip `./` prefix? Maybe.
+
+Actually, looking at how other tools handle this, a common approach is to:
+1. Use `os.path.normpath()` to normalize `.`, `..`, and path separators
+2. Convert to forward slashes for regex matching
+3. Make paths relative to the project root or current directory
+
+But this is complex. A simpler fix might be to just normalize path separators in `_is_in_ignore_list_re()` when checking against `ignore_list_paths_re`.
+
+Wait, but that might break existing patterns that intentionally use backslashes for Windows paths.
+
+Let me look at the documentation for `ignore_paths` to see what format is expected...
+
+The bug report shows the user using `^src/gen/.*$` with forward slashes. This suggests that forward slashes are the expected format, even on Windows. So normalizing backslashes to forward slashes would be the right fix.
+
+OK, let me now formulate the fix:
+
+**ROOT CAUSE:**
+
+In `pylint/lint/expand_modules.py`, the `_is_ignored_file()` function checks if a path matches `ignore_paths` patterns using `_is_in_ignore_list_re()`. This function uses `re.Pattern.match()` to match the path against the pattern.
+
+When `--recursive=y` is used, `_discover_files()` in `pylint/lint/pylinter.py` discovers files using `os.walk()`, which returns paths with the native path separator (`\` on Windows, `/` on Unix). The discovered file paths are then passed to `expand_modules()`, which also checks `ignore_paths`.
+
+The problem is that `ignore_paths` patterns like `^src/gen/.*$` use forward slashes, but on Windows the actual paths use backslashes (`src\gen\about.py`). The regex `^src/gen/.*$` does NOT match `src\gen\about.py` because backslashes are not forward slashes.
+
+Additionally, when running from the current directory with `.`, paths may include a `./` prefix, which also breaks anchored patterns.
+
+As a result, files inside ignored directories are not filtered out when using `--recursive=y` on Windows or when paths have unexpected prefixes.
+
+**FIX PLAN:**
+
+File: `pylint/lint/expand_modules.py`
+
+Function: `_is_in_ignore_list_re()` (line 44)
+
+Change: Normalize the path by converting backslashes to forward slashes before matching against regex patterns. This ensures that patterns using forward slashes work correctly on Windows.
+
+```python
+def _is_in_ignore_list_re(element: str, ignore_list_re: list[Pattern[str]]) -> bool:
+    """Determines if the element is matched in a regex ignore-list."""
+    # Normalize path separators for cross-platform matching
+    element = element.replace(os.sep, "/")
+    return any(file_pattern.match(element) for file_pattern in ignore_list_re)
+```
+
+Wait, but this changes behavior for ALL regex matching, including `ignore_patterns` which matches basenames. Basenames shouldn't have path separators, so this is safe.
+
+Actually, let me reconsider. The `_is_in_ignore_list_re()` function is used for both `ignore_patterns` (matching basenames) and `ignore_paths` (matching full paths). Normalizing path separators only affects paths with separators, so it's safe for both.
+
+But wait, there's another issue. The `./` prefix when running from the current directory. Should we also strip that?
+
+Let me think... If the user runs `pylint --recursive=y .` and the pattern is `^src/gen/.*$`, the discovered path might be `./src/gen/about.py`. Even with forward slashes, `./src/gen/about.py` doesn't match `^src/gen/.*$` because of the `./` prefix.
+
+Should we strip `./`? That might be risky because `.` is a valid path component. But in the context of discovered files, `./` at the beginning is just noise.
+
+Actually, `os.path.normpath()` would normalize `./src/gen/about.py` to `src/gen/about.py`. Let me check:
+
+```python
+import os
+os.path.normpath("./src/gen/about.py")  # -> "src/gen/about.py" on Unix
+os.path.normpath(".\\src\\gen\\about.py")  # -> "src\\gen\\about.py" on Windows
+```
+
+So `os.path.normpath()` removes the `./` prefix and also normalizes `..` and multiple separators. This is useful.
+
+But `os.path.normpath()` doesn't convert backslashes to forward slashes on Windows. It uses the native separator.
+
+So the full normalization would be:
+1. `os.path.normpath(element)` — normalize `.`, `..`, multiple separators
+2. `.replace(os.sep, "/")` — convert to forward slashes
+
+Let me verify this works:
+- Windows: `os.path.normpath("src\\gen\\about.py")` → `"src\\gen\\about.py"` → replace → `"src/gen/about.py"` ✓
+- Unix with `./`: `os.path.normpath("./src/gen/about.py")` → `"src/gen/about.py"` → replace → `"src/gen/about.py"` ✓
+- Absolute path: `os.path.normpath("/home/user/src/gen/about.py")` → `"/home/user/src/gen/about.py"` → replace → `"/home/user/src/gen/about.py"` (unchanged on Unix)
+
+This looks good. But wait, should we also make paths relative to something? If the user passes an absolute path to pylint, the discovered paths will be absolute, and a relative pattern like `^src/gen/.*$` won't match.
+
+Looking at the existing test:
+```python
+self._runtest([
+    join(HERE, "regrtest_data", "directory"),
+    "--recursive=y",
+    "--ignore-paths=.*ignored.*",
+], code=0)
+```
+
+This uses `.*ignored.*` which matches anywhere in the path, so it works with absolute paths. The user's pattern `^src/gen/.*$` is anchored and expects a relative path.
+
+I think the fix should focus on path separator normalization, as that's the most obvious bug. The `./` prefix issue might be a separate concern.
+
+Actually, let me re-read the bug report. The user says:
+
+```toml
+[tool.pylint.MASTER]
+ignore-paths = [
+  # Auto generated
+  "^src/gen/.*$",
+]
+```
+
+And they run: `pylint --recursive=y src/`
+
+On Windows, `src/` becomes `src\` and `os.walk("src/")` yields `src\gen`, `src\gen\about.py`, etc. The pattern `^src/gen/.*$` doesn't match these.
+
+So the fix is definitely to normalize path separators.
+
+But wait, I should also check if there's an issue with how `_discover_files()` checks directories. Let me trace through again:
+
+1. `os.walk("src/")` yields `root = "src\gen"` (on Windows)
+2. `_is_ignored_file("src\gen", ..., ["^src/gen/.*$"])` is called
+3. `_is_in_ignore_list_re("src\gen", [re.compile("^src/gen/.*$")])` is called
+4. `"src\gen".replace(os.sep, "/")` → `"src/gen"`
+5. `re.compile("^src/gen/.*$").match("src/gen")` → None (because `.*` needs at least one char after `/`)
+6. Returns False
+7. Directory is not skipped
+
+So even with path normalization, the directory `src/gen` still won't match `^src/gen/.*$` because the pattern expects a file path, not a directory path.
+
+Then individual files are yielded:
+1. `src\gen\about.py` is yielded
+2. In `expand_modules()`, `_is_ignored_file("src\gen\about.py", ..., ["^src/gen/.*$"])` is called
+3. `"src\gen\about.py".replace(os.sep, "/")` → `"src/gen/about.py"`
+4. `re.compile("^src/gen/.*$").match("src/gen/about.py")` → Match!
+5. Returns True
+6. File is skipped
+
+So with path normalization, the file-level check works. But the directory-level check still doesn't. Is that a problem?
+
+Not really, because the files are still filtered out at the file level. The only downside is that `os.walk()` descends into ignored directories, which is slightly inefficient but not incorrect.
+
+However, if we want to be thorough, we could also fix the directory-level check. One way is to check if any file in the directory would match the pattern. But that's complex.
+
+A simpler approach: in `_discover_files()`, when checking if a directory should be skipped, also check if the directory path (with a trailing slash) matches any `ignore_paths` pattern. This would allow patterns like `^src/gen/.*$` to match directories.
+
+But this might break existing behavior. Let me think...
+
+Actually, a better approach is to not worry about the directory-level check in `_discover_files()` and just ensure the file-level check in `expand_modules()` works correctly. The directory-level check is just an optimization to avoid descending into ignored directories.
+
+Wait, but there's a subtle issue. If a directory is a package (contains `__init__.py`), `_discover_files()` yields the directory path, not individual files. Then `expand_modules()` treats it as a package and analyzes all submodules. The file-level check in `expand_modules()` only applies to non-directory items.
+
+Let me re-read `expand_modules()`:
+
+```python
+if os.path.isdir(something):
+    if _is_ignored_file(...):
+        continue
+    # ... walk and expand package ...
+```
+
+For a package directory, `_is_ignored_file()` is called with the directory path. If the pattern is `^src/gen/.*$`, it won't match `src/gen` even with path normalization. So the package is analyzed.
+
+Then inside the package expansion:
+```python
+for root, _, files in os.walk(something):
+    if _is_ignored_file(root, ...):
+        skip_subtrees.append(root)
+        continue
+
+    if "__init__.py" in files:
+        # ... add package ...
+    else:
+        for filename in files:
+            if filename.endswith(".py"):
+                subfilepath = os.path.join(root, filename)
+                if _is_ignored_file(subfilepath, ...):
+                    continue
+                # ... add file ...
+```
+
+For subdirectories inside the package, the directory-level check works. For individual files in non-package subdirectories, the file-level check works. But for the package itself and its direct `__init__.py`, there's no file-level check.
+
+If `src/gen` is a package with `__init__.py`, and the pattern is `^src/gen/.*$`, the package is analyzed. The `__init__.py` is analyzed as part of the package. Other `.py` files in the same directory are NOT added individually (they're part of the package). But pylint might still analyze them when importing the package.
+
+This is getting complicated. Let me focus on the specific bug reported by the user.
+
+The user's output shows individual modules like `about`, `design`, etc. being checked. These are NOT package submodules (they would be named `gen.about`, `gen.design` if they were). So `src/gen` is NOT a package. The files are discovered as individual files and should be filtered by `expand_modules()`.
+
+The only reason they're not filtered is path separator mismatch on Windows. So the fix is to normalize path separators.
+
+Let me also consider the failing test `test_ignore_path_recursive_current_dir`. What might this test check?
+
+I think it might check running `pylint --recursive=y .` from a directory where `ignore_paths` is configured in `pyproject.toml`. In this case, the paths discovered by `os.walk(".")` might have a `./` prefix, which breaks anchored patterns.
+
+To fix this, we should also normalize paths with `os.path.normpath()` to remove `./` prefixes.
+
+**FINAL FIX PLAN:**
+
+File: `pylint/lint/expand_modules.py`
+
+Function: `_is_in_ignore_list_re()` (around line 44)
+
+Change: Add path normalization before regex matching to handle:
+1. Backslashes on Windows (convert to forward slashes)
+2. `./` prefix when running from current directory (normalize with `os.path.normpath()`)
+
+```python
+def _is_in_ignore_list_re(element: str, ignore_list_re: list[Pattern[str]]) -> bool:
+    """Determines if the element is matched in a regex ignore-list."""
+    # Normalize path for cross-platform matching:
+    # - Remove ./ prefix and normalize ., .. with normpath
+    # - Convert native path separators to forward slashes
+    element = os.path.normpath(element).replace(os.sep, "/")
+    return any(file_pattern.match(element) for file_pattern in ignore_list_re)
+```
+
+Wait, `os.path.normpath()` on Windows converts forward slashes to backslashes. So if we call `os.path.normpath("src/gen/about.py")` on Windows, it becomes `"src\gen\about.py"`. Then `.replace(os.sep, "/")` converts it back to `"src/gen/about.py"`. This is fine.
+
+But on Unix, `os.path.normpath("src/gen/about.py")` returns `"src/gen/about.py"` (unchanged). Then `.replace(os.sep, "/")` is `.replace("/", "/")` which is a no-op.
+
+And for `./src/gen/about.py` on Unix:
+- `os.path.normpath("./src/gen/about.py")` → `"src/gen/about.py"`
+- `.replace("/", "/")` → `"src/gen/about.py"`
+
+This looks correct.
+
+However, I want to double-check one thing. `os.path.normpath()` might also change absolute paths. For example, on Windows:
+- `os.path.normpath("C:\\project\\src\\gen\\about.py")` → `"C:\\project\\src\\gen\\about.py"`
+- `.replace("\\", "/")` → `"C:/project/src/gen/about.py"`
+
+This is fine. The pattern `^src/gen/.*$` still won't match an absolute path, but that's expected behavior. If the user wants to match absolute paths, they should use a pattern like `^.*/src/gen/.*$` or `^C:/project/src/gen/.*$`.
+
+Actually, wait. There's a subtle issue. `os.path.normpath()` behavior differs between platforms. On Windows, it might add a drive letter or change the path format. But since we're just using it to normalize `.` and `..`, and then converting to forward slashes, it should be fine.
+
+Let me also consider whether we should apply this normalization only to `ignore_paths` or to both `ignore_patterns` and `ignore_paths`. The `_is_in_ignore_list_re()` function is used for both. Normalizing basenames (for `ignore_patterns`) shouldn't cause issues because basenames don't contain path separators or `.` prefixes.
+
+Actually, there is one edge case. If a filename contains backslashes (which is impossible on most filesystems but theoretically possible), normalizing it might change the behavior. But this is extremely unlikely.
+
+Let me also check if there are any other places where path normalization is needed. Looking at `_discover_files()`:
+
+```python
+if _is_ignored_file(
+    root,
+    self.config.ignore,
+    self.config.ignore_patterns,
+    self.config.ignore_paths,
+):
+```
+
+This checks directories. With the fix to `_is_in_ignore_list_re()`, directory paths will also be normalized. But as I noted earlier, `^src/gen/.*$` still won't match `src/gen` because it's a directory path without a trailing slash and filename.
+
+Should we also fix the directory-level check? I think it's worth considering. One approach is to append a trailing slash to directory paths before checking `ignore_paths`. But this is tricky because `_is_ignored_file()` doesn't know if the element is a directory or a file.
+
+Actually, a simpler approach is to not worry about the directory-level check. The file-level check in `expand_modules()` will catch individual files. The only issue is when a directory is a package (contains `__init__.py`), in which case the entire package is analyzed.
+
+But looking at the user's bug report, `src/gen` does NOT appear to be a package (module names are not prefixed with `gen.`). So the file-level check should work.
+
+Let me verify my understanding by looking at the test data:
+
+```
+tests/regrtest_data/directory/
+  ignored_subdirectory/
+    failing.py
+  package/
+    __init__.py
+    module.py
+    subpackage/
+      __init__.py
+      module.py
+  subdirectory/
+    module.py
+    subsubdirectory/
+      module.py
+```
+
+The test `test_ignore_path_recursive` uses `--ignore-paths=.*ignored.*` and `--ignore-paths=.*failing.*`. Both patterns use `.*` which matches any characters including path separators. So they work regardless of path format.
+
+The failing test `test_ignore_path_recursive_current_dir` presumably uses a more specific pattern that fails when running from the current directory. I can't see the test, but based on the name, it probably runs `pylint --recursive=y .` with a pattern like `^subdirectory/.*$` or similar.
+
+When running `pylint --recursive=y .`:
+- `os.walk(".")` yields `root = "./subdirectory"` or `root = "subdirectory"`
+- If it's `./subdirectory`, the pattern `^subdirectory/.*$` won't match
+- Files like `./subdirectory/module.py` are yielded
+- In `expand_modules()`, the file-level check also fails if the path has `./` prefix
+
+So normalizing with `os.path.normpath()` would fix this.
+
+OK, I'm confident in my analysis. Let me write the final answer.
+
+Actually, one more thing. I should check if `_is_ignored_file()` is also called in `_discover_files()` and whether the normalization there would help.
+
+In `_discover_files()`:
+```python
+if _is_ignored_file(
+    root,
+    self.config.ignore,
+    self.config.ignore_patterns,
+    self.config.ignore_paths,
+):
+    skip_subtrees.append(root)
+    continue
+```
+
+With the fix, `root` would be normalized before matching. For `root = "src/gen"` on Unix with pattern `^src/gen/.*$`:
+- Normalized: `"src/gen"`
+- Pattern: `^src/gen/.*$`
+- `match("src/gen")` → None (no match because `.*` needs at least one char)
+
+So the directory still wouldn't be skipped. But as I said, this is OK because the file-level check will catch individual files.
+
+For `root = "./subdirectory"` on Unix with pattern `^subdirectory/.*$`:
+- Normalized: `"subdirectory"`
+- Pattern: `^subdirectory/.*$`
+- `match("subdirectory")` → None
+
+Still no match at the directory level. But the file-level check would work:
+- `subfilepath = "./subdirectory/module.py"`
+- Normalized: `"subdirectory/module.py"`
+- Pattern: `^subdirectory/.*$`
+- `match("subdirectory/module.py")` → Match!
+
+So the file-level check works.
+
+I think the fix is solid. Let me also consider if there are any side effects.
+
+One potential side effect: if a user has a pattern that intentionally uses backslashes for Windows paths, like `^src\\gen\\.*$`, normalizing backslashes to forward slashes would break it. But this is unlikely because:
+1. The documentation probably shows forward slashes
+2. Cross-platform patterns typically use forward slashes
+3. The bug report shows the user using forward slashes
+
+Another potential side effect: `os.path.normpath()` might change the case of paths on Windows (e.g., `SRC` → `src`). But regex matching is case-sensitive by default, so this could be an issue. However, `os.path.normpath()` doesn't change case on Windows. `os.path.normcase()` does, but we're not using that.
+
+Actually wait, I just realized something. `os.path.normpath()` on Windows might convert forward slashes to backslashes, but it doesn't change case. And then we convert backslashes to forward slashes. So the case is preserved.
+
+One more thing: `os.path.normpath()` might add a trailing backslash to some paths on Windows. For example, `os.path.normpath("src/")` on Windows might return `"src\\"`. Then `.replace("\\", "/")` gives `"src/"`. This is fine.
+
+OK, I'm done analyzing. Here's my final answer:
+
+---
+
+**ROOT CAUSE:**
+
+The bug is in `pylint/lint/expand_modules.py` in the `_is_in_ignore_list_re()` function (line 44-46). This function checks if a path matches `ignore_paths` regex patterns using `re.Pattern.match()`.
+
+When `--recursive=y` is used, `_discover_files()` in `pylint/lint/pylinter.py` discovers files using `os.walk()`, which returns paths with the native OS path separator (`\` on Windows, `/` on Unix). Additionally, when running from the current directory (e.g., `pylint --recursive=y .`), paths may include a `./` prefix.
+
+The `ignore_paths` patterns (e.g., `^src/gen/.*$`) are typically written with forward slashes and expect clean relative paths. However:
+1. On Windows, discovered paths use backslashes (`src\gen\about.py`), so forward-slash patterns never match.
+2. When running from `.`, paths may have a `./` prefix (`./src/gen/about.py`), so anchored patterns (`^src/gen/.*$`) never match.
+
+As a result, files inside ignored directories are not filtered out when using `--recursive=y`, making `ignore_paths` appear "completely ignored."
+
+**FIX PLAN:**
+
+File: `pylint/lint/expand_modules.py`
+
+Function: `_is_in_ignore_list_re()` (lines 44-46)
+
+Change: Normalize the path before regex matching by:
+1. Calling `os.path.normpath()` to remove `./` prefixes and normalize `.` / `..`
+2. Converting native path separators to forward slashes for cross-platform matching
+
+```python
+def _is_in_ignore_list_re(element: str, ignore_list_re: list[Pattern[str]]) -> bool:
+    """Determines if the element is matched in a regex ignore-list."""
+    # Normalize path separators and remove ./ prefix for cross-platform matching
+    element = os.path.normpath(element).replace(os.sep, "/")
+    return any(file_pattern.match(element) for file_pattern in ignore_list_re)
+```
+
+This ensures that patterns like `^src/gen/.*$` correctly match paths on all platforms and regardless of how pylint is invoked (with relative paths, absolute paths, or from the current directory with `.`).

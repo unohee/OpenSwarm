@@ -13,8 +13,8 @@ import type {
   ReviewResult,
 } from './types.js';
 import { AuthProfileStore, ensureValidToken } from '../auth/index.js';
-import { t } from '../locale/index.js';
 import { runAgenticLoop, loopResultToCliResult, type ChatMessage, type AgenticLoopOptions } from './agenticLoop.js';
+import { parseWorkerResult, parseReviewerResult } from './resultParsing.js';
 import type { ToolDefinition } from './tools.js';
 
 const OPENAI_API_BASE = 'https://api.openai.com/v1';
@@ -154,13 +154,11 @@ export class GptCliAdapter implements CliAdapter {
   }
 
   parseWorkerOutput(raw: CliRunResult): WorkerResult {
-    const text = raw.stdout;
-    return extractWorkerResultJson(text) ?? extractWorkerFromText(text);
+    return parseWorkerResult(raw.stdout);
   }
 
   parseReviewerOutput(raw: CliRunResult): ReviewResult {
-    const text = raw.stdout;
-    return extractReviewerResultJson(text) ?? extractReviewerFromText(text);
+    return parseReviewerResult(raw.stdout);
   }
 
 }
@@ -198,129 +196,5 @@ async function refreshAndRetry(store: AuthProfileStore): Promise<string> {
   return ensureValidToken(store, PROFILE_KEY);
 }
 
-// Worker/Reviewer output parsing (Codex 어댑터와 동일한 로직)
-
-function extractWorkerResultJson(text: string): WorkerResult | null {
-  const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
-  const jsonStr = jsonMatch?.[1] ?? findJsonObject(text, '"success"');
-  if (!jsonStr) return null;
-
-  try {
-    const parsed = JSON.parse(jsonStr);
-    return {
-      success: Boolean(parsed.success),
-      summary: parsed.summary || t('common.fallback.noSummary'),
-      filesChanged: Array.isArray(parsed.filesChanged) ? parsed.filesChanged : [],
-      commands: Array.isArray(parsed.commands) ? parsed.commands : [],
-      output: text,
-      error: parsed.error,
-      confidencePercent: typeof parsed.confidencePercent === 'number'
-        ? parsed.confidencePercent : undefined,
-      haltReason: parsed.haltReason || undefined,
-    };
-  } catch {
-    return null;
-  }
-}
-
-function extractWorkerFromText(text: string): WorkerResult {
-  // Only an explicit failure phrase marks the run as failed. Loose words like
-  // "error" or "fail" appear in normal coding prose ("error handling", "the
-  // failing test") and used to cause false negatives. git-diff promotion in
-  // worker.ts is the real success signal; this is just the non-repo fallback.
-  const failed = isExplicitFailure(text);
-
-  return {
-    success: !failed,
-    summary: extractSummary(text),
-    filesChanged: [],
-    commands: [],
-    output: text,
-    error: failed ? extractErrorMessage(text) : undefined,
-  };
-}
-
-function extractReviewerResultJson(text: string): ReviewResult | null {
-  const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
-  const jsonStr = jsonMatch?.[1] ?? findJsonObject(text, '"decision"');
-  if (!jsonStr) return null;
-
-  try {
-    const parsed = JSON.parse(jsonStr);
-    const decision = parsed.decision === 'approve' || parsed.decision === 'reject'
-      ? parsed.decision
-      : 'revise';
-    return {
-      decision,
-      feedback: typeof parsed.feedback === 'string' ? parsed.feedback : t('common.fallback.noSummary'),
-      issues: Array.isArray(parsed.issues)
-        ? parsed.issues.filter((v: unknown): v is string => typeof v === 'string')
-        : [],
-      suggestions: Array.isArray(parsed.suggestions)
-        ? parsed.suggestions.filter((v: unknown): v is string => typeof v === 'string')
-        : [],
-    };
-  } catch {
-    return null;
-  }
-}
-
-function extractReviewerFromText(text: string): ReviewResult {
-  const lower = text.toLowerCase();
-  const decision = lower.includes('approve')
-    ? 'approve'
-    : lower.includes('reject')
-      ? 'reject'
-      : 'revise';
-  return {
-    decision,
-    feedback: extractSummary(text),
-    issues: [],
-    suggestions: [],
-  };
-}
-
-// Helpers
-
-function findJsonObject(text: string, marker: string): string | null {
-  const idx = text.indexOf(marker);
-  if (idx < 0) return null;
-
-  // marker 앞의 '{' 찾기
-  let start = text.lastIndexOf('{', idx);
-  if (start < 0) return null;
-
-  let depth = 0;
-  for (let i = start; i < text.length; i++) {
-    if (text[i] === '{') depth++;
-    if (text[i] === '}') {
-      depth--;
-      if (depth === 0) {
-        return text.slice(start, i + 1);
-      }
-    }
-  }
-  return null;
-}
-
-// Detect a real failure declaration, not incidental "error"/"fail" prose.
-// Matches explicit statements like "failed to", "unable to", "could not",
-// "cannot complete", or an explicit JSON success:false.
-function isExplicitFailure(text: string): boolean {
-  if (/"success"\s*:\s*false/i.test(text)) return true;
-  return /\b(failed to|unable to|could not|couldn['’]t|cannot (?:complete|finish|proceed|continue)|giving up|abort(?:ed|ing))\b/i.test(text);
-}
-
-function extractSummary(text: string): string {
-  const lines = text.split('\n').filter((l) => l.trim().length > 10);
-  if (lines.length === 0) return t('common.fallback.noSummary');
-  const summary = lines[0].trim();
-  return summary.length > 200 ? `${summary.slice(0, 200)}...` : summary;
-}
-
-function extractErrorMessage(text: string): string {
-  const errorMatch = text.match(/(?:error|exception|failed?):\s*(.+)/i);
-  if (errorMatch) return errorMatch[1].slice(0, 200);
-  const lines = text.split('\n').filter((l) => /error|fail/i.test(l));
-  return lines.length > 0 ? lines[0].slice(0, 200) : 'Unknown error';
-}
+// Worker/Reviewer output parsing lives in ./resultParsing.ts (shared with the
+// local, openrouter, and codex adapters — INT-1441).

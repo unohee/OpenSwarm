@@ -13,7 +13,8 @@
 //   3. git diff로 model_patch 추출 → prediction JSON 작성
 //   → 채점은 별도: python -m swebench.harness.run_evaluation -p preds.json ...
 //
-// 실행: OPENROUTER_API=... npx tsx benchmarks/sweBench.ts <instances.json> [outPreds.json]
+// 실행: npx tsx benchmarks/sweBench.ts <instances.json> [outPreds.json]
+//       (OPENROUTER_API_KEY required — auto-loaded from the repo .env)
 // ============================================
 
 import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
@@ -24,6 +25,7 @@ import { promisify } from 'node:util';
 import { runWorker } from '../src/agents/worker.js';
 import { setDefaultAdapter } from '../src/adapters/index.js';
 import { initLocale } from '../src/locale/index.js';
+import { loadEnvFile } from '../src/core/envFile.js';
 
 const exec = promisify(execFile);
 
@@ -33,10 +35,27 @@ interface SweInstance {
   base_commit: string;
   problem_statement: string;
   FAIL_TO_PASS: string;
+  // The gold test diff. SWE-bench images ship base_commit only; the official
+  // grader applies this at eval time. We pre-apply it so local verification
+  // runs the REAL FAIL_TO_PASS test (defect #8) — see solveOne.
+  test_patch?: string;
 }
 
 function imageFor(id: string): string {
   return `swebench/sweb.eval.x86_64.${id.replace('__', '_1776_')}:latest`;
+}
+
+/**
+ * Extract the file paths a SWE-bench test_patch touches (the `+++ b/<path>`
+ * targets). These feed protectedFiles so the implementer cannot edit the test
+ * oracle once it has been pre-applied.
+ */
+function testFilesFromPatch(testPatch: string): string[] {
+  const files = new Set<string>();
+  for (const m of testPatch.matchAll(/^\+\+\+ b\/(\S+)/gm)) {
+    if (m[1] !== '/dev/null') files.add(m[1]);
+  }
+  return [...files];
 }
 
 /**
@@ -86,6 +105,29 @@ async function solveOne(inst: SweInstance, model: string): Promise<{ pred: Recor
     await sh('docker', ['run', '-d', '--name', container, '--platform', 'linux/amd64', image, 'sleep', 'infinity'], { timeoutMs: 60_000 });
     log('  extracting /testbed...');
     await sh('docker', ['cp', `${container}:/testbed/.`, hostDir], { timeoutMs: 120_000 });
+
+    // Pre-apply the gold test_patch BEFORE baselining (defect #8). The extracted
+    // /testbed is at base_commit without the FAIL_TO_PASS test, so the implementer
+    // would otherwise invent its own test — which can validate a WRONG fix (seen on
+    // 7080). Baking the real test into the baseline (a) makes local verification use
+    // the true oracle and (b) keeps it out of the extracted model_patch automatically
+    // (git diff baseSha excludes it), so model_patch stays source-only as the grader
+    // requires. The official harness applies test_patch itself at eval time.
+    let protectedTestFiles: string[] = [];
+    if (inst.test_patch && inst.test_patch.trim()) {
+      const tpPath = join(tmpdir(), `swe-tp-${inst.instance_id.replace(/[^a-z0-9]/gi, '-')}.diff`);
+      await writeFile(tpPath, inst.test_patch);
+      try {
+        await sh('git', ['apply', '--whitespace=nowarn', tpPath], { cwd: hostDir, timeoutMs: 30_000 });
+        protectedTestFiles = testFilesFromPatch(inst.test_patch);
+        log(`  applied gold test_patch — protecting ${protectedTestFiles.length} test file(s): ${protectedTestFiles.join(', ')}`);
+      } catch (err) {
+        log(`  WARNING: gold test_patch did not apply (${err instanceof Error ? err.message.split('\n')[0] : String(err)}) — falling back to implementer-authored test (defect #8 risk)`);
+      }
+      await rm(tpPath, { force: true }).catch(() => {});
+    } else {
+      log('  WARNING: instance has no test_patch — local verification relies on an implementer-authored test (defect #8 risk)');
+    }
 
     // git baseline 고정 (patch 추출 기준). 추출된 /testbed는 이미 git repo.
     await sh('git', ['add', '-A'], { cwd: hostDir, timeoutMs: 30_000 }).catch(() => {});
@@ -166,7 +208,9 @@ async function solveOne(inst: SweInstance, model: string): Promise<{ pred: Recor
       nudgeMaxOnNoEdit: 2,
       // Verification-harness protection — on 7993 the implementer blamed test
       // failures on run_tests.sh and edited it 5 times, dismantling verification.
-      protectedFiles: ['run_tests.sh'],
+      // The pre-applied gold test files join the protected set (defect #8) so the
+      // implementer can't rewrite the oracle to make a wrong fix pass.
+      protectedFiles: ['run_tests.sh', ...protectedTestFiles],
       // run_tests.sh = docker cp + in-container pytest — the 30s default times
       // out into a silent no-output failure the model reads as a broken env.
       bashTimeoutMs: 240_000,
@@ -189,6 +233,7 @@ async function solveOne(inst: SweInstance, model: string): Promise<{ pred: Recor
 }
 
 async function main() {
+  loadEnvFile();
   initLocale('en');
   setDefaultAdapter('openrouter');
   const file = process.argv[2];

@@ -144,13 +144,41 @@ export interface ToolResult {
  * (모델이 edit 후 "고쳐졌나?" 확인하려 재read하는 패턴) 디스크를 다시 읽지 않고
  * 캐시된 내용 + "변경 없음" 힌트를 반환해 토큰·턴 낭비를 줄인다.
  * edit_file/write_file 성공 시 해당 경로를 무효화해 stale read를 막는다.
+ *
+ * LRU-bounded: a single 80-turn SWE run reading many offsets of large files
+ * could otherwise retain megabytes of numbered content for the whole loop.
+ * The Map preserves insertion order, so eviction drops the least-recently-used
+ * key once MAX_READ_CACHE_ENTRIES is exceeded.
  */
+const MAX_READ_CACHE_ENTRIES = 64;
+
 export interface ReadCache {
   store: Map<string, string>;
 }
 
 export function createReadCache(): ReadCache {
   return { store: new Map() };
+}
+
+/** Cache read that bumps the key to most-recently-used. */
+function cacheGet(cache: ReadCache, key: string): string | undefined {
+  const value = cache.store.get(key);
+  if (value === undefined) return undefined;
+  // Re-insert to move to the end (MRU) so eviction targets truly-old entries.
+  cache.store.delete(key);
+  cache.store.set(key, value);
+  return value;
+}
+
+/** Cache write with LRU eviction once the entry cap is exceeded. */
+function cacheSet(cache: ReadCache, key: string, value: string): void {
+  cache.store.delete(key);
+  cache.store.set(key, value);
+  while (cache.store.size > MAX_READ_CACHE_ENTRIES) {
+    const oldest = cache.store.keys().next().value;
+    if (oldest === undefined) break;
+    cache.store.delete(oldest);
+  }
 }
 
 /** 캐시에서 한 파일의 모든 범위 엔트리를 제거 (edit/write 후 stale 방지) */
@@ -223,10 +251,11 @@ export async function executeTool(
 
         // 같은 루프에서 이미 같은 범위를 읽었으면 디스크 재접근 없이 캐시 반환.
         // 모델에게 "변경 없음"을 알려 추가 확인 read를 유도하지 않는다.
-        if (cache?.store.has(cacheKey)) {
+        const cached = cache ? cacheGet(cache, cacheKey) : undefined;
+        if (cached !== undefined) {
           return {
             tool_call_id: callId,
-            content: `(unchanged since last read — cached)\n${cache.store.get(cacheKey)!}`,
+            content: `(unchanged since last read — cached)\n${cached}`,
             is_error: false,
           };
         }
@@ -239,7 +268,7 @@ export async function executeTool(
           ? `\n... (${lines.length - offset - limit} more lines)`
           : '';
         const result = numbered + truncated;
-        cache?.store.set(cacheKey, result);
+        if (cache) cacheSet(cache, cacheKey, result);
         return { tool_call_id: callId, content: result, is_error: false };
       }
 

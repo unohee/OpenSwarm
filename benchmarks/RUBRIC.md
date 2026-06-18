@@ -35,8 +35,8 @@ Derived from benchmark data (`benchmarks/results/`). Score = pass_rate → $/pas
 |----|--------------------------|-----------|
 | L0–L3 | **z-ai/glm-4.7-flash** or deepseek-v4-flash | 100% pass, $0.002–0.004/pass. glm is fastest at 2759 tok/s (DeepInfra). Lightweight is enough |
 | L4 | Lightweight + escalate | Lightweight models mostly pass (100%); frontier escalation absorbs failures |
-| L5 | Lightweight (tolerating some failures) | glm/qwen fail 1–2 tasks like L5-lru (87–95%). Escalation absorbs it |
-| **L6** | **Frontier (openai/gpt-5)** | **Lightweight models lack answer accuracy** — see L6 measurements below |
+| L5 | **moonshotai/kimi-k2.5** | 100% L0–L5 sweep (24/24, repeat 2), $0.0095/pass — 57% cheaper than gemini-2.5-flash at higher quality (2026-06-11 round) |
+| **L6** | **Frontier diagnosis + lightweight implementation** | Solo lightweight lacks diagnostic depth. Diagnosis role: gpt-5 or **kimi-k2.6** (first-shot RESOLVED); glm-5.1 works but needed the re-diagnosis escalate loop. Implementation role: kimi-k2.5 / deepseek-v4-flash / glm-5.1 |
 
 ### L6 measurements (pylint-dev__pylint-7080, 2026-06)
 
@@ -116,6 +116,92 @@ diagnosis) — the no-edit guard (`nudgeMaxOnNoEdit`) and a rich diagnosis
 (including concrete pseudocode) are the success factors. Best-of-N has low
 expected value (all 9 undiagnosed gemini attempts were wrong).
 
+### Kimi K2.5/K2.6 round (2026-06-11) — both roles validated
+
+Tested MoonshotAI Kimi K2.5 ($0.40/$1.90 per M) and K2.6 ($0.68/$3.41 per M)
+in both OpenSwarm roles, same harness, official grading.
+
+**L0–L5 ladder** (12 tasks × repeat 2 vs baseline gemini-2.5-flash):
+
+| Model | L0–L5 pass | $/pass | avg tools | avg dur |
+|-------|-----------|--------|-----------|---------|
+| **moonshotai/kimi-k2.5** | **100%** (24/24) | $0.0095 | 7.9 | 34s |
+| moonshotai/kimi-k2.6 | **100%** (24/24) | $0.0122 | 6.8 | 41s |
+| google/gemini-2.5-flash (baseline) | 88% | $0.0220 | 10.8 | 27s |
+
+k2.5 strictly dominates k2.6 as a worker (same quality, cheaper, faster);
+k2.6's higher reasoning latency (~2× on trivial tasks) buys nothing at L0–L5.
+
+**L6 worker role** — kimi-k2.5 as hybrid implementer (saved gpt-5 diagnoses):
+
+| Configuration | Instance | Result |
+|---------------|----------|--------|
+| gpt-5 diagnosis + **kimi-k2.5** implementation | 5859 | **RESOLVED** ✅ |
+| gpt-5 re-diagnosis + **kimi-k2.5** implementation | 7993 | **RESOLVED** ✅ (first attempt, clean single-file patch) |
+
+**L6 planner role** — kimi-k2.6 as the diagnostician (replacing gpt-5):
+
+| Configuration | Instance | Result |
+|---------------|----------|--------|
+| **kimi-k2.6 diagnosis** + deepseek-v4-flash implementation | 7080 | **RESOLVED** ✅ |
+
+→ **The hybrid pattern no longer requires gpt-5.** kimi-k2.6 produced a
+RESOLVED-grade diagnosis on the instance where 5 of 6 solo models failed
+(its fix differs from gpt-5's — `_is_in_ignore_list_re` path normalization
+vs `os.path.relpath` — both pass the official grader). Caveat: the k2.6
+diagnosis is verbose (58k chars vs gpt-5's 5.5k), so implementer context
+pressure is higher; it worked, but diagnosis-length budgeting is a future
+lever. Implementer fitness update: **kimi-k2.5 ✅✅ (2/2, joins deepseek as
+a reliable finisher)**.
+
+One contamination case (5859): the implementer re-created the missing
+FAIL_TO_PASS test in the test file to self-verify; test-file hunks were
+stripped from model_patch before grading (standard SWE-bench practice).
+Harness improvement candidate: auto-exclude `tests/**` from patch
+extraction.
+
+Evidence: `results/kimi_ladder_260611.json`,
+`results/swe_{5859,7993}_kimi_worker_RESOLVED_report.json`,
+`results/swe_7080_kimi_planner_RESOLVED_report.json`,
+`results/swe_7080_kimi_k26_diagnosis.txt`.
+
+### GLM-5.1 round (2026-06-11) — worker ✅, planner needs the escalate loop
+
+Tested `z-ai/glm-5.1` ($0.98/$3.08 per M, 202k ctx — kimi-k2.6's class) on the
+same instances:
+
+| Role | Configuration | Instance | Result |
+|------|---------------|----------|--------|
+| Worker | gpt-5 diagnosis + **glm-5.1** implementation | 5859 | **RESOLVED** ✅ (identical source fix to kimi-k2.5's) |
+| Planner (1st shot) | **glm-5.1** diagnosis + deepseek implementation | 7080 | unresolved — wrong mechanism (directory pruning instead of the `./` prefix mismatch); FAIL_TO_PASS 0/1, PASS_TO_PASS 120/120 intact |
+| Planner (escalate) | **glm-5.1 re-diagnosis** (fed the failed patch + official test output) + deepseek | 7080 | **RESOLVED** ✅ (`os.path.normpath(root)` + `norm_root + os.sep` — converged on the real mechanism) |
+
+Planner-role comparison on 7080: gpt-5 ✅ first shot / kimi-k2.6 ✅ first shot /
+**glm-5.1 ✅ but only via the re-diagnosis escalate loop**. Its first diagnosis
+reads precise (compact 4k chars, detailed mechanism walkthrough) yet targeted
+the wrong layer — articulate-but-wrong is exactly the failure mode the escalate
+loop exists for, and glm-5.1 self-corrected when fed the failing evidence
+(same protocol that rescued gpt-5 on 7993).
+
+**Harness defect #8 — self-authored test masking (FIXED 2026-06-18, INT-1462)**:
+the FAIL_TO_PASS test is absent from the extracted /testbed, so the implementer
+wrote its own guess of the gold test, which validated the wrong fix — local
+verification "passed" while official grading failed. When the test oracle
+itself is model-authored, the verification loop cannot catch a wrong diagnosis.
+→ Fix: `sweBench.ts` now pre-applies the instance's `test_patch` to the sandbox
+**before** baselining, so local verification runs the real oracle; the touched
+test files join `protectedFiles` so the implementer can't rewrite them. Because
+the gold test is baked into the baseline, `git diff baseSha` excludes it and
+model_patch stays source-only automatically (no manual test-hunk stripping).
+Verified on 5859: worker created zero test files, model_patch was source-only
+(`pylint/checkers/misc.py`), official grading still RESOLVED
+(`results/swe_5859_fix8_{sourceonly_preds,RESOLVED_report}.json`).
+
+Evidence: `results/swe_5859_glm51_worker_{report,preds}.json`,
+`results/swe_7080_glm51_{diagnosis,rediagnosis}.txt`,
+`results/swe_7080_glm51_planner_v1_failed_preds.json`,
+`results/swe_7080_glm51_rediag_{RESOLVED_report,preds}.json`.
+
 Additional hybrid failure modes (discovered on 7993):
 
 - **Diagnosis error propagation**: if the diagnosis pseudocode itself is buggy
@@ -133,8 +219,9 @@ Additional hybrid failure modes (discovered on 7993):
 ## Routing principles (tiering)
 
 - **Judgment-heavy roles** (Planner/decomposition, Reviewer): pinned to
-  frontier (gpt-5). A wrong judgment poisons everything downstream, so these
-  are never downgraded.
+  frontier-grade models. A wrong judgment poisons everything downstream, so
+  these are never downgraded. Measured options: gpt-5, **kimi-k2.6**
+  (RESOLVED-grade L6 diagnosis at ~1/3 of gpt-5 pricing — 2026-06-11 round).
 - **Execution roles** (Worker/Tester/Documenter/Auditor): lightweight by
   default + frontier escalation after 2 failures.
   - But **L6-grade real-world work should use a frontier worker too** —
@@ -147,7 +234,7 @@ Additional hybrid failure modes (discovered on 7993):
 export DOCKER_HOST="unix:///Users/<you>/.orbstack/run/docker.sock"
 
 # 2. The OpenSwarm worker solves the instance and produces predictions
-OPENROUTER_API=... SWE_MODEL=openai/gpt-5 \
+SWE_MODEL=openai/gpt-5 \
   npx tsx benchmarks/sweBench.ts <instances.json> <preds.json>
 
 # 3. Grade with the official swebench harness (per-model, max_workers 1 — concurrency overloads the VM)
@@ -186,6 +273,6 @@ L6 exposed defects that only manifest in large repos:
    were never reached. → Thresholds 24k→60k tokens, compactAfterMessages
    24→60, keepRecent 8→16.
 
-(Defects #4–#7 — final-answer turn, no-edit guard, protected files, bash
-timeout — were found later during the hybrid experiments; see the hybrid
-section above.)
+(Defects #4–#8 — final-answer turn, no-edit guard, protected files, bash
+timeout, and self-authored test masking — were found later during the hybrid
+experiments; see the hybrid section above. #8 is fixed in INT-1462.)
