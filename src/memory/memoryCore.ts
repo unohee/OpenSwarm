@@ -532,8 +532,14 @@ export async function saveMemory(
       return null;
     }
 
-    // Use distillation-suggested type if more appropriate
-    if (distillation.type !== type && isCognitiveType(distillation.type)) {
+    // Distillation may refine the type for UNVERIFIED content — a best-effort
+    // classification the caller didn't firmly assert. But when the caller marks
+    // the memory isVerified, its explicit type is authoritative and must not be
+    // overridden (e.g. system_pattern / constraint silently downgraded to
+    // belief). Previously the only escape was skipDistillation, a trap for any
+    // caller that didn't know the flag (see repoKnowledge.ts). Contract: explicit
+    // type + isVerified wins; unverified content is still auto-refined.
+    if (!options?.isVerified && distillation.type !== type && isCognitiveType(distillation.type)) {
       console.log(`[Memory] Type adjusted by distillation: ${type} → ${distillation.type}`);
       type = distillation.type;
     }

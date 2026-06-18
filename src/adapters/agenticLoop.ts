@@ -310,6 +310,9 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
   // 도구 없이 마지막 1회 호출로 결론을 강제한다. 이게 없으면 진단·분석형 작업이
   // 끝까지 도구만 호출하다 빈 결과("(no summary)")로 끝난다 — SWE 하이브리드 진단
   // 단계에서 발견된 결함.
+  // Note: an empty-string finalText ('') intentionally triggers this too — an
+  // empty final answer is worthless, so the one extra call to salvage a real
+  // conclusion is the whole point, not an accidental cost (INT-1442 part 3).
   if (!finalText && apiCallCount > 0) {
     onLog?.('▸ Final answer turn (no tools) — loop ended without a final message');
     messages.push({

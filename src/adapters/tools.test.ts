@@ -345,6 +345,25 @@ describe('ReadCache', () => {
     expect(head.content).toContain('line1');
     expect(tail.content).toContain('line11');
   });
+
+  it('evicts the least-recently-used entry once the bound (64) is exceeded', async () => {
+    const filePath = path.join(TMP_DIR, 'cache-lru.txt');
+    await fs.writeFile(filePath, Array.from({ length: 80 }, (_, i) => `row${i + 1}`).join('\n') + '\n');
+    const cache = createReadCache();
+
+    // 65 distinct ranges (offset 0..64, limit 1) — one past the 64-entry cap,
+    // so the first read (offset 0, the LRU) must be evicted.
+    for (let off = 0; off <= 64; off++) {
+      await executeTool(makeCall('read_file', { path: filePath, offset: off, limit: 1 }), TMP_DIR, cache);
+    }
+
+    // The evicted entry re-reads from disk (no "unchanged" marker)...
+    const evicted = await executeTool(makeCall('read_file', { path: filePath, offset: 0, limit: 1 }), TMP_DIR, cache);
+    expect(evicted.content).not.toContain('unchanged');
+    // ...while a recently-read entry is still cached.
+    const recent = await executeTool(makeCall('read_file', { path: filePath, offset: 64, limit: 1 }), TMP_DIR, cache);
+    expect(recent.content).toContain('unchanged since last read');
+  });
 });
 
 // ──────────────────────────────────────────────
