@@ -2,10 +2,12 @@
 // Created: 2026-06-09
 // Purpose: ZDR(data_collection:deny) 조건에서 후보 모델의 provider/throughput 변동 측정.
 //          실제 운영(provider 자동선택)과 동일 조건. tok/s + provider 분포 + TTFT.
-// Dependencies: tsx, OPENROUTER_API
+// Dependencies: tsx, OPENROUTER_API_KEY (auto-loaded from the repo .env)
 // Test Status: profiling
 //
-// 실행: source ~/dev/VEGA/.env && npx tsx benchmarks/throughputProbe.ts
+// 실행: npx tsx benchmarks/throughputProbe.ts
+
+import { loadEnvFile } from '../src/core/envFile.js';
 
 const API = 'https://openrouter.ai/api/v1/chat/completions';
 const PROMPT =
@@ -50,8 +52,9 @@ async function probe(apiKey: string, model: string): Promise<Sample> {
 }
 
 async function main() {
-  const apiKey = process.env.OPENROUTER_API;
-  if (!apiKey) { console.error('OPENROUTER_API not set'); process.exit(1); }
+  loadEnvFile();
+  const apiKey = process.env.OPENROUTER_API_KEY ?? process.env.OPENROUTER_API;
+  if (!apiKey) { console.error('OPENROUTER_API_KEY not set (checked shell env and .env)'); process.exit(1); }
 
   for (const model of MODELS) {
     console.log(`\n=== ${model} (ZDR, ${SAMPLES} samples) ===`);

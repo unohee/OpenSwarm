@@ -7,8 +7,8 @@
 //          자동 교체 안 함 — 랭킹만 출력, 사람이 config 반영(통제력 유지).
 //
 // 실행:
-//   source ~/dev/VEGA/.env   (OPENROUTER_API 필요)
 //   npx tsx benchmarks/modelSelect.ts --repeat 3
+//   (OPENROUTER_API_KEY required — auto-loaded from the repo .env)
 //   npx tsx benchmarks/modelSelect.ts --model openai/gpt-5 --model qwen/qwen3-coder
 //   npx tsx benchmarks/modelSelect.ts --task L0-fix-multiply --repeat 5
 // ============================================
@@ -22,6 +22,7 @@ import { promisify } from 'node:util';
 import { runWorker } from '../src/agents/worker.js';
 import { setDefaultAdapter } from '../src/adapters/index.js';
 import { initLocale } from '../src/locale/index.js';
+import { loadEnvFile } from '../src/core/envFile.js';
 import { CODING_TASKS, type BenchTask } from './tasks/codingTasks.js';
 
 const exec = promisify(execFile);
@@ -285,12 +286,13 @@ function parseArgs(argv: string[]) {
 }
 
 async function main() {
+  loadEnvFile();
   initLocale('en');
   setDefaultAdapter('openrouter');
 
-  const apiKey = process.env.OPENROUTER_API;
+  const apiKey = process.env.OPENROUTER_API_KEY ?? process.env.OPENROUTER_API;
   if (!apiKey) {
-    console.error('OPENROUTER_API not set. Run: source ~/dev/VEGA/.env');
+    console.error('OPENROUTER_API_KEY not set (checked shell env and .env).');
     process.exit(1);
   }
 

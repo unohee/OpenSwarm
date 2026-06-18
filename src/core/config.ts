@@ -607,7 +607,7 @@ export function generateSampleConfig(): string {
 # Default CLI adapter for worker/reviewer stages
 # Options: codex, openrouter, lmstudio, local, gpt
 # - codex:      OpenAI Codex via PKCE login (openswarm auth login --provider codex)
-# - openrouter: OpenRouter API key (OPENROUTER_API env var or openswarm auth login --provider openrouter)
+# - openrouter: OpenRouter API key (OPENROUTER_API_KEY env var or openswarm auth login --provider openrouter)
 # - lmstudio:   LM Studio local server (set LMSTUDIO_BASE_URL / LMSTUDIO_MODEL)
 # - local:      Ollama local models (ollama pull <model>)
 # - gpt:        OpenAI Chat API via OAuth (openswarm auth login --provider gpt)

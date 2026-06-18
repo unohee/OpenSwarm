@@ -1,0 +1,125 @@
+So `os.path.normpath(root) + os.sep` = `"ignored_subdirectory/"` DOES match `^ignored_subdirectory/.*`. 
+
+So the fix needs:
+1. Normalize `root` with `os.path.normpath` before checking
+2. Also check `os.path.normpath(root) + os.sep` (to match directory paths against patterns that expect a trailing separator)
+3. Normalize individual file paths and check them too
+
+Actually, let me think about this differently. The most robust approach is to normalize the paths and then check both the directory and its contents. But the simplest approach that fixes the test is:
+
+In `_discover_files`, when checking if a directory should be ignored, normalize the path and also check with a trailing separator:
+
+```python
+norm_root = os.path.normpath(root)
+if _is_ignored_file(
+    norm_root,
+    self.config.ignore,
+    self.config.ignore_patterns,
+    self.config.ignore_paths,
+) or _is_ignored_file(
+    norm_root + os.sep,
+    self.config.ignore,
+    self.config.ignore_patterns,
+    self.config.ignore_paths,
+):
+    skip_subtrees.append(root)
+    continue
+```
+
+And for individual files:
+```python
+yield from (
+    os.path.normpath(os.path.join(root, file))
+    for file in files
+    if file.endswith(".py")
+    and not _is_ignored_file(
+        os.path.normpath(os.path.join(root, file)),
+        self.config.ignore,
+        self.config.ignore_patterns,
+        self.config.ignore_paths,
+    )
+)
+```
+
+Wait, but I also need to make sure the yielded paths are valid for downstream processing. Let me check if `expand_modules` can handle relative paths like `"ignored_subdirectory/failing.py"` — actually, these would be filtered out by `expand_modules`'s own `_is_ignored_file` check, so they'd never reach the linting stage. But if they're not filtered (e.g., the pattern doesn't match), they need to be valid paths.
+
+Actually, the yielded paths from `_discover_files` go to `expand_modules` which then processes them. If we yield `"subdirectory/module.py"` instead of `"./subdirectory/module.py"`, `expand_modules` should still work because `os.path.exists("subdirectory/module.py")` would be true when CWD is the right directory.
+
+Let me also check: what about the `yield root` case (for packages)? If we normalize `root`, we'd yield `"package"` instead of `"./package"`. That should also work.
+
+OK, I'm now confident in the diagnosis. Let me also verify one more thing — the `skip_subtrees` check uses `root.startswith(s)`. If we append `norm_root + os.sep` to `skip_subtrees` instead of `root`, the `startswith` check would break. So we need to keep appending `root` to `skip_subtrees` (the original, non-normalized path) for the subtree skipping to work.
+
+Let me finalize the diagnosis:
+
+---
+
+**ROOT CAUSE:**
+
+In `pylint/lint/pylinter.py`, method `_discover_files` (line 585), when the user runs pylint with `--recursive=y` from the current directory (e.g., `pylint . --recursive=y`), `os.walk(".")` produces paths with a `./` prefix (e.g., `./ignored_subdirectory`, `./ignored_subdirectory/failing.py`). These paths are passed directly to `_is_ignored_file` for matching against `ignore-paths` regex patterns.
+
+The `ignore-paths` patterns (e.g., `^ignored_subdirectory/.*`) are written to match paths relative to the starting directory without the `./` prefix. The `./` prefix prevents the regex from matching, so ignored directories and files are not filtered out.
+
+Additionally, the directory-level check only tests `root` (e.g., `./ignored_subdirectory`) against the pattern, but patterns like `^ignored_subdirectory/.*` are designed to match file paths within the directory (e.g., `ignored_subdirectory/failing.py`), not the directory name itself. The directory check needs to also test `root + os.sep` (with normalization) to match such patterns.
+
+**FIX PLAN:**
+
+File: `pylint/lint/pylinter.py`, method `_discover_files` (starting line 585)
+
+1. Normalize `root` with `os.path.normpath()` before passing to `_is_ignored_file`, to strip the `./` prefix.
+2. Also check `os.path.normpath(root) + os.sep` against `_is_ignored_file`, so that patterns like `^ignored_subdirectory/.*` match the directory path with a trailing separator.
+3. Normalize individual file paths with `os.path.normpath()` before yielding them and before checking them against `_is_ignored_file`.
+4. Add individual file-level `_is_ignored_file` check in the `yield from` clause, to catch files that match `ignore-paths` even if their parent directory doesn't.
+
+Concrete code change in `_discover_files`:
+
+```python
+# Replace the current _is_ignored_file check on root (lines 600-607):
+if _is_ignored_file(
+    root,
+    self.config.ignore,
+    self.config.ignore_patterns,
+    self.config.ignore_paths,
+):
+    skip_subtrees.append(root)
+    continue
+
+# With:
+norm_root = os.path.normpath(root)
+if _is_ignored_file(
+    norm_root,
+    self.config.ignore,
+    self.config.ignore_patterns,
+    self.config.ignore_paths,
+) or _is_ignored_file(
+    norm_root + os.sep,
+    self.config.ignore,
+    self.config.ignore_patterns,
+    self.config.ignore_paths,
+):
+    skip_subtrees.append(root)
+    continue
+```
+
+```python
+# Replace the current yield from clause (lines 613-617):
+yield from (
+    os.path.join(root, file)
+    for file in files
+    if file.endswith(".py")
+)
+
+# With:
+yield from (
+    os.path.normpath(os.path.join(root, file))
+    for file in files
+    if file.endswith(".py")
+    and not _is_ignored_file(
+        os.path.normpath(os.path.join(root, file)),
+        self.config.ignore,
+        self.config.ignore_patterns,
+        self.config.ignore_paths,
+    )
+)
+```
+
+Note: `skip_subtrees.append(root)` should still use the original `root` (not `norm_root`) because the `startswith` check on line 596 compares against the original `os.walk` paths.

@@ -1,0 +1,53 @@
+## ROOT CAUSE
+
+In `pylint/lint/pylinter.py`, the `_discover_files` method (line 585-619) only checks `_is_ignored_file` against **directory roots** (`root` from `os.walk`), but never checks individual `.py` files yielded at lines 613-617. The `ignore-paths` regex patterns (e.g., `^src/gen/.*$`) are designed to match **file paths** like `src/gen/about.py`, not bare directory paths like `src/gen`. Since `^src/gen/.*$` requires a `/` after `gen`, it never matches the directory path `src/gen`, so the directory is not pruned from the walk. Then individual files within that directory are yielded unconditionally (only filtered by `.py` extension).
+
+While `expand_modules` (called later via `_iterate_file_descrs` → `_expand_files`) does re-check individual file paths against `ignore_list_paths_re`, this only works for files within **packages** (the `has_init` branch at line 137-146). For directories without `__init__.py`, `_discover_files` yields individual file paths, and `expand_modules` processes them as top-level entries. The `_is_ignored_file` check at line 78-80 of `expand_modules` does check `ignore_list_paths_re` against the full path — BUT the critical problem is that `_discover_files` also yields the **directory itself** when it contains `__init__.py` (line 611: `yield root`). When `expand_modules` receives a package directory like `src/gen`, the `_is_ignored_file` check at line 78 uses `os.path.basename("src/gen")` = `"gen"` for the `ignore_list` and `ignore_list_re` checks, and checks the full path `"src/gen"` against `ignore_list_paths_re` — which fails to match `^src/gen/.*$` because there's no trailing `/` + content. The package is then expanded, and while subfiles are checked at line 143-145, the **package's own `__init__.py`** is NOT checked against `ignore_list_paths_re` (it's skipped at line 141-142 only if `filepath == subfilepath`).
+
+The core defect: `_discover_files` does not apply `ignore_paths` filtering to individual `.py` files it yields, and the directory-level check fails because `ignore-paths` regexes are written to match file paths (with content after the directory prefix), not bare directory paths.
+
+## FIX PLAN
+
+**File:** `pylint/lint/pylinter.py`, method `_discover_files` (starting line 585)
+
+**Change:** Add `ignore_paths` filtering to the individual `.py` files yielded in the `else` branch (lines 613-617). Currently:
+
+```python
+else:
+    yield from (
+        os.path.join(root, file)
+        for file in files
+        if file.endswith(".py")
+    )
+```
+
+Change to:
+
+```python
+else:
+    yield from (
+        os.path.join(root, file)
+        for file in files
+        if file.endswith(".py")
+        and not _is_in_ignore_list_re(
+            os.path.join(root, file), self.config.ignore_paths
+        )
+    )
+```
+
+This requires importing `_is_in_ignore_list_re` from `pylint.lint.expand_modules` (or alternatively, calling `_is_ignored_file` on each file path, which already does the right check for `ignore_paths` since it passes the full path to `_is_in_ignore_list_re`).
+
+Additionally, the directory-level check at line 600-607 should also match directories against `ignore_paths` by appending a trailing separator to the directory path before regex matching, so that patterns like `^src/gen/.*$` match `src/gen`. This can be done by changing:
+
+```python
+if _is_ignored_file(
+    root,
+    self.config.ignore,
+    self.config.ignore_patterns,
+    self.config.ignore_paths,
+):
+```
+
+to also check `root + os.sep` (or `root + "/"`) against `ignore_paths`, so that a directory path like `src/gen` is tested as `src/gen/` against the regex. This ensures entire ignored directories are pruned from the walk early, avoiding unnecessary traversal.
+
+The minimal fix is just the first change (filtering individual files), but both changes together provide correct behavior: directories are pruned early when possible, and individual files that slip through (e.g., because the regex doesn't match the directory prefix alone) are still filtered.
