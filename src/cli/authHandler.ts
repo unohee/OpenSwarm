@@ -4,7 +4,7 @@
 // ============================================
 
 import { createInterface } from 'node:readline';
-import { AuthProfileStore } from '../auth/index.js';
+import { AuthProfileStore, ensureValidToken } from '../auth/index.js';
 import {
   loginAndSaveProfile,
   DEFAULT_OPENAI_CLIENT_ID,
@@ -13,6 +13,7 @@ import {
   loginAndSaveOpenRouterProfile,
   saveOpenRouterApiKey,
 } from '../auth/openrouterPkce.js';
+import { getCodexModelIds } from '../adapters/codexModels.js';
 
 type Provider = 'gpt' | 'openrouter';
 
@@ -167,6 +168,38 @@ export function handleAuthStatus(): void {
       console.log(`    Account:    ${p.accountId}`);
     }
     console.log('');
+  }
+}
+
+/**
+ * 사용 가능한 Codex 모델 목록 표시.
+ * GPT/Codex OAuth 토큰이 있으면 라이브로(chatgpt.com Codex 백엔드) 조회하고,
+ * 없으면 ~/.codex 로컬 소스 + 큐레이트 fallback으로 표시한다.
+ */
+export async function handleAuthModels(): Promise<void> {
+  const store = new AuthProfileStore();
+  let accessToken: string | undefined;
+
+  if (store.getProfile(PROFILE_KEYS.gpt)) {
+    try {
+      accessToken = await ensureValidToken(store, PROFILE_KEYS.gpt);
+    } catch (err) {
+      console.warn(
+        `[Auth] 토큰 검증 실패 (${err instanceof Error ? err.message : String(err)}). 오프라인 fallback으로 표시합니다.`,
+      );
+    }
+  } else {
+    console.log('GPT/Codex 인증 프로필이 없습니다 — 오프라인 fallback 목록을 표시합니다.');
+    console.log('라이브 조회: openswarm auth login --provider gpt');
+    console.log('');
+  }
+
+  const models = await getCodexModelIds(accessToken);
+  const source = accessToken ? 'live · Codex OAuth backend' : 'offline fallback';
+
+  console.log(`Codex 모델 (${source}):`);
+  for (const model of models) {
+    console.log(`  ${model}`);
   }
 }
 

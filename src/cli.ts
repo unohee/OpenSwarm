@@ -354,6 +354,14 @@ authCmd
   });
 
 authCmd
+  .command('models')
+  .description('List available Codex models (live via OAuth, offline fallback otherwise)')
+  .action(async () => {
+    const { handleAuthModels } = await import('./cli/authHandler.js');
+    await handleAuthModels();
+  });
+
+authCmd
   .command('logout')
   .description('Remove stored auth tokens')
   .option('--provider <provider>', 'Provider to remove (gpt | openrouter)', 'gpt')

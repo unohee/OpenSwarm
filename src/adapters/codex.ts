@@ -14,8 +14,14 @@ import type {
   ReviewResult,
 } from './types.js';
 import { t } from '../locale/index.js';
+import { AuthProfileStore, ensureValidToken } from '../auth/index.js';
+import { getCodexModelIds } from './codexModels.js';
 
 const execFileAsync = promisify(execFile);
+
+// Codex shares the ChatGPT OAuth profile with the gpt adapter — the same token
+// authorizes the Codex backend models endpoint.
+const CODEX_PROFILE_KEY = 'openai-gpt:default';
 
 export class CodexCliAdapter implements CliAdapter {
   readonly name = 'codex';
@@ -35,6 +41,24 @@ export class CodexCliAdapter implements CliAdapter {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * List the Codex models this account can use. Tries the live Codex OAuth
+   * backend (when authenticated via `openswarm auth login --provider gpt`),
+   * falling back to the local ~/.codex sources and a curated default list.
+   */
+  async listModels(): Promise<string[]> {
+    let accessToken: string | undefined;
+    try {
+      const store = new AuthProfileStore();
+      if (store.getProfile(CODEX_PROFILE_KEY)) {
+        accessToken = await ensureValidToken(store, CODEX_PROFILE_KEY);
+      }
+    } catch {
+      // No/expired auth — fall back to offline sources inside getCodexModelIds.
+    }
+    return getCodexModelIds(accessToken);
   }
 
   buildCommand(options: CliRunOptions): { command: string; args: string[] } {
