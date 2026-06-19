@@ -47,7 +47,7 @@ vi.mock('../support/web.js', () => ({
 
 vi.mock('../automation/autonomousRunner.js', () => ({
   setLinearFetcher: vi.fn(),
-  setDiscordReporter: vi.fn(),
+  setNotifier: vi.fn(),
   startAutonomous: vi.fn(async () => ({})),
 }));
 

@@ -13,6 +13,7 @@ import * as github from '../github/index.js';
 import * as scheduler from '../automation/scheduler.js';
 import * as web from '../support/web.js';
 import * as autonomous from '../automation/autonomousRunner.js';
+import { createNotifier } from '../notify/notifier.js';
 import { PRProcessor } from '../automation/prProcessor.js';
 import { startCIWorker, stopCIWorker } from '../automation/ciWorker.js';
 import { initMonitors } from '../automation/longRunningMonitor.js';
@@ -175,11 +176,13 @@ export async function startService(config: SwarmConfig): Promise<void> {
     });
     console.log('[Service] Linear fetcher registered');
 
-    // Register Discord reporter (to default channel)
-    autonomous.setDiscordReporter(async (content: any) => {
+    // Register the notifier for the configured channel (Discord/Slack/Telegram/
+    // webhook). Discord's sender is injected so the notifier stays decoupled.
+    const notifier = createNotifier(config.notifications, async (content: any) => {
       await discord.sendToChannel(content);
     });
-    console.log('[Service] Discord reporter registered');
+    autonomous.setNotifier(notifier);
+    console.log(`[Service] Notifier registered (${config.notifications?.channel ?? 'discord'})`);
 
     const runnerInstance = await autonomous.startAutonomous({
       defaultAdapter: config.adapter,

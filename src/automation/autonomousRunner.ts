@@ -52,7 +52,7 @@ import type { AutonomousConfig, RunnerState } from './runnerTypes.js';
 import type { AdapterName } from '../adapters/types.js';
 
 // Re-export types and integration setters (used by service.ts)
-export { setDiscordReporter, setLinearFetcher } from './runnerExecution.js';
+export { setNotifier, setLinearFetcher } from './runnerExecution.js';
 export type { AutonomousConfig, RunnerState } from './runnerTypes.js';
 export type { ProjectInfo } from './runnerState.js';
 

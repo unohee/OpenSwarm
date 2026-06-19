@@ -284,10 +284,21 @@ const CIWorkerConfigSchema = z.object({
   maxAgeDays: z.number().positive().default(30),
 }).optional();
 
+// Outbound notification channel (INT-1576). Discord stays the default; Slack/
+// Telegram/webhook are BYO. Distinct from the per-job `notify` boolean above.
+const NotificationsSchema = z.object({
+  channel: z.enum(['discord', 'slack', 'telegram', 'webhook', 'none']).default('discord'),
+  slackWebhookUrl: z.string().optional(),
+  telegramBotToken: z.string().optional(),
+  telegramChatId: z.string().optional(),
+  webhookUrl: z.string().optional(),
+}).optional();
+
 const RawConfigSchema = z.object({
   adapter: AdapterNameSchema.default('codex'),
   language: z.enum(['en', 'ko']).default('en'),
   discord: DiscordConfigSchema,
+  notifications: NotificationsSchema,
   linear: LinearConfigSchema,
   github: GitHubConfigSchema,
   timeWindow: TimeWindowConfigSchema,
@@ -413,6 +424,15 @@ function transformConfig(raw: RawConfig): SwarmConfig {
     discordToken: raw.discord?.token ?? '',
     discordChannelId: raw.discord?.channelId ?? '',
     discordWebhookUrl: raw.discord?.webhookUrl,
+    notifications: raw.notifications
+      ? {
+          channel: raw.notifications.channel,
+          slackWebhookUrl: raw.notifications.slackWebhookUrl,
+          telegramBotToken: raw.notifications.telegramBotToken,
+          telegramChatId: raw.notifications.telegramChatId,
+          webhookUrl: raw.notifications.webhookUrl,
+        }
+      : undefined,
     linearApiKey: raw.linear?.apiKey ?? '',
     linearTeamId: raw.linear?.teamId ?? '',
     agents: raw.agents.map(agent => ({
@@ -618,6 +638,17 @@ discord:
   channelId: \${DISCORD_CHANNEL_ID}
   webhookUrl: \${DISCORD_WEBHOOK_URL:-}  # optional
 
+# Outbound notification channel (default: discord). BYO credentials.
+# channel: discord | slack | telegram | webhook | none
+notifications:
+  channel: discord
+  # slackWebhookUrl: \${SLACK_WEBHOOK_URL:-}
+  # telegramBotToken: \${TELEGRAM_BOT_TOKEN:-}
+  # telegramChatId: \${TELEGRAM_CHAT_ID:-}
+  # webhookUrl: \${NOTIFY_WEBHOOK_URL:-}
+
+# Task source: when the linear block below is unset, OpenSwarm falls back to a
+# local SQLite issue store (~/.openswarm/issues.db) — no external account needed.
 linear:
   apiKey: \${LINEAR_API_KEY}
   teamId: \${LINEAR_TEAM_ID}

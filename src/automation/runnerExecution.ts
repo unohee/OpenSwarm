@@ -21,6 +21,7 @@ import { analyzeIssue } from '../knowledge/index.js';
 import { runDraftAnalysis, type DraftAnalysis } from '../agents/draftAnalyzer.js';
 import { t } from '../locale/index.js';
 import { broadcastEvent } from '../core/eventHub.js';
+import type { Notifier } from '../notify/notifier.js';
 import {
   buildBranchName,
   createWorktree,
@@ -46,38 +47,26 @@ import {
   upsertTaskState,
 } from '../taskState/store.js';
 
-// Discord Reporter
+// Notifier (outbound notifications — Discord/Slack/Telegram/webhook, INT-1576)
 
-type DiscordSendFn = (content: string | { embeds: EmbedBuilder[] }) => Promise<void>;
+let notifier: Notifier | null = null;
 
-let discordSend: DiscordSendFn | null = null;
-
-export function setDiscordReporter(sendFn: DiscordSendFn): void {
-  discordSend = sendFn;
-  console.log('[AutonomousRunner] Discord reporter registered');
+export function setNotifier(n: Notifier): void {
+  notifier = n;
+  console.log('[AutonomousRunner] Notifier registered');
 }
 
+/**
+ * Send an outbound notification. Name kept for call-site stability — it is now
+ * backend-agnostic (routes to the configured Notifier, not necessarily Discord).
+ */
 export async function reportToDiscord(message: string | EmbedBuilder): Promise<void> {
-  if (!discordSend) {
-    console.log('[AutonomousRunner] No Discord reporter, logging instead:',
+  if (!notifier) {
+    console.log('[AutonomousRunner] No notifier, logging instead:',
       typeof message === 'string' ? message : message.data.title);
     return;
   }
-
-  try {
-    if (typeof message === 'string') {
-      // Convert plain text to Embed for consistent Discord UI
-      const embed = new EmbedBuilder()
-        .setDescription(message)
-        .setColor(0x00ff41) // OpenSwarm green
-        .setTimestamp();
-      await discordSend({ embeds: [embed] });
-    } else {
-      await discordSend({ embeds: [message] });
-    }
-  } catch (error) {
-    console.error('[AutonomousRunner] Discord report failed:', error);
-  }
+  await notifier.notify(message);
 }
 
 // Linear Integration

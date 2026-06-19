@@ -2,6 +2,8 @@
 // OpenSwarm - Type Definitions
 // ============================================
 
+import type { NotificationsConfig } from '../notify/notifier.js';
+
 /**
  * Agent session configuration
  */
@@ -101,6 +103,8 @@ export type SwarmConfig = {
   discordChannelId: string;
   /** Discord Webhook URL (optional) */
   discordWebhookUrl?: string;
+  /** Outbound notification channel (Discord/Slack/Telegram/webhook) — INT-1576 */
+  notifications?: NotificationsConfig;
   /** Linear API key */
   linearApiKey: string;
   /** Linear team ID */

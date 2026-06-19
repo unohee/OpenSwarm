@@ -829,14 +829,16 @@ export async function handleAuto(msg: Message, args: string[]): Promise<void> {
     await msg.reply(`🚀 ${startingMsg}\nSchedule: \`${schedule}\``);
 
     try {
-      // Register Discord reporter
-      autonomous.setDiscordReporter(async (content) => {
-        const channel = msg.channel as TextChannel;
-        if (typeof content === 'string') {
-          await channel.send(content);
-        } else {
-          await channel.send(content);
-        }
+      // Register a notifier that reports back to the command's channel.
+      autonomous.setNotifier({
+        async notify(message: string | EmbedBuilder) {
+          const channel = msg.channel as TextChannel;
+          if (typeof message === 'string') {
+            await channel.send(message);
+          } else {
+            await channel.send({ embeds: [message] });
+          }
+        },
       });
 
       // Register Linear fetcher
