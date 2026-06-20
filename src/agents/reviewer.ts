@@ -21,6 +21,8 @@ export interface ReviewerOptions {
   maxTurns?: number;           // Max agentic turns per CLI invocation
   adapterName?: AdapterName;
   processContext?: ProcessContext;
+  /** Reasoning effort (codex/GPT-5) from complexity routing. */
+  reasoningEffort?: 'low' | 'medium' | 'high';
 }
 
 export interface PreCheckResult {
@@ -192,6 +194,7 @@ export async function runReviewer(options: ReviewerOptions): Promise<ReviewResul
       timeoutMs: options.timeoutMs ?? 180000, // 3 min default (review is faster)
       model: options.model,
       maxTurns: options.maxTurns,
+      reasoningEffort: options.reasoningEffort,
       processContext: options.processContext,
       systemPrompt: getPrompts().systemPrompt,
     });

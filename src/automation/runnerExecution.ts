@@ -139,7 +139,35 @@ export interface ExecutionContext {
 
 // Project Path Resolution
 
+/**
+ * True if `path` is one of `allowed` or lives under one of them. An empty list
+ * means "no restriction". This makes allowedProjects a real whitelist: with
+ * ['~/dev'] everything under ~/dev passes (legacy), but narrowing it (e.g.
+ * ['~/dev/vega-agent']) restricts pickup to that project — otherwise the
+ * ~/dev/{name} fallback below would resolve any sibling project too.
+ */
+function isUnderAllowed(path: string, allowed: string[] | undefined): boolean {
+  if (!allowed || allowed.length === 0) return true;
+  for (const a of allowed) {
+    const exp = a.replace('~', process.env.HOME || '').replace(/\/$/, '');
+    if (path === exp || path.startsWith(exp + '/')) return true;
+  }
+  return false;
+}
+
 export async function resolveProjectPath(
+  ctx: ExecutionContext,
+  task: TaskItem,
+): Promise<string | null> {
+  const resolved = await resolveProjectPathUnchecked(ctx, task);
+  if (resolved && !isUnderAllowed(resolved, ctx.allowedProjects)) {
+    console.log(`[AutonomousRunner] Resolved "${resolved}" is outside allowedProjects — skipping`);
+    return null;
+  }
+  return resolved;
+}
+
+async function resolveProjectPathUnchecked(
   ctx: ExecutionContext,
   task: TaskItem,
 ): Promise<string | null> {
@@ -151,11 +179,17 @@ export async function resolveProjectPath(
     return null;
   }
 
-  // 1순위: allowedProjects에서 정확한 basename 매칭 (fuzzy보다 신뢰도 높음)
+  // Normalize names so a Linear project ("VEGA Agent") matches a local dir
+  // ("vega-agent"): lowercase + collapse spaces/underscores to hyphens. Without
+  // this, "VEGA Agent".toLowerCase() = "vega agent" never matched "vega-agent".
+  const norm = (s: string) => s.toLowerCase().replace(/[\s_]+/g, '-');
+  const normProject = norm(projectName);
+
+  // 1순위: allowedProjects에서 basename 매칭 (정규화 — fuzzy보다 신뢰도 높음)
   for (const allowed of ctx.allowedProjects) {
     const expanded = allowed.replace('~', process.env.HOME || '');
-    const dirName = expanded.split('/').pop();
-    if (dirName === projectName || dirName?.toLowerCase() === projectName.toLowerCase()) {
+    const dirName = expanded.split('/').pop() ?? '';
+    if (norm(dirName) === normProject) {
       if (await isValidProjectPath(expanded)) {
         console.log(`[AutonomousRunner] AllowedProjects match: ${projectName} → ${expanded}`);
         return expanded;
@@ -163,17 +197,13 @@ export async function resolveProjectPath(
     }
   }
 
-  // 2순위: ~/dev/{name} 직접 경로
-  const directPath = `${process.env.HOME}/dev/${projectName}`;
-  if (await isValidProjectPath(directPath)) {
-    console.log(`[AutonomousRunner] Direct path found: ${projectName} → ${directPath}`);
-    return directPath;
-  }
-
-  const lowerPath = `${process.env.HOME}/dev/${projectName.toLowerCase()}`;
-  if (await isValidProjectPath(lowerPath)) {
-    console.log(`[AutonomousRunner] Lowercase path found: ${projectName} → ${lowerPath}`);
-    return lowerPath;
+  // 2순위: ~/dev/{name} 직접 경로 (원본 + 정규화 둘 다 시도)
+  for (const candidate of [projectName, normProject]) {
+    const directPath = `${process.env.HOME}/dev/${candidate}`;
+    if (await isValidProjectPath(directPath)) {
+      console.log(`[AutonomousRunner] Direct path found: ${projectName} → ${directPath}`);
+      return directPath;
+    }
   }
 
   // 3순위: ~/dev/tools/ 서브디렉토리
@@ -196,7 +226,7 @@ export async function resolveProjectPath(
   }
 
   console.error(`[AutonomousRunner] Failed to resolve project path for "${projectName}" - SKIP`);
-  console.error(`[AutonomousRunner] Tried: allowedProjects, ${directPath}, ${lowerPath}, ${toolsPath}, fuzzy mapper`);
+  console.error(`[AutonomousRunner] Tried: allowedProjects, ~/dev/${projectName}, ~/dev/${normProject}, ${toolsPath}, fuzzy mapper`);
   return null;
 }
 
@@ -515,6 +545,16 @@ export async function decomposeTask(
 
   if (!result.needsDecomposition || result.subTasks.length === 0) {
     console.log('[AutonomousRunner] Planner determined no decomposition needed');
+    // Plan transfer: hand the planner's analysis to the worker so it doesn't start
+    // cold. The planner already produced a plan (approach / relevant files / notes)
+    // in `reason`; prepend it to the task description so the worker prompt carries
+    // it. Without this, "No Decomposition" sent the worker in blind → reviewer
+    // REJECT (e.g. INT-1615). This is the missing half of "planner plans, worker
+    // executes the plan".
+    if (result.reason && result.reason.trim()) {
+      task.description = `## Plan (from Planner)\n${result.reason.trim()}\n\n## Task\n${task.description || ''}`;
+      console.log('[AutonomousRunner] Plan transferred to worker prompt (no-decomp)');
+    }
     return 'no-decomp';
   }
 

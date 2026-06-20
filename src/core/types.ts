@@ -261,8 +261,9 @@ export type RoleConfig = {
   enabled: boolean;
   /** CLI adapter name */
   adapter?: 'codex' | 'codex-responses' | 'gpt' | 'local' | 'lmstudio' | 'openrouter';
-  /** Model ID */
-  model: string;
+  /** Model ID. When omitted, the adapter uses its own DEFAULT_MODEL (never hardcode
+   * a model id in code — a fixed id breaks adapters of other families). */
+  model?: string;
   /** Timeout (ms), 0 = unlimited */
   timeoutMs: number;
   /** Model to escalate to on repeated failure */
@@ -271,6 +272,8 @@ export type RoleConfig = {
   escalateAfterIteration?: number;
   /** Max agentic turns per CLI invocation */
   maxTurns?: number;
+  /** Reasoning effort for reasoning-capable models (codex/GPT-5): low|medium|high */
+  effort?: 'low' | 'medium' | 'high';
 };
 
 /**
@@ -284,6 +287,8 @@ export type JobProfile = {
   maxMinutes?: number;
   priority?: number;
   roles?: Partial<Record<PipelineStage, string>>;
+  /** Reasoning effort applied to all stages of this profile (codex/GPT-5). */
+  effort?: 'low' | 'medium' | 'high';
 };
 
 /**

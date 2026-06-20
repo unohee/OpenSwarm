@@ -202,6 +202,12 @@ export class PairPipeline extends EventEmitter {
     return profile?.roles?.[stage] || this.config.roles?.[stage]?.model;
   }
 
+  /** Reasoning effort for a stage: matched job profile wins, else the role's own. */
+  private getEffortForRole(stage: PipelineStage, task: TaskItem): 'low' | 'medium' | 'high' | undefined {
+    const profile = this.getProfileForTask(task);
+    return profile?.effort ?? this.config.roles?.[stage]?.effort;
+  }
+
   // ============================================
   // Main Execution
   // ============================================
@@ -450,6 +456,7 @@ export class PairPipeline extends EventEmitter {
   ): Promise<StageResult> {
     const startTime = Date.now();
     const stageModel = overrides?.model ?? this.getModelForRole(stage, context.task);
+    const stageEffort = this.getEffortForRole(stage, context.task);
     const prefix = context.taskPrefix;
     console.log(`[${prefix}] Stage starting: ${stage}`);
     this.emit('stage:start', { stage, context });
@@ -496,7 +503,10 @@ export class PairPipeline extends EventEmitter {
                   ? reviewerAgent.buildRevisionPrompt(context.reviewResult)
                   : undefined),
             timeoutMs: this.config.roles?.worker?.timeoutMs ?? 0,
-            model: overrides?.model ?? this.config.roles?.worker?.model,
+            // Use stageModel so a matched job profile actually overrides the model
+            // (previously this read config.roles directly, so profiles did nothing).
+            model: stageModel,
+            reasoningEffort: stageEffort,
             maxTurns: this.config.roles?.worker?.maxTurns,
             adapterName: this.config.roles?.worker?.adapter,
             issueIdentifier: context.task.issueIdentifier || context.task.issueId,
@@ -562,7 +572,8 @@ export class PairPipeline extends EventEmitter {
             workerResult: context.workerResult,
             projectPath: context.projectPath,
             timeoutMs: this.config.roles?.reviewer?.timeoutMs ?? 0,
-            model: this.config.roles?.reviewer?.model,
+            model: stageModel,
+            reasoningEffort: stageEffort,
             maxTurns: reviewerMaxTurns,
             adapterName: this.config.roles?.reviewer?.adapter,
             processContext: { taskId: context.task.id, stage: 'reviewer' },

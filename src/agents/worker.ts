@@ -36,6 +36,8 @@ export interface WorkerOptions {
   bashTimeoutMs?: number;
   /** Expose web_fetch + web_search tools (default true). Set false for SWE-bench integrity. */
   webTools?: boolean;
+  /** Reasoning effort (codex/GPT-5) from complexity routing. When set, reasoning stays on. */
+  reasoningEffort?: 'low' | 'medium' | 'high';
 }
 
 // Prompts
@@ -82,9 +84,12 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       onLog: options.onLog,
       processContext: options.processContext,
       systemPrompt: getPrompts().systemPrompt,
-      // Worker is a mechanical execution role — file edits, not deep reasoning.
-      // Disable reasoning tokens to cut cost/latency (no-op on non-thinking models).
-      disableReasoning: true,
+      // Worker is normally a mechanical execution role — file edits, not deep
+      // reasoning — so reasoning tokens are disabled to cut cost/latency. But when
+      // complexity routing assigns an effort level (hard tasks), keep reasoning on
+      // and let the effort control it.
+      disableReasoning: options.reasoningEffort ? false : true,
+      reasoningEffort: options.reasoningEffort,
       nudgeMaxOnNoEdit: options.nudgeMaxOnNoEdit,
       protectedFiles: options.protectedFiles,
       bashTimeoutMs: options.bashTimeoutMs,

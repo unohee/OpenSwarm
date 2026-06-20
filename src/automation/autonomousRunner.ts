@@ -451,33 +451,34 @@ export class AutonomousRunner {
       pa => projectPath.includes(pa.projectPath.replace('~', ''))
     );
 
-    if (!projectConfig?.roles && !this.config.defaultRoles) {
-      // Convert from legacy configuration
-      return {
-        worker: {
-          enabled: true,
-          model: this.config.workerModel || 'claude-sonnet-4-6',
-          timeoutMs: this.config.workerTimeoutMs ?? 0,
-        },
-        reviewer: {
-          enabled: true,
-          model: this.config.reviewerModel || 'claude-haiku-4-5-20251001',
-          timeoutMs: this.config.reviewerTimeoutMs ?? 0,
-        },
+    // Base roles: defaultRoles (config) wins; else legacy autonomous.models
+    // (workerModel/reviewerModel) if set; else undefined so each adapter uses its
+    // OWN DEFAULT_MODEL. Never hardcode a model id here — a fixed id (gpt-* or
+    // claude-*) breaks whichever adapter doesn't use that family (openrouter,
+    // claude CLI, local, ...). A missing model flows through as undefined and
+    // each adapter resolves `options.model ?? DEFAULT_MODEL`.
+    let base = this.config.defaultRoles;
+    if (!base && (this.config.workerModel || this.config.reviewerModel)) {
+      base = {
+        worker: { enabled: true, model: this.config.workerModel, timeoutMs: this.config.workerTimeoutMs ?? 0 },
+        reviewer: { enabled: true, model: this.config.reviewerModel, timeoutMs: this.config.reviewerTimeoutMs ?? 0 },
       };
     }
 
-    // Apply per-project overrides
-    const base = this.config.defaultRoles || {
-      worker: { enabled: true, model: 'claude-sonnet-4-6', timeoutMs: 0 },
-      reviewer: { enabled: true, model: 'claude-haiku-4-5-20251001', timeoutMs: 0 },
-    };
+    if (!base) {
+      // No role config anywhere → adapter picks its own default model.
+      if (!projectConfig?.roles) return undefined;
+      return {
+        worker: { enabled: true, ...projectConfig.roles.worker },
+        reviewer: { enabled: true, ...projectConfig.roles.reviewer },
+      } as DefaultRolesConfig;
+    }
 
     if (!projectConfig?.roles) {
       return base;
     }
 
-    // Merge overrides
+    // Merge per-project overrides onto the base.
     return {
       worker: { ...base.worker, ...projectConfig.roles.worker },
       reviewer: { ...base.reviewer, ...projectConfig.roles.reviewer },
@@ -702,32 +703,36 @@ export class AutonomousRunner {
     // Only execute Todo tasks; Backlog is fetched for dashboard display only
     const executableTasks = tasks.filter(t => t.linearState !== 'Backlog');
 
-    let tasksForEngine = executableTasks;
-    if (this.enabledProjects.size > 0) {
-      tasksForEngine = executableTasks.filter(task => {
-        const projName = task.linearProject?.name;
-        if (!projName) return false;
-        const cachedPath = this.projectPathCache.get(projName)
-          ?? this.projectPathCache.get(projName.toLowerCase())
-          ?? this.projectPathCache.get(projName.replace(/-/g, ' '));
-        if (!cachedPath) {
-          this.syslog(`  ⚠ No path cache for project "${projName}" — skipping ${task.issueIdentifier}`);
-          return false;
-        }
-        const enabled = this.isProjectEnabled(cachedPath);
-        if (!enabled) {
-          this.syslog(`  ⚠ Project "${projName}" (${cachedPath}) not enabled — skipping ${task.issueIdentifier}`);
-        }
-        return enabled;
-      });
-      if (tasksForEngine.length === 0) {
-        this.syslog(`⚠ No enabled tasks (${executableTasks.length} executable, ${tasks.length - executableTasks.length} backlog)`);
-        this.syslog(`  Path cache: [${[...this.projectPathCache.entries()].map(([k,v]) => `${k}→${v}`).join(', ')}]`);
-        this.syslog(`  Enabled: [${[...this.enabledProjects].join(', ')}]`);
-        return;
+    // ALWAYS filter by resolvability (allowedProjects enforce + local dir present),
+    // and fill projectPathCache as a side effect. This must NOT be gated on
+    // enabledProjects.size > 0: enabledProjects is runtime state that resets on
+    // restart, so gating let every task through after a restart and DecisionEngine
+    // kept re-selecting unresolvable tasks (kis-agent/STO etc) → "mapping failed"
+    // spam. allowedProjects (config) is the durable whitelist; enabledProjects only
+    // narrows further when it happens to be set.
+    const resolvedByProj = new Map<string, string | null>();
+    const filtered: TaskItem[] = [];
+    for (const task of executableTasks) {
+      const projName = task.linearProject?.name;
+      if (!projName) continue;
+      if (!resolvedByProj.has(projName)) {
+        resolvedByProj.set(projName, await this.resolveProjectPath(task));
       }
-      this.syslog(`  Tasks: ${tasksForEngine.length} enabled-or-uncached / ${executableTasks.length} executable / ${tasks.length} total`);
+      const path = resolvedByProj.get(projName);
+      if (!path) continue; // unresolvable (outside allowedProjects / no local dir)
+      if (this.enabledProjects.size > 0 && !this.isProjectEnabled(path)) {
+        this.syslog(`  ⚠ Project "${projName}" (${path}) not enabled — skipping ${task.issueIdentifier}`);
+        continue;
+      }
+      filtered.push(task);
     }
+    const tasksForEngine = filtered;
+    if (tasksForEngine.length === 0) {
+      this.syslog(`⚠ No resolvable tasks (${executableTasks.length} executable, ${tasks.length - executableTasks.length} backlog)`);
+      this.syslog(`  allowedProjects: [${this.config.allowedProjects.join(', ')}]`);
+      return;
+    }
+    this.syslog(`  Tasks: ${tasksForEngine.length} resolvable / ${executableTasks.length} executable / ${tasks.length} total`);
 
     // Get validated task list from DecisionEngine
     this.syslog('⟳ Decision Engine evaluating tasks...');
@@ -888,12 +893,15 @@ export class AutonomousRunner {
       if (needsDecomp) {
         console.log(`[AutonomousRunner] Task "${task.title}" needs decomposition (>${threshold}min estimated)`);
         const decomposed = await this.decomposeTask(task, projectPath, threshold);
-        if (decomposed) {
-          // Decomposition succeeded - sub-tasks added to queue, skip original task
+        if (decomposed === true) {
+          // Decomposition succeeded — sub-tasks queued, skip the original task.
           return;
         }
-        // Decomposition failed - execute original task as-is
-        console.log('[AutonomousRunner] Decomposition failed, executing original task');
+        // 'no-decomp' (planner judged it small) or false (failed): fall through and
+        // execute the original task. The old `if (decomposed)` treated the
+        // 'no-decomp' STRING as truthy and skipped the worker entirely, so every
+        // task the planner declined to split silently never ran.
+        console.log('[AutonomousRunner] No decomposition — executing original task');
       }
     }
 
@@ -1084,12 +1092,12 @@ export class AutonomousRunner {
       defaultAdapter,
       worker: {
         adapter: defaultRoles?.worker?.adapter ?? defaultAdapter,
-        model: defaultRoles?.worker?.model ?? this.config.workerModel ?? 'gpt-5-codex',
+        model: defaultRoles?.worker?.model ?? this.config.workerModel ?? '(adapter default)',
         enabled: defaultRoles?.worker?.enabled !== false,
       },
       reviewer: {
         adapter: defaultRoles?.reviewer?.adapter ?? defaultAdapter,
-        model: defaultRoles?.reviewer?.model ?? this.config.reviewerModel ?? 'gpt-5-codex',
+        model: defaultRoles?.reviewer?.model ?? this.config.reviewerModel ?? '(adapter default)',
         enabled: defaultRoles?.reviewer?.enabled !== false,
       },
       tester: defaultRoles?.tester ? {
@@ -1106,23 +1114,19 @@ export class AutonomousRunner {
   }
 
   switchProvider(adapter: AdapterName): void {
-    const mapModelForProvider = (model: string | undefined, role: 'worker' | 'reviewer' | 'tester' | 'documenter' | 'auditor' | 'skill-documenter'): string => {
-      const current = model || '';
-      const isClaudeModel = current.startsWith('claude-');
-      // ChatGPT 계정 Codex에서는 gpt-5.x / gpt-*-codex 계열만 지원
-      // o-series (o3, o4-mini 등)는 사용 불가
-      const isCodexCompatible = current.startsWith('gpt-');
-
+    // Re-map each role's model to the target adapter. Keep a model only if it's
+    // plausibly valid for that adapter; otherwise drop it to undefined so the
+    // adapter uses its OWN DEFAULT_MODEL. Never translate to a hardcoded id of one
+    // family (gpt-* / claude-*) — that breaks every other adapter (openrouter,
+    // local, claude CLI, ...).
+    const mapModelForProvider = (model: string | undefined, _role: 'worker' | 'reviewer' | 'tester' | 'documenter' | 'auditor' | 'skill-documenter'): string | undefined => {
       if (adapter === 'codex' || adapter === 'codex-responses') {
-        if (isCodexCompatible) return current;
-        // 비호환 모델(o-series·claude 등). codex CLI는 빈 플래그로 기본값을 위임할 수
-        // 있지만, codex-responses 어댑터는 API model 필드가 필수라 기본 모델로 채운다.
-        return adapter === 'codex-responses' ? 'gpt-5.5' : '';
+        // ChatGPT-account Codex only supports gpt-5.x / gpt-*-codex; anything else
+        // (o-series, claude, openrouter ids) → undefined → adapter DEFAULT_MODEL.
+        return model?.startsWith('gpt-') ? model : undefined;
       }
-
-      if (isClaudeModel) return current;
-      if (role === 'reviewer') return 'claude-sonnet-4-6';
-      return 'claude-haiku-4-5-20251001';
+      // openrouter / gpt / local / claude CLI: trust the configured id as-is.
+      return model;
     };
 
     this.config.defaultAdapter = adapter;

@@ -112,14 +112,16 @@ const RoleConfigSchema = z.object({
   enabled: z.boolean().default(true),
   /** CLI adapter */
   adapter: AdapterNameSchema.optional(),
-  /** Model ID */
-  model: z.string(),
+  /** Model ID. When omitted, the adapter falls back to its own DEFAULT_MODEL. */
+  model: z.string().optional(),
   /** Timeout (ms), 0 = unlimited */
   timeoutMs: z.number().min(0).default(0),
   /** Model to escalate to on repeated failure */
   escalateModel: z.string().optional(),
   /** Escalate after this iteration number (default: 3) */
   escalateAfterIteration: z.number().min(1).optional(),
+  /** Reasoning effort for reasoning-capable models (codex/GPT-5): low|medium|high */
+  effort: z.enum(['low', 'medium', 'high']).optional(),
 });
 
 /** Default roles configuration schema */
@@ -203,7 +205,18 @@ const JobProfileSchema = z.object({
   minMinutes: z.number().min(0).optional(),
   maxMinutes: z.number().min(0).optional(),
   priority: z.number().int().min(1).max(4).optional(),
-  roles: z.record(PipelineStageSchema, z.string()).optional(),
+  // Per-stage model override. An object with optional stages (not z.record over
+  // the enum, which Zod v4 treats as exhaustive and would require every stage).
+  roles: z.object({
+    worker: z.string().optional(),
+    reviewer: z.string().optional(),
+    tester: z.string().optional(),
+    documenter: z.string().optional(),
+    auditor: z.string().optional(),
+    'skill-documenter': z.string().optional(),
+  }).partial().optional(),
+  /** Reasoning effort applied to all stages of this profile (codex/GPT-5). */
+  effort: z.enum(['low', 'medium', 'high']).optional(),
 });
 
 const AutonomousConfigSchema = z.object({
@@ -492,6 +505,10 @@ function transformConfig(raw: RawConfig): SwarmConfig {
       worktreeMode: raw.autonomous.worktreeMode,
       dailyTaskCap: raw.autonomous.dailyTaskCap,
       interTaskCooldownMs: raw.autonomous.interTaskCooldownMs,
+      // jobProfiles was defined in the schema but never mapped here, so
+      // config.autonomous.jobProfiles was always undefined — complexity-based
+      // model/effort routing silently did nothing. Map it through.
+      jobProfiles: raw.autonomous.jobProfiles,
     } : undefined,
     prProcessor: raw.prProcessor ? {
       enabled: raw.prProcessor.enabled,

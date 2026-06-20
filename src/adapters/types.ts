@@ -49,6 +49,13 @@ export interface CliRunOptions {
    */
   disableReasoning?: boolean;
   /**
+   * Reasoning effort for reasoning-capable models (codex-responses / GPT-5):
+   * 'low' | 'medium' | 'high'. Used by complexity-based routing — light tasks
+   * run a small model at low/medium effort, hard tasks a big model at high
+   * effort. Adapters that don't support it ignore this.
+   */
+  reasoningEffort?: 'low' | 'medium' | 'high';
+  /**
    * 수정 필수 작업의 no-edit 종료 가드 횟수 (agenticLoop). 모델이 edit/write 없이
    * 끝내려 하면 N회까지 되민다. 기본 0(비활성).
    */

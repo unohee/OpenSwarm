@@ -264,7 +264,7 @@ export class CodexResponsesAdapter implements CliAdapter {
     }
 
     const model = options.model ?? DEFAULT_MODEL;
-    const callApi = this.createApiCaller(accessToken, accountId, store, model, options.onToken, options.signal);
+    const callApi = this.createApiCaller(accessToken, accountId, store, model, options.onToken, options.signal, options.reasoningEffort);
 
     const loopOptions: AgenticLoopOptions = {
       systemPrompt: options.systemPrompt,
@@ -308,6 +308,7 @@ export class CodexResponsesAdapter implements CliAdapter {
     model: string,
     onToken?: (delta: string) => void,
     signal?: AbortSignal,
+    reasoningEffort?: 'low' | 'medium' | 'high',
   ) {
     let token = initialToken;
     let retried = false;
@@ -322,6 +323,8 @@ export class CodexResponsesAdapter implements CliAdapter {
       };
       if (instructions) body.instructions = instructions;
       if (tools.length > 0) body.tools = toolsToResponsesTools(tools);
+      // Reasoning effort for GPT-5/Codex reasoning models (complexity routing).
+      if (reasoningEffort) body.reasoning = { effort: reasoningEffort };
       // NOTE: never set max_output_tokens — the Codex backend rejects it with HTTP 400.
 
       const doCall = async (accessToken: string): Promise<ChatLikeResponse> => {
