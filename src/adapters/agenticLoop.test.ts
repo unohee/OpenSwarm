@@ -7,7 +7,7 @@
 // ============================================
 
 import { describe, it, expect } from 'vitest';
-import { compactPriorTurns, toolCallKey, allToolCallsSeen, type ChatMessage } from './agenticLoop.js';
+import { compactPriorTurns, toolCallKey, allToolCallsSeen, shouldNudgeReadLoop, type ChatMessage } from './agenticLoop.js';
 import type { ToolCall } from './tools.js';
 
 describe('progress-based stop helpers', () => {
@@ -29,6 +29,24 @@ describe('progress-based stop helpers', () => {
   it('any new call (e.g. different path) → progress, not a stall', () => {
     const seen = new Set(['read_file:{"path":"a"}']);
     expect(allToolCallsSeen([mk('read_file', '{"path":"a"}'), mk('read_file', '{"path":"b"}')], seen)).toBe(false);
+  });
+});
+
+describe('read-loop guard (shouldNudgeReadLoop)', () => {
+  const MAX = 20; // floor(20/2) = 10 → halfway boundary
+  it('nudges when no edits and past the halfway mark', () => {
+    expect(shouldNudgeReadLoop(0, 0, 3, 10, MAX)).toBe(true);
+    expect(shouldNudgeReadLoop(0, 0, 3, 15, MAX)).toBe(true);
+  });
+  it('does not nudge before halfway (still legitimately exploring)', () => {
+    expect(shouldNudgeReadLoop(0, 0, 3, 9, MAX)).toBe(false);
+    expect(shouldNudgeReadLoop(0, 0, 3, 0, MAX)).toBe(false);
+  });
+  it('does not nudge once at least one edit has happened', () => {
+    expect(shouldNudgeReadLoop(1, 0, 3, 15, MAX)).toBe(false);
+  });
+  it('does not nudge after the nudge budget is exhausted', () => {
+    expect(shouldNudgeReadLoop(0, 3, 3, 15, MAX)).toBe(false);
   });
 });
 

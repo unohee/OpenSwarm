@@ -333,6 +333,21 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
       (tc.function.name === 'edit_file' || tc.function.name === 'write_file') && !results[i]?.is_error,
     ).length;
 
+    // Read-loop guard: the model is burning turns reading/searching but has made NO
+    // edits yet. The no-edit-on-finish guard (line ~278) only fires when the model
+    // STOPS with text — a model that keeps calling read/search never trips it and just
+    // hits maxTurns → "no file changes" fail (INT-1618/1630). Past the halfway mark,
+    // nudge it to start editing. (The progress-stop below only catches REPEATED calls;
+    // reading many DIFFERENT files slips past it.)
+    if (shouldNudgeReadLoop(editToolCount, nudgesUsed, nudgeMaxOnNoEdit, turn, maxTurns)) {
+      nudgesUsed++;
+      onLog?.(`↩ Read-loop guard: ${turn + 1} turns, still no edit (nudge ${nudgesUsed}/${nudgeMaxOnNoEdit})`);
+      messages.push({
+        role: 'user',
+        content: 'You have explored enough but made NO edits yet. Stop reading and APPLY the change now with edit_file/write_file — this task requires code changes, not just analysis.',
+      });
+    }
+
     // Progress-based stop: if every tool call this turn repeats a prior one
     // (same name+args → no new info or change), count it as a stalled turn.
     // N consecutive stalled turns → wrap up via the final-answer turn.
@@ -423,6 +438,22 @@ export function toolCallKey(tc: ToolCall): string {
 export function allToolCallsSeen(toolCalls: ToolCall[], seen: Set<string>): boolean {
   if (toolCalls.length === 0) return false;
   return toolCalls.every((tc) => seen.has(toolCallKey(tc)));
+}
+
+/**
+ * Read-loop guard predicate (exported for unit testing). True when the model has
+ * spent enough turns without ANY edit that it should be nudged to start editing —
+ * catches the "reads many different files, never edits, hits maxTurns" failure that
+ * the no-edit-on-finish guard misses (because that one only fires on a text-only stop).
+ */
+export function shouldNudgeReadLoop(
+  editToolCount: number,
+  nudgesUsed: number,
+  nudgeMax: number,
+  turn: number,
+  maxTurns: number,
+): boolean {
+  return editToolCount === 0 && nudgesUsed < nudgeMax && turn >= Math.floor(maxTurns / 2);
 }
 
 // ============ 히스토리 압축 (VEGA compaction.py 패턴 이식) ============
