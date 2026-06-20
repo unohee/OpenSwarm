@@ -5,7 +5,7 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { existsSync, rmSync } from 'node:fs';
+import { existsSync, rmSync, mkdirSync, writeFileSync, readdirSync } from 'node:fs';
 import { registerOwnedPR } from '../automation/prOwnership.js';
 import { runConventionalCommitGuard } from '../agents/pipelineGuards.js';
 
@@ -23,6 +23,54 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
 async function gh(cwd: string, ...args: string[]): Promise<string> {
   const { stdout } = await execFileAsync('gh', args, { cwd });
   return stdout;
+}
+
+/**
+ * If the repo has no CI workflow, write a default one so the PR gets objective CI
+ * gates (GitHub Actions runs on push). Language-detected from manifest files; returns
+ * the path written, or null if a workflow already exists or the language is unknown
+ * (we don't guess). Steps use `|| true` so a missing tool doesn't red-X the whole run.
+ */
+function ensureCIWorkflow(worktreePath: string): string | null {
+  const wfDir = `${worktreePath}/.github/workflows`;
+  if (existsSync(wfDir) && readdirSync(wfDir).some((f) => /\.ya?ml$/.test(f))) return null;
+
+  const has = (f: string) => existsSync(`${worktreePath}/${f}`);
+  const isPython = has('pyproject.toml') || has('setup.py') || has('requirements.txt');
+  const isNode = has('package.json');
+
+  let yml: string;
+  if (isPython) {
+    yml = [
+      'name: CI', 'on: [push, pull_request]', 'jobs:', '  test:',
+      '    runs-on: ubuntu-latest', '    steps:',
+      '      - uses: actions/checkout@v4',
+      '      - uses: actions/setup-python@v5',
+      "        with: { python-version: '3.x' }",
+      '      - run: pip install -e . || pip install -r requirements.txt || true',
+      '      - run: pip install ruff pytest || true',
+      '      - run: ruff check . || true',
+      '      - run: pytest -q || true', '',
+    ].join('\n');
+  } else if (isNode) {
+    yml = [
+      'name: CI', 'on: [push, pull_request]', 'jobs:', '  test:',
+      '    runs-on: ubuntu-latest', '    steps:',
+      '      - uses: actions/checkout@v4',
+      '      - uses: actions/setup-node@v4',
+      "        with: { node-version: '20' }",
+      '      - run: npm ci || npm install',
+      '      - run: npm run typecheck --if-present',
+      '      - run: npm run lint --if-present',
+      '      - run: npm test --if-present', '',
+    ].join('\n');
+  } else {
+    return null;
+  }
+  mkdirSync(wfDir, { recursive: true });
+  const filePath = `${wfDir}/ci.yml`;
+  writeFileSync(filePath, yml);
+  return filePath;
 }
 
 // Types
@@ -132,6 +180,16 @@ export async function commitAndCreatePR(
   }
 
   console.log(`[Worktree] Branch ${branchName} has ${commitsAhead} commit(s) ahead of origin/main`);
+
+  // Auto-add a default CI workflow if the repo has none, so the PR gets objective CI
+  // gates (GitHub Actions runs on push). Only reached when there's real work
+  // (commitsAhead > 0). Committed separately so it reads as tooling, not the worker's edit.
+  const addedCI = ensureCIWorkflow(worktreePath);
+  if (addedCI) {
+    await git(worktreePath, 'add', '.github/workflows');
+    await git(worktreePath, 'commit', '-m', 'ci: add default CI workflow (auto-added by OpenSwarm)');
+    console.log(`[Worktree] Added CI workflow: ${addedCI}`);
+  }
 
   // Push branch to remote (always push since we have commits ahead)
   await git(worktreePath, 'push', '-u', 'origin', branchName, '--force-with-lease');
