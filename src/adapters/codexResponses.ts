@@ -187,17 +187,34 @@ function parseSseLine(line: string): SseEvent | null {
  * `onToken` is provided, each `response.output_text.delta` is emitted live so
  * the chat TUI can stream tokens as they arrive.
  */
-async function consumeResponsesStream(res: Response, onToken?: (delta: string) => void): Promise<ChatLikeResponse> {
+async function consumeResponsesStream(res: Response, onToken?: (delta: string) => void, onLog?: (line: string) => void): Promise<ChatLikeResponse> {
   const events: SseEvent[] = [];
   const reader = res.body?.getReader();
   if (!reader) throw new Error('Codex responses: empty stream body');
 
   const decoder = new TextDecoder();
   let buffer = '';
+  // Reasoning summary — codex reasoning models put their "thinking" here, not in
+  // output_text. Buffer the per-token deltas and flush on a sentence boundary (or
+  // when long); emitting per-token spams the Live LOG one word at a time.
+  let reasoningBuf = '';
+  const flushReasoning = () => {
+    const t = reasoningBuf.replace(/\s+/g, ' ').trim();
+    if (onLog && t) onLog(`  💭 ${t}`);
+    reasoningBuf = '';
+  };
   const handle = (ev: SseEvent | null) => {
     if (!ev) return;
     events.push(ev);
-    if (onToken && ev.type === 'response.output_text.delta' && ev.delta) onToken(ev.delta);
+    if (ev.type === 'response.output_text.delta' && ev.delta) {
+      flushReasoning(); // reasoning ended, real answer starting
+      if (onToken) onToken(ev.delta);
+    } else if (ev.delta &&
+        (ev.type === 'response.reasoning_summary_text.delta' ||
+         ev.type === 'response.reasoning_summary.delta')) {
+      reasoningBuf += ev.delta;
+      if (/[.!?。\n]\s*$/.test(reasoningBuf) || reasoningBuf.length > 220) flushReasoning();
+    }
   };
   for (;;) {
     const { done, value } = await reader.read();
@@ -208,6 +225,7 @@ async function consumeResponsesStream(res: Response, onToken?: (delta: string) =
     for (const line of lines) handle(parseSseLine(line));
   }
   handle(parseSseLine(buffer));
+  flushReasoning(); // emit any trailing reasoning that didn't hit a boundary
 
   return reduceResponsesEvents(events);
 }
@@ -264,7 +282,7 @@ export class CodexResponsesAdapter implements CliAdapter {
     }
 
     const model = options.model ?? DEFAULT_MODEL;
-    const callApi = this.createApiCaller(accessToken, accountId, store, model, options.onToken, options.signal, options.reasoningEffort);
+    const callApi = this.createApiCaller(accessToken, accountId, store, model, options.onToken, options.signal, options.reasoningEffort, options.onLog);
 
     const loopOptions: AgenticLoopOptions = {
       systemPrompt: options.systemPrompt,
@@ -309,6 +327,7 @@ export class CodexResponsesAdapter implements CliAdapter {
     onToken?: (delta: string) => void,
     signal?: AbortSignal,
     reasoningEffort?: 'low' | 'medium' | 'high',
+    onLog?: (line: string) => void,
   ) {
     let token = initialToken;
     let retried = false;
@@ -323,8 +342,12 @@ export class CodexResponsesAdapter implements CliAdapter {
       };
       if (instructions) body.instructions = instructions;
       if (tools.length > 0) body.tools = toolsToResponsesTools(tools);
-      // Reasoning effort for GPT-5/Codex reasoning models (complexity routing).
-      if (reasoningEffort) body.reasoning = { effort: reasoningEffort };
+      // Always request a reasoning summary so the model's thinking surfaces in the
+      // Live LOG — codex reasoning models emit their "생각" here, not in output_text.
+      // (effort from complexity routing when set.)
+      body.reasoning = reasoningEffort
+        ? { effort: reasoningEffort, summary: 'auto' }
+        : { summary: 'auto' };
       // NOTE: never set max_output_tokens — the Codex backend rejects it with HTTP 400.
 
       const doCall = async (accessToken: string): Promise<ChatLikeResponse> => {
@@ -353,7 +376,7 @@ export class CodexResponsesAdapter implements CliAdapter {
           throw new Error(`Codex responses error (${res.status}): ${errText.slice(0, 500)}`);
         }
 
-        return consumeResponsesStream(res, onToken);
+        return consumeResponsesStream(res, onToken, onLog);
       };
 
       return doCall(token);

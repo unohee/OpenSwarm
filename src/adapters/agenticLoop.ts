@@ -292,6 +292,12 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
       break;
     }
 
+    // 어시스턴트의 추론/계획 텍스트도 Live LOG로 보낸다. 도구 호출(🔧)만 보이면
+    // worker가 무슨 의도로 그 도구를 호출하는지 알 수 없어, 엉뚱한 작업의 원인을
+    // 진단할 수 없다(= "응답 토큰이 안 나오고 도구만 보인다"는 증상의 정체).
+    if (assistantMsg.content && assistantMsg.content.trim()) {
+      onLog?.(`  💭 ${assistantMsg.content.trim().replace(/\s+/g, ' ').slice(0, 400)}`);
+    }
     // 어시스턴트 메시지를 히스토리에 추가 (tool_calls 포함)
     messages.push({
       role: 'assistant',
