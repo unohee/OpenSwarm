@@ -116,7 +116,9 @@ export class AutonomousRunner {
   private completedTaskIds = new Set<string>();
   private failedTaskCounts = new Map<string, number>();
   private failedTaskRetryTimes = new Map<string, number>(); // issueId → next retry timestamp (ms)
-  private static readonly MAX_RETRY_COUNT = 4; // Increased from 2 to allow more retries with backoff
+  private static readonly MAX_RETRY_COUNT = 2; // Lowered from 4: a worker that can't
+  // edit a complex task won't on retry 3-4 either (no-edit guard now fails empty edits
+  // early). Block fast and rotate the backlog instead of one issue monopolizing it.
 
   private get taskStateRef(): TaskState {
     return {
