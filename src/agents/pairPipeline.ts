@@ -508,6 +508,11 @@ export class PairPipeline extends EventEmitter {
             model: stageModel,
             reasoningEffort: stageEffort,
             maxTurns: this.config.roles?.worker?.maxTurns,
+            // Reasoning models (gpt-5.4-mini) often end with analysis only and never
+            // call edit_file → reviewer rejects "Worker made no changes" (the bulk of
+            // the 89% REVISE rate). Nudge them back to actually apply edits before
+            // concluding. agenticLoop has the guard; it was just never enabled here.
+            nudgeMaxOnNoEdit: 3,
             adapterName: this.config.roles?.worker?.adapter,
             issueIdentifier: context.task.issueIdentifier || context.task.issueId,
             projectName: context.task.linearProject?.name,
