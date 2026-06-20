@@ -110,6 +110,8 @@ ${feedbackSection}${contextSection}
 - Before completing: verify all changed files exist, no syntax errors, confidence reflects reality.
 - If verification is part of the task (tests/scripts), RUN it and paste the ACTUAL output into your summary — reviewers need evidence it passed, not just that a test file exists.
 - STAGE every new or changed file with \`git add -A\` before finishing. Untracked files are invisible to the reviewer's git diff and get treated as missing/incomplete.
+- This task may require NEW code. If the repo lacks what the task assumes (a helper, function, or file), CREATE it — "prerequisites missing", "file mismatch", or "tool limitations" are NEVER valid reasons to stop. You HAVE edit_file and write_file; use them to make the change.
+- After a few reads you understand enough — STOP exploring and START editing. Re-reading the same file or searching endlessly without ever editing is the #1 failure mode (reviewer rejects "made no changes"). Make the edit, then verify.
 
 ## Tools available
 Use search_files (ripgrep) + read_file as your primary navigation. They're always available and cheapest.
