@@ -74,13 +74,15 @@ Apply the above feedback and make corrections.
       if (context.registryBriefs && context.registryBriefs.length > 0) {
         parts.push('');
         parts.push('### File Map (from Code Registry — no need to Read these files)');
-        for (const brief of context.registryBriefs) {
+        // Cap hard: small models drown in a huge auto-context (workers burned
+        // 176k–212k tokens and never edited). Top files + top entities per file only.
+        for (const brief of context.registryBriefs.slice(0, 6)) {
           parts.push(`**${brief.filePath}** (${brief.summary})`);
           if (brief.highlights.length > 0) {
             parts.push(`⚠️ ${brief.highlights.join(', ')}`);
           }
           if (brief.entities && brief.entities.length > 0) {
-            for (const e of brief.entities) {
+            for (const e of brief.entities.slice(0, 12)) {
               const sig = e.signature ? ` — ${e.signature}` : '';
               const flags: string[] = [];
               if (e.status !== 'active') flags.push(e.status);
