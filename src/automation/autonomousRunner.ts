@@ -642,8 +642,12 @@ export class AutonomousRunner {
       this.lastFetchedTasks = tasks;
       this.syslog(`✓ Found ${tasks.length} tasks from Linear`);
 
-      // Filter out completed and over-retried tasks
-      const filteredTasks = this.filterAlreadyProcessed(tasks);
+      // Filter out completed/over-retried tasks AND project-less tasks. A task with no
+      // Linear project fails resolveProjectPath → SKIP; since the engine picks ONE task
+      // per heartbeat, a perpetually-reselected project-less task starves the whole
+      // backlog ("CI/CD 정기 유지보수 작업" stalled 68 issues this way).
+      const filteredTasks = this.filterAlreadyProcessed(tasks)
+        .filter((t) => t.linearProject?.id && t.linearProject?.name);
       if (filteredTasks.length === 0) {
         this.syslog('— All tasks already completed or max retries exceeded');
         return;
