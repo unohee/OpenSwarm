@@ -968,6 +968,22 @@ export async function reportExecutionResult(
     if (failedStepResult?.error) {
       await reportFn(`\`\`\`\n${failedStepResult.error.slice(0, 1500)}\n\`\`\``);
     }
+
+    // Learn from failure too — so the next worker on a similar task doesn't repeat it.
+    // Success saves a 'strategy' memory above; this is the missing other half. A
+    // 'constraint' memory surfaces to the worker as a ⚠️ PITFALL in its context.
+    try {
+      const why = (result as { reviewResult?: { feedback?: string } }).reviewResult?.feedback
+        || failedStepResult?.error?.slice(0, 300)
+        || result.failedStep
+        || 'unknown blocker';
+      await saveCognitiveMemory('constraint',
+        `Autonomous attempt FAILED on "${task.title}" — ${why}. Address this exact blocker first; do not repeat the same approach.`,
+        { confidence: 0.7, derivedFrom: task.issueId }
+      );
+    } catch (memErr) {
+      console.warn('[AutonomousRunner] Failure-memory save failed (non-critical):', memErr);
+    }
   }
 }
 
