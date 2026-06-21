@@ -326,6 +326,13 @@ export class AutonomousRunner {
           this.saveTaskState();
           console.log(`[Scheduler] Task failure count: ${count}/${AutonomousRunner.MAX_RETRY_COUNT} for ${taskCtx} — BLOCKED`);
           try {
+            // Move the issue OUT of an active (recoverable) Linear state. syncFailureState only
+            // updates the LOCAL store, so the issue stays "In Progress" on Linear — and
+            // filterAlreadyProcessed treats any recoverable state + completedTaskIds as a manual
+            // revert and "recovers" (re-selects) it every heartbeat, looping forever and starving
+            // the backlog (and any dependents). Backlog is non-recoverable, so the block sticks;
+            // a human moving it back to Todo/In Progress still re-enables retry via that path.
+            await getTaskSource()?.updateState(task.issueId, 'Backlog');
             await execution.syncFailureState(task, `Autonomous execution failed ${count} times`);
             await getTaskSource()?.logBlocked(task.issueId, 'autonomous-runner',
               `Autonomous execution failed ${count} times. Moving to Blocked for manual review.`
