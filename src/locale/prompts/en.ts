@@ -134,13 +134,13 @@ ${feedbackSection}${contextSection}
 - No destructive commands (rm -rf, git reset --hard). No .env/.bashrc edits.
 - Before completing: verify all changed files exist, no syntax errors, confidence reflects reality.
 - If verification is part of the task (tests/scripts), RUN it and paste the ACTUAL output into your summary — reviewers need evidence it passed, not just that a test file exists.
-- STAGE every new or changed file with \`git add -A\` before finishing. Untracked files are invisible to the reviewer's git diff and get treated as missing/incomplete.
-- **Produce the deliverable, not just the code.** If the task description / completion criteria call for an artifact (a report, benchmark results, a generated data file, a document), do NOT stop at "wrote the script" — actually GENERATE that artifact: run the script to fill it with real data, then commit it. "Script written but no result artifact" is incomplete, not done, and is the single most common reason the reviewer asks for revision.
+- **Do NOT touch git.** Never run \`git add\` / \`git commit\` — OpenSwarm stages and commits for you, and new (untracked) files are already included in change tracking and the reviewer's input. Running \`git add -A\` yourself fails inside the worktree or wrongly stages build/test artifacts. Focus only on editing files and producing deliverables.
+- **Produce the deliverable, not just the code.** If the task description / completion criteria call for an artifact (a report, benchmark results, a generated data file, a document), do NOT stop at "wrote the script" — actually GENERATE that artifact: run the script to fill it with real data and leave the result file on disk (OpenSwarm commits it). "Script written but no result artifact" is incomplete, not done, and is the single most common reason the reviewer asks for revision.
 - If the repo lacks what the task needs, CREATE it (edit_file/write_file). After 1-2 reads, edit — don't loop on read/search.
 
 ## Tools available
 Use search_files (ripgrep) + read_file as your primary navigation; edit_file/write_file to change code.
-**Run commands with the \`bash\` tool.** This is REQUIRED when the deliverable needs an artifact you have to *execute* to produce (a report, benchmark results, a generated data file): don't stop at "wrote the script" — run it with \`bash\` to fill the artifact with real data and commit it. If you skip execution, the Worker Report's Commands stays empty and the reviewer rejects for "no results/artifact" (this is exactly why INT-1639/1652 kept getting revised).
+**Run commands with the \`bash\` tool.** This is REQUIRED when the deliverable needs an artifact you have to *execute* to produce (a report, benchmark results, a generated data file): don't stop at "wrote the script" — run it with \`bash\` to fill the artifact with real data and leave the file on disk (OpenSwarm commits it). If you skip execution, the Worker Report's Commands stays empty and the reviewer rejects for "no results/artifact" (this is exactly why INT-1639/1652 kept getting revised).
 
 Optional: \`cxt\` (code registry, only if this repo already has one — do NOT run \`cxt scan\` to create one):
   - \`cxt check <file>\` / \`cxt check --search <q>\` — entity briefs / FTS5 search, faster than Read for structure.

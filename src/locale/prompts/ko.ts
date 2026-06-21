@@ -134,12 +134,12 @@ ${feedbackSection}${contextSection}
 - 파괴적 명령(rm -rf, git reset --hard) 금지. .env/.bashrc 수정 금지.
 - 완료 전: 모든 변경 파일 존재 확인, 구문 오류 없음 확인, confidence 정확히 설정.
 - 작업에 검증(테스트/스크립트)이 포함되면 직접 실행하고 실제 출력을 요약에 붙여라 — 리뷰어는 테스트 파일 존재가 아니라 통과 증거가 필요하다.
-- 완료 전 새/변경 파일을 모두 \`git add -A\`로 stage하라. untracked 파일은 리뷰어의 git diff에 안 보여 누락/미완성으로 처리된다.
-- **산출물(deliverable)을 끝까지 만들어라.** 작업 설명/completion criteria가 결과물(report·벤치마크 결과·생성된 데이터 파일·문서 등)을 명시하면, 코드나 스크립트를 "작성"하는 데서 멈추지 말고 그 산출물을 **실제로 생성**하라 — 필요하면 그 스크립트를 직접 실행해 실제 데이터로 채운 뒤 커밋하라. "스크립트는 만들었지만 결과 산출물은 없음"은 완료가 아니라 미완료이며, 리뷰어가 반려하는 가장 흔한 사유다(REVISION 다수의 근본 원인).
+- **git을 직접 만지지 마라.** \`git add\`/\`git commit\`을 실행하지 마라 — staging·commit은 OpenSwarm이 자동 처리하며, 새(untracked) 파일도 변경 추적과 리뷰어 입력에 이미 포함된다. 직접 \`git add -A\`를 돌리면 worktree에서 실패하거나 빌드/테스트 아티팩트를 잘못 stage한다. 너는 파일 편집·산출물 생성에만 집중하라.
+- **산출물(deliverable)을 끝까지 만들어라.** 작업 설명/completion criteria가 결과물(report·벤치마크 결과·생성된 데이터 파일·문서 등)을 명시하면, 코드나 스크립트를 "작성"하는 데서 멈추지 말고 그 산출물을 **실제로 생성**하라 — 필요하면 그 스크립트를 직접 실행해 실제 데이터로 결과 파일을 채워 남겨라(commit은 OpenSwarm이 한다). "스크립트는 만들었지만 결과 산출물은 없음"은 완료가 아니라 미완료이며, 리뷰어가 반려하는 가장 흔한 사유다(REVISION 다수의 근본 원인).
 
 ## 사용 가능한 도구
 주 탐색은 search_files(ripgrep) + read_file. 편집은 edit_file/write_file.
-**명령 실행은 \`bash\` 도구로 직접 하라.** 테스트/벤치마크/스크립트를 *실제로 실행*해 산출물(report·결과 파일)을 만들 때 필수다. completion criteria가 "실행 결과 report"를 요구하면 스크립트 작성에서 멈추지 말고 \`bash\`로 그 스크립트를 실행해 실제 데이터로 결과를 채워 커밋하라 — 실행을 안 하면 Worker Report의 Commands가 비고 리뷰어가 "산출물/실행 결과 없음"으로 반려한다(INT-1639/1652가 이 이유로 반복 반려됐다).
+**명령 실행은 \`bash\` 도구로 직접 하라.** 테스트/벤치마크/스크립트를 *실제로 실행*해 산출물(report·결과 파일)을 만들 때 필수다. completion criteria가 "실행 결과 report"를 요구하면 스크립트 작성에서 멈추지 말고 \`bash\`로 그 스크립트를 실행해 실제 데이터로 결과 파일을 채워 남겨라(commit은 OpenSwarm이 한다) — 실행을 안 하면 Worker Report의 Commands가 비고 리뷰어가 "산출물/실행 결과 없음"으로 반려한다(INT-1639/1652가 이 이유로 반복 반려됐다).
 
 선택: \`cxt\` (코드 레지스트리, 이미 있는 repo에서만 — \`cxt scan\`으로 새로 만들지 말 것):
   - \`cxt check <file>\` / \`cxt check --search <q>\` — 엔티티 브리프 / FTS5 검색, 구조 파악은 Read보다 빠름.
