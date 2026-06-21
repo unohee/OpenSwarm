@@ -211,7 +211,11 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
   let totalTokens = 0;
   let finalText = '';
 
-  for (let turn = 0; turn < maxTurns + 1; turn++) {
+  // maxTurns removed (user request): a read-heavy model (qwen) spent its entire turn budget
+  // reading/searching and never reached the edit (1/9 success). The loop is now bounded ONLY by
+  // timeoutMs (deadline check below); the read-loop nudge fires on a fixed EARLY turn budget
+  // (READ_LOOP_NUDGE_AT) instead of the old maxTurns-2, which fired too late to recover.
+  for (let turn = 0; ; turn++) {
     // 사용자 중단 (Esc/Ctrl+C) — 현재 텍스트가 있으면 유지, 없으면 표시만.
     if (signal?.aborted) {
       onLog?.('■ Stopped by user');
@@ -453,14 +457,19 @@ export function allToolCallsSeen(toolCalls: ToolCall[], seen: Set<string>): bool
  * out, not a "stop reading" signal. (Repeated/looping reads are already caught separately by
  * the progress-based stop, so a turn-count threshold here only needs to catch the tail.)
  */
+// Nudge a read-only model toward editing after this many turns with zero edits. Fixed (not
+// maxTurns-2) since maxTurns is gone — fire EARLY so the model still has timeout budget left to
+// actually apply the edits the nudge asks for.
+export const READ_LOOP_NUDGE_AT = 6;
+
 export function shouldNudgeReadLoop(
   editToolCount: number,
   nudgesUsed: number,
   nudgeMax: number,
   turn: number,
-  maxTurns: number,
+  _maxTurns?: number,
 ): boolean {
-  return editToolCount === 0 && nudgesUsed < nudgeMax && turn >= maxTurns - 2;
+  return editToolCount === 0 && nudgesUsed < nudgeMax && turn >= READ_LOOP_NUDGE_AT;
 }
 
 // ============ 히스토리 압축 (VEGA compaction.py 패턴 이식) ============
