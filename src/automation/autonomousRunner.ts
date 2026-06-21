@@ -282,6 +282,11 @@ export class AutonomousRunner {
           this.saveTaskState();
 
           try {
+            // Move to Backlog (non-recoverable) so the defer STICKS and the board reflects it —
+            // symmetric with the failure-max path. Without this the issue stays "In Progress" on
+            // Linear even though it's blocked: misleading on the board, and (before the Todo-only
+            // recovery fix) it got re-selected every heartbeat.
+            await getTaskSource()?.updateState(task.issueId, 'Backlog');
             await execution.syncFailureState(task, `Max rejection limit reached (${rejectionCount} attempts): ${feedback}`);
             await getTaskSource()?.logBlocked(task.issueId, 'autonomous-runner',
               `⚠️ **Max rejection limit reached (${rejectionCount} attempts)**\n\n` +

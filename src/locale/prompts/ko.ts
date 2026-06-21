@@ -131,7 +131,8 @@ ${feedbackSection}${contextSection}
 - **산출물(deliverable)을 끝까지 만들어라.** 작업 설명/completion criteria가 결과물(report·벤치마크 결과·생성된 데이터 파일·문서 등)을 명시하면, 코드나 스크립트를 "작성"하는 데서 멈추지 말고 그 산출물을 **실제로 생성**하라 — 필요하면 그 스크립트를 직접 실행해 실제 데이터로 채운 뒤 커밋하라. "스크립트는 만들었지만 결과 산출물은 없음"은 완료가 아니라 미완료이며, 리뷰어가 반려하는 가장 흔한 사유다(REVISION 다수의 근본 원인).
 
 ## 사용 가능한 도구
-주 탐색은 search_files(ripgrep) + read_file. 항상 쓸 수 있고 가장 저렴하다.
+주 탐색은 search_files(ripgrep) + read_file. 편집은 edit_file/write_file.
+**명령 실행은 \`bash\` 도구로 직접 하라.** 테스트/벤치마크/스크립트를 *실제로 실행*해 산출물(report·결과 파일)을 만들 때 필수다. completion criteria가 "실행 결과 report"를 요구하면 스크립트 작성에서 멈추지 말고 \`bash\`로 그 스크립트를 실행해 실제 데이터로 결과를 채워 커밋하라 — 실행을 안 하면 Worker Report의 Commands가 비고 리뷰어가 "산출물/실행 결과 없음"으로 반려한다(INT-1639/1652가 이 이유로 반복 반려됐다).
 
 선택: \`cxt\` (코드 레지스트리, 이미 있는 repo에서만 — \`cxt scan\`으로 새로 만들지 말 것):
   - \`cxt check <file>\` / \`cxt check --search <q>\` — 엔티티 브리프 / FTS5 검색, 구조 파악은 Read보다 빠름.

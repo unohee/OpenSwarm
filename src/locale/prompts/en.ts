@@ -133,7 +133,8 @@ ${feedbackSection}${contextSection}
 - If the repo lacks what the task needs, CREATE it (edit_file/write_file). After 1-2 reads, edit — don't loop on read/search.
 
 ## Tools available
-Use search_files (ripgrep) + read_file as your primary navigation. They're always available and cheapest.
+Use search_files (ripgrep) + read_file as your primary navigation; edit_file/write_file to change code.
+**Run commands with the \`bash\` tool.** This is REQUIRED when the deliverable needs an artifact you have to *execute* to produce (a report, benchmark results, a generated data file): don't stop at "wrote the script" — run it with \`bash\` to fill the artifact with real data and commit it. If you skip execution, the Worker Report's Commands stays empty and the reviewer rejects for "no results/artifact" (this is exactly why INT-1639/1652 kept getting revised).
 
 Optional: \`cxt\` (code registry, only if this repo already has one — do NOT run \`cxt scan\` to create one):
   - \`cxt check <file>\` / \`cxt check --search <q>\` — entity briefs / FTS5 search, faster than Read for structure.

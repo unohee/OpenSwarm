@@ -6,6 +6,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { existsSync, rmSync, mkdirSync, writeFileSync, readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { registerOwnedPR } from '../automation/prOwnership.js';
 import { runConventionalCommitGuard } from '../agents/pipelineGuards.js';
 
@@ -148,6 +149,18 @@ export async function createWorktree(
   await git(repoPath, 'worktree', 'add', '-b', branchName, worktreePath, 'origin/main');
   console.log(`[Worktree] Created: ${worktreePath} (branch: ${branchName})`);
 
+  // Local-exclude OpenSwarm's own metadata so `git add -A` and checkouts never touch
+  // .openswarm/* (regenerated knowledge snapshots that otherwise collide across PRs). This
+  // writes the worktree's own info/exclude — it does NOT modify the user's tracked .gitignore.
+  try {
+    const gitPath = (await git(worktreePath, 'rev-parse', '--git-path', 'info/exclude')).trim();
+    const excludePath = gitPath.startsWith('/') ? gitPath : join(worktreePath, gitPath);
+    const cur = existsSync(excludePath) ? readFileSync(excludePath, 'utf-8') : '';
+    if (!/(^|\n)\.openswarm\/?(\n|$)/.test(cur)) {
+      writeFileSync(excludePath, (cur && !cur.endsWith('\n') ? cur + '\n' : cur) + '.openswarm/\n');
+    }
+  } catch { /* exclude is best-effort; the rm --cached on commit is the backstop */ }
+
   return { worktreePath, branchName, originalPath: repoPath, issueId };
 }
 
@@ -165,6 +178,11 @@ export async function commitAndCreatePR(
 
   if (status.trim()) {
     await git(worktreePath, 'add', '-A');
+    // Never commit OpenSwarm's own metadata. .openswarm/* (knowledge-graph snapshots) is
+    // regenerated every run, so when add -A commits it the file collides across PRs and
+    // blocks merges/checkouts. Drop it from the index (also rm --cached if a past run had
+    // already tracked it) so it never enters the diff.
+    await git(worktreePath, 'rm', '-r', '--cached', '--ignore-unmatch', '.openswarm').catch(() => {});
     const commitMsg = [
       `feat(${issueIdentifier}): ${title.slice(0, 72)}`,
       '',
