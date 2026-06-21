@@ -197,12 +197,13 @@ export function initRateLimiters(): void {
     queueTimeoutMs: 120000, // 2 minutes timeout
   }));
 
-  // Linear API: 5000 req/hour (from error message)
+  // Linear API: the HARD cap is 2500 req/hour (observed in the 429, not 5000). 40/min = 2400/hour
+  // stays under it; the old 80/min (4800/hour) blew past the real limit and triggered 429s.
   limiters.set('linear', new RateLimiter('linear', {
-    maxRequests: 80, // 80 requests per minute (4800/hour with safety margin)
+    maxRequests: 40, // 40/min = 2400/hour, under Linear's 2500/hour hard cap
     windowMs: 60000,
-    maxQueueSize: 100,
-    queueTimeoutMs: 60000,
+    maxQueueSize: 300, // getStuckIssues/fetch fan out many sub-requests — queue them, don't drop
+    queueTimeoutMs: 120000,
   }));
 
   // GitHub API: 5000 req/hour (authenticated)

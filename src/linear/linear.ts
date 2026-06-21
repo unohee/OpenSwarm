@@ -1212,12 +1212,22 @@ _This issue was auto-created by an agent. Please review and adjust priority or d
 /**
  * Get stuck/failed issues and PRs (issues stuck in In Progress for >7 days, or with retry/failed labels)
  */
-export async function getStuckIssues(): Promise<{
+type StuckResult = {
   stuckIssues: Array<LinearIssueInfo & { stuckDays: number; reason: string }>;
   failedIssues: Array<LinearIssueInfo & { reason: string }>;
-}> {
+};
+// Cache for 5 min. The dashboard polls /api/stuck-issues, and each call fans out many Linear
+// sub-fetches (state/labels/comments/project per issue). Without caching, that alone blew past the
+// 2500/hour cap. 5-min staleness is fine for a stuck/failed panel.
+let _stuckCache: { data: StuckResult; fetched: number } | null = null;
+const STUCK_CACHE_MS = 5 * 60 * 1000;
+
+export async function getStuckIssues(): Promise<StuckResult> {
   if (!isLinearInitialized()) {
     return { stuckIssues: [], failedIssues: [] };
+  }
+  if (_stuckCache && Date.now() - _stuckCache.fetched < STUCK_CACHE_MS) {
+    return _stuckCache.data;
   }
   const linear = getClient();
   const now = Date.now();
@@ -1352,7 +1362,7 @@ export async function getStuckIssues(): Promise<{
     }
   } catch { /* no rejection-state file yet */ }
 
-  return {
+  const result: StuckResult = {
     stuckIssues: stuckIssues.sort((a, b) => b.stuckDays - a.stuckDays),
     failedIssues: failedIssues.sort((a, b) => {
       const pa = a.priority === 0 ? 999 : a.priority;
@@ -1360,4 +1370,6 @@ export async function getStuckIssues(): Promise<{
       return pa - pb;
     }),
   };
+  _stuckCache = { data: result, fetched: Date.now() };
+  return result;
 }
