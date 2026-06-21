@@ -12,7 +12,7 @@
 
 ---
 
-OpenSwarm orchestrates multiple AI agents as autonomous code workers. It picks up Linear issues, runs Worker/Reviewer pair pipelines, reports to Discord, and retains long-term memory via LanceDB. Workers run on Claude Code, OpenAI GPT, Codex, **any OpenRouter model**, or **local open-source models** (Ollama, LMStudio, llama.cpp) — with cost-aware routing measured on an L0–L6 benchmark ladder.
+OpenSwarm orchestrates multiple AI agents as autonomous code workers. It picks up Linear issues, runs a **Planner → Worker → Tester → Reviewer** pipeline (the planner decomposes, the worker implements, the tester actually runs the tests/benchmarks, and the reviewer judges the code together with the test results), reports to Discord, and retains long-term memory via LanceDB. Workers run on Claude Code, OpenAI GPT, Codex, **any OpenRouter model**, or **local open-source models** (Ollama, LMStudio, llama.cpp) — with cost-aware routing measured on an L0–L6 benchmark ladder.
 
 **Verified on real GitHub issues**: the agentic harness solves SWE-bench Lite instances graded by the official harness. Hybrid mode — a frontier model diagnoses read-only, a lightweight model implements with a verification loop — resolved **3/3 attempted instances** that every single lightweight model had failed, at a fraction of frontier-only cost. Workers also **learn each repository over time**: task outcomes are stored as per-repo knowledge and recalled into future prompts. ([benchmark rubric & results](benchmarks/RUBRIC.md))
 
@@ -72,7 +72,7 @@ openswarm annotate "funcName" --warn "error/security: SQL injection"
 | `--path <path>` | Project path (default: cwd) |
 | `--timeout <seconds>` | Timeout in seconds (default: 600) |
 | `--local` | Execute locally without daemon |
-| `--pipeline` | Full pipeline: worker + reviewer + tester + documenter |
+| `--pipeline` | Full pipeline: planner → worker → tester → reviewer (+ documenter/auditor post-pass) |
 | `--worker-only` | Worker only, no review |
 | `-m, --model <model>` | Model override for worker |
 
@@ -172,11 +172,11 @@ autonomous:
       model: claude-haiku-4-5-20251001
       timeoutMs: 600000
     tester:
-      enabled: false
+      enabled: true        # runs tests/benchmarks before the reviewer (recommended)
     documenter:
-      enabled: false
+      enabled: false       # optional non-blocking post-pass
     auditor:
-      enabled: false
+      enabled: false       # optional non-blocking post-pass
 ```
 
 ### Running the daemon
@@ -206,6 +206,8 @@ docker compose up -d         # Docker
 
 ## Architecture
 
+> Full component breakdown, data flow, and file map: **[ARCHITECTURE.md](ARCHITECTURE.md)**
+
 ```
                          ┌──────────────────────────┐
                          │       Linear API          │
@@ -222,15 +224,15 @@ docker compose up -d         # Docker
            │                                            │
            v                                            v
   ┌──────────────────────────────────────────────────────────────┐
-  │                      PairPipeline                            │
-  │  ┌────────┐   ┌──────────┐   ┌────────┐   ┌─────────────┐  │
-  │  │ Worker │──>│ Reviewer │──>│ Tester │──>│ Documenter  │  │
-  │  │(Adapter│<──│(Adapter) │   │(Adapter│   │  (Adapter)  │  │
-  │  └───┬────┘   └──────────┘   └────────┘   └─────────────┘  │
-  │      │  ↕ StuckDetector                                      │
-  │  ┌───┴────────────────────────────────────────────────────┐  │
-  │  │ Adapters: Claude | Codex | GPT | Local (Ollama/LMS)   │  │
-  │  └────────────────────────────────────────────────────────┘  │
+  │                  PairPipeline (per iteration)                  │
+  │                                                                │
+  │   Planner ─> Worker ─> Tester ─> Reviewer                      │
+  │  (decompose)(implement)(run tests)(judge code + test results)  │
+  │                 ▲_______________________│  revise → next iter  │
+  │                 ↕ StuckDetector                                │
+  │                                                                │
+  │   After all pass (non-blocking): Documenter · Auditor · SkillDoc│
+  │   Adapters: codex-responses · gpt · openrouter · local · lmstudio │
   └──────────────────────────────────────────────────────────────┘
            │                     │                     │
            v                     v                     v
