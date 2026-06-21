@@ -90,7 +90,10 @@ export function inferProviderFromModel(model?: string): AdapterName {
 }
 
 export function getDefaultChatModel(provider: AdapterName): string {
-  if (provider === 'codex') return 'gpt-5-codex';
+  // ChatGPT-account `codex exec` rejects 'gpt-5-codex' ("model is not supported when using Codex
+  // with a ChatGPT account") → 400 → turn.failed → "[No response]" (INT-1658). gpt-5.5 passes model
+  // validation; use it for chat like codex-responses does.
+  if (provider === 'codex') return 'gpt-5.5';
   if (provider === 'codex-responses') return 'gpt-5.5';
   if (provider === 'gpt') return 'gpt-4o';
   if (provider === 'local') return 'gemma3:4b';
