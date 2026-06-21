@@ -114,6 +114,10 @@ export async function runTester(options: TesterOptions): Promise<TesterResult> {
       timeoutMs: options.timeoutMs,
       model: options.model,
       maxTurns: options.maxTurns,
+      // codex-responses 400s ("Instructions are required") without a systemPrompt — worker and
+      // reviewer pass one, the tester was missing it (every run failed: "0 passed, 0 failed").
+      // Also spell out that the tester must actually RUN the tests via bash, not just inspect.
+      systemPrompt: 'You are a test runner. Detect the project test command (pytest, npm test, cargo test, etc.), run the tests relevant to the changed files using the bash tool, and report pass/fail counts and coverage in the requested format. Actually EXECUTE the tests — do not just read files.',
     });
 
     return parseTesterOutput(raw.stdout);
