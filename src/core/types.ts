@@ -97,6 +97,9 @@ export type SwarmConfig = {
   adapter?: 'codex' | 'codex-responses' | 'gpt' | 'local' | 'lmstudio' | 'openrouter';
   /** UI language: 'en' | 'ko' (default: 'en') */
   language: 'en' | 'ko';
+  /** Python venv to activate for the bash tool (e.g. ~/dev/mlx_env). Optional — bash also
+   *  auto-detects a repo-local .venv/venv, so this is only a fallback for shared/unified venvs. */
+  pythonVenv?: string;
   /** Discord bot token */
   discordToken: string;
   /** Discord channel ID (for reporting) */

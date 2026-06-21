@@ -6,6 +6,7 @@
 // ============================================
 
 import fs from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
@@ -256,6 +257,22 @@ export interface ToolExecOptions {
 // timeout killed the run, the report never got generated, and the task looped on revision.
 const DEFAULT_BASH_TIMEOUT_MS = 120000;
 
+/** Search cwd and its ancestors for a Python venv (.venv/venv with bin/python). Returns the
+ *  venv dir, or '' if none. Lets the bash tool activate a repo-local venv even from a worktree
+ *  (the worktree's project root is a few levels up), with no config required. */
+function findProjectVenv(startDir: string): string {
+  let dir = startDir;
+  for (let i = 0; i < 8; i++) {
+    for (const name of ['.venv', 'venv']) {
+      if (existsSync(path.join(dir, name, 'bin', 'python'))) return path.join(dir, name);
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return '';
+}
+
 function isProtected(resolved: string, protectedFiles?: string[]): boolean {
   if (!protectedFiles?.length) return false;
   return protectedFiles.some((p) => resolved === p || resolved.endsWith(`/${p}`));
@@ -402,14 +419,20 @@ export async function executeTool(
         }
         try {
           const shimDir = await ensurePythonShimDir();
-          const pathWithShim = shimDir
-            ? `${shimDir}${path.delimiter}${process.env.PATH ?? ''}`
-            : process.env.PATH;
+          // Put a Python venv's bin/ FIRST on PATH so python/pytest resolve to it (system Python
+          // misses project deps → ModuleNotFoundError). Resolution order, covering every user:
+          //   (1) a repo-local .venv/venv found by searching cwd upward — works even from a
+          //       worktree, and needs NO config;
+          //   (2) the configured OPENSWARM_PYTHON_VENV (shared/unified venv like ~/dev/mlx_env);
+          //   (3) none → system Python (users with no venv just fall through).
+          const venv = findProjectVenv(cwd) || process.env.OPENSWARM_PYTHON_VENV || '';
+          const pathWithShim = [venv ? `${venv}/bin` : '', shimDir, process.env.PATH ?? '']
+            .filter(Boolean).join(path.delimiter);
           const { stdout, stderr } = await execFileAsync('bash', ['-c', command], {
             cwd,
             timeout: execOptions?.bashTimeoutMs ?? DEFAULT_BASH_TIMEOUT_MS,
             maxBuffer: 1024 * 512,
-            env: { ...process.env, PATH: pathWithShim },
+            env: { ...process.env, PATH: pathWithShim, ...(venv ? { VIRTUAL_ENV: venv } : {}) },
           });
           const output = stdout + (stderr ? `\n[stderr] ${stderr}` : '');
           // 출력이 너무 길면 잘라냄

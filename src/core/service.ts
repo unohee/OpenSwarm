@@ -53,6 +53,10 @@ export async function startService(config: SwarmConfig): Promise<void> {
   // Locale initialization
   initLocale(config.language);
 
+  // Expose the configured Python venv so the bash tool puts its bin/ first on PATH
+  // (python/pytest resolve to the venv, not system Python — worktrees have no repo-local venv).
+  if (config.pythonVenv) process.env.OPENSWARM_PYTHON_VENV = config.pythonVenv;
+
   // Default CLI adapter
   setDefaultAdapter(config.adapter ?? 'codex');
   console.log(`🛠️ CLI adapter: ${config.adapter ?? 'codex'}`);

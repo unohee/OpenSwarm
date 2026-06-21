@@ -312,6 +312,9 @@ const NotificationsSchema = z.object({
 const RawConfigSchema = z.object({
   adapter: AdapterNameSchema.default('codex'),
   language: z.enum(['en', 'ko']).default('en'),
+  /** Python venv to activate for the bash tool, so python/pytest see project deps
+   *  (worktrees have no repo-local venv). e.g. ~/dev/mlx_env */
+  pythonVenv: z.string().optional(),
   discord: DiscordConfigSchema,
   notifications: NotificationsSchema,
   linear: LinearConfigSchema,
@@ -436,6 +439,7 @@ function transformConfig(raw: RawConfig): SwarmConfig {
   return {
     adapter: raw.adapter,
     language: raw.language,
+    pythonVenv: raw.pythonVenv ? expandPath(raw.pythonVenv) : undefined,
     discordToken: raw.discord?.token ?? '',
     discordChannelId: raw.discord?.channelId ?? '',
     discordWebhookUrl: raw.discord?.webhookUrl,
