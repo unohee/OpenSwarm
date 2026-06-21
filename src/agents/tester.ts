@@ -157,14 +157,16 @@ function parseTesterOutput(output: string): TesterResult {
       } catch { /* skip non-JSON lines */ }
     }
 
-    if (!resultText) {
-      const result = extractFromText(output);
-      result.costInfo = costInfo;
-      return result;
-    }
-
-    // Extract JSON block from result
-    const result = extractResultJson(resultText) || extractFromText(resultText);
+    // codex-responses (and other native adapters) don't emit a `type:'result'` NDJSON line —
+    // the final assistant text (the JSON block) IS the stdout. So if a result line was found use
+    // it, but ALWAYS fall back to scanning the whole output for the JSON block before dropping to
+    // the regex path. Previously, with no result line, a valid {"success":...,"testsPassed":12}
+    // block was ignored: extractFromText found no "N passed" text → reported 0/0, and the JSON
+    // leaked into the error field.
+    const result =
+      (resultText ? extractResultJson(resultText) : null) ||
+      extractResultJson(output) ||
+      extractFromText(resultText || output);
     result.costInfo = costInfo;
     return result;
   } catch (error) {
