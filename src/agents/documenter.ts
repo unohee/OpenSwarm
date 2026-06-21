@@ -120,6 +120,8 @@ export async function runDocumenter(options: DocumenterOptions): Promise<Documen
       timeoutMs: options.timeoutMs,
       model: options.model,
       maxTurns: options.maxTurns,
+      // codex-responses 400s ("Instructions are required") without a systemPrompt.
+      systemPrompt: 'You are a documentation agent. Add or update documentation (docstrings, README, API docs) for the changed files, following the existing style. Do not add unrequested docs.',
     });
 
     return parseDocumenterOutput(raw.stdout);

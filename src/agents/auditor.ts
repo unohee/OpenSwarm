@@ -97,6 +97,8 @@ export async function runAuditor(options: AuditorOptions): Promise<AuditorResult
       timeoutMs: options.timeoutMs,
       model: options.model,
       maxTurns: options.maxTurns,
+      // codex-responses 400s ("Instructions are required") without a systemPrompt.
+      systemPrompt: 'You are a code auditor. Review the changed files for security and quality issues. Use read_file/search_files (and bash if needed) to inspect, then report concrete findings only.',
     });
     return parseAuditorOutput(raw.stdout);
   } catch (error) {
