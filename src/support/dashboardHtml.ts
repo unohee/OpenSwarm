@@ -877,7 +877,9 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           document.getElementById("stat-cost").textContent = "$" + totalCostUsd.toFixed(2);
           break;
         }
-        case "chat:agent": appendChatMsg("agent", ev.data.text, null, ev.data.ts); break;
+        // chat:agent is intentionally NOT rendered here — the sender's fetch flow (sendChat) already
+        // appends the reply once. Rendering the SSE echo too made every response appear twice.
+        case "chat:agent": break;
         case "monitor:checked":
         case "monitor:stateChange":
           fetchMonitors();
@@ -1789,6 +1791,16 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       container.scrollTop = container.scrollHeight;
     }
 
+    // Witty loading phrases + braille spinner — mirrors the chat TUI (chatTui.ts LOADING_MESSAGES).
+    const CHAT_LOADING_MESSAGES = [
+      "Initializing cogitator arrays", "Querying data-vault archives", "Accessing servitor protocols",
+      "Compiling neural responses", "Interfacing with the Noosphere", "Scanning data-streams",
+      "Calibrating logic engines", "Decoding transmission packets", "Loading archive databases",
+      "Synchronizing machine protocols", "Analyzing pattern matrices", "Establishing neural link",
+      "Processing data-core output", "Running diagnostics sequence", "Activating response circuits",
+    ];
+    const CHAT_SPINNER_FRAMES = ["\\u28be","\\u28bd","\\u28bb","\\u28bf","\\u287f","\\u28df","\\u28ef","\\u28f7"];
+
     async function sendChat() {
       if (chatBusy) return;
       const input  = document.getElementById("chat-input");
@@ -1805,7 +1817,15 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       const thinkEl = document.createElement("div");
       thinkEl.id = thinkId;
       thinkEl.className = "chat-line chat-agent";
-      thinkEl.innerHTML = "<span class=\\"chat-prefix\\">OpenSwarm&gt;</span> <span class=\\"chat-text chat-thinking\\">thinking...</span>";
+      const phrase = CHAT_LOADING_MESSAGES[Math.floor(Math.random() * CHAT_LOADING_MESSAGES.length)];
+      let frame = 0;
+      const renderThinking = () => {
+        const spin = CHAT_SPINNER_FRAMES[frame % CHAT_SPINNER_FRAMES.length];
+        thinkEl.innerHTML = "<span class=\\"chat-prefix\\">OpenSwarm&gt;</span> <span class=\\"chat-text chat-thinking\\">" + spin + " " + phrase + "...</span>";
+        frame++;
+      };
+      renderThinking();
+      const spinTimer = setInterval(renderThinking, 90);
       document.getElementById("chat-messages").appendChild(thinkEl);
       document.getElementById("chat-messages").scrollTop = 99999;
 
@@ -1816,9 +1836,11 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           body: JSON.stringify({ message: msg }),
         });
         const data = await res.json();
+        clearInterval(spinTimer);
         document.getElementById(thinkId)?.remove();
         appendChatMsg("agent", data.response || data.error || "(no response)", null, Date.now());
       } catch(e) {
+        clearInterval(spinTimer);
         document.getElementById(thinkId)?.remove();
         appendChatMsg("agent", "[ERROR] " + e.message, null, Date.now());
       }
