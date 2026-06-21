@@ -43,6 +43,18 @@ export interface WorkerOptions {
 // Prompts
 
 /**
+ * Strip the Confidence-gate section from the worker's system prompt. The gate ("verify with tools
+ * if <80%, halt if <60%") is meant for autonomous judgment, but a read-heavy model (qwen) over-obeys
+ * it — it keeps reading to "raise confidence" and never edits (the root cause behind needing the
+ * no-edit nudge). The worker is an ACTION role and the REVIEWER gate already enforces quality, so
+ * the worker shouldn't self-gate. Only the Confidence-gate section is removed; anti-shortcut
+ * (fake-exec/fake-data) and the quality bar stay. reviewer/planner keep the full prompt.
+ */
+function stripConfidenceGate(prompt: string): string {
+  return prompt.replace(/\n## Confidence gate[\s\S]*?(?=\n## )/, '\n');
+}
+
+/**
  * Build Worker prompt using locale templates
  */
 function buildWorkerPrompt(options: WorkerOptions): string {
@@ -83,7 +95,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       maxTurns: options.maxTurns,
       onLog: options.onLog,
       processContext: options.processContext,
-      systemPrompt: getPrompts().systemPrompt,
+      systemPrompt: stripConfidenceGate(getPrompts().systemPrompt),
       // Worker is normally a mechanical execution role — file edits, not deep
       // reasoning — so reasoning tokens are disabled to cut cost/latency. But when
       // complexity routing assigns an effort level (hard tasks), keep reasoning on
