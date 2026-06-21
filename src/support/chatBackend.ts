@@ -16,6 +16,9 @@ export interface ChatCompletionOptions {
   onLog?: (line: string) => void;
   /** Max agentic turns (default 25); raised for autonomous /goal pursuit. */
   maxTurns?: number;
+  /** Expose file/bash/web tools to the loop (default true). Set false for a plain classify/answer
+   *  call like judgeGoalComplexity — the model just responds, no tool round-trips. */
+  enableTools?: boolean;
   /** Abort the run (Esc/Ctrl+C). */
   signal?: AbortSignal;
 }
@@ -118,6 +121,49 @@ export function resolveChatModel(input: string | undefined, provider: AdapterNam
   return alias || input;
 }
 
+export interface GoalComplexity {
+  tier: 'simple' | 'complex';
+  /** subset of worker/reviewer/tester/documenter — which roles the goal warrants. */
+  stages: string[];
+}
+
+/**
+ * One quick no-tools classify call (INT-1603) so /goal sizes its approach to the work: a light
+ * single pass for simple goals, an explicit worker→review (+test/docs) pass for complex ones.
+ * Defaults to 'simple' on any error — never blocks the goal.
+ */
+export async function judgeGoalComplexity(
+  goal: string,
+  provider: AdapterName,
+  model: string,
+  signal?: AbortSignal,
+): Promise<GoalComplexity> {
+  const prompt =
+    'Classify the complexity of this coding goal for an autonomous agent. Respond with ONLY a JSON object:\n' +
+    '{"tier":"simple"|"complex","stages":[...]}\n' +
+    '- "simple": a single focused change or question (one file, a small fix) → stages ["worker"].\n' +
+    '- "complex": multi-file, needs design or verification → include "reviewer" (add "tester" if tests matter, "documenter" if docs do).\n\n' +
+    `Goal: ${goal}`;
+  try {
+    const r = await runChatCompletion({
+      prompt, provider, model, cwd: process.cwd(), timeoutMs: 60_000, enableTools: false, maxTurns: 1, signal,
+    });
+    const json = r.response.match(/\{[\s\S]*\}/)?.[0];
+    if (json) {
+      const j = JSON.parse(json) as { tier?: string; stages?: unknown };
+      const tier: 'simple' | 'complex' = j.tier === 'complex' ? 'complex' : 'simple';
+      const valid = new Set(['worker', 'reviewer', 'tester', 'documenter']);
+      const stages = Array.isArray(j.stages)
+        ? j.stages.filter((s): s is string => typeof s === 'string' && valid.has(s))
+        : [];
+      return { tier, stages: stages.length ? stages : (tier === 'complex' ? ['worker', 'reviewer'] : ['worker']) };
+    }
+  } catch {
+    // fall through to the safe default
+  }
+  return { tier: 'simple', stages: ['worker'] };
+}
+
 export function shortenChatModel(model: string): string {
   // OpenRouter: "anthropic/claude-sonnet-4" → "claude-sonnet-4"
   if (model.includes('/')) return model.split('/').pop() ?? model;
@@ -160,8 +206,8 @@ async function runChatViaAdapter(
       'tool returns, briefly note what you found and your next step, then continue. Actually use the tools to perform ' +
       'the task — never just describe it. Keep narration to a sentence or two between actions, not essays. ' +
       'For a trivial question with no task, just answer directly without tools.',
-    enableTools: true,
-    webTools: true,
+    enableTools: options.enableTools ?? true,
+    webTools: options.enableTools ?? true,
     mcpTools,
     // A high safety ceiling, not a task limit — normal work ends when the model
     // stops calling tools; the progress-based stop catches stuck loops earlier.

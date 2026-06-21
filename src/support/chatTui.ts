@@ -9,7 +9,7 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { loadConfig, expandPath } from '../core/config.js';
 import { getDefaultAdapterName, isKnownAdapter, type AdapterName } from '../adapters/index.js';
-import { getDefaultChatModel, resolveChatModel, runChatCompletion, shortenChatModel } from './chatBackend.js';
+import { getDefaultChatModel, resolveChatModel, runChatCompletion, shortenChatModel, judgeGoalComplexity } from './chatBackend.js';
 import { runPlanCommand, type PlanIO } from './planCommand.js';
 // Constants
 const CHAT_DIR = resolve(homedir(), '.openswarm', 'chat');
@@ -1174,13 +1174,24 @@ async function handleCommand(
       updateStatusBar(state, ui);
       ui.chatLog.log('');
       ui.chatLog.log(`  {#34d399-fg}{bold}Goal set — pursuing autonomously:{/bold}{/} ${goalText}`);
+      // INT-1603: size the approach to the work — a light single pass for simple goals, an explicit
+      // worker→self-review (+test/docs) pass for complex ones.
+      const complexity = await judgeGoalComplexity(goalText, state.session.provider, state.session.model);
+      ui.chatLog.log(`  {#718096-fg}Complexity: ${complexity.tier} · stages: ${complexity.stages.join(' → ')}{/}`);
       ui.chatLog.log('');
       safeRender();
-      const goalPrompt =
+      const base =
         `[GOAL] ${goalText}\n\nWork autonomously toward this goal: break it down, use your tools to implement and ` +
         `verify each step, narrate your reasoning as you go, and keep going until the goal is achieved or you are ` +
         `genuinely blocked. Do not ask for approval between steps.`;
-      await sendMessage(state, ui, goalPrompt, { maxTurns: 120 });
+      const goalPrompt = complexity.tier === 'complex'
+        ? base + `\n\nThis is a COMPLEX goal — work in stages like a ${complexity.stages.join('→')} pipeline: `
+          + `first implement as the WORKER, then critically REVIEW your own changes against the goal `
+          + `(correctness, edge cases${complexity.stages.includes('tester') ? ', run the tests' : ''}`
+          + `${complexity.stages.includes('documenter') ? ', update docs' : ''}), and revise until it holds. `
+          + `Do not declare done until that self-review passes.`
+        : base;
+      await sendMessage(state, ui, goalPrompt, { maxTurns: complexity.tier === 'complex' ? 160 : 120 });
       break;
     }
 
