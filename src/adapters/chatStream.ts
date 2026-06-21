@@ -21,7 +21,7 @@ export interface ChatCompletionLike {
     message: { role: string; content: string | null; tool_calls?: StreamToolCall[] };
     finish_reason: string;
   }>;
-  usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+  usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number; cached_tokens?: number };
 }
 
 interface StreamChunk {
@@ -32,7 +32,13 @@ interface StreamChunk {
     };
     finish_reason?: string | null;
   }>;
-  usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | null;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+    prompt_tokens_details?: { cached_tokens?: number } | null;
+    cache_read_input_tokens?: number;
+  } | null;
 }
 
 /**
@@ -52,7 +58,11 @@ export function reduceChatChunks(chunks: StreamChunk[], onToken?: (delta: string
     if (chunk.usage) {
       const pt = chunk.usage.prompt_tokens ?? 0;
       const ct = chunk.usage.completion_tokens ?? 0;
-      usage = { prompt_tokens: pt, completion_tokens: ct, total_tokens: chunk.usage.total_tokens ?? pt + ct };
+      // vega-agent pattern (streaming.py:457): cached prompt tokens arrive as
+      // prompt_tokens_details.cached_tokens (OpenAI/OpenRouter) or cache_read_input_tokens
+      // (Anthropic). Track for cache-hit visibility.
+      const cached = chunk.usage.prompt_tokens_details?.cached_tokens ?? chunk.usage.cache_read_input_tokens ?? 0;
+      usage = { prompt_tokens: pt, completion_tokens: ct, total_tokens: chunk.usage.total_tokens ?? pt + ct, cached_tokens: cached };
     }
     const choice = chunk.choices?.[0];
     if (!choice) continue;

@@ -76,6 +76,7 @@ interface ChatCompletionResponse {
     prompt_tokens: number;
     completion_tokens: number;
     total_tokens: number;
+    cached_tokens?: number;
   };
 }
 
@@ -134,6 +135,8 @@ export interface AgenticLoopResult {
   apiCallCount: number;
   /** 총 토큰 사용량 (추적 가능한 경우) */
   totalTokens: number;
+  /** cached (prompt) tokens served from cache — vega-agent pattern, cache-hit visibility */
+  cachedTokens: number;
   /** 소요 시간 (ms) */
   durationMs: number;
 }
@@ -209,6 +212,7 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
   let nudgesUsed = 0;
   let apiCallCount = 0;
   let totalTokens = 0;
+  let cachedTokens = 0;
   let finalText = '';
 
   // maxTurns removed (user request): a read-heavy model (qwen) spent its entire turn budget
@@ -264,6 +268,7 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
 
     if (response.usage) {
       totalTokens += response.usage.prompt_tokens + response.usage.completion_tokens;
+      cachedTokens += response.usage.cached_tokens ?? 0;
     }
 
     const choice = response.choices?.[0];
@@ -400,6 +405,7 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
       const response = await callApi(messages, []);
       if (response.usage) {
         totalTokens += response.usage.prompt_tokens + response.usage.completion_tokens;
+        cachedTokens += response.usage.cached_tokens ?? 0;
       }
       apiCallCount++;
       finalText = response.choices?.[0]?.message?.content ?? '';
@@ -413,6 +419,7 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
     toolCallCount,
     apiCallCount,
     totalTokens,
+    cachedTokens,
     durationMs: Date.now() - startTime,
   };
 }

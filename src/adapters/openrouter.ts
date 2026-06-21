@@ -112,7 +112,7 @@ export class OpenRouterCliAdapter implements CliAdapter {
     try {
       const result = await runAgenticLoop(loopOptions);
       options.onLog?.(
-        `[OpenRouter] ${result.apiCallCount} API calls, ${result.toolCallCount} tool uses, ${result.totalTokens} tokens`,
+        `[OpenRouter] ${result.apiCallCount} API calls, ${result.toolCallCount} tool uses, ${result.totalTokens} tokens${result.cachedTokens ? ` (${result.cachedTokens} cached)` : ''}`,
       );
       return loopResultToCliResult(result);
     } catch (err) {
@@ -206,11 +206,11 @@ export function createApiCaller(apiKey: string, model: string, opts: ApiCallerOp
  * breakpoint 2개: (1) 시스템 메시지 끝, (2) 마지막 user/tool 메시지 직전 경계.
  * Anthropic은 최대 4개 breakpoint를 허용하므로 2개는 안전하다.
  */
-export function applyPromptCaching(messages: ChatMessage[], model: string): unknown[] {
-  // OpenAI/Gemini 등은 자동 캐싱 — 변환 불필요 (cache_control을 넣으면 거부될 수 있음)
-  if (!/anthropic\/|claude/i.test(model)) {
-    return messages;
-  }
+export function applyPromptCaching(messages: ChatMessage[], _model: string): unknown[] {
+  // vega-agent verified (llm_gateway.py:528 "safest"): send cache_control markers to ALL models,
+  // not just Anthropic. Anthropic NEEDS the markers; OpenAI/DeepSeek/Gemini/Grok auto-cache and
+  // ignore them harmlessly; models without caching (qwen) ignore them too. The old Anthropic-only
+  // guard left every other model uncached even when the provider supported caching.
 
   // 캐시 마커를 달 인덱스: 시스템 메시지(있으면) + 마지막 직전 메시지.
   // 마지막 메시지(가장 최근 tool 결과)는 매 턴 바뀌므로 캐시하지 않는다.
