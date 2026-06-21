@@ -579,6 +579,7 @@ export class PairPipeline extends EventEmitter {
             taskTitle: context.task.title,
             taskDescription: context.task.description || '',
             workerResult: context.workerResult,
+            testerResult: context.testerResult,
             projectPath: context.projectPath,
             timeoutMs: this.config.roles?.reviewer?.timeoutMs ?? 0,
             model: stageModel,
@@ -773,7 +774,7 @@ export class PairPipeline extends EventEmitter {
   /**
    * Full iteration loop
    *
-   * 1 iteration = full pass through Worker → Reviewer → Tester
+   * 1 iteration = full pass through Worker → Tester → Reviewer
    * On failure (revise) at any stage, restart from Worker in next iteration
    * reject = immediate termination
    */
@@ -935,7 +936,45 @@ export class PairPipeline extends EventEmitter {
         }
       }
 
-      // ========== REVIEWER ==========
+      // ========== TESTER (runs BEFORE the reviewer, so the reviewer judges code + test results together) ==========
+      if (hasTester) {
+        // Skip tester if no code files changed (configurable, default true)
+        const skipIfNoCode = this.config.skipTesterIfNoCodeChange ?? true;
+        const codeExtensions = /\.(ts|tsx|js|jsx|py|rs|go|java|rb|c|cpp|h|hpp)$/;
+        const changedFiles = context.workerResult?.filesChanged || [];
+        const hasCodeChange = changedFiles.some(f => codeExtensions.test(f));
+        if (skipIfNoCode && !hasCodeChange) {
+          console.log(`[${context.taskPrefix}] Skipping tester: no code files changed (${changedFiles.length} files: ${changedFiles.join(', ') || 'none'})`);
+        } else {
+          const testerResult = await this.runStage('tester', context);
+          stages.push(testerResult);
+
+          if (!testerResult.success && !this.config.continueOnTestFail) {
+            // Tests failed → revise now, before spending a review pass on broken code
+            console.log(`[${context.taskPrefix}] Tester failed, retrying...`);
+            agentPair.trackFailure(context.session.id);
+
+            if (context.testerResult) {
+              context.reviewResult = {
+                decision: 'revise',
+                feedback: testerAgent.buildTestFixPrompt(context.testerResult),
+                issues: context.testerResult.failedTests,
+                suggestions: context.testerResult.suggestions,
+              };
+            }
+
+            this.emit('iteration:fail', {
+              iteration: context.currentIteration,
+              stage: 'tester',
+              context,
+            });
+            agentPair.updateSessionStatus(context.session.id, 'revising');
+            continue;
+          }
+        } // end else (has code change)
+      }
+
+      // ========== REVIEWER (sees worker output AND tester results from this iteration) ==========
       if (hasReviewer) {
         agentPair.updateSessionStatus(context.session.id, 'reviewing');
 
@@ -990,46 +1029,8 @@ export class PairPipeline extends EventEmitter {
           continue;
         }
 
-        // approve → proceed to Tester
+        // approve → all stages passed (Tester already ran before the reviewer)
         agentPair.resetFailureStreak(context.session.id); // Reset on approval
-      }
-
-      // ========== TESTER ==========
-      if (hasTester) {
-        // Skip tester if no code files changed (configurable, default true)
-        const skipIfNoCode = this.config.skipTesterIfNoCodeChange ?? true;
-        const codeExtensions = /\.(ts|tsx|js|jsx|py|rs|go|java|rb|c|cpp|h|hpp)$/;
-        const changedFiles = context.workerResult?.filesChanged || [];
-        const hasCodeChange = changedFiles.some(f => codeExtensions.test(f));
-        if (skipIfNoCode && !hasCodeChange) {
-          console.log(`[${context.taskPrefix}] Skipping tester: no code files changed (${changedFiles.length} files: ${changedFiles.join(', ') || 'none'})`);
-        } else {
-        const testerResult = await this.runStage('tester', context);
-        stages.push(testerResult);
-
-        if (!testerResult.success && !this.config.continueOnTestFail) {
-          // Test failed → set feedback then next iteration
-          console.log(`[${context.taskPrefix}] Tester failed, retrying...`);
-          agentPair.trackFailure(context.session.id); // Track for fresh context decision
-
-          if (context.testerResult) {
-            context.reviewResult = {
-              decision: 'revise',
-              feedback: testerAgent.buildTestFixPrompt(context.testerResult),
-              issues: context.testerResult.failedTests,
-              suggestions: context.testerResult.suggestions,
-            };
-          }
-
-          this.emit('iteration:fail', {
-            iteration: context.currentIteration,
-            stage: 'tester',
-            context,
-          });
-          agentPair.updateSessionStatus(context.session.id, 'revising');
-          continue;
-        }
-        } // end else (has code change)
       }
 
       // ========== ALL PASSED ==========

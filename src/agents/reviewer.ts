@@ -4,6 +4,7 @@
 // ============================================
 
 import type { WorkerResult, ReviewResult } from './agentPair.js';
+import type { TesterResult } from './tester.js';
 import { t, getPrompts } from '../locale/index.js';
 import type { AdapterName, ProcessContext } from '../adapters/types.js';
 import { getAdapter, spawnCli } from '../adapters/index.js';
@@ -16,6 +17,9 @@ export interface ReviewerOptions {
   taskTitle: string;
   taskDescription: string;
   workerResult: WorkerResult;
+  /** Tester results from this iteration. Tester runs BEFORE the reviewer, so the reviewer
+   * judges the worker's code together with whether the tests/benchmarks actually passed. */
+  testerResult?: TesterResult;
   projectPath: string;
   timeoutMs?: number;
   model?: string;              // Model ID (default: adapter default)
@@ -97,10 +101,17 @@ function buildReviewerPrompt(options: ReviewerOptions): string {
 ${options.workerResult.error ? `- **Error:** ${options.workerResult.error}` : ''}
 `;
 
+  // Tester ran before this review (worker→tester→reviewer). Surface its results so the
+  // reviewer judges real test/benchmark outcomes, not just the worker's self-report.
+  const tr = options.testerResult;
+  const testReport = tr
+    ? `\n## Test Results (executed before this review)\n- Passed: ${tr.testsPassed} / Failed: ${tr.testsFailed}${tr.coverage != null ? ` / Coverage: ${tr.coverage}%` : ''}${tr.failedTests?.length ? `\n- Failing: ${tr.failedTests.slice(0, 5).join(', ')}` : ''}${tr.error ? `\n- Tester error: ${tr.error}` : ''}`
+    : '';
+
   return getPrompts().buildReviewerPrompt({
     taskTitle: options.taskTitle,
     taskDescription: options.taskDescription,
-    workerReport,
+    workerReport: workerReport + testReport,
   });
 }
 
