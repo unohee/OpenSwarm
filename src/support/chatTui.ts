@@ -9,7 +9,7 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { loadConfig, expandPath } from '../core/config.js';
 import { getDefaultAdapterName, isKnownAdapter, type AdapterName } from '../adapters/index.js';
-import { getDefaultChatModel, resolveChatModel, runChatCompletion, shortenChatModel, judgeGoalComplexity } from './chatBackend.js';
+import { getDefaultChatModel, resolveChatModel, runChatCompletion, shortenChatModel, judgeGoalComplexity, runGoalPipeline } from './chatBackend.js';
 import { runPlanCommand, type PlanIO } from './planCommand.js';
 // Constants
 const CHAT_DIR = resolve(homedir(), '.openswarm', 'chat');
@@ -1184,14 +1184,25 @@ async function handleCommand(
         `[GOAL] ${goalText}\n\nWork autonomously toward this goal: break it down, use your tools to implement and ` +
         `verify each step, narrate your reasoning as you go, and keep going until the goal is achieved or you are ` +
         `genuinely blocked. Do not ask for approval between steps.`;
-      const goalPrompt = complexity.tier === 'complex'
-        ? base + `\n\nThis is a COMPLEX goal — work in stages like a ${complexity.stages.join('→')} pipeline: `
-          + `first implement as the WORKER, then critically REVIEW your own changes against the goal `
-          + `(correctness, edge cases${complexity.stages.includes('tester') ? ', run the tests' : ''}`
-          + `${complexity.stages.includes('documenter') ? ', update docs' : ''}), and revise until it holds. `
-          + `Do not declare done until that self-review passes.`
-        : base;
-      await sendMessage(state, ui, goalPrompt, { maxTurns: complexity.tier === 'complex' ? 160 : 120 });
+
+      if (complexity.tier === 'complex') {
+        // INT-1603: complex goals run the actual worker→reviewer(+tester/doc) pipeline (helper in
+        // chatBackend), built from the chat's provider/model, with stage events streamed here.
+        try {
+          const result = await runGoalPipeline({
+            goalText, description: base, stages: complexity.stages,
+            provider: state.session.provider, model: state.session.model,
+            onStage: (s) => { ui.chatLog.log(`  {#60a5fa-fg}▶ ${s}{/}`); safeRender(); },
+            onLog: (l) => { ui.chatLog.log(`  {#718096-fg}${l}{/}`); safeRender(); },
+          });
+          ui.chatLog.log(`  ${result.success ? '{#34d399-fg}✅ pipeline completed' : '{#f87171-fg}■ pipeline ended'}{/}: ${result.summary ?? ''}`);
+        } catch (e) {
+          ui.chatLog.log(`  {#f87171-fg}pipeline error: ${(e as Error).message}{/}`);
+        }
+        safeRender();
+      } else {
+        await sendMessage(state, ui, base, { maxTurns: 120 });
+      }
       break;
     }
 

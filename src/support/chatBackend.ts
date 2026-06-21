@@ -164,6 +164,37 @@ export async function judgeGoalComplexity(
   return { tier: 'simple', stages: ['worker'] };
 }
 
+/**
+ * Run a complex /goal through the actual worker→reviewer(+tester/doc) PairPipeline (INT-1603),
+ * built from the chat's own provider/model. Stage + log events are forwarded to the caller's UI.
+ * Kept here (not in chatTui) so the TUI file stays under its size budget.
+ */
+export async function runGoalPipeline(opts: {
+  goalText: string;
+  description: string;
+  stages: string[];
+  provider: AdapterName;
+  model: string;
+  onStage: (stage: string) => void;
+  onLog: (line: string) => void;
+}): Promise<{ success: boolean; summary?: string }> {
+  const { PairPipeline } = await import('../agents/pairPipeline.js');
+  const stages = (opts.stages.length ? opts.stages : ['worker', 'reviewer']) as import('../core/types.js').PipelineStage[];
+  const roles: Record<string, import('../core/types.js').RoleConfig> = {};
+  for (const s of stages) {
+    roles[s] = { enabled: true, model: opts.model, adapter: opts.provider, timeoutMs: 0 };
+  }
+  const task: import('../orchestration/decisionEngine.js').TaskItem = {
+    id: `goal-${Date.now()}`, source: 'local', title: opts.goalText, description: opts.description,
+    priority: 3, projectPath: process.cwd(), createdAt: Date.now(),
+  };
+  const pipeline = new PairPipeline({ stages, maxIterations: 3, roles });
+  pipeline.on('stage:start', ({ stage }) => opts.onStage(stage));
+  pipeline.on('log', ({ line }) => opts.onLog(line));
+  const result = await pipeline.run(task, process.cwd());
+  return { success: result.success, summary: result.workerResult?.summary };
+}
+
 export function shortenChatModel(model: string): string {
   // OpenRouter: "anthropic/claude-sonnet-4" → "claude-sonnet-4"
   if (model.includes('/')) return model.split('/').pop() ?? model;
