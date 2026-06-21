@@ -302,7 +302,7 @@ export async function runDraftAnalysis(options: DraftAnalyzerOptions): Promise<D
     const raw = await spawnCli(adapter, {
       prompt,
       cwd: options.projectPath,  // read the REAL codebase — the draft was guessing from the
-      timeoutMs: options.timeoutMs ?? 30000,  // registry + description only; with projectPath it
+      timeoutMs: options.timeoutMs ?? 60000,  // registry + description only; with projectPath it
       model,                     // can actually read_file/search_files to ground its analysis
       maxTurns: 3,               // a few turns to inspect the relevant files (still fast)
       // codex-responses requires instructions — without a systemPrompt the call
@@ -312,9 +312,9 @@ export async function runDraftAnalysis(options: DraftAnalyzerOptions): Promise<D
     });
 
     haikuResult = parseDraftResponse(raw.stdout);
-    onLog?.(`[Draft] Haiku: type=${haikuResult.taskType}, files=${haikuResult.relevantFiles?.length ?? 0}`);
+    onLog?.(`[Draft] type=${haikuResult.taskType}, files=${haikuResult.relevantFiles?.length ?? 0} (model: ${model})`);
   } catch (err) {
-    onLog?.(`[Draft] Haiku analysis failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`);
+    onLog?.(`[Draft] analysis failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`);
   }
 
   const durationMs = Date.now() - startTime;

@@ -618,7 +618,10 @@ export async function executePipeline(
         taskDescription: task.description || '',
         projectPath,
         model: ctx.draftModel,
-        timeoutMs: 30000,
+        // 60s, not 30s: with projectPath the draft uses read_file/search_files over a few
+        // turns to ground its analysis, and codex-responses regularly needs >30s for that —
+        // so it was timing out every run ("[Draft] analysis failed: codex timeout").
+        timeoutMs: 60000,
         onLog: (line) => broadcastEvent({ type: 'log', data: { taskId, stage: 'draft', line } }),
       });
 

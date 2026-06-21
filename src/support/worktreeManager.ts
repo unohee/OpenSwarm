@@ -169,8 +169,6 @@ export async function commitAndCreatePR(
       `feat(${issueIdentifier}): ${title.slice(0, 72)}`,
       '',
       '🤖 Generated with OpenSwarm',
-      '',
-      'Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>',
     ].join('\n');
 
     // Validate conventional commit format (warning only)
