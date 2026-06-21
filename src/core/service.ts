@@ -24,6 +24,7 @@ import { initRateLimiters, destroyRateLimiters } from '../support/rateLimiter.js
 import { compactMemoryTable, shouldCompact, cleanupBackupFiles } from '../memory/compaction.js';
 import { Cron } from 'croner';
 import { setDefaultAdapter } from '../adapters/index.js';
+import { readProviderOverride } from './providerOverride.js';
 import { enrichTaskFromState, hydrateTaskStateFromComments, updateTaskLinearState } from '../taskState/store.js';
 
 let state: ServiceState = {
@@ -221,6 +222,15 @@ export async function startService(config: SwarmConfig): Promise<void> {
       jobProfiles: config.autonomous.jobProfiles,
     });
     web.setWebRunner(runnerInstance);
+    // Re-apply the persisted provider toggle: switchProvider() is in-memory only, so without this a
+    // restart silently reverts to config.yaml's adapter. Reusing switchProvider keeps the role +
+    // jobProfile remapping identical to a live dashboard toggle.
+    const providerOverride = readProviderOverride();
+    if (providerOverride && providerOverride !== (config.adapter ?? 'codex')) {
+      setDefaultAdapter(providerOverride);
+      runnerInstance.switchProvider(providerOverride);
+      console.log(`[Service] Restored persisted provider: ${providerOverride}`);
+    }
     const modelInfo = config.autonomous.models
       ? `, Worker: ${config.autonomous.models.worker || 'default'}, Reviewer: ${config.autonomous.models.reviewer || 'default'}`
       : '';
