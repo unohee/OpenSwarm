@@ -452,7 +452,7 @@ export class PairPipeline extends EventEmitter {
     const stageModel = overrides?.model ?? this.getModelForRole(stage, context.task);
     const prefix = context.taskPrefix;
     console.log(`[${prefix}] Stage starting: ${stage}`);
-    this.emit('stage:start', { stage, context });
+    this.emit('stage:start', { stage, context, model: stageModel });
     broadcastEvent({ type: 'pipeline:stage', data: { taskId: context.task.id, stage, status: 'start', model: stageModel } });
 
     if (this.config.verbose) {

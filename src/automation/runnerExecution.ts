@@ -9,6 +9,8 @@ import type { ExecutorResult } from '../orchestration/workflow.js';
 import type { PipelineResult } from '../agents/pairPipeline.js';
 import type { DefaultRolesConfig, PipelineStage, JobProfile } from '../core/types.js';
 import { createPipelineFromConfig, buildTaskPrefix } from '../agents/pairPipeline.js';
+import type { WorkerResult } from '../agents/agentPair.js';
+import { buildWorkerStartComment, buildWorkerCompleteComment } from './workerAuditLog.js';
 import { formatParsedTaskSummary, loadParsedTask } from '../orchestration/taskParser.js';
 import { saveCognitiveMemory } from '../memory/index.js';
 import * as workerAgent from '../agents/worker.js';
@@ -644,8 +646,25 @@ export async function executePipeline(
 
     const taskPrefix = buildTaskPrefix(task, actualPath);
 
-    pipeline.on('stage:start', ({ stage }) => {
+    pipeline.on('stage:start', ({ stage, context, model }) => {
       console.log(`[${taskPrefix}] Stage started: ${stage}`);
+      // Audit trail: comment the worker instruction (prompt summary, target
+      // files, model/effort) on each worker run. Non-blocking — fire & forget.
+      if (stage === 'worker' && task.issueId) {
+        const draft = context?.config?.draftAnalysis;
+        const body = buildWorkerStartComment({
+          attempt: context?.currentIteration ?? 1,
+          maxAttempts: ctx.pairMaxAttempts ?? 3,
+          taskTitle: task.title,
+          taskGoal: draft?.intentSummary || task.description,
+          targetFiles: draft?.relevantFiles,
+          model: model || context?.config?.roles?.worker?.model,
+          maxTurns: context?.config?.roles?.worker?.maxTurns,
+          isRevision: (context?.currentIteration ?? 1) > 1,
+        });
+        void taskSource?.addComment(task.issueId, body).catch((err) =>
+          console.error(`[${taskPrefix}] Worker start audit comment failed:`, err));
+      }
     });
 
     const taskReportCtx = {
@@ -654,9 +673,23 @@ export async function executePipeline(
       projectPath: actualPath,
     };
 
-    pipeline.on('stage:complete', async ({ stage, result }) => {
+    pipeline.on('stage:complete', async ({ stage, result, context }) => {
       console.log(`[${taskPrefix}] Stage completed: ${stage}, success=${result.success}`);
       await reportStageResult(stage, result, ctx.reportToDiscord, taskReportCtx);
+      // Audit trail: comment the actions taken (files changed, commands run,
+      // confidence, halt reason) on each worker run.
+      if (stage === 'worker' && task.issueId) {
+        try {
+          await taskSource?.addComment(task.issueId, buildWorkerCompleteComment({
+            attempt: context?.currentIteration ?? 1,
+            maxAttempts: ctx.pairMaxAttempts ?? 3,
+            result: result.result as WorkerResult,
+            durationSec: Math.floor((result.duration ?? 0) / 1000),
+          }));
+        } catch (err) {
+          console.error(`[${taskPrefix}] Worker complete audit comment failed:`, err);
+        }
+      }
     });
 
     pipeline.on('revision:start', ({ stage }) => {
