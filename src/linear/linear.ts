@@ -7,6 +7,9 @@ import type { LinearIssueInfo, LinearProjectInfo } from '../core/types.js';
 import { getDateLocale, getLocale } from '../locale/index.js';
 import { setLinearClient } from './projectUpdater.js';
 import { withRateLimit } from '../support/rateLimiter.js';
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 /**
  * Extract project info from an issue
@@ -1317,6 +1320,37 @@ export async function getStuckIssues(): Promise<{
       reason,
     });
   }
+
+  // OpenSwarm-side blocks the Linear label / 7-day criteria MISS: rejection-limit and failure-max
+  // blocks live in rejection-state.json (no Linear label), and blocked tasks bounce
+  // Todo↔In-Progress every ~10min so they never sit In-Progress for 7 days. Read them directly so a
+  // blocked task (e.g. INT-1645 at 3 rejections) actually surfaces in FAILED.
+  try {
+    const seen = new Set(failedIssues.map((f) => f.id));
+    const rej = JSON.parse(
+      readFileSync(join(homedir(), '.claude', 'openswarm-rejection-state.json'), 'utf8'),
+    ) as { rejections?: Record<string, { count?: number }> };
+    for (const [issueId, entry] of Object.entries(rej.rejections ?? {})) {
+      if ((entry.count ?? 0) < 3 || seen.has(issueId)) continue;
+      const issue = await withRateLimit('linear', () => linear.issue(issueId)).catch(() => null);
+      if (!issue) continue;
+      const st = await issue.state;
+      if (st && ['Done', 'Canceled'].includes(st.name)) continue;
+      const [labels, comments, project] = await Promise.all([issue.labels(), issue.comments(), getProjectInfo(issue)]);
+      failedIssues.push({
+        id: issue.id,
+        identifier: issue.identifier,
+        title: issue.title,
+        description: issue.description ?? undefined,
+        state: st?.name ?? 'Unknown',
+        priority: issue.priority,
+        labels: labels.nodes.map((l) => l.name),
+        comments: comments.nodes.map((c) => ({ id: c.id, body: c.body, createdAt: c.createdAt.toISOString(), user: undefined })),
+        project,
+        reason: `OpenSwarm blocked: ${entry.count} reviewer rejections`,
+      });
+    }
+  } catch { /* no rejection-state file yet */ }
 
   return {
     stuckIssues: stuckIssues.sort((a, b) => b.stuckDays - a.stuckDays),
