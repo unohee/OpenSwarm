@@ -278,11 +278,12 @@ ${draftSection}${kgSection}
 이 작업을 분석하고, ${targetMinutes}분 이내에 완료할 수 있는 단위로 분해하라.
 
 ## Analysis Steps
-1. 작업 범위 파악
-2. 필요한 단계 나열
-3. 각 단계의 예상 시간 추정
-4. ${targetMinutes}분 초과 시 더 작은 단위로 분해
-5. 의존성 관계 파악
+1. **먼저 코드를 읽어라 (필수)** — 위 "관련 파일"과 영향 모듈을 read_file/search_files로 실제 열어 관련 함수·구조·시그니처를 확인하라. 아래 description의 "## 조사"에 file:line을 인용하려면 추측이 아니라 *읽은 근거*가 있어야 한다. 이 단계를 건너뛰면 description이 부실한 한 줄 지시가 되어 워커가 재탐색에 갇힌다.
+2. 작업 범위 파악
+3. 필요한 단계 나열
+4. 각 단계의 예상 시간 추정
+5. ${targetMinutes}분 초과 시 더 작은 단위로 분해
+6. 의존성 관계 파악
 
 ## Guidelines
 - 각 sub-task는 독립적으로 테스트/검증 가능해야 함

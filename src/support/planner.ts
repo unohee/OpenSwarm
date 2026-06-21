@@ -112,7 +112,11 @@ export async function runPlanner(options: PlannerOptions): Promise<PlannerResult
       maxTurns: options.maxTurns ?? 15,
       onLog: options.onLog ? (line: string) => options.onLog!(humanizePlannerOutput(line)) : undefined,
       systemPrompt: getPrompts().systemPrompt,
-      // Planner is a judgment role — keep reasoning ON (unlike the worker).
+      // Planner is a judgment role — run reasoning at HIGH effort (unlike the worker). The
+      // decomposition must cite real code (file:line), which needs the model to actually read and
+      // reason over the repo; high effort is worth it for a once-per-task planning call. ('xhigh'
+      // doesn't exist — codex-responses caps at 'high'.)
+      reasoningEffort: 'high',
     });
 
     if (raw.exitCode !== 0 && !raw.stdout.trim()) {

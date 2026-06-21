@@ -14,7 +14,8 @@ import { getLocale } from '../locale/index.js';
 // (hidden from humans) while `parseTaskStateSyncComment` can still recover it. The old
 // format used a closed marker + a fenced ```json block (visible); the parser stays
 // backward-compatible with it.
-const TASK_STATE_MARKER = '<!-- openswarm:task-state:v1';
+// Comments no longer embed machine state (Linear shows raw HTML comments), so the marker is no
+// longer written. parseTaskStateSyncComment still matches the literal for old-comment back-compat.
 
 const TaskExecutionStatusSchema = z.enum([
   'backlog',
@@ -438,15 +439,11 @@ export function buildTaskStateSyncComment(state: OpenSwarmTaskState, headline: s
   const entry = STATE_MESSAGES[headline];
   const message = entry ? entry[locale](state) : headline;
 
-  // Natural-language line for humans, then the machine state hidden inside an HTML
-  // comment (renders as nothing in Linear, still recoverable by the parser).
-  return [
-    `🧭 ${message}`,
-    '',
-    TASK_STATE_MARKER,
-    JSON.stringify(state, null, 2),
-    '-->',
-  ].join('\n');
+  // Human-readable line ONLY. We used to append the machine state inside an HTML comment, but
+  // Linear's markdown does NOT hide HTML comments — the raw JSON showed up in the comment body.
+  // Task state is persisted locally (~/.openswarm task store), so the comment doesn't need to
+  // carry it. parseTaskStateSyncComment still reads old comments (back-compat) for hydration.
+  return `🧭 ${message}`;
 }
 
 export function parseTaskStateSyncComment(body: string): OpenSwarmTaskState | null {

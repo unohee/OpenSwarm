@@ -287,11 +287,12 @@ ${draftSection}${kgSection}
 Analyze this task and decompose it into units completable within ${targetMinutes} minutes.
 
 ## Analysis Steps
-1. Understand the scope of work
-2. List required steps
-3. Estimate time for each step
-4. Decompose further if exceeding ${targetMinutes} minutes
-5. Identify dependencies
+1. **Read the code FIRST (required)** — open the "Likely files" and affected modules above with read_file/search_files and confirm the relevant functions, structures, and signatures. To cite file:line in each description's "## Investigation" section you need *evidence you actually read*, not guesses. Skip this and the description degrades into a one-line instruction that traps the worker in re-discovery.
+2. Understand the scope of work
+3. List required steps
+4. Estimate time for each step
+5. Decompose further if exceeding ${targetMinutes} minutes
+6. Identify dependencies
 
 ## Guidelines
 - Each sub-task must be independently testable/verifiable
