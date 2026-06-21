@@ -33,7 +33,7 @@ export interface LocalCIResult {
 /** A gate step: its exit code decides pass/fail (lint/typecheck/test all exit non-zero on issues). */
 interface Step { cmd: string; args: string[]; label: string }
 
-function detectSteps(projectPath: string): Step[] {
+export function detectSteps(projectPath: string): Step[] {
   const has = (f: string) => existsSync(join(projectPath, f));
   const isPython = has('pyproject.toml') || has('setup.py') || has('requirements.txt');
   const isNode = has('package.json');
@@ -52,7 +52,7 @@ function detectSteps(projectPath: string): Step[] {
   return [];
 }
 
-const isMissingTool = (s: string) => /command not found|ENOENT|not found|No such file/i.test(s);
+export const isMissingTool = (s: string) => /command not found|ENOENT|not found|No such file/i.test(s);
 
 /**
  * Check out `branch` in `projectPath` and run the detected CI steps. Missing tools (e.g. ruff not

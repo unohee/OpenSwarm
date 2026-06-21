@@ -9,15 +9,17 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { AdapterName } from '../adapters/types.js';
 
-const OVERRIDE_DIR = join(homedir(), '.config', 'openswarm');
-const OVERRIDE_PATH = join(OVERRIDE_DIR, 'provider-override.json');
+// Computed per-call (not captured at module load) so it follows $HOME — correct if the home dir
+// ever changes, and lets tests redirect to a temp dir instead of the real config.
+const overrideDir = () => join(homedir(), '.config', 'openswarm');
+const overridePath = () => join(overrideDir(), 'provider-override.json');
 const VALID: readonly AdapterName[] = ['codex', 'codex-responses', 'gpt', 'local', 'lmstudio', 'openrouter', 'claude'];
 
 /** The provider the user last selected via the dashboard, or undefined if never toggled. */
 export function readProviderOverride(): AdapterName | undefined {
   try {
-    if (!existsSync(OVERRIDE_PATH)) return undefined;
-    const { provider } = JSON.parse(readFileSync(OVERRIDE_PATH, 'utf8')) as { provider?: string };
+    if (!existsSync(overridePath())) return undefined;
+    const { provider } = JSON.parse(readFileSync(overridePath(), 'utf8')) as { provider?: string };
     return VALID.includes(provider as AdapterName) ? (provider as AdapterName) : undefined;
   } catch {
     return undefined;
@@ -27,8 +29,8 @@ export function readProviderOverride(): AdapterName | undefined {
 /** Record the user's provider choice so it survives a restart. Best-effort — never blocks the toggle. */
 export function writeProviderOverride(provider: AdapterName): void {
   try {
-    mkdirSync(OVERRIDE_DIR, { recursive: true });
-    writeFileSync(OVERRIDE_PATH, `${JSON.stringify({ provider }, null, 2)}\n`, 'utf8');
+    mkdirSync(overrideDir(), { recursive: true });
+    writeFileSync(overridePath(), `${JSON.stringify({ provider }, null, 2)}\n`, 'utf8');
   } catch {
     /* persistence is an optimization — a failed write must not break the switch */
   }
