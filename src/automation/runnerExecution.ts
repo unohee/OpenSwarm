@@ -622,9 +622,12 @@ export async function executePipeline(
         onLog: (line) => broadcastEvent({ type: 'log', data: { taskId, stage: 'draft', line } }),
       });
 
+      // draft only ANALYZES files (it changes nothing), so report "analyzed" and do NOT set
+      // filesChangedCount — otherwise the dashboard appends "· N files" to a summary that
+      // already says "N files" (the "9 files · 9 files" duplicate) and reads as if draft
+      // edited code, which the worker's real changed-file count then contradicts.
       broadcastEvent({ type: 'pipeline:stage', data: { taskId, stage: 'draft', status: 'complete',
-        summary: `type=${draftResult.taskType}, ${draftResult.relevantFiles.length} files`,
-        filesChangedCount: draftResult.relevantFiles.length } });
+        summary: `type=${draftResult.taskType} · ${draftResult.relevantFiles.length} files analyzed` } });
       console.log(`[AutonomousRunner] Draft: type=${draftResult.taskType}, files=${draftResult.relevantFiles.length}, ${draftResult.durationMs}ms`);
     } catch (err) {
       console.warn('[AutonomousRunner] Draft analysis failed (non-blocking):', err);
