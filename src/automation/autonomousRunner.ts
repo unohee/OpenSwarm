@@ -16,8 +16,6 @@ import {
   formatRetryTime,
   getDailyPaceInfo,
   recordProjectCompletion,
-  canProjectAcceptTask,
-  getProjectWindowCount,
   type TaskState,
   type ProjectInfo,
 } from './runnerState.js';
@@ -795,14 +793,10 @@ export class AutonomousRunner {
         continue;
       }
 
-      // 프로젝트별 5시간 윈도우 cap 체크
-      const projName = task.linearProject?.name ?? 'unknown';
-      const perProjectCap = this.config.dailyTaskCap ?? 6;
-      if (!canProjectAcceptTask(projName, perProjectCap)) {
-        const count = getProjectWindowCount(projName);
-        this.syslog(`  ⏸ ${projName}: ${count}/${perProjectCap} tasks in 5h window — throttled`);
-        continue;
-      }
+      // 프로젝트별 5시간 윈도우 cap (removed): the global pace gate (§1.6) was already removed by
+      // user request; this remaining per-project 5h cap (dailyTaskCap, default 6) was the source of
+      // "N/6 tasks in 5h window — throttled". Removed too — throughput is governed only by the cron
+      // schedule and the Linear rate limiter, not by an internal completion cap.
 
       candidates.push({ task, projectPath });
     }
