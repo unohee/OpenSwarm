@@ -80,6 +80,9 @@ export interface TaskOutcomeInput {
   rejectionFeedback?: string;
   /** Pipeline iteration count (1 = passed on the first attempt) */
   iterations?: number;
+  /** Reviewer-led retrospective (INT-1613): follow-ups/suggestions the reviewer flagged even on
+   *  APPROVE — stored as a 'strategy' so future workers see what to revisit. */
+  reviewerLearnings?: string[];
 }
 
 /**
@@ -129,6 +132,21 @@ export async function recordTaskOutcome(
       parts.join('\n'),
       { derivedFrom: outcome.derivedFrom, isVerified: true, skipDistillation: true },
     );
+
+    // INT-1613: reviewer-led retrospective — persist the follow-ups/suggestions the reviewer flagged
+    // (even on approve) so the next worker on this repo sees what to revisit. No extra LLM call: it
+    // reuses the reviewer's already-structured output (recommendedActions + suggestions, INT-1611).
+    const learnings = (outcome.reviewerLearnings ?? []).map((l) => l.trim()).filter(Boolean);
+    if (learnings.length > 0) {
+      await saveMemory(
+        'strategy',
+        repo,
+        `Follow-ups: ${outcome.taskTitle.slice(0, 80)}`,
+        `After approving "${outcome.taskTitle}", the reviewer flagged follow-ups to revisit:\n` +
+        learnings.slice(0, 8).map((l) => `- ${l.slice(0, 200)}`).join('\n'),
+        { derivedFrom: outcome.derivedFrom, isVerified: true, skipDistillation: true },
+      );
+    }
   } catch (err) {
     // Memory write failures must never stop the pipeline
     console.warn('[RepoKnowledge] recordTaskOutcome failed (non-critical):', err);

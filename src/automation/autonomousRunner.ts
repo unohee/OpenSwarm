@@ -961,6 +961,13 @@ export class AutonomousRunner {
               derivedFrom: task.issueIdentifier ?? task.issueId,
               workerResult: result.workerResult,
               iterations: result.iterations,
+              // INT-1613: persist the reviewer's follow-ups (recommendedActions + suggestions) as
+              // a retrospective so the next worker sees what to revisit.
+              reviewerLearnings: [
+                ...(result.reviewResult?.recommendedActions?.map(
+                  (a) => `[${a.type}] ${a.title}${a.file ? ` (${a.file})` : ''}`) ?? []),
+                ...(result.reviewResult?.suggestions ?? []),
+              ],
             });
           }
         } else if (result.finalStatus === 'rejected') {
