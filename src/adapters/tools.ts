@@ -251,7 +251,10 @@ export interface ToolExecOptions {
   bashTimeoutMs?: number;
 }
 
-const DEFAULT_BASH_TIMEOUT_MS = 30000;
+// 120s, not 30s: workers must actually RUN scripts/benchmarks/tests to produce result
+// artifacts (e.g. INT-1639/1652 load a BGE-M3 model + embed queries, well over 30s). A short
+// timeout killed the run, the report never got generated, and the task looped on revision.
+const DEFAULT_BASH_TIMEOUT_MS = 120000;
 
 function isProtected(resolved: string, protectedFiles?: string[]): boolean {
   if (!protectedFiles?.length) return false;
