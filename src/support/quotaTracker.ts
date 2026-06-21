@@ -44,48 +44,11 @@ function readAccessToken(): string | null {
 }
 
 export async function fetchQuota(): Promise<QuotaInfo | null> {
-  // Return cache if fresh
-  if (cached && Date.now() - cached.fetched_at < CACHE_TTL_MS) {
-    return cached;
-  }
-
-  const token = readAccessToken();
-  if (!token) {
-    console.warn('[QuotaTracker] No OAuth token found');
-    return cached; // return stale cache if available
-  }
-
-  try {
-    const res = await fetch('https://api.anthropic.com/api/oauth/usage', {
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'anthropic-beta': 'oauth-2025-04-20',
-      },
-      signal: AbortSignal.timeout(10000),
-    });
-
-    if (!res.ok) {
-      const body = await res.text();
-      console.warn(`[QuotaTracker] API error ${res.status}: ${body.slice(0, 200)}`);
-      return cached;
-    }
-
-    const data = await res.json() as Record<string, unknown>;
-
-    cached = {
-      five_hour: data.five_hour as QuotaWindow | null,
-      seven_day: data.seven_day as QuotaWindow | null,
-      seven_day_opus: data.seven_day_opus as QuotaWindow | null,
-      seven_day_sonnet: data.seven_day_sonnet as QuotaWindow | null,
-      extra_usage: data.extra_usage as QuotaExtraUsage | null,
-      fetched_at: Date.now(),
-    };
-
-    return cached;
-  } catch (err) {
-    console.warn('[QuotaTracker] Fetch failed:', (err as Error).message);
-    return cached;
-  }
+  // Anthropic usage polling removed: the worker runs on codex/openrouter, not Claude Max, so
+  // hitting api.anthropic.com/oauth/usage only produced 401/429 noise (the gate that used it was
+  // already removed). The quota widget is disabled — /api/quota returns null.
+  void cached; void CACHE_TTL_MS; void readAccessToken; // kept to avoid churn; intentionally unused
+  return null;
 }
 
 /**
