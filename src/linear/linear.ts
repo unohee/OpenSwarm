@@ -687,8 +687,11 @@ User intervention required
 Time: ${timestamp}`;
 
   await addComment(issueId, body);
-  // Use 'Todo' instead of 'Blocked' (Blocked state may not exist in team workflow)
-  await updateIssueState(issueId, 'Todo');
+  // Do NOT change state here. The CALLER decides: the max-retry/rejection block path sets
+  // 'Backlog' (non-recoverable, so the block sticks). Previously this forced 'Todo', which
+  // filterAlreadyProcessed then "recovered" every heartbeat — un-blocking the task, looping it
+  // forever, hiding it from STUCK (looked like a normal Todo/In-Progress issue), and starving the
+  // backlog. The comment alone records the block for humans.
 }
 
 // Pair Mode Linear Integration
