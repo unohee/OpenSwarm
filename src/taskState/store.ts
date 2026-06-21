@@ -7,8 +7,14 @@ import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { z } from 'zod';
 import type { TaskItem } from '../orchestration/decisionEngine.js';
+import { getLocale } from '../locale/index.js';
 
-const TASK_STATE_MARKER = '<!-- openswarm:task-state:v1 -->';
+// Opening of the HTML comment that carries the machine-readable task state. The JSON
+// follows on the next lines and is closed by `-->`, so it renders as nothing in Linear
+// (hidden from humans) while `parseTaskStateSyncComment` can still recover it. The old
+// format used a closed marker + a fenced ```json block (visible); the parser stays
+// backward-compatible with it.
+const TASK_STATE_MARKER = '<!-- openswarm:task-state:v1';
 
 const TaskExecutionStatusSchema = z.enum([
   'backlog',
@@ -386,36 +392,80 @@ export function completeParentIfChildrenDone(childIssueId: string): OpenSwarmTas
   });
 }
 
-export function buildTaskStateSyncComment(state: OpenSwarmTaskState, headline: string): string {
-  const deps = state.dependencyIssueIds.length > 0 ? state.dependencyIssueIds.join(', ') : '(none)';
-  const children = state.childIssueIds.length > 0 ? state.childIssueIds.join(', ') : '(none)';
+// Human-readable, locale-aware messages for each runner state transition, keyed by the
+// headline the runner passes. Replaces the old mechanical bullet dump (Status/Linear
+// state/Parent/Dependencies/Children) with a natural-language sentence that folds in the
+// few facts that matter (child count, block reason). Follows config.language via
+// getLocale(); falls back to the raw headline for an unknown key.
+const STATE_MESSAGES: Record<
+  string,
+  { en: (s: OpenSwarmTaskState) => string; ko: (s: OpenSwarmTaskState) => string }
+> = {
+  'Parent task decomposed': {
+    en: (s) =>
+      `Decomposed into ${s.childIssueIds.length} sub-task(s). The actual implementation happens in each child issue; this parent closes automatically once all of them are done.`,
+    ko: (s) =>
+      `이 작업을 ${s.childIssueIds.length}개의 하위 작업으로 분해했습니다. 실제 구현은 각 하위 이슈에서 진행되며, 모두 완료되면 이 상위 작업이 자동으로 종료됩니다.`,
+  },
+  'Task execution started': {
+    en: () =>
+      `Started working on this issue — the worker/reviewer pipeline is running in an isolated git worktree.`,
+    ko: () =>
+      `이 이슈 작업을 시작했습니다 — 격리된 git worktree에서 worker/reviewer 파이프라인이 실행 중입니다.`,
+  },
+  'Task completed': {
+    en: () => `Work is complete. See the detailed worker/reviewer report above.`,
+    ko: () => `작업을 완료했습니다. 위의 상세 worker/reviewer 보고서를 참고하세요.`,
+  },
+  'Task blocked': {
+    en: (s) =>
+      `This task is blocked${s.execution.blockedReason ? `: ${s.execution.blockedReason}` : ''}. It will resume automatically once the blocker clears.`,
+    ko: (s) =>
+      `이 작업이 차단되었습니다${s.execution.blockedReason ? `: ${s.execution.blockedReason}` : ''}. 차단 요인이 해소되면 자동으로 재개됩니다.`,
+  },
+  'All child tasks completed': {
+    en: () => `All sub-tasks are complete, so this parent task is now closed.`,
+    ko: () => `모든 하위 작업이 완료되어 이 상위 작업을 종료합니다.`,
+  },
+  'Task unblocked and ready': {
+    en: () => `Dependencies resolved — this task is unblocked and queued to run.`,
+    ko: () => `의존성이 해소되어 이 작업의 차단이 풀렸고 실행 대기열에 들어갔습니다.`,
+  },
+};
 
+export function buildTaskStateSyncComment(state: OpenSwarmTaskState, headline: string): string {
+  const locale = getLocale() === 'ko' ? 'ko' : 'en';
+  const entry = STATE_MESSAGES[headline];
+  const message = entry ? entry[locale](state) : headline;
+
+  // Natural-language line for humans, then the machine state hidden inside an HTML
+  // comment (renders as nothing in Linear, still recoverable by the parser).
   return [
-    `🧭 **[OpenSwarm] ${headline}**`,
-    '',
-    `- Status: \`${state.execution.status}\``,
-    `- Linear state: \`${state.linearState || 'unknown'}\``,
-    `- Parent: \`${state.parentIssueId || 'none'}\``,
-    `- Dependencies: \`${deps}\``,
-    `- Children: \`${children}\``,
+    `🧭 ${message}`,
     '',
     TASK_STATE_MARKER,
-    '```json',
     JSON.stringify(state, null, 2),
-    '```',
+    '-->',
   ].join('\n');
 }
 
 export function parseTaskStateSyncComment(body: string): OpenSwarmTaskState | null {
-  if (!body.includes(TASK_STATE_MARKER)) return null;
-  const match = body.match(/```json\s*([\s\S]*?)\s*```/);
-  if (!match) return null;
+  if (!body.includes('openswarm:task-state:v1')) return null;
 
-  try {
-    return OpenSwarmTaskStateSchema.parse(JSON.parse(match[1]));
-  } catch {
-    return null;
+  // New format: JSON lives inside the HTML comment (marker … -->).
+  // Old format: a fenced ```json block after a closed marker. Try both.
+  const hidden = body.match(/openswarm:task-state:v1\s*([\s\S]*?)\s*-->/);
+  const fenced = body.match(/```json\s*([\s\S]*?)\s*```/);
+
+  for (const candidate of [hidden?.[1], fenced?.[1]]) {
+    if (!candidate || !candidate.trim().startsWith('{')) continue;
+    try {
+      return OpenSwarmTaskStateSchema.parse(JSON.parse(candidate));
+    } catch {
+      // try the next candidate
+    }
   }
+  return null;
 }
 
 export function hydrateTaskStateFromComments(

@@ -4,7 +4,7 @@
 
 import { LinearClient } from '@linear/sdk';
 import type { LinearIssueInfo, LinearProjectInfo } from '../core/types.js';
-import { getDateLocale } from '../locale/index.js';
+import { getDateLocale, getLocale } from '../locale/index.js';
 import { setLinearClient } from './projectUpdater.js';
 import { withRateLimit } from '../support/rateLimiter.js';
 
@@ -801,30 +801,46 @@ export async function logPairComplete(
     : '(none)';
 
   // Build sections
+  // Locale-aware labels (follows config.language). The dynamic values (worker summary,
+  // reviewer feedback, etc.) are the worker's own output and are left untouched.
+  const ko = getLocale() === 'ko';
+  const L = ko
+    ? {
+        workerReport: '## 🔨 작업자 보고', whatDone: '**수행한 작업:**', commands: '**실행한 명령:**',
+        reviewerReport: '## ✅ 리뷰어 보고', decision: '**판정:**', feedback: '**피드백:**',
+        testResults: '## 🧪 테스트 결과', passed: '통과', coverage: '커버리지',
+        failedTests: '**실패한 테스트:**', andMore: (n: number) => `- … 외 ${n}건`,
+        remaining: '## 📋 남은 작업', title: '✅ **[자동화] 작업 완료**', session: '🆔 세션',
+        completed: '⏰ 완료', summary: '**📊 요약:**', iterations: '🔄 반복',
+        duration: '⏱️ 소요 시간', filesChanged: '📁 변경 파일 수', changedFiles: '**변경된 파일:**',
+        footer: '_Worker/Reviewer/Tester 파이프라인 자동 생성_',
+      }
+    : {
+        workerReport: '## 🔨 Worker Report', whatDone: '**What was done:**', commands: '**Commands executed:**',
+        reviewerReport: '## ✅ Reviewer Report', decision: '**Decision:**', feedback: '**Feedback:**',
+        testResults: '## 🧪 Test Results', passed: 'Passed', coverage: 'Coverage',
+        failedTests: '**Failed tests:**', andMore: (n: number) => `- ... and ${n} more`,
+        remaining: '## 📋 Remaining Work', title: '✅ **[Automation] Task Complete**', session: '🆔 Session',
+        completed: '⏰ Completed', summary: '**📊 Summary:**', iterations: '🔄 Iterations',
+        duration: '⏱️ Duration', filesChanged: '📁 Files changed', changedFiles: '**Changed files:**',
+        footer: '_Automated by Worker/Reviewer/Tester pipeline_',
+      };
+
   const sections = [];
 
   // Worker section
   if (stats.workerSummary) {
-    sections.push(`## 🔨 Worker Report
-
-**What was done:**
-${stats.workerSummary}`);
+    sections.push(`${L.workerReport}\n\n${L.whatDone}\n${stats.workerSummary}`);
 
     if (stats.workerCommands && stats.workerCommands.length > 0) {
       const cmdStr = stats.workerCommands.slice(0, 5).map(c => `- \`${c}\``).join('\n');
-      sections.push(`**Commands executed:**
-${cmdStr}`);
+      sections.push(`${L.commands}\n${cmdStr}`);
     }
   }
 
   // Reviewer section
   if (stats.reviewerFeedback) {
-    sections.push(`## ✅ Reviewer Report
-
-**Decision:** ${stats.reviewerDecision || 'APPROVE'}
-
-**Feedback:**
-${stats.reviewerFeedback}`);
+    sections.push(`${L.reviewerReport}\n\n${L.decision} ${stats.reviewerDecision || 'APPROVE'}\n\n${L.feedback}\n${stats.reviewerFeedback}`);
   }
 
   // Tester section
@@ -833,19 +849,17 @@ ${stats.reviewerFeedback}`);
     const totalTests = passed + failed;
     const passRate = totalTests > 0 ? ((passed / totalTests) * 100).toFixed(1) : '0';
 
-    let testSection = `## 🧪 Test Results
-
-- ✅ Passed: ${passed}/${totalTests} (${passRate}%)`;
+    let testSection = `${L.testResults}\n\n- ✅ ${L.passed}: ${passed}/${totalTests} (${passRate}%)`;
 
     if (coverage !== undefined) {
-      testSection += `\n- 📊 Coverage: ${coverage.toFixed(1)}%`;
+      testSection += `\n- 📊 ${L.coverage}: ${coverage.toFixed(1)}%`;
     }
 
     if (failed > 0 && failedTests && failedTests.length > 0) {
       const failedStr = failedTests.slice(0, 3).map(t => `- ❌ ${t}`).join('\n');
-      testSection += `\n\n**Failed tests:**\n${failedStr}`;
+      testSection += `\n\n${L.failedTests}\n${failedStr}`;
       if (failedTests.length > 3) {
-        testSection += `\n- ... and ${failedTests.length - 3} more`;
+        testSection += `\n${L.andMore(failedTests.length - 3)}`;
       }
     }
 
@@ -854,22 +868,20 @@ ${stats.reviewerFeedback}`);
 
   // Remaining work section
   if (stats.remainingWork) {
-    sections.push(`## 📋 Remaining Work
-
-${stats.remainingWork}`);
+    sections.push(`${L.remaining}\n\n${stats.remainingWork}`);
   }
 
-  const body = `✅ **[Automation] Task Complete**
+  const body = `${L.title}
 
-🆔 Session: \`${sessionId}\`
-⏰ Completed: ${timestamp}
+${L.session}: \`${sessionId}\`
+${L.completed}: ${timestamp}
 
-**📊 Summary:**
-- 🔄 Iterations: ${stats.attempts}
-- ⏱️ Duration: ${durationStr}
-- 📁 Files changed: ${stats.filesChanged.length}
+${L.summary}
+- ${L.iterations}: ${stats.attempts}
+- ${L.duration}: ${durationStr}
+- ${L.filesChanged}: ${stats.filesChanged.length}
 
-**Changed files:**
+${L.changedFiles}
 ${filesStr}
 
 ---
@@ -877,7 +889,7 @@ ${filesStr}
 ${sections.join('\n\n---\n\n')}
 
 ---
-_Automated by Worker/Reviewer/Tester pipeline_`;
+${L.footer}`;
 
   await addComment(issueId, body);
   await updateIssueState(issueId, 'Done');
