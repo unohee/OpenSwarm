@@ -31,6 +31,7 @@ import {
   createPipelineFromConfig,
 } from '../agents/pairPipeline.js';
 import { getScheduler } from '../orchestration/taskScheduler.js';
+import { ensureCIWorkflow } from '../support/worktreeManager.js';
 import { reportEvent } from '../discord/index.js';
 import type { TaskItem } from '../orchestration/decisionEngine.js';
 import type { DefaultRolesConfig, ConflictResolverConfig } from '../core/types.js';
@@ -208,6 +209,7 @@ export class PRProcessor {
           }
 
           // If no conflicts and no review feedback, check CI status — only process PRs with failures
+          let needsCI = false;
           if (!hasConflicts && !hasReviewFeedback) {
             const { getPRChecks } = await import('../github/index.js');
             const checks = await getPRChecks(repo, pr.number);
@@ -221,6 +223,11 @@ export class PRProcessor {
               console.log(`[PRProcessor] ${key}: no conflicts, no review feedback, CI passing — ready for manual merge, skipping`);
               continue;
             }
+            if (checks.length === 0) {
+              // PR has NO CI checks at all (e.g. an older PR opened before CI auto-add).
+              // Add a default CI workflow to its branch so it gets an objective gate.
+              needsCI = true;
+            }
           } else if (hasConflicts) {
             console.log(`[PRProcessor] ${key}: merge conflicts detected, will attempt resolution`);
           } else if (hasReviewFeedback) {
@@ -231,6 +238,12 @@ export class PRProcessor {
           const projectPath = this.mapRepoToProject(repo);
           if (!projectPath) {
             console.log(`[PRProcessor] ${key}: no local project found, skipping`);
+            continue;
+          }
+
+          // A CI-less PR just needs a workflow added to its branch — no worker run.
+          if (needsCI) {
+            await this.addCIWorkflowToPR(pr.branch, projectPath, key);
             continue;
           }
 
@@ -302,6 +315,43 @@ export class PRProcessor {
       // Broadcast end event
       const { broadcastEvent } = await import('../core/eventHub.js');
       broadcastEvent({ type: 'pr_processor_end', data: { lastRun: this.lastRun, nextRun: this.nextRun } });
+    }
+  }
+
+  /**
+   * Add a default CI workflow to a PR that has no CI checks at all, so it gets an
+   * objective gate. Checks out the PR branch, writes ci.yml (language-detected),
+   * commits and pushes. No worker run — this is pure tooling. The merge decision
+   * still stays with the human; we only ensure CI exists.
+   */
+  private async addCIWorkflowToPR(branch: string, projectPath: string, key: string): Promise<void> {
+    let originalBranch = '';
+    try {
+      originalBranch = (await gitExec(projectPath, 'rev-parse', '--abbrev-ref', 'HEAD')).trim();
+      await gitExec(projectPath, 'fetch', 'origin', branch);
+      try {
+        await gitExec(projectPath, 'stash', 'push', '-u', '-m', `PRProcessor CI-add for ${key}`);
+      } catch {
+        // Nothing to stash
+      }
+      await gitExec(projectPath, 'checkout', branch);
+
+      const added = ensureCIWorkflow(projectPath);
+      if (added) {
+        await gitExec(projectPath, 'add', '.github/workflows');
+        await gitExec(projectPath, 'commit', '-m', 'ci: add CI workflow (auto-added by OpenSwarm)');
+        await gitExec(projectPath, 'push', 'origin', branch);
+        console.log(`[PRProcessor] ${key}: added CI workflow → pushed to ${branch}`);
+      } else {
+        console.log(`[PRProcessor] ${key}: CI already present or unknown language — no workflow added`);
+      }
+    } catch (e) {
+      console.warn(`[PRProcessor] ${key}: failed to add CI workflow:`, e instanceof Error ? e.message : e);
+    } finally {
+      if (originalBranch) {
+        await gitExec(projectPath, 'checkout', originalBranch).catch(() => {});
+        await gitExec(projectPath, 'stash', 'pop').catch(() => {});
+      }
     }
   }
 

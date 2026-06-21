@@ -31,7 +31,7 @@ async function gh(cwd: string, ...args: string[]): Promise<string> {
  * the path written, or null if a workflow already exists or the language is unknown
  * (we don't guess). Steps use `|| true` so a missing tool doesn't red-X the whole run.
  */
-function ensureCIWorkflow(worktreePath: string): string | null {
+export function ensureCIWorkflow(worktreePath: string): string | null {
   const wfDir = `${worktreePath}/.github/workflows`;
   // Skip only if a PR-triggered CI TEST workflow already exists. A build/release
   // workflow (on: push, no test gate — e.g. vega-agent's build-windows.yml) does NOT
