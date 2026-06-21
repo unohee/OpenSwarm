@@ -320,6 +320,10 @@ export class AutonomousRunner {
       if (task.issueId) {
         const count = (this.failedTaskCounts.get(task.issueId) ?? 0) + 1;
         this.failedTaskCounts.set(task.issueId, count);
+        // Persist on EVERY increment. Previously saveTaskState ran only in the >=MAX block below,
+        // so a count of 1 never hit disk — a frequently-restarted daemon reset mid-count and never
+        // accumulated to the block threshold (looked like the same task looping forever).
+        this.saveTaskState();
 
         if (count >= AutonomousRunner.MAX_RETRY_COUNT) {
           // Max retries exceeded - permanently block

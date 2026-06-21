@@ -1028,9 +1028,14 @@ export class PairPipeline extends EventEmitter {
       return { success: true };
     }
 
-    // maxIterations exceeded
+    // maxIterations exceeded. If the loop ran out because the reviewer kept asking for revisions
+    // (last decision 'revise'), classify as 'rejected' — NOT 'failed' — so the runner's rejection
+    // path runs: it records the reviewer feedback as a constraint memory (failure learning) and
+    // blocks after MAX_REJECTION_ATTEMPTS via the disk-persisted rejection store. A worker crash
+    // that never reached a review stays 'failed' (worker-failure path).
     console.log(`[${context.taskPrefix}] Max iterations (${maxIterations}) exceeded`);
-    agentPair.updateSessionStatus(context.session.id, 'failed');
+    const exhaustedByReview = context.reviewResult?.decision === 'revise';
+    agentPair.updateSessionStatus(context.session.id, exhaustedByReview ? 'rejected' : 'failed');
     return { success: false };
   }
 
