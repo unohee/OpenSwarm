@@ -247,19 +247,26 @@ export class PRProcessor {
             continue;
           }
 
-          // TaskScheduler concurrency check
-          try {
-            const scheduler = getScheduler();
-            if (scheduler.isProjectBusy(projectPath)) {
-              console.log(`[PRProcessor] ${key}: project busy (Linear task running)`);
-              continue;
+          // TaskScheduler concurrency check.
+          // Conflict resolution must NOT compete for task slots. When the backlog keeps all slots
+          // full, a conflicted PR would otherwise hit "no available slots" every cron run and
+          // never get resolved (the bug: CONFLICTING PRs #14~#27 piling up). Skip the slot gate
+          // for conflicts — resolution is a short, separate worktree merge, processed one PR at a
+          // time in this loop anyway.
+          if (!hasConflicts) {
+            try {
+              const scheduler = getScheduler();
+              if (scheduler.isProjectBusy(projectPath)) {
+                console.log(`[PRProcessor] ${key}: project busy (Linear task running)`);
+                continue;
+              }
+              if (!scheduler.hasAvailableSlot()) {
+                console.log(`[PRProcessor] ${key}: no available slots`);
+                break; // No available slots, stop entirely
+              }
+            } catch {
+              // Ignore if scheduler not initialized
             }
-            if (!scheduler.hasAvailableSlot()) {
-              console.log(`[PRProcessor] ${key}: no available slots`);
-              break; // No available slots, stop entirely
-            }
-          } catch {
-            // Ignore if scheduler not initialized
           }
 
           // Process PR
