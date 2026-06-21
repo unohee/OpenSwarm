@@ -158,7 +158,7 @@ export class ConflictResolver {
       if (!autoMerged) {
         // 5. Get conflicted files
         const conflictOutput = await gitExec(projectPath, 'diff', '--name-only', '--diff-filter=U');
-        const conflictedFiles = conflictOutput.trim().split('\n').filter(Boolean);
+        let conflictedFiles = conflictOutput.trim().split('\n').filter(Boolean);
 
         if (conflictedFiles.length === 0) {
           // No actual conflicts (maybe already resolved)
@@ -167,47 +167,63 @@ export class ConflictResolver {
           return false;
         }
 
-        console.log(`[ConflictResolver] ${key}: ${conflictedFiles.length} conflicted files: ${conflictedFiles.join(', ')}`);
-
-        // 6. Spawn worker to resolve conflicts
-        const workerResult = await runWorker({
-          taskTitle: `Resolve merge conflicts: ${pr.title}`,
-          taskDescription: [
-            `## Merge Conflict Resolution`,
-            ``,
-            `**PR:** #${pr.number} - ${pr.title}`,
-            `**Branch:** ${pr.branch} ← ${baseBranch}`,
-            ``,
-            `## Conflicted Files`,
-            conflictedFiles.map((f) => `- ${f}`).join('\n'),
-            ``,
-            `## Instructions`,
-            `1. Open each conflicted file and resolve the merge conflict markers (<<<<<<< HEAD, =======, >>>>>>> ...)`,
-            `2. Keep BOTH sides' changes where possible. When the same line was modified by both sides, prefer the HEAD (PR branch) version.`,
-            `3. After resolving each file, run \`git add <file>\` for each resolved file.`,
-            `4. Do NOT run git commit — only resolve conflicts and stage files.`,
-            `5. Do NOT modify any files that are not in the conflicted files list.`,
-            `6. Ensure the resolved code compiles and makes logical sense.`,
-          ].join('\n'),
-          projectPath,
-          model: this.config.workerModel,
-          timeoutMs: this.config.workerTimeoutMs || 300_000,
-        });
-
-        if (!workerResult.success) {
-          console.log(`[ConflictResolver] ${key}: worker failed - ${workerResult.error}`);
-          await gitExec(projectPath, 'merge', '--abort').catch(() => {});
-          await this.reportFailure(pr, `Worker failed: ${workerResult.error || 'unknown error'}`);
-          return false;
+        // 5b. Auto-resolve OpenSwarm's OWN metadata without a worker. .openswarm/* is regenerated
+        // every run and should never have been committed (older PRs predate the gitignore) — it's
+        // the cause of nearly every conflict here. git rm it from the merge so only real code
+        // conflicts reach the worker; if it was the ONLY conflict, the merge commit below finishes it.
+        const isMeta = (f: string) => f === '.openswarm' || f.startsWith('.openswarm/');
+        const metaConflicts = conflictedFiles.filter(isMeta);
+        if (metaConflicts.length > 0) {
+          for (const f of metaConflicts) {
+            await gitExec(projectPath, 'rm', '-r', '--force', '--', f).catch(() => {});
+          }
+          conflictedFiles = conflictedFiles.filter((f) => !isMeta(f));
+          console.log(`[ConflictResolver] ${key}: auto-removed ${metaConflicts.length} .openswarm metadata conflict(s)`);
         }
 
-        // 7. Verify all conflicts are resolved
-        const remaining = await gitExec(projectPath, 'diff', '--name-only', '--diff-filter=U').catch(() => '');
-        if (remaining.trim()) {
-          console.log(`[ConflictResolver] ${key}: unresolved files remain: ${remaining.trim()}`);
-          await gitExec(projectPath, 'merge', '--abort').catch(() => {});
-          await this.reportFailure(pr, `Unresolved conflicts remain: ${remaining.trim()}`);
-          return false;
+        // 6. Spawn a worker only if REAL (non-metadata) conflicts remain.
+        if (conflictedFiles.length > 0) {
+          console.log(`[ConflictResolver] ${key}: ${conflictedFiles.length} conflicted files: ${conflictedFiles.join(', ')}`);
+
+          const workerResult = await runWorker({
+            taskTitle: `Resolve merge conflicts: ${pr.title}`,
+            taskDescription: [
+              `## Merge Conflict Resolution`,
+              ``,
+              `**PR:** #${pr.number} - ${pr.title}`,
+              `**Branch:** ${pr.branch} ← ${baseBranch}`,
+              ``,
+              `## Conflicted Files`,
+              conflictedFiles.map((f) => `- ${f}`).join('\n'),
+              ``,
+              `## Instructions`,
+              `1. Open each conflicted file and resolve the merge conflict markers (<<<<<<< HEAD, =======, >>>>>>> ...)`,
+              `2. Keep BOTH sides' changes where possible. When the same line was modified by both sides, prefer the HEAD (PR branch) version.`,
+              `3. After resolving each file, run \`git add <file>\` for each resolved file.`,
+              `4. Do NOT run git commit — only resolve conflicts and stage files.`,
+              `5. Do NOT modify any files that are not in the conflicted files list.`,
+              `6. Ensure the resolved code compiles and makes logical sense.`,
+            ].join('\n'),
+            projectPath,
+            model: this.config.workerModel,
+            timeoutMs: this.config.workerTimeoutMs || 300_000,
+          });
+
+          if (!workerResult.success) {
+            console.log(`[ConflictResolver] ${key}: worker failed - ${workerResult.error}`);
+            await gitExec(projectPath, 'merge', '--abort').catch(() => {});
+            await this.reportFailure(pr, `Worker failed: ${workerResult.error || 'unknown error'}`);
+            return false;
+          }
+
+          // 7. Verify all conflicts are resolved
+          const remaining = await gitExec(projectPath, 'diff', '--name-only', '--diff-filter=U').catch(() => '');
+          if (remaining.trim()) {
+            console.log(`[ConflictResolver] ${key}: unresolved files remain: ${remaining.trim()}`);
+            await gitExec(projectPath, 'merge', '--abort').catch(() => {});
+            await this.reportFailure(pr, `Unresolved conflicts remain: ${remaining.trim()}`);
+            return false;
+          }
         }
 
         // 8. Commit the merge
