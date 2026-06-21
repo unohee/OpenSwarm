@@ -9,6 +9,7 @@ import { existsSync, rmSync, mkdirSync, writeFileSync, readdirSync, readFileSync
 import { join } from 'node:path';
 import { registerOwnedPR } from '../automation/prOwnership.js';
 import { runConventionalCommitGuard } from '../agents/pipelineGuards.js';
+import { stageWorkExcludingArtifacts } from './gitTracker.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -177,12 +178,10 @@ export async function commitAndCreatePR(
   const status = await git(worktreePath, 'status', '--porcelain');
 
   if (status.trim()) {
-    await git(worktreePath, 'add', '-A');
-    // Never commit OpenSwarm's own metadata. .openswarm/* (knowledge-graph snapshots) is
-    // regenerated every run, so when add -A commits it the file collides across PRs and
-    // blocks merges/checkouts. Drop it from the index (also rm --cached if a past run had
-    // already tracked it) so it never enters the diff.
-    await git(worktreePath, 'rm', '-r', '--cached', '--ignore-unmatch', '.openswarm').catch(() => {});
+    // Stage work but exclude build/test artifacts (.coverage, .pytest_cache, …) AND OpenSwarm's own
+    // metadata (.openswarm/* — regenerated every run; committing it collides across PRs and blocks
+    // merges). A bare `git add -A` leaked both into vega-agent PR #48. Centralized in gitTracker.
+    await stageWorkExcludingArtifacts(worktreePath);
     const commitMsg = [
       `feat(${issueIdentifier}): ${title.slice(0, 72)}`,
       '',

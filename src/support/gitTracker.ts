@@ -5,6 +5,39 @@
 
 import { spawn } from 'node:child_process';
 
+// Build/test artifacts + OpenSwarm's own metadata must NEVER enter a PR. Target repos often have
+// incomplete .gitignores (e.g. vega-agent ignores coverage.json but not the bare `.coverage` file),
+// so `git add -A` sweeps them in (vega-agent PR #48 leaked `.coverage` + `.openswarm/*`). These
+// pathspecs are excluded at every staging point. Keep the leading "." — `git add` requires at least
+// one positive pathspec alongside the `:(exclude)` ones.
+const ARTIFACT_EXCLUDE_PATHSPECS = [
+  '.',
+  ':(exclude).openswarm',         // OpenSwarm snapshots + timeout-handoff — regenerated every run
+  ':(exclude).coverage',
+  ':(exclude).coverage.*',
+  ':(exclude)htmlcov',
+  ':(exclude).pytest_cache',
+  ':(exclude).mypy_cache',
+  ':(exclude).ruff_cache',
+  ':(exclude).tox',
+  ':(exclude)**/__pycache__',
+  ':(exclude)*.pyc',
+  ':(exclude).DS_Store',
+];
+
+// Artifacts a PRIOR commit on the branch may already track — untrack them so they leave the PR diff.
+const ARTIFACT_CACHED_PATHS = ['.openswarm', '.coverage', 'htmlcov', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.tox'];
+
+/**
+ * Stage all work like `git add -A`, but exclude build/test artifacts and OpenSwarm metadata, and
+ * drop any such files a previous commit already tracked. Use this everywhere instead of a bare
+ * `git add -A` so junk dotfiles never reach a PR.
+ */
+export async function stageWorkExcludingArtifacts(repoPath: string): Promise<void> {
+  await runGitCommand(repoPath, ['add', '-A', '--', ...ARTIFACT_EXCLUDE_PATHSPECS]);
+  await runGitCommand(repoPath, ['rm', '-r', '--cached', '--ignore-unmatch', ...ARTIFACT_CACHED_PATHS]).catch(() => {});
+}
+
 /**
  * Extract changed file list via git diff
  * Track actual changed files without relying on Worker JSON parsing
@@ -108,8 +141,8 @@ export async function autoCommit(
   model: string = 'claude'
 ): Promise<{ success: boolean; hash?: string; error?: string }> {
   try {
-    // 1. Stage all changes
-    await runGitCommand(projectPath, ['add', '-A']);
+    // 1. Stage all changes (excluding build/test artifacts + OpenSwarm metadata)
+    await stageWorkExcludingArtifacts(projectPath);
 
     // 2. Check if there are changes to commit
     const status = await runGitCommand(projectPath, ['status', '--porcelain']);
