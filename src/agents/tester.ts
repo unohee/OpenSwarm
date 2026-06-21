@@ -20,6 +20,7 @@ export interface TesterOptions {
   model?: string;
   maxTurns?: number;
   adapterName?: AdapterName;
+  onLog?: (line: string) => void; // stream tester internals (tools/reasoning) to Live Log
 }
 
 export interface TesterResult {
@@ -114,6 +115,7 @@ export async function runTester(options: TesterOptions): Promise<TesterResult> {
       timeoutMs: options.timeoutMs,
       model: options.model,
       maxTurns: options.maxTurns,
+      onLog: options.onLog,
       // codex-responses 400s ("Instructions are required") without a systemPrompt — worker and
       // reviewer pass one, the tester was missing it (every run failed: "0 passed, 0 failed").
       // Also spell out that the tester must actually RUN the tests via bash, not just inspect.

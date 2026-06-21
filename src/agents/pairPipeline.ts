@@ -469,12 +469,15 @@ export class PairPipeline extends EventEmitter {
     try {
       let result: WorkerResult | ReviewResult | TesterResult | DocumenterResult | AuditorResult | SkillDocumenterResult;
 
+      // Stream agent internals (tools/reasoning/guards) to the Live Log for EVERY stage, not just
+      // worker. onLog used to live inside the worker case with stage:'worker' hardcoded, so the
+      // tester and reviewer produced nothing in the dashboard's Live Log.
+      const onLog = (line: string) =>
+        broadcastEvent({ type: 'log', data: { taskId: context.task.id, stage, line: `[${prefix}] ${line}` } });
+
       switch (stage) {
         case 'worker': {
           agentPair.updateSessionStatus(context.session.id, 'working');
-          const taskId = context.task.id;
-          const onLog = (line: string) =>
-            broadcastEvent({ type: 'log', data: { taskId, stage: 'worker', line: `[${prefix}] ${line}` } });
 
           // Check if fresh context should be used (after N failures)
           const useFreshContext = agentPair.shouldUseFreshContext(context.session.id);
@@ -587,6 +590,7 @@ export class PairPipeline extends EventEmitter {
             maxTurns: reviewerMaxTurns,
             adapterName: this.config.roles?.reviewer?.adapter,
             processContext: { taskId: context.task.id, stage: 'reviewer' },
+            onLog,
           });
 
           agentPair.saveReviewerResult(context.session.id, result as ReviewResult);
@@ -618,6 +622,7 @@ export class PairPipeline extends EventEmitter {
             model: this.config.roles?.tester?.model,
             maxTurns: this.config.roles?.tester?.maxTurns,
             adapterName: this.config.roles?.tester?.adapter,
+            onLog,
           });
           context.testerResult = result as TesterResult;
 

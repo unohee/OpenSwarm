@@ -28,6 +28,7 @@ export interface ReviewerOptions {
   processContext?: ProcessContext;
   /** Reasoning effort (codex/GPT-5) from complexity routing. */
   reasoningEffort?: 'low' | 'medium' | 'high';
+  onLog?: (line: string) => void; // stream reviewer internals (tools/reasoning) to Live Log
 }
 
 export interface PreCheckResult {
@@ -136,6 +137,7 @@ export async function runPreCheck(options: ReviewerOptions): Promise<PreCheckRes
       model: options.model,
       maxTurns: options.maxTurns,
       processContext: options.processContext,
+      onLog: options.onLog,
     });
 
     // DEBUG: Log raw Haiku output for troubleshooting
@@ -208,6 +210,7 @@ export async function runReviewer(options: ReviewerOptions): Promise<ReviewResul
       maxTurns: options.maxTurns ?? 15, // multi-turn so the reviewer can actually RUN ci checks
       reasoningEffort: options.reasoningEffort,
       processContext: options.processContext,
+      onLog: options.onLog,
       systemPrompt: getPrompts().systemPrompt,
       webTools: true,                 // docs lookup if the change touches an external API
       mcpTools: await getMcpTools(),  // Linear etc. — destructive cmds still blocked by isCommandBlocked
