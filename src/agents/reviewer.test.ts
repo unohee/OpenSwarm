@@ -32,6 +32,23 @@ describe('reviewer', () => {
       expect(report).toContain('Needs some adjustments');
     });
 
+    it('surfaces recommended follow-up actions (INT-1611)', () => {
+      const result: ReviewResult = {
+        decision: 'approve',
+        feedback: 'Good, but a couple of follow-ups.',
+        recommendedActions: [
+          { type: 'docs-update', title: 'Update README adapter table', file: 'README.md:89' },
+          { type: 'test', title: 'Add edge-case test' },
+        ],
+      };
+
+      const report = formatReviewFeedback(result);
+
+      expect(report).toContain('Recommended follow-ups');
+      expect(report).toContain('[docs-update] Update README adapter table (README.md:89)');
+      expect(report).toContain('[test] Add edge-case test');
+    });
+
     it('should format reject decision', () => {
       const result: ReviewResult = {
         decision: 'reject',

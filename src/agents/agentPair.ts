@@ -62,6 +62,14 @@ export interface ConfidenceTracker {
  */
 export type ReviewDecision = 'approve' | 'revise' | 'reject';
 
+/** A concrete, typed follow-up the reviewer recommends — so review findings become actionable
+ *  items instead of evaporating in the feedback text (INT-1611). */
+export interface RecommendedAction {
+  type: 'docs-update' | 'refactor' | 'test' | 'contract-fix' | 'bug' | 'other';
+  title: string;       // one-line task title
+  file?: string;       // file:line if the reviewer cited one
+}
+
 /**
  * Reviewer result
  */
@@ -70,6 +78,8 @@ export interface ReviewResult {
   feedback: string;
   issues?: string[];
   suggestions?: string[];
+  /** Typed follow-up actions (INT-1611) — surfaced always, optionally auto-filed as sub-issues. */
+  recommendedActions?: RecommendedAction[];
   costInfo?: CostInfo;
 }
 

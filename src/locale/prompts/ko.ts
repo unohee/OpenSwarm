@@ -206,7 +206,8 @@ ${workerReport}
   "decision": "approve" | "revise" | "reject",
   "feedback": "전체적인 피드백 (1-3문장)",
   "issues": ["발견된 문제점 목록 (없으면 빈 배열)"],
-  "suggestions": ["개선 제안 목록 (없으면 빈 배열)"]
+  "suggestions": ["개선 제안 목록 (없으면 빈 배열)"],
+  "recommendedActions": [{ "type": "docs-update|refactor|test|contract-fix|bug|other", "title": "후속 작업 한 줄 제목", "file": "경로:라인 (있으면)" }]
 }
 \`\`\`
 

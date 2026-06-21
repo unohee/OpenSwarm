@@ -215,7 +215,8 @@ After review, output results in the following JSON format:
   "decision": "approve" | "revise" | "reject",
   "feedback": "Overall feedback (1-3 sentences)",
   "issues": ["List of found issues (empty array if none)"],
-  "suggestions": ["List of improvement suggestions (empty array if none)"]
+  "suggestions": ["List of improvement suggestions (empty array if none)"],
+  "recommendedActions": [{ "type": "docs-update|refactor|test|contract-fix|bug|other", "title": "one-line follow-up title", "file": "path:line (if any)" }]
 }
 \`\`\`
 

@@ -268,6 +268,15 @@ export function formatReviewFeedback(result: ReviewResult): string {
     }
   }
 
+  // INT-1611: surface typed follow-up actions so review findings don't evaporate.
+  if (result.recommendedActions && result.recommendedActions.length > 0) {
+    lines.push('');
+    lines.push('🔧 Recommended follow-ups:');
+    for (const a of result.recommendedActions.slice(0, 8)) {
+      lines.push(`  • [${a.type}] ${a.title}${a.file ? ` (${a.file})` : ''}`);
+    }
+  }
+
   return lines.join('\n');
 }
 

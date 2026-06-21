@@ -406,6 +406,10 @@ export interface PipelineGuardsConfig {
   haltToLinear: boolean;
   registryCheck: boolean;
   bsDetector: boolean;
+  /** INT-1611: auto-file the reviewer's recommendedActions as follow-up sub-issues on approve.
+   *  Off by default — recommendedActions are always surfaced in the review comment; this only
+   *  controls whether they additionally become tracked issues (avoids issue spam unless opted in). */
+  autoFileFollowups?: boolean;
 }
 
 export type AutonomousStartupConfig = {

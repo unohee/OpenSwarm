@@ -7,7 +7,7 @@ import { EmbedBuilder } from 'discord.js';
 import type { TaskItem, DecisionResult } from '../orchestration/decisionEngine.js';
 import type { ExecutorResult } from '../orchestration/workflow.js';
 import type { PipelineResult } from '../agents/pairPipeline.js';
-import type { WorkerResult } from '../agents/agentPair.js';
+import type { WorkerResult, ReviewResult } from '../agents/agentPair.js';
 import type { DefaultRolesConfig, PipelineStage, JobProfile } from '../core/types.js';
 import { createPipelineFromConfig, buildTaskPrefix } from '../agents/pairPipeline.js';
 import { formatParsedTaskSummary, loadParsedTask } from '../orchestration/taskParser.js';
@@ -755,6 +755,21 @@ export async function executePipeline(
           + (extra.length ? `\n\n${extra.join(' · ')}` : '');
         await taskSource?.addComment(task.issueId, body)
           .catch((err) => console.warn(`[${taskPrefix}] worker audit comment failed:`, err));
+      }
+      // INT-1611: on approve, optionally file the reviewer's recommendedActions as follow-up
+      // sub-issues (off by default — they're always surfaced in the review comment regardless).
+      if (stage === 'reviewer' && task.issueId && ctx.guards?.autoFileFollowups && result.result) {
+        const rr = result.result as ReviewResult;
+        if (rr.decision === 'approve' && rr.recommendedActions?.length) {
+          for (const a of rr.recommendedActions.slice(0, 10)) {
+            await taskSource?.createSubIssue(
+              task.issueId,
+              `[${a.type}] ${a.title}`,
+              `Reviewer follow-up from ${task.issueIdentifier || task.issueId}.${a.file ? `\n\nLocation: ${a.file}` : ''}`,
+              { priority: 3 },
+            ).catch((err) => console.warn(`[${taskPrefix}] follow-up sub-issue failed:`, err));
+          }
+        }
       }
     });
 

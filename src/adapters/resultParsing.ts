@@ -74,10 +74,30 @@ function extractReviewerResultJson(text: string): ReviewResult | null {
       suggestions: Array.isArray(parsed.suggestions)
         ? parsed.suggestions.filter((v: unknown): v is string => typeof v === 'string')
         : [],
+      recommendedActions: parseRecommendedActions(parsed.recommendedActions),
     };
   } catch {
     return null;
   }
+}
+
+const ACTION_TYPES = new Set(['docs-update', 'refactor', 'test', 'contract-fix', 'bug', 'other']);
+
+/** Normalize the reviewer's `recommendedActions` array into typed RecommendedAction[] (INT-1611). */
+function parseRecommendedActions(raw: unknown): ReviewResult['recommendedActions'] {
+  if (!Array.isArray(raw)) return [];
+  const out: NonNullable<ReviewResult['recommendedActions']> = [];
+  for (const a of raw) {
+    if (!a || typeof a !== 'object') continue;
+    const rec = a as Record<string, unknown>;
+    const title = typeof rec.title === 'string' ? rec.title.trim() : '';
+    if (!title) continue;
+    const type = typeof rec.type === 'string' && ACTION_TYPES.has(rec.type)
+      ? (rec.type as NonNullable<ReviewResult['recommendedActions']>[number]['type'])
+      : 'other';
+    out.push({ type, title, file: typeof rec.file === 'string' ? rec.file : undefined });
+  }
+  return out;
 }
 
 /** Text fallback when no JSON reviewer result is present. */
