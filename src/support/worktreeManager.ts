@@ -5,7 +5,7 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { existsSync, rmSync, mkdirSync, writeFileSync, readdirSync } from 'node:fs';
+import { existsSync, rmSync, mkdirSync, writeFileSync, readdirSync, readFileSync } from 'node:fs';
 import { registerOwnedPR } from '../automation/prOwnership.js';
 import { runConventionalCommitGuard } from '../agents/pipelineGuards.js';
 
@@ -33,7 +33,21 @@ async function gh(cwd: string, ...args: string[]): Promise<string> {
  */
 function ensureCIWorkflow(worktreePath: string): string | null {
   const wfDir = `${worktreePath}/.github/workflows`;
-  if (existsSync(wfDir) && readdirSync(wfDir).some((f) => /\.ya?ml$/.test(f))) return null;
+  // Skip only if a PR-triggered CI TEST workflow already exists. A build/release
+  // workflow (on: push, no test gate — e.g. vega-agent's build-windows.yml) does NOT
+  // gate PRs, so we still add a PR CI then. (Previously any .yml made us skip, leaving
+  // PRs ungated.)
+  if (existsSync(wfDir)) {
+    const hasPRCi = readdirSync(wfDir)
+      .filter((f) => /\.ya?ml$/.test(f))
+      .some((f) => {
+        try {
+          const c = readFileSync(`${wfDir}/${f}`, 'utf-8');
+          return /pull_request/.test(c) && /(pytest|ruff|mypy|npm test|tsc|jest|vitest|go test|cargo test)/.test(c);
+        } catch { return false; }
+      });
+    if (hasPRCi) return null;
+  }
 
   const has = (f: string) => existsSync(`${worktreePath}/${f}`);
   const isPython = has('pyproject.toml') || has('setup.py') || has('requirements.txt');
