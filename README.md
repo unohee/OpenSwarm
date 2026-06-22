@@ -20,10 +20,11 @@ OpenSwarm orchestrates multiple AI agents as autonomous code workers. It picks u
 
 ```bash
 npm install -g @intrect/openswarm
-openswarm
+openswarm auth login   # one-time provider setup — ChatGPT (codex/gpt) OAuth
+openswarm              # launches the TUI chat
 ```
 
-That's it. `openswarm` with no arguments launches the TUI chat interface immediately.
+`openswarm` with no arguments launches the TUI chat. You need **one provider** first: `openswarm auth login` (ChatGPT OAuth, used by `codex`/`gpt`), or `openswarm auth login --provider openrouter` / `export OPENROUTER_API_KEY=…`, or just have an authenticated `claude` on PATH. Check what's wired with `openswarm auth status`.
 
 ![TUI Chat Interface](screenshots/tui.png)
 
@@ -50,7 +51,7 @@ openswarm chat [session]         # Simple readline chat
 openswarm start                  # Start full daemon (requires config.yaml)
 openswarm run "Fix the bug" -p ~/my-project   # Run a single task
 openswarm exec "Run tests" --local --pipeline # Execute via daemon
-openswarm init                   # Generate config.yaml scaffold
+openswarm init                   # Interactive setup wizard (provider, task backend, config)
 openswarm validate               # Validate config.yaml
 
 # Code Registry & BS Detector
@@ -87,11 +88,13 @@ For autonomous operation (Linear issue processing, Discord control, PR auto-impr
 ### Prerequisites
 
 - **Node.js** >= 22
-- **Claude Code CLI** authenticated (`claude -p`) — default provider
-- **OpenAI Codex CLI** (`codex exec`) — optional alternative provider
-- **Discord Bot** token with message content intent
-- **Linear** API key and team ID
-- **GitHub CLI** (`gh`) for CI monitoring (optional)
+- **At least one LLM provider** (default `codex`):
+  - **OpenAI Codex** — default. `openswarm auth login` (ChatGPT OAuth) or a `codex` binary on PATH
+  - **OpenRouter** — `OPENROUTER_API_KEY`, or `openswarm auth login --provider openrouter`
+  - **Claude Code CLI** (`claude -p`) — opt-in fallback; an authenticated `claude` on PATH (used when codex hits its usage limit or OpenRouter is unavailable)
+  - **Local** (Ollama / LM Studio / llama.cpp) — auto-detected, no auth
+- **Native build toolchain** — `better-sqlite3` and `@lancedb/lancedb` are native modules. Prebuilt binaries cover common platforms; if yours lacks one, `npm install` builds from source and needs `python3` + a C/C++ toolchain (`build-essential` on Linux, Xcode Command Line Tools on macOS)
+- **For autonomous mode only** (optional): **Linear** API key + team ID, **Discord** bot token (message content intent), **GitHub CLI** (`gh`) for CI monitoring
 
 ### Configuration
 
@@ -127,15 +130,15 @@ LINEAR_TEAM_ID=your-linear-team-id
 ### CLI Adapter (Provider)
 
 ```yaml
-adapter: claude   # "claude" | "codex" | "gpt" | "openrouter" | "local" | "lmstudio"
+adapter: codex   # default. "codex" | "openrouter" | "gpt" | "local" | "lmstudio" | "claude"
 ```
 
 Switch at runtime via Discord: `!provider codex` / `!provider claude`
 
 | Adapter | Backend | Models | Auth |
 |---------|---------|--------|------|
-| `claude` | Claude Code CLI | sonnet-4, haiku-4.5, opus-4 | CLI auth |
-| `codex` | OpenAI Codex CLI | o3, o4-mini | CLI auth |
+| `codex` | OpenAI Codex CLI | o3, o4-mini | OAuth PKCE / CLI auth |
+| `claude` | Claude Code CLI (`claude -p`) — opt-in fallback | sonnet-4, haiku-4.5, opus-4 | CLI auth |
 | `gpt` | OpenAI API | gpt-4o, o3, gpt-4.1 | OAuth PKCE |
 | `openrouter` | OpenRouter API (native agentic loop) | any OpenRouter model — gpt-5, gemini-2.5-flash, deepseek, glm, qwen, … | OAuth PKCE or `OPENROUTER_API_KEY` |
 | `local` | Ollama / LMStudio / llama.cpp | gemma4, llama3, mistral, qwen, etc. | None |
