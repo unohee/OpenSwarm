@@ -107,6 +107,46 @@ agents:
       }
     });
 
+    it('should wire autonomous.guards and maxReflections through to runtime config', () => {
+      // Regression: guards/maxReflections were absent from the zod schema and the
+      // transform, so config.autonomous.guards silently resolved to undefined and
+      // the bad-edit lint gate never ran. Lock the wiring in place.
+      const jsonContent = JSON.stringify({
+        language: 'en',
+        linear: { apiKey: 'k', teamId: 't' },
+        agents: [{ name: 'main', projectPath: '/p', enabled: true, paused: false }],
+        autonomous: {
+          enabled: true,
+          guards: { qualityGate: true, bsDetector: true, fakeDataGuard: false },
+          maxReflections: 2,
+        },
+      });
+
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockReturnValue(jsonContent);
+
+      const config = loadConfig('/tmp/config.json');
+      expect(config.autonomous?.guards?.qualityGate).toBe(true);
+      expect(config.autonomous?.guards?.bsDetector).toBe(true);
+      expect(config.autonomous?.guards?.fakeDataGuard).toBe(false);
+      expect(config.autonomous?.maxReflections).toBe(2);
+    });
+
+    it('should default autonomous.maxReflections to 3 when omitted', () => {
+      const jsonContent = JSON.stringify({
+        language: 'en',
+        linear: { apiKey: 'k', teamId: 't' },
+        agents: [{ name: 'main', projectPath: '/p', enabled: true, paused: false }],
+        autonomous: { enabled: true },
+      });
+
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockReturnValue(jsonContent);
+
+      const config = loadConfig('/tmp/config.json');
+      expect(config.autonomous?.maxReflections).toBe(3);
+    });
+
     it('should throw error when config file not found', () => {
       vi.mocked(existsSync).mockReturnValue(false);
 

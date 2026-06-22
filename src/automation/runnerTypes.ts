@@ -33,6 +33,8 @@ export interface AutonomousConfig {
   decomposition?: import('../core/types.js').DecompositionConfig;
   worktreeMode?: boolean;
   guards?: Partial<import('../core/types.js').PipelineGuardsConfig>;
+  /** Max objective self-repair attempts (lint/bs/test) before giving up (default: 3) */
+  maxReflections?: number;
   /** Per-project task cap in 5h rolling window (default: 6) */
   dailyTaskCap?: number;
   /** Cooldown between task completions in ms (default: 1800000 = 30min) */

@@ -94,13 +94,19 @@ autonomous:
 
   # Pipeline guards
   guards:
-    qualityGate: true
+    qualityGate: true       # bad-edit lint gate: tsc/ruff on changed files (blocking)
     fakeDataGuard: true
     conventionalCommits: true
     branchValidation: true
     uncertaintyDetection: true
     registryCheck: true
-    bsDetector: true
+    bsDetector: true        # blocks on critical code-smell patterns
+
+  # Self-repair reflection budget: max objective (lint/bs/test) failures tolerated
+  # before the loop gives up on bad edits. Lower it to cap token burn when
+  # reflection stops making progress; the loop also bails early on stagnation
+  # (identical errors twice in a row). Default: 3.
+  maxReflections: 3
 
   # Job profiles for lightweight vs heavy work
   jobProfiles:

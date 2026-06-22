@@ -206,6 +206,17 @@ const JobProfileSchema = z.object({
   roles: z.record(PipelineStageSchema, z.string()).optional(),
 });
 
+const PipelineGuardsConfigSchema = z.object({
+  qualityGate: z.boolean().optional(),
+  fakeDataGuard: z.boolean().optional(),
+  conventionalCommits: z.boolean().optional(),
+  branchValidation: z.boolean().optional(),
+  uncertaintyDetection: z.boolean().optional(),
+  haltToLinear: z.boolean().optional(),
+  registryCheck: z.boolean().optional(),
+  bsDetector: z.boolean().optional(),
+}).optional();
+
 const AutonomousConfigSchema = z.object({
   /** Auto-enable on service start */
   enabled: z.boolean().default(false),
@@ -235,6 +246,10 @@ const AutonomousConfigSchema = z.object({
   worktreeMode: z.boolean().default(false),
   /** Dynamic job profiles for model selection */
   jobProfiles: z.array(JobProfileSchema).optional(),
+  /** Pipeline quality guards (bad-edit lint gate, BS detector, etc.) */
+  guards: PipelineGuardsConfigSchema,
+  /** Max objective self-repair attempts (lint/bs/test) before giving up */
+  maxReflections: z.number().min(1).max(10).default(3),
   /** Daily task completion cap (default: 6) */
   dailyTaskCap: z.number().min(1).max(50).default(6),
   /** Cooldown between task completions in ms (default: 1800000 = 30min) */
@@ -490,6 +505,8 @@ function transformConfig(raw: RawConfig): SwarmConfig {
         plannerTimeoutMs: raw.autonomous.decomposition.plannerTimeoutMs,
       } : undefined,
       worktreeMode: raw.autonomous.worktreeMode,
+      guards: raw.autonomous.guards,
+      maxReflections: raw.autonomous.maxReflections,
       dailyTaskCap: raw.autonomous.dailyTaskCap,
       interTaskCooldownMs: raw.autonomous.interTaskCooldownMs,
     } : undefined,

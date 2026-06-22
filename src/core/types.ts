@@ -429,6 +429,13 @@ export type AutonomousStartupConfig = {
   worktreeMode?: boolean;
   /** Pipeline guards configuration */
   guards?: Partial<PipelineGuardsConfig>;
+  /**
+   * Max objective self-repair attempts (lint/bs/test failures) tolerated before
+   * the bad-edit/reflection loop gives up. Independent of maxAttempts so it can
+   * be lowered to cap token burn when reflection stops making progress.
+   * Default: 3.
+   */
+  maxReflections?: number;
   /** Daily task completion cap (default: 6) */
   dailyTaskCap?: number;
   /** Cooldown between task completions in ms (default: 1800000 = 30min) */

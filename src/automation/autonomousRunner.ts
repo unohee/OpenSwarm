@@ -977,6 +977,7 @@ export class AutonomousRunner {
       worktreeMode: this.config.worktreeMode ?? false,
       scheduleNextHeartbeat: () => this.scheduleNextHeartbeat(),
       guards: this.config.guards,
+      maxReflections: this.config.maxReflections,
     };
   }
 

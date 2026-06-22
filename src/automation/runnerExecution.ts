@@ -135,6 +135,8 @@ export interface ExecutionContext {
   scheduleNextHeartbeat?: () => void;
   /** Pipeline guards configuration */
   guards?: Partial<import('../core/types.js').PipelineGuardsConfig>;
+  /** Max objective self-repair attempts (lint/bs/test) before giving up (default: 3) */
+  maxReflections?: number;
 }
 
 // Project Path Resolution
@@ -640,6 +642,7 @@ export async function executePipeline(
         impactAnalysis: draftResult.impactAnalysis,
         registrySnapshot: draftResult.registrySnapshot,
       } : undefined,
+      ctx.maxReflections,
     );
 
     const taskPrefix = buildTaskPrefix(task, actualPath);

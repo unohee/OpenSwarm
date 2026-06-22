@@ -17,6 +17,15 @@ import { broadcastEvent } from '../core/eventHub.js';
 import { CONFIDENCE_THRESHOLDS } from './agentPair.js';
 import * as agentPair from './agentPair.js';
 import { runGuards, type GuardsRunResult } from './pipelineGuards.js';
+import {
+  type ReflectionState,
+  type ReflectionSource,
+  createReflectionState,
+  recordReflection,
+  shouldStopReflecting,
+  buildReflectionFeedback,
+  DEFAULT_MAX_REFLECTIONS,
+} from './reflection.js';
 import { hasRepoSnapshot, scanAndCache, analyzeIssue } from '../knowledge/index.js';
 import { getRegistryStore } from '../registry/sqliteStore.js';
 import { recallRepoKnowledge } from '../memory/repoKnowledge.js';
@@ -40,6 +49,13 @@ export interface PipelineConfig {
   skipDocumenterIfNoChange?: boolean;
   /** Max total iterations (one cycle = Worker → Reviewer → Tester) */
   maxIterations?: number;
+  /**
+   * Max objective self-repair attempts (lint/bs/test failures) before the loop
+   * gives up on bad edits. Independent of maxIterations so an operator can cap
+   * token burn on reflection without shrinking the reviewer-revise budget.
+   * Default: DEFAULT_MAX_REFLECTIONS (3).
+   */
+  maxReflections?: number;
   /** Per-role configuration */
   roles?: {
     worker?: RoleConfig;
@@ -125,6 +141,15 @@ export interface PipelineContext {
   auditorResult?: AuditorResult;
   skillDocumenterResult?: SkillDocumenterResult;
   guardsResult?: GuardsRunResult;
+  /** Accumulated objective (lint/bs/test) errors for self-repair reflection */
+  reflection: ReflectionState;
+  /**
+   * Source of the latest revise feedback. 'objective' failures (lint/bs/test)
+   * flow through the reflection trail and are preserved across fresh-context
+   * resets; 'review' feedback (reviewer/halt) is subjective and dropped on a
+   * fresh-context retry.
+   */
+  feedbackSource?: 'objective' | 'review';
 }
 
 /**
@@ -174,6 +199,7 @@ export class PairPipeline extends EventEmitter {
       continueOnTestFail: false,
       skipDocumenterIfNoChange: true,
       maxIterations: 3,
+      maxReflections: DEFAULT_MAX_REFLECTIONS,
       ...config,
     };
     // Initialize stuck detector
@@ -252,6 +278,7 @@ export class PairPipeline extends EventEmitter {
       config: this.config,
       currentIteration: 0,
       taskPrefix,
+      reflection: createReflectionState(),
     };
 
     try {
@@ -486,15 +513,24 @@ export class PairPipeline extends EventEmitter {
             this.emit('log', { line: `[verbose] Worker context: ${modCount} affected modules, ${briefCount} file briefs` });
           }
 
+          // Self-repair feedback: objective lint/test errors (reflection trail)
+          // are always carried forward — they are ground truth and survive a
+          // fresh-context reset. Subjective reviewer feedback is dropped on fresh
+          // context and only included when it was the latest revise reason.
+          const reflectionPart = buildReflectionFeedback(context.reflection);
+          const includeReview =
+            !useFreshContext && context.feedbackSource === 'review' && !!context.reviewResult;
+          const reviewPart = includeReview
+            ? reviewerAgent.buildRevisionPrompt(context.reviewResult!)
+            : undefined;
+          const combinedFeedback =
+            [reflectionPart, reviewPart].filter(Boolean).join('\n\n') || undefined;
+
           result = await workerAgent.runWorker({
             taskTitle: context.task.title,
             taskDescription: context.task.description || '',
             projectPath: context.projectPath,
-            previousFeedback: useFreshContext
-              ? undefined // Fresh context: no previous feedback
-              : (context.reviewResult
-                  ? reviewerAgent.buildRevisionPrompt(context.reviewResult)
-                  : undefined),
+            previousFeedback: combinedFeedback,
             timeoutMs: this.config.roles?.worker?.timeoutMs ?? 0,
             model: overrides?.model ?? this.config.roles?.worker?.model,
             maxTurns: this.config.roles?.worker?.maxTurns,
@@ -746,6 +782,37 @@ export class PairPipeline extends EventEmitter {
     }
   }
 
+  /**
+   * Decide whether to stop the bounded self-repair loop after an objective
+   * (lint/bs/test) failure. Aborts when the agent is stagnating (identical
+   * errors twice in a row) or has spent its reflection budget — either way
+   * further retries only burn tokens (the regression guard from the task spec).
+   * Returns true when the caller should terminate the pipeline as failed.
+   */
+  private shouldAbortSelfRepair(
+    context: PipelineContext,
+    progressed: boolean,
+    source: ReflectionSource,
+  ): boolean {
+    const max = this.config.maxReflections ?? DEFAULT_MAX_REFLECTIONS;
+    const budgetSpent = shouldStopReflecting(context.reflection, max);
+    if (progressed && !budgetSpent) return false;
+
+    const reason = !progressed
+      ? `self-repair stagnated: identical ${source} errors repeated`
+      : `self-repair budget exhausted (${context.reflection.reflectionCount}/${max} objective failures)`;
+    console.warn(`[${context.taskPrefix}] Aborting self-repair — ${reason}`);
+    this.emit('log', { line: `🛑 ${reason}` });
+    this.emit('reflection:abort', {
+      reason,
+      source,
+      reflectionCount: context.reflection.reflectionCount,
+      context,
+    });
+    agentPair.updateSessionStatus(context.session.id, 'failed');
+    return true;
+  }
+
   // ============================================
   // Full Iteration Loop
   // ============================================
@@ -853,14 +920,27 @@ export class PairPipeline extends EventEmitter {
         context.guardsResult = guardsResult;
 
         if (!guardsResult.allPassed) {
-          // Blocking guard failed → inject revise, skip reviewer
-          console.log(`[${context.taskPrefix}] Blocking guard failed: ${guardsResult.combinedIssues.join('; ')}`);
+          // Blocking guard failed → bad edit. Skip the (expensive) reviewer and
+          // drive a bounded self-repair retry with the exact errors preserved.
+          const blocking = guardsResult.results.filter(r => !r.passed && r.blocking);
+          const blockingIssues = blocking.flatMap(r => r.issues);
+          console.log(`[${context.taskPrefix}] Blocking guard failed: ${blockingIssues.join('; ')}`);
+
+          // qualityGate is the lint/type bad-edit check; bsDetector is code-smell.
+          const source: ReflectionSource = blocking.some(r => r.guard === 'qualityGate') ? 'lint' : 'bs';
+          const { progressed } = recordReflection(context.reflection, {
+            iteration: context.currentIteration,
+            source,
+            errors: blockingIssues,
+          });
+
           context.reviewResult = {
             decision: 'revise',
-            feedback: `Pipeline guard failed: ${guardsResult.combinedIssues.join('; ')}`,
-            issues: guardsResult.combinedIssues,
+            feedback: `Pipeline guard failed: ${blockingIssues.join('; ')}`,
+            issues: blockingIssues,
             suggestions: ['Fix the issues flagged by quality guards'],
           };
+          context.feedbackSource = 'objective';
           agentPair.trackFailure(context.session.id);
           this.emit('iteration:fail', {
             iteration: context.currentIteration,
@@ -868,6 +948,10 @@ export class PairPipeline extends EventEmitter {
             context,
           });
           agentPair.updateSessionStatus(context.session.id, 'revising');
+
+          if (this.shouldAbortSelfRepair(context, progressed, source)) {
+            return { success: false };
+          }
           continue;
         }
 
@@ -897,13 +981,15 @@ export class PairPipeline extends EventEmitter {
             context,
           });
 
-          // Inject revise to retry
+          // Inject revise to retry. Low confidence is a subjective signal, so it
+          // travels through the reviewer channel (dropped on a fresh-context reset).
           context.reviewResult = {
             decision: 'revise',
             feedback: `[HALT] Confidence too low (${confidence}%). ${haltReason}`,
             issues: [haltReason],
             suggestions: ['Review task requirements', 'Provide additional context', 'Break into sub-tasks'],
           };
+          context.feedbackSource = 'review';
           agentPair.trackFailure(context.session.id);
           this.emit('iteration:fail', {
             iteration: context.currentIteration,
@@ -958,8 +1044,10 @@ export class PairPipeline extends EventEmitter {
         }
 
         if (decision === 'revise') {
-          // revise = next iteration
+          // revise = next iteration. Reviewer feedback is subjective → it travels
+          // through the reviewer channel and is dropped on a fresh-context reset.
           console.log(`[${context.taskPrefix}] Reviewer requested revision`);
+          context.feedbackSource = 'review';
           agentPair.trackFailure(context.session.id); // Track for fresh context decision
           this.emit('iteration:fail', {
             iteration: context.currentIteration,
@@ -988,9 +1076,20 @@ export class PairPipeline extends EventEmitter {
         stages.push(testerResult);
 
         if (!testerResult.success && !this.config.continueOnTestFail) {
-          // Test failed → set feedback then next iteration
+          // Test failure is objective ground truth → record into the reflection
+          // trail and drive a bounded self-repair retry.
           console.log(`[${context.taskPrefix}] Tester failed, retrying...`);
           agentPair.trackFailure(context.session.id); // Track for fresh context decision
+
+          const failedTests = context.testerResult?.failedTests ?? [];
+          const testErrors = failedTests.length > 0
+            ? failedTests
+            : [context.testerResult?.error || `Tests failed (${context.testerResult?.testsFailed ?? 0} failing)`];
+          const { progressed } = recordReflection(context.reflection, {
+            iteration: context.currentIteration,
+            source: 'test',
+            errors: testErrors,
+          });
 
           if (context.testerResult) {
             context.reviewResult = {
@@ -1000,6 +1099,7 @@ export class PairPipeline extends EventEmitter {
               suggestions: context.testerResult.suggestions,
             };
           }
+          context.feedbackSource = 'objective';
 
           this.emit('iteration:fail', {
             iteration: context.currentIteration,
@@ -1007,6 +1107,10 @@ export class PairPipeline extends EventEmitter {
             context,
           });
           agentPair.updateSessionStatus(context.session.id, 'revising');
+
+          if (this.shouldAbortSelfRepair(context, progressed, 'test')) {
+            return { success: false };
+          }
           continue;
         }
         } // end else (has code change)
@@ -1129,6 +1233,7 @@ export function createPipelineFromConfig(
   guards?: Partial<PipelineGuardsConfig>,
   jobProfiles?: JobProfile[],
   draftAnalysis?: PipelineConfig['draftAnalysis'],
+  maxReflections?: number,
 ): PairPipeline {
   const stages: PipelineStage[] = [];
 
@@ -1154,6 +1259,7 @@ export function createPipelineFromConfig(
   return new PairPipeline({
     stages,
     maxIterations,
+    maxReflections,
     roles,
     guards,
     jobProfiles,
