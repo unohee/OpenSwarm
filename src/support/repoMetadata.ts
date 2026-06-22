@@ -7,7 +7,7 @@
 // (Linear today, GitHub/etc later) and removes the need for fuzzy
 // name matching, which silently breaks on renames or ambiguous names.
 
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
 
@@ -82,6 +82,19 @@ export async function loadRepoMetadata(repoPath: string): Promise<RepoMetadata |
     );
   }
   return result.data;
+}
+
+/**
+ * Write `${repoPath}/openswarm.json`. Validates against the schema first so we
+ * never persist a malformed mapping. Returns the written file path.
+ * Used by `openswarm init` to record the repo ↔ Linear team/project mapping the
+ * user picked, so the daemon resolves this repo without fuzzy name matching.
+ */
+export async function saveRepoMetadata(repoPath: string, meta: RepoMetadata): Promise<string> {
+  const validated = RepoMetadataSchema.parse(meta);
+  const filePath = join(repoPath, REPO_METADATA_FILENAME);
+  await writeFile(filePath, `${JSON.stringify(validated, null, 2)}\n`, 'utf-8');
+  return filePath;
 }
 
 export class RepoMetadataError extends Error {

@@ -195,6 +195,40 @@ export function getClient(): LinearClient {
   return client;
 }
 
+/** Linear team summary for the `openswarm init` picker. */
+export interface LinearTeamInfo {
+  id: string;
+  key: string;
+  name: string;
+}
+
+/**
+ * List all Linear teams the API key can see — for the `openswarm init` picker.
+ * Accepts an explicit apiKey so init can call it before initLinear() runs (the
+ * user has only just pasted the key); falls back to the initialized client.
+ */
+export async function listTeams(apiKey?: string): Promise<LinearTeamInfo[]> {
+  const c = apiKey ? new LinearClient({ apiKey }) : getClient();
+  const res: any = await withRateLimit('linear', () => c.teams({ first: 250 })); // cxt-ignore: type_safety — SDK TeamConnection
+  return (res?.nodes ?? []).map((t: any) => ({ id: t.id, key: t.key, name: t.name }));
+}
+
+/**
+ * List projects within a team — for the `openswarm init` picker. Accepts an
+ * explicit apiKey so init can call it before initLinear() runs.
+ */
+export async function listProjects(teamId: string, apiKey?: string): Promise<LinearProjectInfo[]> {
+  const c = apiKey ? new LinearClient({ apiKey }) : getClient();
+  const team: any = await withRateLimit('linear', () => c.team(teamId)); // cxt-ignore: type_safety — SDK Team
+  const res: any = await withRateLimit('linear', () => team.projects({ first: 250 }));
+  return (res?.nodes ?? []).map((p: any) => ({
+    id: p.id,
+    name: p.name,
+    icon: p.icon ?? undefined,
+    color: p.color ?? undefined,
+  }));
+}
+
 /**
  * Get in-progress issues for an agent (with caching)
  */

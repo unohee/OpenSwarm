@@ -1,51 +1,51 @@
 // ============================================
 // OpenSwarm - First-run onboarding wizard
-// `openswarm init` (interactive). INT-1578.
+// `openswarm init` (interactive). INT-1578 / INT-1808.
 // ============================================
 //
-// Walks a fresh user through: AI provider (+ inline auth), task backend
-// (Linear or local SQLite), and an optional notification channel. Writes a
-// .env (secrets, 0600) + config.yaml, then validates. `--yes` keeps the old
-// config-only path for CI (handled by the caller in cli.ts).
+// Walks a fresh user through: AI provider (availability detection + inline
+// auth), task backend (Linear with an arrow-key team/project picker, or local
+// SQLite), and an optional notification channel. Writes a .env (secrets, 0600)
+// + config.yaml + an openswarm.json repo→Linear mapping, then prints next steps.
+// `--yes` keeps the config-only path for CI (handled by the caller in cli.ts).
 
 import { existsSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { createPrompter, type ChoiceOption } from '../support/promptHelper.js';
+import { basename, join } from 'node:path';
+import { select, checkbox, input, password, confirm } from '@inquirer/prompts';
 import { writeEnvVars } from '../core/envFile.js';
 import { generateSampleConfig } from '../core/config.js';
 import { AuthProfileStore } from '../auth/index.js';
+import { getAdapter } from '../adapters/index.js';
+import { listTeams, listProjects } from '../linear/index.js';
+import { saveRepoMetadata } from '../support/repoMetadata.js';
 
-type ProviderId = 'codex-responses' | 'openrouter' | 'gpt' | 'lmstudio' | 'local' | 'codex';
+type ProviderId = 'codex-responses' | 'openrouter' | 'gpt' | 'lmstudio' | 'local' | 'codex' | 'claude';
 type TaskBackend = 'linear' | 'local';
 type NotifyChannel = 'none' | 'discord' | 'slack' | 'telegram' | 'webhook';
 
-const PROVIDER_OPTIONS: ChoiceOption<ProviderId>[] = [
-  { label: 'codex-responses', value: 'codex-responses', hint: 'ChatGPT subscription (OAuth) — Codex models, native loop' },
-  { label: 'openrouter', value: 'openrouter', hint: 'OpenRouter API key or OAuth (any model)' },
-  { label: 'gpt', value: 'gpt', hint: 'OpenAI ChatGPT OAuth (chat/completions)' },
-  { label: 'lmstudio', value: 'lmstudio', hint: 'Local LM Studio server (no account)' },
-  { label: 'local', value: 'local', hint: 'Local Ollama models (no account)' },
-  { label: 'codex', value: 'codex', hint: 'External codex CLI (delegated)' },
+const PROVIDER_CHOICES: { name: string; value: ProviderId; description: string }[] = [
+  { name: 'codex-responses', value: 'codex-responses', description: 'ChatGPT subscription (OAuth) — Codex models, native loop' },
+  { name: 'codex', value: 'codex', description: 'External codex CLI (delegated)' },
+  { name: 'openrouter', value: 'openrouter', description: 'OpenRouter API key or OAuth (any model)' },
+  { name: 'gpt', value: 'gpt', description: 'OpenAI ChatGPT OAuth (chat/completions)' },
+  { name: 'claude', value: 'claude', description: 'Claude Code CLI (claude -p) — opt-in fallback' },
+  { name: 'lmstudio', value: 'lmstudio', description: 'Local LM Studio server (no account)' },
+  { name: 'local', value: 'local', description: 'Local Ollama models (no account)' },
 ];
 
-const TASK_OPTIONS: ChoiceOption<TaskBackend>[] = [
-  { label: 'local', value: 'local', hint: 'Local SQLite issue store (~/.openswarm/issues.db) — no account' },
-  { label: 'linear', value: 'linear', hint: 'Linear (paste API key + team id)' },
-];
-
-const NOTIFY_OPTIONS: ChoiceOption<NotifyChannel>[] = [
-  { label: 'none', value: 'none', hint: 'No outbound notifications' },
-  { label: 'discord', value: 'discord', hint: 'Discord bot token + channel id' },
-  { label: 'slack', value: 'slack', hint: 'Slack incoming webhook URL' },
-  { label: 'telegram', value: 'telegram', hint: 'Telegram bot token + chat id' },
-  { label: 'webhook', value: 'webhook', hint: 'Generic webhook URL' },
+const NOTIFY_CHOICES: { name: string; value: NotifyChannel; description: string }[] = [
+  { name: 'none', value: 'none', description: 'No outbound notifications' },
+  { name: 'discord', value: 'discord', description: 'Discord bot token + channel id' },
+  { name: 'slack', value: 'slack', description: 'Slack incoming webhook URL' },
+  { name: 'telegram', value: 'telegram', description: 'Telegram bot token + chat id' },
+  { name: 'webhook', value: 'webhook', description: 'Generic webhook URL' },
 ];
 
 /** ChatGPT-OAuth providers share the openai-gpt profile; openrouter has its own. */
 function authPlanFor(provider: ProviderId): { providerArg: 'gpt' | 'openrouter'; profileKey: string } | null {
   if (provider === 'codex-responses' || provider === 'gpt') return { providerArg: 'gpt', profileKey: 'openai-gpt:default' };
   if (provider === 'openrouter') return { providerArg: 'openrouter', profileKey: 'openrouter:default' };
-  return null; // lmstudio / local / codex need no OAuth here
+  return null; // lmstudio / local / codex / claude need no OAuth here
 }
 
 /** Apply the wizard's choices onto the static sample config via targeted replaces. */
@@ -69,65 +69,199 @@ export interface InitWizardOptions {
   force?: boolean;
 }
 
+/**
+ * Provider bootstrap. `adapter.isAvailable()` is the canonical "already
+ * configured?" probe — it covers env keys, OAuth profiles, PATH binaries, and
+ * local servers (the old wizard only checked OAuth profiles). When not available,
+ * branch on how to set the provider up. Returns whether to run inline OAuth after
+ * the wizard, plus the auth plan.
+ */
+async function bootstrapProvider(
+  provider: ProviderId,
+): Promise<{ doAuthNow: boolean; plan: ReturnType<typeof authPlanFor> }> {
+  let available = false;
+  try {
+    available = await getAdapter(provider).isAvailable();
+  } catch { // cxt-ignore: error_swallow,exception_hiding — unknown/unconfigured provider treated as unavailable
+    available = false;
+  }
+
+  if (provider === 'claude') {
+    // claude = the `claude -p` CLI wrapper; isAvailable() is just `which claude`.
+    // PATH presence ≠ logged in, so guide explicitly instead of claiming "configured".
+    if (available) console.log('   ✓ `claude` on PATH. If not logged in yet, run `claude` once to authenticate.');
+    else console.log('   `claude` not found. Install: npm i -g @anthropic-ai/claude-code, then run `claude` to log in.');
+    return { doAuthNow: false, plan: null };
+  }
+
+  if (available) {
+    console.log(`   ✓ ${provider} already configured.`);
+    return { doAuthNow: false, plan: authPlanFor(provider) };
+  }
+
+  if (provider === 'codex') {
+    console.log('   `codex` not found. Install the OpenAI Codex CLI and ensure `codex` is on PATH.');
+    return { doAuthNow: false, plan: null };
+  }
+  if (provider === 'lmstudio' || provider === 'local') {
+    console.log(`   No ${provider} server detected — start it (LM Studio :1234 / Ollama :11434) before running.`);
+    return { doAuthNow: false, plan: null };
+  }
+
+  const plan = authPlanFor(provider);
+  if (plan) {
+    const doAuthNow = await confirm({
+      message: `   ${provider} needs login — run \`auth login --provider ${plan.providerArg}\` now?`,
+      default: true,
+    });
+    return { doAuthNow, plan };
+  }
+  return { doAuthNow: false, plan: null };
+}
+
+/**
+ * Interactive Linear setup: paste API key → arrow-key pick teams (multi) → pick
+ * THIS repo's project → write LINEAR_* env + an openswarm.json mapping so the
+ * daemon resolves this repo without fuzzy name matching. Falls back to manual
+ * team-id entry if the Linear API can't be reached.
+ */
+async function setupLinear(envVars: Record<string, string>, cwd: string): Promise<void> {
+  console.log('   Get a key at https://linear.app/settings/api');
+  const apiKey = (await password({ message: '   LINEAR_API_KEY (hidden):' })).trim();
+  if (!apiKey) {
+    console.log('   Skipped Linear (no key).');
+    return;
+  }
+  envVars.LINEAR_API_KEY = apiKey;
+
+  let teams: Awaited<ReturnType<typeof listTeams>> = [];
+  try {
+    teams = await listTeams(apiKey);
+  } catch (err) { // cxt-ignore: error_swallow,exception_hiding — surfaced to the user + manual team-id fallback
+    console.log(`   ⚠ Could not fetch teams (${(err as Error).message}). Enter the team id manually.`);
+  }
+
+  if (teams.length === 0) {
+    const tid = (await input({ message: '   LINEAR_TEAM_ID:' })).trim();
+    if (tid) envVars.LINEAR_TEAM_ID = tid;
+    return;
+  }
+
+  const pickedTeamIds = await checkbox({
+    message: '   Teams the daemon should watch (space = select, enter = confirm):',
+    choices: teams.map((t) => ({ name: `${t.key} — ${t.name}`, value: t.id })),
+  });
+  if (pickedTeamIds.length > 0) envVars.LINEAR_TEAM_ID = pickedTeamIds.join(',');
+
+  // Map THIS repo to a single project.
+  const mapTeamId =
+    pickedTeamIds.length === 1
+      ? pickedTeamIds[0]
+      : await select({
+          message: '   Which team owns THIS repo?',
+          choices: teams
+            .filter((t) => pickedTeamIds.includes(t.id))
+            .map((t) => ({ name: `${t.key} — ${t.name}`, value: t.id })),
+        });
+  if (!mapTeamId) return;
+
+  let projects: Awaited<ReturnType<typeof listProjects>> = [];
+  try {
+    projects = await listProjects(mapTeamId, apiKey);
+  } catch (err) { // cxt-ignore: error_swallow,exception_hiding — surfaced to the user; repo mapping skipped
+    console.log(`   ⚠ Could not fetch projects (${(err as Error).message}).`);
+    return;
+  }
+  if (projects.length === 0) {
+    console.log('   No projects in that team — skipping repo mapping.');
+    return;
+  }
+
+  const repoName = basename(cwd);
+  const projectId = await select({
+    message: `   Linear project for "${repoName}":`,
+    choices: [
+      { name: '(skip — no repo mapping)', value: '' },
+      ...projects.map((p) => ({ name: p.name, value: p.id })),
+    ],
+  });
+  if (!projectId) return;
+
+  const proj = projects.find((p) => p.id === projectId);
+  const team = teams.find((t) => t.id === mapTeamId);
+  const filePath = await saveRepoMetadata(cwd, {
+    schemaVersion: 1,
+    projectName: proj?.name,
+    linear: {
+      teamId: mapTeamId,
+      teamKey: team?.key,
+      projectId,
+      projectName: proj?.name,
+    },
+  });
+  console.log(`   Wrote ${filePath} → ${team?.key ?? '?'}/${proj?.name ?? projectId}`);
+}
+
 export async function runInitWizard(opts: InitWizardOptions = {}): Promise<void> {
-  const configPath = join(process.cwd(), 'config.yaml');
-  const envPath = join(process.cwd(), '.env');
+  const cwd = process.cwd();
+  const configPath = join(cwd, 'config.yaml');
+  const envPath = join(cwd, '.env');
 
   if (existsSync(configPath) && !opts.force) {
     console.error('config.yaml already exists. Use --force to overwrite, or edit it directly.');
     process.exit(1);
   }
 
-  const store = new AuthProfileStore();
-  const prompter = createPrompter();
   const envVars: Record<string, string> = {};
-  let provider: ProviderId;
-  let taskBackend: TaskBackend;
-  let notify: NotifyChannel;
+  let provider: ProviderId = 'codex';
+  let taskBackend: TaskBackend = 'local';
+  let notify: NotifyChannel = 'none';
   let doAuthNow = false;
+  let plan: ReturnType<typeof authPlanFor> = null;
 
   try {
-    console.log('OpenSwarm first-run setup — three quick choices.\n');
+    console.log('OpenSwarm first-run setup.\n');
 
     // 1) AI provider
-    provider = await prompter.choose('1) AI provider for worker/reviewer:', PROVIDER_OPTIONS);
-    const plan = authPlanFor(provider);
-    if (plan) {
-      const already = store.getProfile(plan.profileKey) !== null;
-      if (already) {
-        console.log(`   ✓ already authenticated (${plan.profileKey}).`);
-      } else {
-        doAuthNow = await prompter.confirm(`   ${provider} needs login. Run \`auth login --provider ${plan.providerArg}\` now?`, true);
-      }
-    } else {
-      console.log(`   ${provider} needs no OAuth here (configure its endpoint/model later).`);
-    }
+    provider = await select({
+      message: '1) AI provider for worker/reviewer:',
+      choices: PROVIDER_CHOICES.map((c) => ({ name: c.name, value: c.value, description: c.description })),
+    });
+    ({ doAuthNow, plan } = await bootstrapProvider(provider));
 
     // 2) Task backend
-    taskBackend = await prompter.choose('\n2) Task backend:', TASK_OPTIONS);
-    if (taskBackend === 'linear') {
-      console.log('   Get a key at https://linear.app/settings/api');
-      const apiKey = await prompter.ask('   LINEAR_API_KEY');
-      const teamId = await prompter.ask('   LINEAR_TEAM_ID');
-      if (apiKey) envVars.LINEAR_API_KEY = apiKey;
-      if (teamId) envVars.LINEAR_TEAM_ID = teamId;
-    }
+    taskBackend = await select({
+      message: '\n2) Task backend:',
+      choices: [
+        { name: 'local', value: 'local' as TaskBackend, description: 'Local SQLite issue store (~/.openswarm/issues.db) — no account' },
+        { name: 'linear', value: 'linear' as TaskBackend, description: 'Linear (arrow-key team/project picker)' },
+      ],
+    });
+    if (taskBackend === 'linear') await setupLinear(envVars, cwd);
 
     // 3) Notification channel
-    notify = await prompter.choose('\n3) Notification channel (optional):', NOTIFY_OPTIONS);
+    notify = await select({
+      message: '\n3) Notification channel (optional):',
+      choices: NOTIFY_CHOICES.map((c) => ({ name: c.name, value: c.value, description: c.description })),
+    });
     if (notify === 'discord') {
-      envVars.DISCORD_TOKEN = await prompter.ask('   DISCORD_TOKEN');
-      envVars.DISCORD_CHANNEL_ID = await prompter.ask('   DISCORD_CHANNEL_ID');
+      envVars.DISCORD_TOKEN = (await password({ message: '   DISCORD_TOKEN (hidden):' })).trim();
+      envVars.DISCORD_CHANNEL_ID = (await input({ message: '   DISCORD_CHANNEL_ID:' })).trim();
     } else if (notify === 'slack') {
-      envVars.SLACK_WEBHOOK_URL = await prompter.ask('   SLACK_WEBHOOK_URL');
+      envVars.SLACK_WEBHOOK_URL = (await input({ message: '   SLACK_WEBHOOK_URL:' })).trim();
     } else if (notify === 'telegram') {
-      envVars.TELEGRAM_BOT_TOKEN = await prompter.ask('   TELEGRAM_BOT_TOKEN');
-      envVars.TELEGRAM_CHAT_ID = await prompter.ask('   TELEGRAM_CHAT_ID');
+      envVars.TELEGRAM_BOT_TOKEN = (await password({ message: '   TELEGRAM_BOT_TOKEN (hidden):' })).trim();
+      envVars.TELEGRAM_CHAT_ID = (await input({ message: '   TELEGRAM_CHAT_ID:' })).trim();
     } else if (notify === 'webhook') {
-      envVars.NOTIFY_WEBHOOK_URL = await prompter.ask('   NOTIFY_WEBHOOK_URL');
+      envVars.NOTIFY_WEBHOOK_URL = (await input({ message: '   NOTIFY_WEBHOOK_URL:' })).trim();
     }
-  } finally {
-    prompter.close();
+  } catch (err) {
+    // @inquirer throws ExitPromptError on Ctrl-C — exit cleanly, no stack trace.
+    if (err instanceof Error && err.name === 'ExitPromptError') {
+      console.log('\nSetup cancelled.');
+      return;
+    }
+    throw err;
   }
 
   // Drop empty answers so we never write `KEY=` for a skipped field.
@@ -143,8 +277,7 @@ export async function runInitWizard(opts: InitWizardOptions = {}): Promise<void>
   writeFileSync(configPath, buildWizardConfig(provider, notify), 'utf-8');
   console.log(`Wrote ${configPath}.`);
 
-  // Inline auth last (browser OAuth) — after the prompt readline is closed.
-  const plan = authPlanFor(provider);
+  // Inline auth last (browser OAuth) — after all prompts.
   if (doAuthNow && plan) {
     console.log(`\nLaunching login for ${plan.providerArg}...`);
     const { handleAuthLogin } = await import('./authHandler.js');
@@ -154,11 +287,14 @@ export async function runInitWizard(opts: InitWizardOptions = {}): Promise<void>
   // Next steps.
   console.log('\nNext steps:');
   console.log('  1. Edit config.yaml — set your project path(s) under `agents:`.');
-  if (plan && !doAuthNow && store.getProfile(plan.profileKey) === null) {
-    console.log(`  2. Authenticate: openswarm auth login --provider ${plan.providerArg}`);
+  if (plan && !doAuthNow) {
+    const store = new AuthProfileStore();
+    if (store.getProfile(plan.profileKey) === null) {
+      console.log(`  2. Authenticate: openswarm auth login --provider ${plan.providerArg}`);
+    }
   }
   console.log('  • Validate: openswarm validate');
-  console.log('  • Start:    openswarm start   (or `openswarm chat` for the TUI)');
+  console.log('  • Start:    openswarm start    (or `openswarm` for the TUI)');
   if (taskBackend === 'local') {
     console.log('  • Task backend: local SQLite (~/.openswarm/issues.db) — no Linear account needed.');
   }

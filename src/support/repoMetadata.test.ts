@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { loadRepoMetadata, REPO_METADATA_FILENAME, RepoMetadataError } from './repoMetadata.js';
+import { loadRepoMetadata, saveRepoMetadata, REPO_METADATA_FILENAME, RepoMetadataError } from './repoMetadata.js';
 
 describe('loadRepoMetadata', () => {
   let dir: string;
@@ -67,5 +67,41 @@ describe('loadRepoMetadata', () => {
       }),
     );
     await expect(loadRepoMetadata(dir)).rejects.toBeInstanceOf(RepoMetadataError);
+  });
+});
+
+describe('saveRepoMetadata', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'openswarm-meta-save-'));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('round-trips a Linear mapping through loadRepoMetadata', async () => {
+    const meta = {
+      schemaVersion: 1 as const,
+      projectName: 'OpenSwarm',
+      linear: {
+        teamId: '49b7af95-3cac-4a56-adc7-f19d77dfbe9b',
+        teamKey: 'INT',
+        projectId: '74a9d092-7b3c-4d4d-a998-a2c9a8f08e83',
+        projectName: 'OpenSwarm',
+      },
+    };
+    const filePath = await saveRepoMetadata(dir, meta);
+    expect(filePath).toBe(join(dir, REPO_METADATA_FILENAME));
+    await expect(loadRepoMetadata(dir)).resolves.toEqual(meta);
+  });
+
+  it('rejects an invalid mapping (non-uuid projectId) without writing', async () => {
+    await expect(
+      // projectId is a string at the type level; the uuid check is runtime (zod).
+      saveRepoMetadata(dir, { schemaVersion: 1, linear: { projectId: 'not-a-uuid' } }),
+    ).rejects.toThrow();
+    await expect(loadRepoMetadata(dir)).resolves.toBeNull();
   });
 });
