@@ -5,6 +5,8 @@ import {
   releaseDependentTasks,
   enrichTaskFromState,
   markTaskDone,
+  markTaskInProgress,
+  updateTaskLinearState,
   completeParentIfChildrenDone,
   buildTaskStateSyncComment,
   hydrateTaskStateFromComments,
@@ -139,6 +141,24 @@ describe('task state store', () => {
     const ready = getTaskReadiness(task);
     expect(ready.ready).toBe(true);
     expect(ready.blockedBy).toEqual([]);
+  });
+
+  it('reconciles stale in_progress against Linear state (R5)', () => {
+    // Operator parks an actively-running issue → local in_progress is stale.
+    markTaskInProgress('KT-400', { linearState: 'In Progress' });
+    const parked = updateTaskLinearState('KT-400', 'Backlog');
+    expect(parked.linearState).toBe('Backlog');
+    expect(parked.execution.status).toBe('backlog');
+
+    // Completed externally → mark done locally.
+    markTaskInProgress('KT-401', { linearState: 'In Progress' });
+    const done = updateTaskLinearState('KT-401', 'Done');
+    expect(done.execution.status).toBe('done');
+
+    // Still actively In Progress → execution status is left untouched.
+    markTaskInProgress('KT-402', { linearState: 'In Progress' });
+    const running = updateTaskLinearState('KT-402', 'In Progress');
+    expect(running.execution.status).toBe('in_progress');
   });
 
   it('completes decomposed parent only after all child issues are done', () => {

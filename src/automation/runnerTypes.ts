@@ -16,6 +16,8 @@ export interface AutonomousConfig {
   maxConsecutiveTasks: number;
   cooldownSeconds: number;
   dryRun: boolean;
+  /** Treat Linear Backlog as a work queue (legacy). Default false = Backlog parked (R5). */
+  includeBacklog?: boolean;
   pairMode?: boolean;
   pairMaxAttempts?: number;
   workerModel?: string;

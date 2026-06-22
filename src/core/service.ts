@@ -188,6 +188,7 @@ export async function startService(config: SwarmConfig): Promise<void> {
       defaultAdapter: config.adapter,
       linearTeamId: config.linearTeamId,
       allowedProjects: config.autonomous.allowedProjects,
+      includeBacklog: config.autonomous.includeBacklog,
       heartbeatSchedule: config.autonomous.schedule,
       autoExecute: true,
       maxConsecutiveTasks: 3,
