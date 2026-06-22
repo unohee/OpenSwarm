@@ -210,8 +210,11 @@ const removedConfigPaths = new Set<string>(_reposCfg.removedConfigPaths ?? []);
  */
 export function setWebRunner(runner: AutonomousRunner): void {
   runnerRef = runner;
-  // Restore persisted enabled state
+  // Restore persisted enabled state. INT-1810 R6: removedConfigPaths is a HARD denylist —
+  // never re-enable a removed/isolated repo, even if it lingers in the persisted enabled list
+  // (auto-rediscovery used to re-add isolated repos and silently un-isolate them).
   for (const path of _reposCfg.enabled) {
+    if (removedConfigPaths.has(path)) continue;
     runner.enableProject(path);
   }
   // 대시보드에서 제거된 config 경로를 runner의 allowedProjects에서도 제거
@@ -387,6 +390,9 @@ export async function startWebServer(port: number = 3847): Promise<void> {
           const { projectPath } = JSON.parse(body) as { projectPath: string };
           if (typeof projectPath === 'string' && projectPath) {
             pinnedProjects.add(projectPath);
+            // R6: an explicit pin is a deliberate re-enable — clear the denylist so it isn't
+            // skipped again by setWebRunner on the next restart.
+            removedConfigPaths.delete(projectPath);
             saveReposConfig();
             // Seed path cache so Linear project name matches immediately
             const name = projectPath.split('/').pop();
@@ -421,8 +427,12 @@ export async function startWebServer(port: number = 3847): Promise<void> {
         try {
           const { projectPath, enabled } = JSON.parse(body) as { projectPath: string; enabled: boolean };
           if (typeof projectPath === 'string' && typeof enabled === 'boolean') {
-            if (enabled) runnerRef?.enableProject(projectPath);
-            else         runnerRef?.disableProject(projectPath);
+            if (enabled) {
+              removedConfigPaths.delete(projectPath); // R6: explicit enable clears the denylist
+              runnerRef?.enableProject(projectPath);
+            } else {
+              runnerRef?.disableProject(projectPath);
+            }
             saveReposConfig();
             broadcastEvent({ type: 'project:toggled', data: { projectPath, enabled } });
           }

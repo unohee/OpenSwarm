@@ -15,6 +15,11 @@ const SKIP_DIRS = new Set([
   '.next', '.venv', 'venv', '.tox', '.mypy_cache', '.pytest_cache',
   'coverage', '.turbo', '.cache', '.parcel-cache',
   '.venv-mcp', 'site-packages',
+  // INT-1810 R3: these are .gitignored artifacts but the scanner doesn't read .gitignore.
+  // Without skipping them, scanning a repo with a large `trash/` (archived code) exploded the
+  // registry to 624650 entities (normal ~1,594) and the conflict detector then treated those
+  // trash files as shared between unrelated issues → false conflicts.
+  'trash', '.openswarm', 'htmlcov', '.ruff_cache', 'worktree',
 ]);
 
 // Prefix-based skip: any directory name starting with these prefixes
