@@ -5,6 +5,8 @@ import {
   releaseDependentTasks,
   enrichTaskFromState,
   markTaskDone,
+  markTaskInProgress,
+  updateTaskLinearState,
   completeParentIfChildrenDone,
   buildTaskStateSyncComment,
   hydrateTaskStateFromComments,
@@ -107,6 +109,56 @@ describe('task state store', () => {
     expect(released[0].issueId).toBe('ISSUE-2');
     expect(released[0].execution.status).toBe('todo');
     expect(released[0].linearState).toBe('Todo');
+  });
+
+  it('gates on TaskItem.blockedBy (Linear-fetched deps) until the blocker is done', () => {
+    // INT-1809: blockedBy now arrives on the TaskItem from the Linear fetch
+    // (relations + "블로커:" prose), not just from local taskState.dependencyIssueIds.
+    // getTaskReadiness must prefer it and gate execution.
+    upsertTaskState('KT-307', {
+      execution: { status: 'in_progress', retryCount: 0 },
+      linearState: 'In Progress',
+      updatedAt: new Date().toISOString(),
+    });
+
+    const task = {
+      id: 'KT-308',
+      source: 'linear' as const,
+      title: '[하네스이식 8] eval 회귀 검증',
+      priority: 2,
+      createdAt: Date.now(),
+      issueId: 'KT-308',
+      blockedBy: ['KT-307'],
+    };
+
+    const blocked = getTaskReadiness(task);
+    expect(blocked.ready).toBe(false);
+    expect(blocked.blockedBy).toEqual(['KT-307']);
+    expect(blocked.reason).toContain('Waiting on dependencies');
+
+    // Blocker completes → dependent becomes ready.
+    markTaskDone('KT-307');
+    const ready = getTaskReadiness(task);
+    expect(ready.ready).toBe(true);
+    expect(ready.blockedBy).toEqual([]);
+  });
+
+  it('reconciles stale in_progress against Linear state (R5)', () => {
+    // Operator parks an actively-running issue → local in_progress is stale.
+    markTaskInProgress('KT-400', { linearState: 'In Progress' });
+    const parked = updateTaskLinearState('KT-400', 'Backlog');
+    expect(parked.linearState).toBe('Backlog');
+    expect(parked.execution.status).toBe('backlog');
+
+    // Completed externally → mark done locally.
+    markTaskInProgress('KT-401', { linearState: 'In Progress' });
+    const done = updateTaskLinearState('KT-401', 'Done');
+    expect(done.execution.status).toBe('done');
+
+    // Still actively In Progress → execution status is left untouched.
+    markTaskInProgress('KT-402', { linearState: 'In Progress' });
+    const running = updateTaskLinearState('KT-402', 'In Progress');
+    expect(running.execution.status).toBe('in_progress');
   });
 
   it('completes decomposed parent only after all child issues are done', () => {

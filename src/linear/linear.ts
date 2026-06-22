@@ -348,6 +348,94 @@ export interface GetMyIssuesOptions {
 }
 
 /**
+ * Parse blocker issue identifiers from a description's prose. The KYTE team
+ * writes dependencies as text ("블로커: KT-305/306/307", "Blocked by: KT-302, KT-307")
+ * rather than structured Linear relations, so this is the high-value path.
+ * Returns raw identifiers (e.g. "KT-305"); the caller resolves them to UUIDs.
+ *
+ * Handles Korean ("블로커"/"의존성") and English ("Blocked by"/"Blocker"/"Depends on")
+ * labels; comma / slash separators; and bare numbers that inherit the preceding
+ * team prefix ("KT-305/306" → KT-305, KT-306). Over-capture is safe: identifiers
+ * that don't resolve to a fetched issue are dropped during UUID resolution.
+ */
+export function parseBlockerIdentifiers(description?: string): string[] {
+  if (!description) return [];
+  const ids: string[] = [];
+  // Match a blocker label, then capture the rest of that line.
+  const lineRe = /(?:블로커|의존성?|blocked\s*by|blocker|depends\s*on)\s*[:：]?\s*\*{0,2}\s*([^\n\r]+)/gi;
+  let line: RegExpExecArray | null;
+  while ((line = lineRe.exec(description)) !== null) {
+    const segment = line[1];
+    let lastPrefix: string | null = null;
+    // A full identifier (TEAM-123) or a bare number reusing the last seen prefix.
+    const tokenRe = /([A-Z]{2,})-(\d+)|(\d+)/g;
+    let tok: RegExpExecArray | null;
+    while ((tok = tokenRe.exec(segment)) !== null) {
+      if (tok[1] && tok[2]) {
+        lastPrefix = tok[1];
+        ids.push(`${tok[1]}-${tok[2]}`);
+      } else if (tok[3] && lastPrefix) {
+        ids.push(`${lastPrefix}-${tok[3]}`);
+      }
+    }
+  }
+  return [...new Set(ids)];
+}
+
+/**
+ * Populate `blockedBy` (issue UUIDs) on each fetched issue from two sources:
+ *  1. Structured Linear relations — `inverseRelations()` of type "blocks" (the
+ *     relation's source `issue` is the blocker).
+ *  2. Description prose parsed by {@link parseBlockerIdentifiers}.
+ *
+ * Only blockers that are themselves in the current fetch set are kept. We never
+ * query Done issues, so a completed blocker drops out of the set and won't
+ * false-block its dependents; getTaskReadiness then gates on what remains.
+ */
+async function populateBlockedBy(
+  result: LinearIssueInfo[],
+  // SDK Issue nodes keyed by id (carry inverseRelations()); typed loosely to
+  // match the file's existing lazy-resolver usage.
+  sdkNodeById: Map<string, any>,
+): Promise<void> {
+  const fetchedIds = new Set(result.map((r) => r.id));
+  const identifierToId = new Map(result.map((r) => [r.identifier.toUpperCase(), r.id]));
+
+  await Promise.all(
+    result.map(async (info) => {
+      const blockers = new Set<string>();
+
+      // Source 1: structured relations. `_issue` carries the blocker's id on the
+      // fragment, so we read it without a per-blocker fetch.
+      const node = sdkNodeById.get(info.id);
+      if (node && typeof node.inverseRelations === 'function') {
+        try {
+          const rels: any = await withRateLimit('linear', () => node.inverseRelations()); // cxt-ignore: type_safety — SDK IssueRelationConnection
+          for (const rel of rels?.nodes ?? []) {
+            if (rel?.type !== 'blocks') continue;
+            const blockerId = rel?._issue?.id;
+            if (blockerId) blockers.add(blockerId);
+          }
+        } catch { // cxt-ignore: error_swallow,exception_hiding — best-effort, optional enrichment
+          // Relations enrichment is optional; the text parser below still applies.
+        }
+      }
+
+      // Source 2: description prose → identifiers → resolve to UUIDs.
+      for (const ident of parseBlockerIdentifiers(info.description)) {
+        const id = identifierToId.get(ident.toUpperCase());
+        if (id) blockers.add(id);
+      }
+
+      // Keep only blockers still in the fetch set (excludes Done/out-of-scope →
+      // avoids false-blocking); never self-reference.
+      const filtered = [...blockers].filter((id) => id !== info.id && fetchedIds.has(id));
+      if (filtered.length > 0) info.blockedBy = filtered;
+    }),
+  );
+}
+
+/**
  * Get assigned active issues (with caching)
  * (Todo, In Progress, Review states - excludes Backlog)
  */
@@ -428,6 +516,7 @@ export async function getMyIssues(
         } as LinearIssueInfo);
       }
 
+      await populateBlockedBy(result, new Map(withState.map(({ issue }) => [issue.id, issue])));
       return result;
     }
 
@@ -464,6 +553,8 @@ export async function getMyIssues(
           project,
         });
       }
+
+      await populateBlockedBy(result, new Map(allNodes.map((n) => [n.id, n])));
     }
 
     // Sort by priority

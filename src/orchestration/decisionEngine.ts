@@ -123,6 +123,13 @@ export interface DecisionEngineConfig {
 
   /** Dry run mode */
   dryRun: boolean;
+
+  /**
+   * Treat Linear "Backlog" as an actionable work queue (legacy behavior). When
+   * false (default), Backlog is "parked": only Todo/In Progress/In Review are
+   * actionable, so moving an issue to Backlog stops the daemon picking it up.
+   */
+  includeBacklog?: boolean;
 }
 
 // Constants
@@ -136,7 +143,26 @@ const DEFAULT_CONFIG: DecisionEngineConfig = {
   maxConsecutiveTasks: 3,
   cooldownSeconds: 300,     // 5 minutes
   dryRun: false,
+  includeBacklog: false,    // Backlog is parked, not a queue (R5)
 };
+
+/**
+ * Linear states the daemon will NOT act on. Backlog is "parked" (opt back in via
+ * DecisionEngineConfig.includeBacklog); Done/Canceled are terminal.
+ */
+const NON_ACTIONABLE_LINEAR_STATES = new Set(['Backlog', 'Done', 'Canceled', 'Cancelled']);
+
+/**
+ * R5: whether the daemon should act on an issue in the given Linear state. Only
+ * Todo/In Progress/In Review (and unknown states, conservatively) are actionable;
+ * Backlog is parked and Done/Canceled are terminal. `includeBacklog` opts back
+ * into the legacy "Backlog is a work queue" behavior.
+ */
+export function isActionableLinearState(linearState: string | undefined, includeBacklog = false): boolean {
+  if (!linearState) return true; // unknown state → don't gate (conservative)
+  if (!NON_ACTIONABLE_LINEAR_STATES.has(linearState)) return true;
+  return linearState === 'Backlog' && includeBacklog === true;
+}
 
 // Engine State
 
@@ -426,6 +452,14 @@ export class DecisionEngine {
       // R2: skip umbrella issues (EPIC by title, or parent of another fetched issue).
       if (isUmbrellaIssue(task, parentIds)) {
         console.log(`[DecisionEngine] Filtered out ${task.issueIdentifier}: parent/EPIC issue is not executable`);
+        return false;
+      }
+
+      // R5: Linear is the source of truth for whether work is wanted. Backlog is
+      // "parked" (not a queue) and Done/Canceled are terminal — only actionable
+      // states proceed. Moving an issue to Backlog stops the daemon picking it up.
+      if (!isActionableLinearState(task.linearState, this.config.includeBacklog)) {
+        console.log(`[DecisionEngine] Filtered out ${task.issueIdentifier}: Linear state "${task.linearState}" is not actionable (parked)`);
         return false;
       }
 

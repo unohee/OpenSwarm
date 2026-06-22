@@ -152,6 +152,7 @@ export class AutonomousRunner {
       maxConsecutiveTasks: config.maxConsecutiveTasks,
       cooldownSeconds: config.cooldownSeconds,
       dryRun: config.dryRun,
+      includeBacklog: config.includeBacklog,
     });
 
     // Initialize TaskScheduler

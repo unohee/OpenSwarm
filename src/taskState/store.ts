@@ -175,7 +175,21 @@ export function enrichTaskFromState(task: TaskItem): TaskItem {
 }
 
 export function updateTaskLinearState(issueId: string, linearState: string): OpenSwarmTaskState {
-  return upsertTaskState(issueId, { linearState });
+  // R5: reconcile stale local execution status against Linear (the source of
+  // truth). If an operator parked an issue (Backlog) or it was completed/
+  // cancelled externally while we still hold 'in_progress', the local state is
+  // stale — downgrade it so the issue isn't treated as actively running. This is
+  // a local-only update; it never writes back to Linear (preserves R7).
+  const patch: Partial<OpenSwarmTaskState> = { linearState };
+  const current = getTaskState(issueId);
+  if (current?.execution.status === 'in_progress') {
+    if (linearState === 'Done') {
+      patch.execution = { ...current.execution, status: 'done' };
+    } else if (linearState === 'Backlog' || linearState === 'Canceled' || linearState === 'Cancelled') {
+      patch.execution = { ...current.execution, status: 'backlog' };
+    }
+  }
+  return upsertTaskState(issueId, patch);
 }
 
 export function markTaskInProgress(
