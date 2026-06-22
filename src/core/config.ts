@@ -203,7 +203,10 @@ const JobProfileSchema = z.object({
   minMinutes: z.number().min(0).optional(),
   maxMinutes: z.number().min(0).optional(),
   priority: z.number().int().min(1).max(4).optional(),
-  roles: z.record(PipelineStageSchema, z.string()).optional(),
+  // partialRecord, not record: a profile overrides only the stages it names
+  // (e.g. worker+reviewer). In Zod v4 `z.record(enum, …)` requires every enum
+  // key, which rejected valid partial profiles and crashed daemon startup.
+  roles: z.partialRecord(PipelineStageSchema, z.string()).optional(),
 });
 
 const PipelineGuardsConfigSchema = z.object({
@@ -509,6 +512,9 @@ function transformConfig(raw: RawConfig): SwarmConfig {
       maxReflections: raw.autonomous.maxReflections,
       dailyTaskCap: raw.autonomous.dailyTaskCap,
       interTaskCooldownMs: raw.autonomous.interTaskCooldownMs,
+      // jobProfiles was validated by the schema but dropped here, so per-task
+      // model selection silently fell back to defaultRoles. Carry it through.
+      jobProfiles: raw.autonomous.jobProfiles,
     } : undefined,
     prProcessor: raw.prProcessor ? {
       enabled: raw.prProcessor.enabled,

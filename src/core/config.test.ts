@@ -147,6 +147,30 @@ agents:
       expect(config.autonomous?.maxReflections).toBe(3);
     });
 
+    it('should accept jobProfiles with partial role overrides', () => {
+      // Regression: roles used z.record(enum, string), which under Zod v4 requires
+      // EVERY pipeline stage as a key — so a profile naming only worker+reviewer
+      // failed validation and crashed daemon startup. A profile overrides only the
+      // stages it names.
+      const jsonContent = JSON.stringify({
+        language: 'en',
+        linear: { apiKey: 'k', teamId: 't' },
+        agents: [{ name: 'main', projectPath: '/p', enabled: true, paused: false }],
+        autonomous: {
+          enabled: true,
+          jobProfiles: [
+            { name: 'light', minMinutes: 1, maxMinutes: 15, roles: { worker: 'm1', reviewer: 'm2' } },
+          ],
+        },
+      });
+
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockReturnValue(jsonContent);
+
+      const config = loadConfig('/tmp/config.json');
+      expect(config.autonomous?.jobProfiles?.[0]?.roles).toEqual({ worker: 'm1', reviewer: 'm2' });
+    });
+
     it('should throw error when config file not found', () => {
       vi.mocked(existsSync).mockReturnValue(false);
 
