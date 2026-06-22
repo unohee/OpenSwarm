@@ -61,6 +61,17 @@ export interface TaskItem {
 }
 
 /**
+ * INT-1810 R2: a parent/EPIC (umbrella) issue is not executable work — it's a container for
+ * sub-issues. `parentIds` is the set of issueIds that any fetched task points to via parentId,
+ * so a fetched issue that IS such a parent is an umbrella. EPICs are also tagged in the title.
+ */
+export function isUmbrellaIssue(task: TaskItem, parentIds: Set<string>): boolean {
+  const isEpicTitle = /\[\s*epic\s*\]/i.test(task.title) || /^\s*epic[:\s]/i.test(task.title);
+  const isParent = !!task.issueId && parentIds.has(task.issueId);
+  return isEpicTitle || isParent;
+}
+
+/**
  * Decision result
  */
 export interface DecisionResult {
@@ -395,6 +406,11 @@ export class DecisionEngine {
    * Filter executable tasks
    */
   private filterExecutableTasks(tasks: TaskItem[]): TaskItem[] {
+    // INT-1810 R2: parent/EPIC (umbrella) issues are not executable work. A parent is any issue
+    // another fetched issue points to via parentId; an EPIC is tagged in the title. Without this,
+    // INT-1702 (tracking, decomposed into sub-issues) and KT-300 ([EPIC] …) were picked as work.
+    const parentIds = new Set(tasks.map(t => t.parentId).filter((id): id is string => !!id));
+
     return tasks.filter(task => {
       // Check if project is allowed
       if (task.projectPath && this.config.allowedProjects.length > 0) {
@@ -405,6 +421,12 @@ export class DecisionEngine {
           console.log(`[DecisionEngine] Filtered out ${task.issueIdentifier}: project not allowed (${task.projectPath})`);
           return false;
         }
+      }
+
+      // R2: skip umbrella issues (EPIC by title, or parent of another fetched issue).
+      if (isUmbrellaIssue(task, parentIds)) {
+        console.log(`[DecisionEngine] Filtered out ${task.issueIdentifier}: parent/EPIC issue is not executable`);
+        return false;
       }
 
       const readiness = getTaskReadiness(task);

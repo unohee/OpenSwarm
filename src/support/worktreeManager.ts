@@ -192,8 +192,29 @@ export async function removeWorktree(info: WorktreeInfo): Promise<void> {
   }
 }
 
-/** Clean up dangling worktrees on service start */
+/** Clean up dangling worktrees on service start.
+ *
+ * `git worktree prune` only drops metadata for worktrees whose directory is already gone. A
+ * daemon that was hard-killed or crashed mid-run never ran the `finally` cleanup, so its
+ * `{repo}/worktree/<issueId>` directories survive as orphans (INT-1810 R4). On start nothing
+ * is in flight, so force-remove every one of our own worktree dirs. */
 export async function pruneWorktrees(repoPath: string): Promise<void> {
   await git(repoPath, 'worktree', 'prune').catch((e) => console.warn(`[Worktree] Prune failed for ${repoPath}:`, e));
+  try {
+    const out = await git(repoPath, 'worktree', 'list', '--porcelain');
+    const prefix = `${repoPath}/worktree/`;
+    const orphans = out
+      .split('\n')
+      .filter((l) => l.startsWith('worktree '))
+      .map((l) => l.slice('worktree '.length).trim())
+      .filter((p) => p.startsWith(prefix));
+    for (const p of orphans) {
+      await git(repoPath, 'worktree', 'remove', '--force', p)
+        .then(() => console.log(`[Worktree] Swept orphan worktree: ${p}`))
+        .catch((e) => console.warn(`[Worktree] Orphan sweep failed for ${p}:`, e));
+    }
+  } catch (e) {
+    console.warn(`[Worktree] Orphan sweep skipped for ${repoPath}:`, e);
+  }
   console.log(`[Worktree] Pruned stale worktrees for: ${repoPath}`);
 }
