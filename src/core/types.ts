@@ -65,6 +65,8 @@ export type LinearIssueInfo = {
   comments: LinearComment[];
   /** Linear project info */
   project?: LinearProjectInfo;
+  /** Issue UUIDs that block this issue (from structured relations + "블로커:" prose). */
+  blockedBy?: string[];
 };
 
 /**

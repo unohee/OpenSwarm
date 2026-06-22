@@ -166,6 +166,7 @@ export async function startService(config: SwarmConfig): Promise<void> {
           description: issue.description,
           priority: issue.priority,
           state: issue.state,
+          blockedBy: issue.blockedBy,
           project: issue.project ? {
             id: issue.project.id,
             name: issue.project.name,

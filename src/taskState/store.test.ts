@@ -109,6 +109,38 @@ describe('task state store', () => {
     expect(released[0].linearState).toBe('Todo');
   });
 
+  it('gates on TaskItem.blockedBy (Linear-fetched deps) until the blocker is done', () => {
+    // INT-1809: blockedBy now arrives on the TaskItem from the Linear fetch
+    // (relations + "블로커:" prose), not just from local taskState.dependencyIssueIds.
+    // getTaskReadiness must prefer it and gate execution.
+    upsertTaskState('KT-307', {
+      execution: { status: 'in_progress', retryCount: 0 },
+      linearState: 'In Progress',
+      updatedAt: new Date().toISOString(),
+    });
+
+    const task = {
+      id: 'KT-308',
+      source: 'linear' as const,
+      title: '[하네스이식 8] eval 회귀 검증',
+      priority: 2,
+      createdAt: Date.now(),
+      issueId: 'KT-308',
+      blockedBy: ['KT-307'],
+    };
+
+    const blocked = getTaskReadiness(task);
+    expect(blocked.ready).toBe(false);
+    expect(blocked.blockedBy).toEqual(['KT-307']);
+    expect(blocked.reason).toContain('Waiting on dependencies');
+
+    // Blocker completes → dependent becomes ready.
+    markTaskDone('KT-307');
+    const ready = getTaskReadiness(task);
+    expect(ready.ready).toBe(true);
+    expect(ready.blockedBy).toEqual([]);
+  });
+
   it('completes decomposed parent only after all child issues are done', () => {
     upsertTaskState('PARENT-1', {
       childIssueIds: ['CHILD-1', 'CHILD-2'],
