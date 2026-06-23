@@ -189,17 +189,42 @@ function parseSseLine(line: string): SseEvent | null {
  * `onToken` is provided, each `response.output_text.delta` is emitted live so
  * the chat TUI can stream tokens as they arrive.
  */
-async function consumeResponsesStream(res: Response, onToken?: (delta: string) => void): Promise<ChatLikeResponse> {
+async function consumeResponsesStream(
+  res: Response,
+  onToken?: (delta: string) => void,
+  onReasoning?: (line: string) => void,
+): Promise<ChatLikeResponse> {
   const events: SseEvent[] = [];
   const reader = res.body?.getReader();
   if (!reader) throw new Error('Codex responses: empty stream body');
 
   const decoder = new TextDecoder();
   let buffer = '';
+  // Reasoning summary streams token-by-token; buffer and emit whole lines so the
+  // live log shows readable thoughts instead of one-word-per-line spam.
+  let reasoningBuf = '';
+  const flushReasoning = (force: boolean) => {
+    if (!onReasoning) { reasoningBuf = ''; return; }
+    let idx;
+    while ((idx = reasoningBuf.indexOf('\n')) >= 0) {
+      const line = reasoningBuf.slice(0, idx).trim();
+      reasoningBuf = reasoningBuf.slice(idx + 1);
+      if (line) onReasoning(line);
+    }
+    if (force && reasoningBuf.trim()) { onReasoning(reasoningBuf.trim()); reasoningBuf = ''; }
+  };
   const handle = (ev: SseEvent | null) => {
     if (!ev) return;
     events.push(ev);
     if (onToken && ev.type === 'response.output_text.delta' && ev.delta) onToken(ev.delta);
+    if (onReasoning && ev.type === 'response.reasoning_summary_text.delta' && ev.delta) {
+      reasoningBuf += ev.delta;
+      flushReasoning(false);
+    }
+    // End of a summary part → flush whatever partial line remains.
+    if (ev.type === 'response.reasoning_summary_text.done' || ev.type === 'response.reasoning_summary_part.added') {
+      flushReasoning(true);
+    }
   };
   for (;;) {
     const { done, value } = await reader.read();
@@ -210,6 +235,7 @@ async function consumeResponsesStream(res: Response, onToken?: (delta: string) =
     for (const line of lines) handle(parseSseLine(line));
   }
   handle(parseSseLine(buffer));
+  flushReasoning(true);
 
   return reduceResponsesEvents(events);
 }
@@ -272,7 +298,11 @@ export class CodexResponsesAdapter implements CliAdapter {
     }
 
     const model = options.model ?? await this.getDefaultModel();
-    const callApi = this.createApiCaller(accessToken, accountId, store, model, options.onToken, options.signal);
+    // Stream the model's reasoning summary to the live log as 💭 thoughts.
+    const onReasoning = options.onLog ? (line: string) => options.onLog!(`💭 ${line}`) : undefined;
+    const callApi = this.createApiCaller(
+      accessToken, accountId, store, model, options.onToken, options.signal, onReasoning, options.disableReasoning,
+    );
 
     const loopOptions: AgenticLoopOptions = {
       systemPrompt: options.systemPrompt,
@@ -316,6 +346,8 @@ export class CodexResponsesAdapter implements CliAdapter {
     model: string,
     onToken?: (delta: string) => void,
     signal?: AbortSignal,
+    onReasoning?: (line: string) => void,
+    disableReasoning?: boolean,
   ) {
     let token = initialToken;
     let retried = false;
@@ -330,6 +362,11 @@ export class CodexResponsesAdapter implements CliAdapter {
       };
       if (instructions) body.instructions = instructions;
       if (tools.length > 0) body.tools = toolsToResponsesTools(tools);
+      // Surface the model's thinking: request a reasoning summary so the live log
+      // shows 💭 thoughts (codex-responses keeps thinking in the reasoning channel
+      // and emits little output_text on tool-call turns). Worker (disableReasoning)
+      // uses low effort to stay cheap; other roles use medium. effort ∈ low|medium|high.
+      body.reasoning = { effort: disableReasoning ? 'low' : 'medium', summary: 'auto' };
       // NOTE: never set max_output_tokens — the Codex backend rejects it with HTTP 400.
 
       const doCall = async (accessToken: string): Promise<ChatLikeResponse> => {
@@ -358,7 +395,7 @@ export class CodexResponsesAdapter implements CliAdapter {
           throw new Error(`Codex responses error (${res.status}): ${errText.slice(0, 500)}`);
         }
 
-        return consumeResponsesStream(res, onToken);
+        return consumeResponsesStream(res, onToken, onReasoning);
       };
 
       return doCall(token);
