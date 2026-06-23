@@ -91,7 +91,7 @@ export async function handleProjectAdd(rawPath: string): Promise<void> {
   // <repo>/openswarm.json) so it resolves without fuzzy name matching.
   await mapRepoToLinear(path);
 
-  console.log(c.dim('  Restart the daemon (openswarm start) to pick it up.'));
+  console.log(c.dim('  A running daemon picks this up within a few seconds — otherwise start it with `openswarm start`.'));
 }
 
 /**
@@ -162,5 +162,5 @@ export function handleProjectRm(rawPath: string): void {
   }
   saveRepos(removeProject(cfg, path));
   console.log(c.green(`✓ Removed work repo: ${path}`));
-  console.log(c.dim('  Restart the daemon to apply.'));
+  console.log(c.dim('  A running daemon applies this within a few seconds.'));
 }

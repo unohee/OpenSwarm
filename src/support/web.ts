@@ -3,7 +3,7 @@
 // ============================================
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { writeFileSync, readFileSync, existsSync, watchFile } from 'node:fs';
 import { readdir, stat } from 'node:fs/promises';
 import { join, resolve as resolvePath, dirname, basename } from 'node:path';
 import { homedir } from 'node:os';
@@ -205,33 +205,84 @@ const pinnedProjects = new Set<string>(_reposCfg.pinned);
 const customBasePaths = new Set<string>(_reposCfg.basePaths ?? []);
 const removedConfigPaths = new Set<string>(_reposCfg.removedConfigPaths ?? []);
 
+function syncSet(set: Set<string>, values: string[]): void {
+  set.clear();
+  for (const v of values) set.add(v);
+}
+
 /**
- * Set runner reference (call after autonomous runner is initialized)
+ * Re-read ~/.claude/openswarm-repos.json and apply it to the in-memory registry
+ * + runner. The file is the source of truth: the in-memory pinned/basePaths/
+ * denylist Sets are refilled in place (endpoints close over those refs), and the
+ * runner's enabled set is reconciled to file.enabled minus the denylist. Called
+ * at startup and by the file watcher, so a CLI `add`/`remove` (or a hand edit)
+ * reflects in the dashboard without a daemon restart.
  */
-export function setWebRunner(runner: AutonomousRunner): void {
-  runnerRef = runner;
-  // Restore persisted enabled state. INT-1810 R6: removedConfigPaths is a HARD denylist —
-  // never re-enable a removed/isolated repo, even if it lingers in the persisted enabled list
-  // (auto-rediscovery used to re-add isolated repos and silently un-isolate them).
-  const enabledNow = _reposCfg.enabled.filter((p) => !removedConfigPaths.has(p));
-  for (const path of enabledNow) {
-    runner.enableProject(path);
+export function applyReposConfig(runner: AutonomousRunner, cfg: ReposConfig = loadReposConfig()): void {
+  syncSet(pinnedProjects, cfg.pinned ?? []);
+  syncSet(customBasePaths, cfg.basePaths ?? []);
+  // INT-1810 R6: removedConfigPaths is a HARD denylist — a removed/isolated repo
+  // never returns, even if it lingers in the persisted enabled list.
+  syncSet(removedConfigPaths, cfg.removedConfigPaths ?? []);
+
+  // Reconcile the runner's enabled set to the file (authoritative): enable every
+  // file-enabled, non-denylisted repo; disable anything no longer listed. enabled
+  // is only ever set from here or the dashboard toggle, so this can't fight the
+  // autonomous loop.
+  const enabledNow = (cfg.enabled ?? []).filter((p) => !removedConfigPaths.has(p));
+  const desired = new Set(enabledNow);
+  for (const path of desired) runner.enableProject(path);
+  for (const path of runner.getEnabledProjects()) {
+    if (!desired.has(path)) runner.disableProject(path);
   }
-  // INT-1877: a CLI/dashboard-registered repo (repos.json `enabled`) must also be
-  // ALLOWED — otherwise the DecisionEngine allowedProjects filter drops it. Merge the
-  // enabled set into allowedProjects, then strip the denylist (INT-1810 R6: a removed
-  // path never returns, even if it lingers in the persisted enabled list).
+
+  // INT-1877: an enabled repo must also be ALLOWED — otherwise the DecisionEngine
+  // allowedProjects filter drops it. Merge enabled into allowedProjects, strip the
+  // denylist.
   const current = runner.getAllowedProjects();
   const merged = [...new Set([...current, ...enabledNow])].filter((p) => !removedConfigPaths.has(p));
   if (merged.length !== current.length || merged.some((p) => !current.includes(p))) {
     runner.updateAllowedProjects(merged);
   }
-  // Pre-seed path cache from pinned + enabled projects so tasks without execution history are still matched
-  const allSeeded = new Set([...pinnedProjects, ..._reposCfg.enabled]);
-  for (const path of allSeeded) {
+
+  // Pre-seed name→path cache so tasks without execution history are still matched.
+  for (const path of new Set([...pinnedProjects, ...enabledNow])) {
     const name = path.split('/').pop();
     if (name) runner.registerProjectPath(name, path);
   }
+}
+
+let reposWatcherStarted = false;
+/**
+ * Poll the repo registry file and reload when it changes, so external writers
+ * (CLI `openswarm add`/`remove`, hand edits) show up in the dashboard within a
+ * few seconds — no restart. Dashboard writes (saveReposConfig) also trip this,
+ * but reload is a no-op when memory already matches the file. applyReposConfig
+ * never writes, so there is no feedback loop.
+ */
+function startReposWatcher(): void {
+  if (reposWatcherStarted) return;
+  reposWatcherStarted = true;
+  watchFile(REPOS_FILE, { interval: 3000 }, (curr, prev) => {
+    if (curr.mtimeMs === prev.mtimeMs) return;
+    const runner = runnerRef;
+    if (!runner) return;
+    console.log('[Web] repos config changed on disk — reloading project registry');
+    try {
+      applyReposConfig(runner);
+    } catch (e) {
+      console.warn('[Web] repos reload failed:', e instanceof Error ? e.message : e);
+    }
+  });
+}
+
+/**
+ * Set runner reference (call after autonomous runner is initialized)
+ */
+export function setWebRunner(runner: AutonomousRunner): void {
+  runnerRef = runner;
+  applyReposConfig(runner);
+  startReposWatcher();
 }
 
 // Read POST body helper
