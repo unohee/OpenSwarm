@@ -19,13 +19,15 @@ describe('workerAuditLog', () => {
         maxTurns: 20,
       });
 
-      expect(body).toContain('Worker Instruction');
+      expect(body).toContain('Worker instruction');
       expect(body).toContain('attempt #1/3');
       expect(body).toContain('Add logout button');
       expect(body).toContain('Wire a logout action');
       expect(body).toContain('`src/header.tsx`');
       expect(body).toContain('claude-opus-4-8');
-      expect(body).toContain('max turns 20');
+      expect(body).toContain('Max turns: 20');
+      // Convention: no decorative emoji in comment bodies.
+      expect(body).not.toMatch(/[🛠️🤖✅❌⚠️📋]/u);
     });
 
     it('labels revisions and survives missing optional fields', () => {
@@ -35,7 +37,7 @@ describe('workerAuditLog', () => {
         isRevision: true,
       });
 
-      expect(body).toContain('Worker Revision');
+      expect(body).toContain('Worker revision');
       expect(body).toContain('attempt #2');
       expect(body).not.toContain('Target files');
       expect(body).not.toContain('Effort');
@@ -65,13 +67,14 @@ describe('workerAuditLog', () => {
         durationSec: 75,
       });
 
-      expect(body).toContain('Worker Actions — Done');
+      expect(body).toContain('Worker actions — Done');
       expect(body).toContain('Implemented the endpoint');
       expect(body).toContain('Files changed (1)');
       expect(body).toContain('`src/api.ts`');
       expect(body).toContain('Commands (1)');
       expect(body).toContain('88%');
       expect(body).toContain('1m 15s');
+      expect(body).not.toMatch(/[🛠️🤖✅❌⚠️📋]/u);
     });
 
     it('surfaces halt reason with a warning verdict', () => {
@@ -81,7 +84,7 @@ describe('workerAuditLog', () => {
       });
 
       expect(body).toContain('Halted');
-      expect(body).toContain('Halt reason:');
+      expect(body).toContain('Halt reason');
       expect(body).toContain('Confidence too low');
     });
 
@@ -92,7 +95,7 @@ describe('workerAuditLog', () => {
       });
 
       expect(body).toContain('Failed');
-      expect(body).toContain('Error:');
+      expect(body).toContain('Error');
       expect(body).toContain('compile error');
     });
   });

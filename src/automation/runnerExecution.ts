@@ -21,6 +21,7 @@ import type { SubTask } from '../support/planner.js';
 import { analyzeIssue } from '../knowledge/index.js';
 import { runDraftAnalysis, type DraftAnalysis } from '../agents/draftAnalyzer.js';
 import { t } from '../locale/index.js';
+import { formatTaskDescription } from '../linear/format.js';
 import { broadcastEvent } from '../core/eventHub.js';
 import type { Notifier } from '../notify/notifier.js';
 import type { ITaskSource } from './taskSource.js';
@@ -255,18 +256,15 @@ export async function createSubIssuesWithDependencies(
   }> = [];
 
   for (const [index, subTask] of subTasks.entries()) {
-    const depsStr = subTask.dependencies?.length
-      ? `\n\n${t('runner.decomposition.prerequisite', { deps: subTask.dependencies.join(', ') })}`
-      : '';
-
     const fileScope = (subTask.fileScope ?? []).filter((f) => typeof f === 'string' && f.trim().length > 0);
-    const scopeStr = fileScope.length
-      ? `\n\nFile scope: ${fileScope.join(', ')}`
-      : '';
 
-    const subDescription = `${subTask.description}\n\n` +
-      `${t('runner.decomposition.estimatedTime', { n: String(subTask.estimatedMinutes) })}${depsStr}${scopeStr}\n\n` +
-      t('runner.decomposition.autoDecomposed', { parentTitle: task.title });
+    const subDescription = formatTaskDescription({
+      summary: subTask.description,
+      dependsOn: subTask.dependencies,
+      fileScope,
+      estimateMinutes: subTask.estimatedMinutes,
+      parentTitle: task.title,
+    });
 
     const subResult = taskSource
       ? await taskSource.createSubIssue(parentIssueId, subTask.title, subDescription, {
