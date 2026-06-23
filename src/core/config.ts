@@ -402,7 +402,7 @@ export function expandPath(path: string, resolveRelative = false): string {
  *   3. ~/.config/openswarm/config.{…}     (XDG user config)
  *   4. ~/.openswarm/config.{…}            (legacy home fallback)
  */
-function findConfigFile(): string | null {
+export function findConfigFile(): string | null {
   const envOverride = process.env.OPENSWARM_CONFIG;
   if (envOverride && envOverride.length > 0) {
     if (existsSync(envOverride)) {

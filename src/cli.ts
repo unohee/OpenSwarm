@@ -90,6 +90,16 @@ program
     await runInitWizard({ force: opts.force });
   });
 
+// openswarm doctor
+
+program
+  .command('doctor')
+  .description('Diagnose the environment (runtime, native deps, providers, ports, config)')
+  .action(async () => {
+    const { handleDoctor } = await import('./cli/doctorHandler.js');
+    await handleDoctor();
+  });
+
 // openswarm validate
 
 program
