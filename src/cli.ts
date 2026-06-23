@@ -397,13 +397,9 @@ authCmd
     handleAuthLogout(opts.provider);
   });
 
-// openswarm project — manage work repos the daemon picks up
+// Work-repo management — register which repos the daemon operates on
 
-const projectCmd = program
-  .command('project')
-  .description('Manage work repositories the daemon operates on');
-
-projectCmd
+program
   .command('add')
   .description('Register a repository as a work repo (enabled + pinned)')
   .argument('<path>', 'Path to the git repository')
@@ -412,16 +408,16 @@ projectCmd
     handleProjectAdd(path);
   });
 
-projectCmd
-  .command('list')
+program
+  .command('projects')
   .description('List registered work repositories')
   .action(async () => {
     const { handleProjectList } = await import('./cli/projectHandler.js');
     handleProjectList();
   });
 
-projectCmd
-  .command('rm')
+program
+  .command('remove')
   .description('Unregister a work repository (adds it to the denylist)')
   .argument('<path>', 'Path to the repository')
   .action(async (path: string) => {
