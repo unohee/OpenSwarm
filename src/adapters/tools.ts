@@ -103,6 +103,22 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'search_memory',
+      description:
+        "Search this repository's accumulated knowledge from past tasks — successful approaches (patterns) and reviewer pitfalls (constraints) — by semantic query. Call this BEFORE implementing to reuse what worked here and avoid known mistakes. Scoped to the current repo automatically.",
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'What to recall, e.g. "how auth migrations were handled" or "logout button"' },
+          limit: { type: 'number', description: 'Max results (1-10). Default: 5' },
+        },
+        required: ['query'],
+      },
+    },
+  },
 ];
 
 // ============ 안전 가드 ============
@@ -393,6 +409,40 @@ export async function executeTool(
           // exit 1 + 출력 없음은 보통 무해(grep no-match) → is_error를 false로 둬 모델이 안 헤매게.
           const benign = e.code === 1 && !out.trim();
           return { tool_call_id: callId, content: body, is_error: !benign };
+        }
+      }
+
+      case 'search_memory': {
+        const query = String(args.query ?? '').trim();
+        if (!query) {
+          return { tool_call_id: callId, content: 'search_memory requires a non-empty "query".', is_error: true };
+        }
+        try {
+          // Loaded lazily: the memory core pulls in LanceDB + the embedding model,
+          // which we don't want as a static dependency of every tools.ts consumer.
+          const [{ searchMemorySafe }, { repoKey }] = await Promise.all([
+            import('../memory/index.js'),
+            import('../memory/repoKnowledge.js'),
+          ]);
+          const limit = Math.min(Math.max(Number(args.limit) || 5, 1), 10);
+          const res = await searchMemorySafe(query, {
+            repo: repoKey(cwd),
+            types: ['system_pattern', 'constraint', 'fact', 'strategy', 'belief'],
+            limit,
+            minSimilarity: 0.3,
+          });
+          if (!res.success) {
+            return { tool_call_id: callId, content: `Memory unavailable (${res.errorCode ?? 'unknown'}); proceed without it.`, is_error: false };
+          }
+          if (res.memories.length === 0) {
+            return { tool_call_id: callId, content: 'No matching repo knowledge yet for this query.', is_error: false };
+          }
+          const formatted = res.memories
+            .map((m) => `- [${m.type}] ${m.title}\n  ${m.content.replace(/\s+/g, ' ').slice(0, 300)}`)
+            .join('\n');
+          return { tool_call_id: callId, content: `Repository knowledge (${res.memories.length}):\n${formatted}`, is_error: false };
+        } catch (err) {
+          return { tool_call_id: callId, content: `search_memory failed: ${err instanceof Error ? err.message : String(err)}`, is_error: false };
         }
       }
 

@@ -19,7 +19,7 @@ import type { WorkerResult } from '../agents/agentPair.js';
  * an exact string match, so trailing slashes or symlinked paths to the same
  * repo would otherwise split the knowledge across keys that never match.
  */
-function repoKey(projectPath: string): string {
+export function repoKey(projectPath: string): string {
   const resolved = path.resolve(projectPath);
   try {
     return realpathSync(resolved);

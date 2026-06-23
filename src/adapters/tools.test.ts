@@ -1,8 +1,20 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { TOOL_DEFINITIONS, executeTool, createReadCache, ToolCall } from './tools.js';
+
+// search_memory loads the memory core lazily; stub it so the tool test stays fast
+// and deterministic (no LanceDB / embedding model).
+vi.mock('../memory/index.js', () => ({
+  searchMemorySafe: async (_query: string, opts: { repo?: string }) => ({
+    success: true,
+    memories: opts?.repo
+      ? [{ type: 'constraint', title: 'Avoid double migrations', content: 'two paths touched prod tables' }]
+      : [],
+  }),
+}));
+vi.mock('../memory/repoKnowledge.js', () => ({ repoKey: (p: string) => p }));
 
 // Check if rg binary is available (not just a shell function wrapper)
 let hasRg = false;
@@ -36,10 +48,10 @@ afterAll(async () => {
 // ──────────────────────────────────────────────
 
 describe('TOOL_DEFINITIONS', () => {
-  const expectedNames = ['read_file', 'write_file', 'edit_file', 'search_files', 'bash'];
+  const expectedNames = ['read_file', 'write_file', 'edit_file', 'search_files', 'bash', 'search_memory'];
 
-  it('exports exactly 5 tool definitions', () => {
-    expect(TOOL_DEFINITIONS).toHaveLength(5);
+  it('exports exactly 6 tool definitions', () => {
+    expect(TOOL_DEFINITIONS).toHaveLength(6);
   });
 
   it.each(expectedNames)('includes "%s" tool', (name) => {
@@ -48,6 +60,25 @@ describe('TOOL_DEFINITIONS', () => {
     expect(found!.type).toBe('function');
     expect(found!.function.description).toBeTruthy();
     expect(found!.function.parameters).toBeDefined();
+  });
+});
+
+// ──────────────────────────────────────────────
+// 1b. search_memory tool
+// ──────────────────────────────────────────────
+
+describe('executeTool — search_memory', () => {
+  it('rejects an empty query', async () => {
+    const r = await executeTool(makeCall('search_memory', { query: '  ' }), TMP_DIR);
+    expect(r.is_error).toBe(true);
+    expect(r.content).toContain('query');
+  });
+
+  it('returns repo-scoped knowledge formatted with type tags', async () => {
+    const r = await executeTool(makeCall('search_memory', { query: 'migration' }), TMP_DIR);
+    expect(r.is_error).toBe(false);
+    expect(r.content).toContain('Repository knowledge');
+    expect(r.content).toContain('[constraint] Avoid double migrations');
   });
 });
 
