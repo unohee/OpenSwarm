@@ -192,13 +192,17 @@ export async function removeWorktree(info: WorktreeInfo): Promise<void> {
   }
 }
 
-/** Clean up dangling worktrees on service start.
+/** Clean up dangling worktrees.
  *
  * `git worktree prune` only drops metadata for worktrees whose directory is already gone. A
  * daemon that was hard-killed or crashed mid-run never ran the `finally` cleanup, so its
  * `{repo}/worktree/<issueId>` directories survive as orphans (INT-1810 R4). On start nothing
- * is in flight, so force-remove every one of our own worktree dirs. */
-export async function pruneWorktrees(repoPath: string): Promise<void> {
+ * is in flight, so force-remove every one of our own worktree dirs.
+ *
+ * `activeWorktreePaths` are the worktrees of currently-running tasks — never swept. Pass an
+ * empty set at startup (remove all); pass the live set when sweeping per-heartbeat so an
+ * in-flight task's worktree is preserved. */
+export async function pruneWorktrees(repoPath: string, activeWorktreePaths: Set<string> = new Set()): Promise<void> {
   await git(repoPath, 'worktree', 'prune').catch((e) => console.warn(`[Worktree] Prune failed for ${repoPath}:`, e));
   try {
     const out = await git(repoPath, 'worktree', 'list', '--porcelain');
@@ -207,7 +211,8 @@ export async function pruneWorktrees(repoPath: string): Promise<void> {
       .split('\n')
       .filter((l) => l.startsWith('worktree '))
       .map((l) => l.slice('worktree '.length).trim())
-      .filter((p) => p.startsWith(prefix));
+      .filter((p) => p.startsWith(prefix))
+      .filter((p) => !activeWorktreePaths.has(p)); // keep worktrees of running tasks
     for (const p of orphans) {
       await git(repoPath, 'worktree', 'remove', '--force', p)
         .then(() => console.log(`[Worktree] Swept orphan worktree: ${p}`))

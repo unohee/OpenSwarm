@@ -72,6 +72,48 @@ export function isUmbrellaIssue(task: TaskItem, parentIds: Set<string>): boolean
 }
 
 /**
+ * Count, per task, how many OTHER fetched tasks (transitively) depend on it — its
+ * "downstream" / unblock weight, derived from the `blockedBy` graph (INT-1809
+ * wires blockedBy from Linear relations + description text). The readiness gate
+ * already prevents a dependent from running before its blocker; this metric lets
+ * the priority sort *prefer the unblockers* among ready tasks, so dependency
+ * chains drain instead of leaf tasks being picked first. Cycle-safe; a task with
+ * no dependents scores 0 (then ordering falls back to plain priority).
+ */
+export function computeDownstreamCounts(tasks: TaskItem[]): Map<string, number> {
+  const idOf = (t: TaskItem) => t.issueId || t.id;
+  const inSet = new Set(tasks.map(idOf));
+  // blocker id → dependents that list it in blockedBy (reverse edges, in-set only)
+  const dependents = new Map<string, string[]>();
+  for (const t of tasks) {
+    for (const blocker of t.blockedBy ?? []) {
+      if (!inSet.has(blocker)) continue;
+      const arr = dependents.get(blocker);
+      if (arr) arr.push(idOf(t));
+      else dependents.set(blocker, [idOf(t)]);
+    }
+  }
+  const memo = new Map<string, Set<string>>();
+  const descendants = (id: string, stack: Set<string>): Set<string> => {
+    const cached = memo.get(id);
+    if (cached) return cached;
+    if (stack.has(id)) return new Set(); // cycle guard
+    stack.add(id);
+    const out = new Set<string>();
+    for (const d of dependents.get(id) ?? []) {
+      out.add(d);
+      for (const x of descendants(d, stack)) out.add(x);
+    }
+    stack.delete(id);
+    memo.set(id, out);
+    return out;
+  };
+  const counts = new Map<string, number>();
+  for (const t of tasks) counts.set(idOf(t), descendants(idOf(t), new Set()).size);
+  return counts;
+}
+
+/**
  * Decision result
  */
 export interface DecisionResult {
@@ -261,8 +303,10 @@ export class DecisionEngine {
       };
     }
 
-    // 5. Priority sorting
-    const sorted = this.prioritizeTasks(executableTasks);
+    // 5. Priority sorting — dependency-aware (unblockers first), computed over the
+    // full fetched set so blocked dependents still count toward a blocker's weight.
+    const downstream = computeDownstreamCounts(tasks);
+    const sorted = this.prioritizeTasks(executableTasks, downstream);
     const selectedTask = sorted[0];
 
     // 6. Scope validation (CRITICAL)
@@ -358,8 +402,10 @@ export class DecisionEngine {
       };
     }
 
-    // 5. Priority sorting
-    const sorted = this.prioritizeTasks(executableTasks);
+    // 5. Priority sorting — dependency-aware (unblockers first), computed over the
+    // full fetched set so blocked dependents still count toward a blocker's weight.
+    const downstream = computeDownstreamCounts(tasks);
+    const sorted = this.prioritizeTasks(executableTasks, downstream);
 
     // 6. Select multiple tasks (max maxTasks, blocker-based filtering only)
     const selectedTasks: Array<{ task: TaskItem; workflow: WorkflowConfig }> = [];
@@ -476,8 +522,18 @@ export class DecisionEngine {
   /**
    * Priority sorting
    */
-  private prioritizeTasks(tasks: TaskItem[]): TaskItem[] {
+  private prioritizeTasks(tasks: TaskItem[], downstream?: Map<string, number>): TaskItem[] {
+    const dsOf = (t: TaskItem) => downstream?.get(t.issueId || t.id) ?? 0;
     return [...tasks].sort((a, b) => {
+      // 0. Dependency order: prefer tasks that unblock the most pending work, so
+      // chains drain instead of leaf tasks first. When nothing depends on either
+      // (the common case), both score 0 and this is a no-op → plain priority order.
+      const dsA = dsOf(a);
+      const dsB = dsOf(b);
+      if (dsA !== dsB) {
+        return dsB - dsA;
+      }
+
       const topoA = a.topoRank ?? Number.MAX_SAFE_INTEGER;
       const topoB = b.topoRank ?? Number.MAX_SAFE_INTEGER;
       if (topoA !== topoB) {

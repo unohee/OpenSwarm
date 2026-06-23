@@ -590,6 +590,21 @@ export class AutonomousRunner {
       // 0. Knowledge graph refresh (async, service continues even on failure)
       this.refreshKnowledgeGraphs();
 
+      // 0.1 Sweep orphan worktrees every heartbeat (crashed/cancelled leftovers),
+      // never the worktree of a currently-running task. Startup does a full sweep;
+      // this keeps repos from accumulating worktree/ dirs between restarts.
+      if (this.config.worktreeMode) {
+        const activeWorktrees = new Set(
+          this.scheduler.getRunningTasks().map((r) => `${r.projectPath}/worktree/${r.task.issueId}`),
+        );
+        for (const projectPath of this.config.allowedProjects) {
+          const resolvedPath = projectPath.replace('~', process.env.HOME || '');
+          pruneWorktrees(resolvedPath, activeWorktrees).catch((e) =>
+            console.error(`[AutonomousRunner] Worktree sweep failed for ${resolvedPath}:`, e),
+          );
+        }
+      }
+
       // 0.5 Long-running monitor passive check (before time window)
       const active = getActiveMonitors().filter(m => m.state === 'pending' || m.state === 'running');
       if (active.length > 0) {
