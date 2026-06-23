@@ -21,11 +21,17 @@ import type { WorkerResult } from '../agents/agentPair.js';
  */
 export function repoKey(projectPath: string): string {
   const resolved = path.resolve(projectPath);
+  let real: string;
   try {
-    return realpathSync(resolved);
+    real = realpathSync(resolved);
   } catch {
-    return resolved; // path may not exist yet (tests, dry runs) — resolve is enough
+    real = resolved; // path may not exist yet (tests, dry runs) — resolve is enough
   }
+  // Per-issue git worktrees live at `<repo>/worktree/<issueId>` (worktreeManager).
+  // Normalize them back to the repo so knowledge accumulates per-repo instead of
+  // per ephemeral worktree — each worktree is a unique key recall never revisits,
+  // which silently broke cross-task accumulation. (INT-1856)
+  return real.replace(/\/worktree\/[^/]+\/?$/, '');
 }
 
 /** Repo knowledge item injected into the worker prompt (mirrors locale WorkerContext) */
