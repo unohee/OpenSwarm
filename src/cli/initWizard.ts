@@ -9,8 +9,9 @@
 // + config.yaml + an openswarm.json repo→Linear mapping, then prints next steps.
 // `--yes` keeps the config-only path for CI (handled by the caller in cli.ts).
 
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, writeFileSync, lstatSync, realpathSync } from 'node:fs';
 import { basename, join } from 'node:path';
+import { homedir } from 'node:os';
 import { select, input, password, confirm } from '@inquirer/prompts';
 import { writeEnvVars } from '../core/envFile.js';
 import { generateSampleConfig } from '../core/config.js';
@@ -244,9 +245,26 @@ export async function runInitWizard(opts: InitWizardOptions = {}): Promise<void>
   const configPath = join(cwd, 'config.yaml');
   const envPath = join(cwd, '.env');
 
-  if (existsSync(configPath) && !opts.force) {
-    console.error('config.yaml already exists. Use --force to overwrite, or edit it directly.');
-    process.exit(1);
+  if (existsSync(configPath)) {
+    // Guard: if cwd/config.yaml is a symlink into the daemon's global config
+    // (~/.config/openswarm), `init` here would clobber the running daemon's
+    // settings (agents, allowedProjects, …). Refuse even with --force.
+    let symlinkTarget: string | null = null;
+    try {
+      if (lstatSync(configPath).isSymbolicLink()) symlinkTarget = realpathSync(configPath);
+    } catch {
+      symlinkTarget = null; // cxt-ignore: error_swallow — stat failure → treat as a plain file
+    }
+    if (symlinkTarget && symlinkTarget.startsWith(join(homedir(), '.config', 'openswarm'))) {
+      console.error(`config.yaml is a symlink to the daemon's global config:\n    ${symlinkTarget}`);
+      console.error('Running `init` here would overwrite your running daemon configuration.');
+      console.error('Run init in a different repo, or edit the daemon config directly.');
+      process.exit(1);
+    }
+    if (!opts.force) {
+      console.error('config.yaml already exists. Use --force to overwrite, or edit it directly.');
+      process.exit(1);
+    }
   }
 
   const envVars: Record<string, string> = {};
