@@ -21,6 +21,7 @@ export { GptCliAdapter } from './gpt.js';
 export { LocalModelAdapter } from './local.js';
 export { LmStudioAdapter } from './lmstudio.js';
 export { OpenRouterCliAdapter } from './openrouter.js';
+export { ClaudeCliAdapter } from './claude.js';
 export { registerProcess, getProcess, getAllProcesses, killProcess, startHealthChecker, stopHealthChecker } from './processRegistry.js';
 
 import { CodexCliAdapter } from './codex.js';
@@ -29,6 +30,7 @@ import { GptCliAdapter } from './gpt.js';
 import { LocalModelAdapter } from './local.js';
 import { LmStudioAdapter } from './lmstudio.js';
 import { OpenRouterCliAdapter } from './openrouter.js';
+import { ClaudeCliAdapter } from './claude.js';
 import type { AdapterName, CliAdapter } from './types.js';
 
 const adapters: Record<string, CliAdapter> = {
@@ -38,6 +40,9 @@ const adapters: Record<string, CliAdapter> = {
   local: new LocalModelAdapter(),
   lmstudio: new LmStudioAdapter(),
   openrouter: new OpenRouterCliAdapter(),
+  // claude -p CLI delegate — opt-in fallback (Anthropic hasn't blocked it). Offered
+  // by `openswarm init` and the dashboard provider switch, so it must be registered.
+  claude: new ClaudeCliAdapter(),
 };
 
 let defaultAdapter: AdapterName = 'codex';
@@ -65,12 +70,16 @@ export function getDefaultAdapterName(): AdapterName {
 }
 
 /**
- * True if `name` is a currently-registered adapter. Used to reject stale
- * persisted provider names (e.g. an old chat session saved `claude` before the
- * adapter was removed) instead of crashing downstream.
+ * True if `name` is a currently-registered adapter. Used to reject stale or
+ * unknown persisted provider names instead of crashing downstream.
  */
 export function isKnownAdapter(name: string): name is AdapterName {
   return Object.prototype.hasOwnProperty.call(adapters, name);
+}
+
+/** Names of every registered adapter (for validation messages / UI). */
+export function listAdapterNames(): AdapterName[] {
+  return Object.keys(adapters) as AdapterName[];
 }
 
 /**

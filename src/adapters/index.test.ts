@@ -1,19 +1,25 @@
 import { describe, it, expect } from 'vitest';
-import { isKnownAdapter } from './index.js';
+import { isKnownAdapter, listAdapterNames } from './index.js';
 
 describe('isKnownAdapter', () => {
-  it('accepts currently-registered adapters', () => {
-    for (const name of ['codex', 'codex-responses', 'gpt', 'local', 'lmstudio', 'openrouter']) {
+  it('accepts currently-registered adapters (incl. claude, the opt-in claude -p delegate)', () => {
+    for (const name of ['codex', 'codex-responses', 'gpt', 'local', 'lmstudio', 'openrouter', 'claude']) {
       expect(isKnownAdapter(name)).toBe(true);
     }
   });
 
-  it('rejects removed/unknown providers (e.g. a stale `claude` chat session)', () => {
-    expect(isKnownAdapter('claude')).toBe(false);
+  it('rejects unknown providers', () => {
     expect(isKnownAdapter('')).toBe(false);
     expect(isKnownAdapter('anthropic')).toBe(false);
+    expect(isKnownAdapter('gpt5')).toBe(false);
     // must not be fooled by Object.prototype members
     expect(isKnownAdapter('toString')).toBe(false);
     expect(isKnownAdapter('constructor')).toBe(false);
+  });
+
+  it('listAdapterNames returns every registered adapter', () => {
+    expect([...listAdapterNames()].sort()).toEqual(
+      ['claude', 'codex', 'codex-responses', 'gpt', 'local', 'lmstudio', 'openrouter'].sort(),
+    );
   });
 });

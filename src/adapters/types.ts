@@ -9,7 +9,7 @@ import type { ToolDefinition } from './tools.js';
 // Re-export for convenience
 export type { WorkerResult, ReviewResult };
 
-export type AdapterName = 'codex' | 'codex-responses' | 'gpt' | 'local' | 'lmstudio' | 'openrouter';
+export type AdapterName = 'codex' | 'codex-responses' | 'gpt' | 'local' | 'lmstudio' | 'openrouter' | 'claude';
 
 /**
  * Raw result from a CLI process execution

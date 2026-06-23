@@ -77,6 +77,12 @@ export const CHAT_MODEL_ALIASES: Record<AdapterName, Record<string, string>> = {
     kimi: 'moonshotai/kimi-k2',
     glm: 'z-ai/glm-4.6',
   },
+  claude: {
+    // `claude -p --model <alias>` takes version-robust aliases directly.
+    sonnet: 'sonnet',
+    opus: 'opus',
+    haiku: 'haiku',
+  },
 };
 
 export function inferProviderFromModel(model?: string): AdapterName {

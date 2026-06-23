@@ -20,7 +20,7 @@ import { getProjectGitInfo, startGitStatusPoller } from './gitStatus.js';
 import { getActiveMonitors, registerMonitor, unregisterMonitor } from '../automation/longRunningMonitor.js';
 import type { LongRunningMonitorConfig } from '../core/types.js';
 import { getAllProcesses, killProcess, startHealthChecker } from '../adapters/processRegistry.js';
-import { setDefaultAdapter } from '../adapters/index.js';
+import { setDefaultAdapter, isKnownAdapter, listAdapterNames } from '../adapters/index.js';
 import * as memory from '../memory/index.js';
 import { fetchQuota } from './quotaTracker.js';
 import { PairPipeline, type PipelineResult } from '../agents/pairPipeline.js';
@@ -530,16 +530,17 @@ export async function startWebServer(port: number = 3847): Promise<void> {
         const body = await readBody(req);
         try {
           const { provider } = JSON.parse(body) as { provider: string };
-          const VALID_PROVIDERS = ['codex', 'gpt', 'local', 'lmstudio', 'openrouter'] as const;
-          if (!VALID_PROVIDERS.includes(provider as typeof VALID_PROVIDERS[number])) {
+          // Validate against the live adapter registry rather than a hardcoded list,
+          // so the dashboard's provider buttons (incl. claude / codex-responses) never
+          // drift out of sync with what's actually registered.
+          if (!isKnownAdapter(provider)) {
             res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: `Invalid provider. Valid: ${VALID_PROVIDERS.join(', ')}` }));
+            res.end(JSON.stringify({ error: `Invalid provider "${provider}". Valid: ${listAdapterNames().join(', ')}` }));
             return;
           }
 
-          const validProvider = provider as typeof VALID_PROVIDERS[number];
-          setDefaultAdapter(validProvider);
-          runnerRef?.switchProvider(validProvider);
+          setDefaultAdapter(provider);
+          runnerRef?.switchProvider(provider);
           broadcastEvent({
             type: 'log',
             data: { taskId: 'system', stage: 'provider', line: `Provider switched to ${provider}` },
