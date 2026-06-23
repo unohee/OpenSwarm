@@ -4,7 +4,7 @@
 
 import { LinearClient } from '@linear/sdk';
 import type { LinearIssueInfo, LinearProjectInfo } from '../core/types.js';
-import { getDateLocale } from '../locale/index.js';
+import { formatAutomationComment, type CommentSection } from './format.js';
 import { setLinearClient } from './projectUpdater.js';
 import { withRateLimit } from '../support/rateLimiter.js';
 
@@ -790,14 +790,23 @@ export async function addComment(
 export async function logHalt(
   issueId: string, sessionId: string, confidence: number, iteration: number, reason: string,
 ): Promise<void> {
-  await addComment(issueId,
-    `⚠️ **[Automation] HALT - Low Confidence**\n\nSession: \`${sessionId}\` | Confidence: ${confidence}% | Attempt: #${iteration}\nReason: ${reason}\n\n**Action Required:** Review task requirements / provide context / break into sub-tasks\n\n---\n_Auto-generated_`);
+  await addComment(issueId, formatAutomationComment({
+    heading: 'HALT — low confidence',
+    summary: `Confidence ${confidence}% is below threshold on attempt #${iteration}; manual input needed.`,
+    sections: [
+      { label: 'Reason', body: reason },
+      { label: 'Suggested next step', body: ['Review the task requirements', 'Provide more context', 'Break it into smaller sub-tasks'] },
+    ],
+    meta: { Session: sessionId, Confidence: `${confidence}%`, Attempt: `#${iteration}` },
+  }));
 }
 
 /** Log work start comment for an agent */
 export async function logWorkStart(issueId: string, sessionName: string): Promise<void> {
-  await addComment(issueId,
-    `🤖 **[${sessionName}] Work Started**\n\nTime: ${new Date().toISOString()}\n\n---\n_Auto-generated_`);
+  await addComment(issueId, formatAutomationComment({
+    heading: 'Work started',
+    meta: { Agent: sessionName },
+  }));
   await updateIssueState(issueId, 'In Progress');
 }
 
@@ -809,14 +818,11 @@ export async function logProgress(
   sessionName: string,
   progress: string
 ): Promise<void> {
-  const timestamp = new Date().toISOString();
-  const body = `🤖 **[${sessionName}] Progress Update**
-
-${progress}
-
-Time: ${timestamp}`;
-
-  await addComment(issueId, body);
+  await addComment(issueId, formatAutomationComment({
+    heading: 'Progress update',
+    summary: progress,
+    meta: { Agent: sessionName },
+  }));
 }
 
 /**
@@ -827,14 +833,11 @@ export async function logWorkComplete(
   sessionName: string,
   summary?: string
 ): Promise<void> {
-  const timestamp = new Date().toISOString();
-  const body = `🤖 **[${sessionName}] ✅ Work Complete**
-
-${summary ?? ''}
-
-Time: ${timestamp}`;
-
-  await addComment(issueId, body);
+  await addComment(issueId, formatAutomationComment({
+    heading: 'Work complete',
+    summary: summary?.trim() || undefined,
+    meta: { Agent: sessionName },
+  }));
   await updateIssueState(issueId, 'Done');
 }
 
@@ -846,16 +849,11 @@ export async function logBlocked(
   sessionName: string,
   reason: string
 ): Promise<void> {
-  const timestamp = new Date().toISOString();
-  const body = `🤖 **[${sessionName}] ⚠️ Blocked**
-
-Reason: ${reason}
-
-User intervention required
-
-Time: ${timestamp}`;
-
-  await addComment(issueId, body);
+  await addComment(issueId, formatAutomationComment({
+    heading: 'Blocked — user intervention required',
+    sections: [{ label: 'Reason', body: reason }],
+    meta: { Agent: sessionName },
+  }));
   // Use 'Todo' instead of 'Blocked' (Blocked state may not exist in team workflow)
   await updateIssueState(issueId, 'Todo');
 }
@@ -870,19 +868,11 @@ export async function logPairStart(
   sessionId: string,
   projectPath: string
 ): Promise<void> {
-  const timestamp = new Date().toLocaleString(getDateLocale());
-  const body = `👥 **[Pair Session] Work Started**
-
-🆔 Session: \`${sessionId}\`
-📁 Project: \`${projectPath}\`
-⏰ Time: ${timestamp}
-
-Starting work in Worker/Reviewer pair mode.
-
----
-_Auto-generated_`;
-
-  await addComment(issueId, body);
+  await addComment(issueId, formatAutomationComment({
+    heading: 'Pair session started',
+    summary: 'Starting work in Worker/Reviewer pair mode.',
+    meta: { Session: sessionId, Project: projectPath },
+  }));
   await updateIssueState(issueId, 'In Progress');
 }
 
@@ -894,16 +884,11 @@ export async function logPairReview(
   sessionId: string,
   attempt: number
 ): Promise<void> {
-  const timestamp = new Date().toLocaleString(getDateLocale());
-  const body = `🔍 **[Pair Session] Reviewing**
-
-🆔 Session: \`${sessionId}\`
-🔢 Attempt: #${attempt}
-⏰ Time: ${timestamp}
-
-Reviewer is reviewing Worker's output.`;
-
-  await addComment(issueId, body);
+  await addComment(issueId, formatAutomationComment({
+    heading: 'Reviewing',
+    summary: "Reviewer is evaluating the Worker's output.",
+    meta: { Session: sessionId, Attempt: `#${attempt}` },
+  }));
   await updateIssueState(issueId, 'In Review');
 }
 
@@ -916,24 +901,15 @@ export async function logPairRevision(
   feedback: string,
   issues: string[]
 ): Promise<void> {
-  const timestamp = new Date().toLocaleString(getDateLocale());
-  const issueList = issues.length > 0
-    ? issues.map((i, idx) => `${idx + 1}. ${i}`).join('\n')
-    : '(none)';
-
-  const body = `🔄 **[Pair Session] Revision Requested**
-
-🆔 Session: \`${sessionId}\`
-⏰ Time: ${timestamp}
-
-**Feedback:** ${feedback}
-
-**Issues:**
-${issueList}
-
-Worker will proceed with revisions.`;
-
-  await addComment(issueId, body);
+  await addComment(issueId, formatAutomationComment({
+    heading: 'Revision requested',
+    summary: 'Worker will proceed with revisions.',
+    sections: [
+      { label: 'Feedback', body: feedback },
+      { label: 'Issues', body: issues.length > 0 ? issues : ['(none)'] },
+    ],
+    meta: { Session: sessionId },
+  }));
   await updateIssueState(issueId, 'In Progress');
 }
 
@@ -960,95 +936,61 @@ export async function logPairComplete(
     remainingWork?: string;
   }
 ): Promise<void> {
-  const timestamp = new Date().toLocaleString(getDateLocale());
   const durationStr = stats.duration < 60
     ? `${stats.duration}s`
     : `${Math.floor(stats.duration / 60)}m ${stats.duration % 60}s`;
 
-  const filesStr = stats.filesChanged.length > 0
-    ? stats.filesChanged.slice(0, 10).map(f => `- \`${f}\``).join('\n')
-    : '(none)';
+  const sections: CommentSection[] = [];
 
-  // Build sections
-  const sections = [];
-
-  // Worker section
   if (stats.workerSummary) {
-    sections.push(`## 🔨 Worker Report
-
-**What was done:**
-${stats.workerSummary}`);
-
+    sections.push({ label: 'Worker', body: stats.workerSummary.trim() });
     if (stats.workerCommands && stats.workerCommands.length > 0) {
-      const cmdStr = stats.workerCommands.slice(0, 5).map(c => `- \`${c}\``).join('\n');
-      sections.push(`**Commands executed:**
-${cmdStr}`);
+      sections.push({ label: 'Commands', body: stats.workerCommands.slice(0, 5).map((c) => `\`${c}\``) });
     }
   }
 
-  // Reviewer section
   if (stats.reviewerFeedback) {
-    sections.push(`## ✅ Reviewer Report
-
-**Decision:** ${stats.reviewerDecision || 'APPROVE'}
-
-**Feedback:**
-${stats.reviewerFeedback}`);
+    sections.push({
+      label: `Reviewer — ${stats.reviewerDecision || 'APPROVE'}`,
+      body: stats.reviewerFeedback.trim(),
+    });
   }
 
-  // Tester section
   if (stats.testResults) {
     const { passed, failed, coverage, failedTests } = stats.testResults;
     const totalTests = passed + failed;
     const passRate = totalTests > 0 ? ((passed / totalTests) * 100).toFixed(1) : '0';
-
-    let testSection = `## 🧪 Test Results
-
-- ✅ Passed: ${passed}/${totalTests} (${passRate}%)`;
-
-    if (coverage !== undefined) {
-      testSection += `\n- 📊 Coverage: ${coverage.toFixed(1)}%`;
-    }
-
+    const lines = [`Passed ${passed}/${totalTests} (${passRate}%)`];
+    if (coverage !== undefined) lines.push(`Coverage ${coverage.toFixed(1)}%`);
     if (failed > 0 && failedTests && failedTests.length > 0) {
-      const failedStr = failedTests.slice(0, 3).map(t => `- ❌ ${t}`).join('\n');
-      testSection += `\n\n**Failed tests:**\n${failedStr}`;
-      if (failedTests.length > 3) {
-        testSection += `\n- ... and ${failedTests.length - 3} more`;
-      }
+      const extra = failedTests.length > 3 ? ` (+${failedTests.length - 3} more)` : '';
+      lines.push(`Failed: ${failedTests.slice(0, 3).join(', ')}${extra}`);
     }
-
-    sections.push(testSection);
+    sections.push({ label: 'Tests', body: lines });
   }
 
-  // Remaining work section
   if (stats.remainingWork) {
-    sections.push(`## 📋 Remaining Work
-
-${stats.remainingWork}`);
+    sections.push({ label: 'Remaining work', body: stats.remainingWork.trim() });
   }
 
-  const body = `✅ **[Automation] Task Complete**
+  sections.push({
+    label: 'Changed files',
+    body: stats.filesChanged.length > 0
+      ? stats.filesChanged.slice(0, 10).map((f) => `\`${f}\``)
+      : ['(none)'],
+  });
 
-🆔 Session: \`${sessionId}\`
-⏰ Completed: ${timestamp}
-
-**📊 Summary:**
-- 🔄 Iterations: ${stats.attempts}
-- ⏱️ Duration: ${durationStr}
-- 📁 Files changed: ${stats.filesChanged.length}
-
-**Changed files:**
-${filesStr}
-
----
-
-${sections.join('\n\n---\n\n')}
-
----
-_Automated by Worker/Reviewer/Tester pipeline_`;
-
-  await addComment(issueId, body);
+  await addComment(issueId, formatAutomationComment({
+    heading: 'Task complete',
+    sections,
+    meta: {
+      Session: sessionId,
+      Iterations: stats.attempts,
+      Duration: durationStr,
+      Files: stats.filesChanged.length,
+    },
+    attribution: 'Worker/Reviewer/Tester pipeline',
+  }));
   await updateIssueState(issueId, 'Done');
 }
 
@@ -1061,27 +1003,18 @@ export async function logPairFailed(
   reason: 'rejected' | 'max_attempts' | 'error',
   details: string
 ): Promise<void> {
-  const timestamp = new Date().toLocaleString(getDateLocale());
   const reasonText = {
-    rejected: '❌ Reviewer rejected the work',
-    max_attempts: '⚠️ Maximum retry attempts exceeded',
-    error: '💥 An error occurred',
+    rejected: 'Reviewer rejected the work',
+    max_attempts: 'Maximum retry attempts exceeded',
+    error: 'An error occurred',
   }[reason];
 
-  const body = `❌ **[Pair Session] Work Failed**
-
-🆔 Session: \`${sessionId}\`
-⏰ Time: ${timestamp}
-
-**Reason:** ${reasonText}
-
-**Details:**
-${details}
-
----
-_Manual intervention required_`;
-
-  await addComment(issueId, body);
+  await addComment(issueId, formatAutomationComment({
+    heading: 'Work failed — manual intervention required',
+    summary: reasonText,
+    sections: [{ label: 'Details', body: details }],
+    meta: { Session: sessionId },
+  }));
   // Don't change state on failure; let the user decide
 }
 
@@ -1226,21 +1159,15 @@ export async function markAsDecomposed(
   subIssueCount: number,
   totalMinutes: number
 ): Promise<void> {
-  const timestamp = new Date().toLocaleString(getDateLocale());
-  const body = `📋 **[Planner] Task Decomposition Complete**
-
-⏰ Time: ${timestamp}
-
-**Decomposition result:**
-- Sub-issues created: ${subIssueCount}
-- Total estimated time: ${totalMinutes}min
-
-This issue has been decomposed into sub-issues.
-The parent issue remains active while child issues execute.
-Once all sub-issues are completed, OpenSwarm will close this issue automatically.
-
----
-_Auto-decomposed by Planner agent_`;
+  const body = formatAutomationComment({
+    heading: 'Decomposed into sub-issues',
+    summary: 'The parent stays active while child issues execute; it closes automatically once all sub-issues complete.',
+    sections: [{
+      label: 'Result',
+      body: [`Sub-issues created: ${subIssueCount}`, `Total estimated time: ${totalMinutes} min`],
+    }],
+    attribution: 'Planner agent',
+  });
 
   await addComment(issueId, body);
 

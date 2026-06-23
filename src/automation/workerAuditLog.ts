@@ -8,6 +8,7 @@
 // the local SQLite task source (which writes addComment → addEvent). See INT-1612.
 
 import type { WorkerResult } from '../agents/agentPair.js';
+import { formatAutomationComment, type CommentSection } from '../linear/format.js';
 
 /** Caps so a chatty agent can't post a multi-MB comment. */
 const MAX_FILES = 20;
@@ -51,22 +52,20 @@ export function buildWorkerStartComment(info: WorkerStartInfo): string {
   const attemptLabel = info.maxAttempts
     ? `attempt #${info.attempt}/${info.maxAttempts}`
     : `attempt #${info.attempt}`;
-  const heading = info.isRevision ? 'Worker Revision' : 'Worker Instruction';
+  const heading = info.isRevision ? 'Worker revision' : 'Worker instruction';
 
-  const lines: string[] = [`🛠️ **[${heading}]** (${attemptLabel})`, ''];
-  lines.push(`**Task:** ${cap(info.taskTitle, 200)}`);
-  if (info.taskGoal) lines.push(`**Goal:** ${cap(info.taskGoal, GOAL_CAP)}`);
+  const sections: CommentSection[] = [{ label: 'Task', body: cap(info.taskTitle, 200) }];
+  if (info.taskGoal) sections.push({ label: 'Goal', body: cap(info.taskGoal, GOAL_CAP) });
   if (info.targetFiles && info.targetFiles.length > 0) {
-    lines.push(`**Target files:** ${codeList(info.targetFiles, MAX_FILES)}`);
+    sections.push({ label: 'Target files', body: codeList(info.targetFiles, MAX_FILES) });
   }
 
-  const budget: string[] = [];
-  if (info.model) budget.push(`model \`${info.model}\``);
-  if (info.maxTurns) budget.push(`max turns ${info.maxTurns}`);
-  if (budget.length > 0) lines.push(`**Effort:** ${budget.join(' · ')}`);
-
-  lines.push('', '---', '_Auto-generated audit log_');
-  return lines.join('\n');
+  return formatAutomationComment({
+    heading: `${heading} (${attemptLabel})`,
+    sections,
+    meta: { Model: info.model, 'Max turns': info.maxTurns },
+    attribution: 'Worker audit log',
+  });
 }
 
 export interface WorkerCompleteInfo {
@@ -83,30 +82,32 @@ export function buildWorkerCompleteComment(info: WorkerCompleteInfo): string {
   const attemptLabel = info.maxAttempts
     ? `attempt #${info.attempt}/${info.maxAttempts}`
     : `attempt #${info.attempt}`;
-  const icon = result.haltReason ? '⚠️' : result.success ? '✅' : '❌';
   const verdict = result.haltReason ? 'Halted' : result.success ? 'Done' : 'Failed';
 
-  const lines: string[] = [`${icon} **[Worker Actions — ${verdict}]** (${attemptLabel})`, ''];
-  if (result.summary) lines.push(`**Summary:** ${cap(result.summary, SUMMARY_CAP)}`);
-
   const files = result.filesChanged ?? [];
-  lines.push(`**Files changed (${files.length}):** ${codeList(files, MAX_FILES)}`);
-
   const commands = result.commands ?? [];
+
+  const sections: CommentSection[] = [
+    { label: `Files changed (${files.length})`, body: codeList(files, MAX_FILES) },
+  ];
   if (commands.length > 0) {
-    lines.push(`**Commands (${commands.length}):** ${codeList(commands, MAX_COMMANDS)}`);
+    sections.push({ label: `Commands (${commands.length})`, body: codeList(commands, MAX_COMMANDS) });
   }
+  if (result.haltReason) sections.push({ label: 'Halt reason', body: cap(result.haltReason, GOAL_CAP) });
+  if (result.error) sections.push({ label: 'Error', body: cap(result.error, GOAL_CAP) });
 
-  if (result.confidencePercent != null) {
-    lines.push(`**Confidence:** ${result.confidencePercent}%`);
-  }
-  if (info.durationSec != null) {
-    const d = info.durationSec;
-    lines.push(`**Duration:** ${d < 60 ? `${d}s` : `${Math.floor(d / 60)}m ${d % 60}s`}`);
-  }
-  if (result.haltReason) lines.push(`**Halt reason:** ${cap(result.haltReason, GOAL_CAP)}`);
-  if (result.error) lines.push(`**Error:** ${cap(result.error, GOAL_CAP)}`);
+  const duration = info.durationSec != null
+    ? (info.durationSec < 60 ? `${info.durationSec}s` : `${Math.floor(info.durationSec / 60)}m ${info.durationSec % 60}s`)
+    : undefined;
 
-  lines.push('', '---', '_Auto-generated audit log_');
-  return lines.join('\n');
+  return formatAutomationComment({
+    heading: `Worker actions — ${verdict} (${attemptLabel})`,
+    summary: result.summary ? cap(result.summary, SUMMARY_CAP) : undefined,
+    sections,
+    meta: {
+      Confidence: result.confidencePercent != null ? `${result.confidencePercent}%` : undefined,
+      Duration: duration,
+    },
+    attribution: 'Worker audit log',
+  });
 }
