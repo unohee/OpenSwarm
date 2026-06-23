@@ -6,13 +6,13 @@
 [![SWE-bench Lite](https://img.shields.io/badge/SWE--bench_Lite-hybrid_3%2F3_resolved-2ea44f)](benchmarks/RUBRIC.md)
 [![GitHub Discussions](https://img.shields.io/github/discussions/unohee/OpenSwarm?logo=github&label=discussions)](https://github.com/unohee/OpenSwarm/discussions)
 
-> Autonomous AI agent orchestrator — Claude, GPT, Codex, **OpenRouter (any model)**, and local models (Ollama/LMStudio/llama.cpp)
+> Autonomous AI agent orchestrator — Codex, GPT, **OpenRouter (any model)**, local models (Ollama/LM Studio), and Claude Code (`claude -p`)
 
 > 💬 **Help shape OpenSwarm.** Share feature ideas, vote on the roadmap, and ask questions in [**GitHub Discussions**](https://github.com/unohee/OpenSwarm/discussions). The roadmap is built in the open — your feedback decides what ships next.
 
 ---
 
-OpenSwarm orchestrates multiple AI agents as autonomous code workers. It picks up Linear issues, runs Worker/Reviewer pair pipelines, reports to Discord, and retains long-term memory via LanceDB. Workers run on Claude Code, OpenAI GPT, Codex, **any OpenRouter model**, or **local open-source models** (Ollama, LMStudio, llama.cpp) — with cost-aware routing measured on an L0–L6 benchmark ladder.
+OpenSwarm orchestrates multiple AI agents as autonomous code workers. It picks up issues from **Linear or a built-in local tracker**, runs Worker/Reviewer pair pipelines, reports through a pluggable notifier (Discord, Slack, Telegram, webhook), and retains long-term memory via LanceDB. Workers run on **OpenAI Codex/GPT**, **any OpenRouter model**, **local open-source models** (Ollama, LM Studio), or **Claude Code** (`claude -p`, opt-in) — with cost-aware routing measured on an L0–L6 benchmark ladder.
 
 **Verified on real GitHub issues**: the agentic harness solves SWE-bench Lite instances graded by the official harness. Hybrid mode — a frontier model diagnoses read-only, a lightweight model implements with a verification loop — resolved **3/3 attempted instances** that every single lightweight model had failed, at a fraction of frontier-only cost. Workers also **learn each repository over time**: task outcomes are stored as per-repo knowledge and recalled into future prompts. ([benchmark rubric & results](benchmarks/RUBRIC.md))
 
@@ -20,11 +20,27 @@ OpenSwarm orchestrates multiple AI agents as autonomous code workers. It picks u
 
 ```bash
 npm install -g @intrect/openswarm
-openswarm auth login   # one-time provider setup — ChatGPT (codex/gpt) OAuth
+openswarm init         # interactive setup wizard — provider auth + Linear OAuth + config
+openswarm doctor       # verify your environment (runtime, native deps, providers, ports)
 openswarm              # launches the TUI chat
 ```
 
-`openswarm` with no arguments launches the TUI chat. You need **one provider** first: `openswarm auth login` (ChatGPT OAuth, used by `codex`/`gpt`), or `openswarm auth login --provider openrouter` / `export OPENROUTER_API_KEY=…`, or just have an authenticated `claude` on PATH. Check what's wired with `openswarm auth status`.
+`openswarm init` walks you through provider authentication, optional Linear OAuth (team/project picker), and writes a validated `config.yaml`. Prefer wiring a provider by hand? You need **one** first: `openswarm auth login` (ChatGPT OAuth, used by `codex`/`gpt`), `openswarm auth login --provider openrouter` (or `export OPENROUTER_API_KEY=…`), or just have an authenticated `claude` on PATH. Check what's wired with `openswarm auth status`, and diagnose any gaps with `openswarm doctor`.
+
+### What `openswarm init` sets up
+
+The wizard asks three questions, detects what you already have, and writes the config for you:
+
+1. **AI provider** (worker/reviewer) — it auto-detects existing auth and offers inline login:
+   - `codex-responses` — ChatGPT subscription via OAuth (Codex models, native loop) — **easiest start**
+   - `codex` — external `codex` CLI · `openrouter` — any model (API key/OAuth) · `gpt` — OpenAI OAuth
+   - `lmstudio` / `local` — local servers, no account · `claude` — `claude -p` CLI (opt-in fallback)
+2. **Task backend** — `local` SQLite issue store (no account) **or** `linear` (OAuth browser login or API key, then an arrow-key **team → project** picker for this repo)
+3. **Notification channel** (optional) — `none` / `discord` / `slack` / `telegram` / `webhook`
+
+It then writes **`.env`** (secrets, `chmod 600`), **`config.yaml`** (validated), and — if you mapped a Linear project — **`openswarm.json`** (this repo → Linear team/project). Finally it prints next steps and can launch browser OAuth.
+
+> Re-running in a repo that already has `config.yaml` is refused unless you pass `--force`, and `init` refuses to overwrite a `config.yaml` that symlinks into the daemon's global config. For CI / non-interactive use, `openswarm init --yes` writes a sample config only.
 
 ![TUI Chat Interface](screenshots/tui.png)
 
@@ -32,7 +48,7 @@ openswarm              # launches the TUI chat
 
 | Key | Action |
 |-----|--------|
-| `Tab` | Switch tabs (Chat / Projects / Tasks / Stuck / Logs) |
+| `Tab` | Switch tabs (Chat / Projects / Tasks / Stuck / Issues / Logs) |
 | `Enter` | Send message |
 | `Shift+Enter` | Newline |
 | `i` | Focus input |
@@ -51,7 +67,8 @@ openswarm chat [session]         # Simple readline chat
 openswarm start                  # Start full daemon (requires config.yaml)
 openswarm run "Fix the bug" -p ~/my-project   # Run a single task
 openswarm exec "Run tests" --local --pipeline # Execute via daemon
-openswarm init                   # Interactive setup wizard (provider, task backend, config)
+openswarm init                   # Interactive setup wizard (provider auth, Linear OAuth, config)
+openswarm doctor                 # Diagnose environment (runtime, native deps, providers, ports)
 openswarm validate               # Validate config.yaml
 
 # Code Registry & BS Detector
@@ -88,15 +105,18 @@ For autonomous operation (Linear issue processing, Discord control, PR auto-impr
 ### Prerequisites
 
 - **Node.js** >= 22
-- **At least one LLM provider** (default `codex`):
-  - **OpenAI Codex** — default. `openswarm auth login` (ChatGPT OAuth) or a `codex` binary on PATH
-  - **OpenRouter** — `OPENROUTER_API_KEY`, or `openswarm auth login --provider openrouter`
-  - **Claude Code CLI** (`claude -p`) — opt-in fallback; an authenticated `claude` on PATH (used when codex hits its usage limit or OpenRouter is unavailable)
-  - **Local** (Ollama / LM Studio / llama.cpp) — auto-detected, no auth
+- **At least one LLM provider**:
+  - **OpenAI Codex** — `codex-responses` (ChatGPT OAuth, native loop, no extra binary) is the smoothest start; `codex` delegates to the external Codex CLI. `openswarm auth login` handles the ChatGPT OAuth
+  - **OpenRouter** — any model; `OPENROUTER_API_KEY` or `openswarm auth login --provider openrouter`
+  - **OpenAI GPT** — `openswarm auth login --provider gpt`
+  - **Local** — LM Studio (`lmstudio`, `:1234`) or Ollama (`local`, `:11434`), auto-detected, no auth
+  - **Claude Code CLI** (`claude -p`) — opt-in fallback; an authenticated `claude` on PATH
 - **Native build toolchain** — `better-sqlite3` and `@lancedb/lancedb` are native modules. Prebuilt binaries cover common platforms; if yours lacks one, `npm install` builds from source and needs `python3` + a C/C++ toolchain (`build-essential` on Linux, Xcode Command Line Tools on macOS)
-- **For autonomous mode only** (optional): **Linear** API key + team ID, **Discord** bot token (message content intent), **GitHub CLI** (`gh`) for CI monitoring
+- **For autonomous mode only** (optional): **Linear** — sign in with `openswarm auth login --provider linear` (OAuth PKCE) or use an API key + team ID; **Discord** bot token (message content intent); **GitHub CLI** (`gh`) for CI monitoring
 
 ### Configuration
+
+> 💡 The fastest path is `openswarm init` (interactive — see [What `openswarm init` sets up](#what-openswarm-init-sets-up)). The steps below are the manual equivalent.
 
 ```bash
 git clone https://github.com/unohee/OpenSwarm.git
@@ -130,35 +150,35 @@ LINEAR_TEAM_ID=your-linear-team-id
 ### CLI Adapter (Provider)
 
 ```yaml
-adapter: codex   # default. "codex" | "openrouter" | "gpt" | "local" | "lmstudio" | "claude"
+adapter: codex   # one of: codex · codex-responses · gpt · openrouter · lmstudio · local  (default: codex)
 ```
 
-Switch at runtime via Discord: `!provider codex` / `!provider claude`
+`adapter` accepts one of the six values below (validated by Zod). For a ChatGPT subscription, `codex-responses` is the smoothest first-run choice — it runs OpenSwarm's native loop over the Responses API with no extra binary. Switch at runtime via Discord, e.g. `!provider codex-responses` / `!provider openrouter`.
 
 | Adapter | Backend | Models | Auth |
 |---------|---------|--------|------|
-| `codex` | OpenAI Codex CLI | o3, o4-mini | OAuth PKCE / CLI auth |
-| `claude` | Claude Code CLI (`claude -p`) — opt-in fallback | sonnet-4, haiku-4.5, opus-4 | CLI auth |
-| `gpt` | OpenAI API | gpt-4o, o3, gpt-4.1 | OAuth PKCE |
-| `openrouter` | OpenRouter API (native agentic loop) | any OpenRouter model — gpt-5, gemini-2.5-flash, deepseek, glm, qwen, … | OAuth PKCE or `OPENROUTER_API_KEY` |
-| `local` | Ollama / LMStudio / llama.cpp | gemma4, llama3, mistral, qwen, etc. | None |
-| `lmstudio` | LM Studio OpenAI-compatible API | loaded LM Studio model (`LMSTUDIO_MODEL`) | Optional API key |
+| `codex-responses` | OpenAI Responses API (native loop, no CLI binary) | gpt-5-codex (default), o3, o4-mini | ChatGPT OAuth |
+| `codex` | OpenAI Codex CLI (delegated) | gpt-5-codex (default), o3, o4-mini | ChatGPT OAuth / `codex` CLI auth |
+| `gpt` | OpenAI Chat API | gpt-4o (default), o3, … | OAuth PKCE |
+| `openrouter` | OpenRouter API (native agentic loop) | any OpenRouter model — gpt-5, gemini-2.5, deepseek, glm, qwen, … | `OPENROUTER_API_KEY` or OAuth PKCE |
+| `lmstudio` | LM Studio (OpenAI-compatible, local) | loaded LM Studio model (`LMSTUDIO_MODEL`) | None |
+| `local` | Ollama (local, auto-detected) | gemma, llama, qwen, mistral, … | None |
 
-The `openrouter` adapter runs OpenSwarm's own agentic tool loop (read/search/edit/bash with verification guards), enables ZDR (`data_collection: deny`) for non-OpenAI models, and applies Anthropic prompt caching automatically.
+> **Claude Code (`claude -p`)** is supported as an **opt-in fallback** (and powers the `claude -p` chat path) — install the `claude` CLI and authenticate it; `openswarm init` and `openswarm doctor` detect it. It is **not** a selectable `adapter:` value.
 
-Local models are auto-detected on standard ports (Ollama `:11434`, LMStudio `:1234`, llama.cpp `:8080`). Use `lmstudio` for a dedicated LM Studio endpoint (`LMSTUDIO_BASE_URL`, default `http://localhost:1234`).
+The `openrouter` adapter runs OpenSwarm's own agentic tool loop (read/search/edit/bash with verification guards), enables ZDR (`data_collection: deny`) for non-OpenAI models, and applies Anthropic prompt caching automatically. Local backends are auto-detected on standard ports (Ollama `:11434`, LM Studio `:1234`); use `lmstudio` for a dedicated LM Studio endpoint (`LMSTUDIO_BASE_URL`, default `http://localhost:1234`).
 
-Per-role adapter overrides:
+Per-role adapter overrides (each role may pick its own valid adapter + model):
 
 ```yaml
 autonomous:
   defaultRoles:
     worker:
-      adapter: codex
-      model: o4-mini
+      adapter: codex-responses
+      model: gpt-5-codex
     reviewer:
-      adapter: claude
-      model: claude-sonnet-4-20250514
+      adapter: openrouter
+      model: anthropic/claude-sonnet-4
 ```
 
 ### Agent Roles
@@ -167,12 +187,12 @@ autonomous:
 autonomous:
   defaultRoles:
     worker:
-      model: claude-haiku-4-5-20251001
-      escalateModel: claude-sonnet-4-20250514
+      model: gpt-5-codex
+      escalateModel: openai/gpt-5     # escalate after repeated review failures
       escalateAfterIteration: 3
       timeoutMs: 1800000
     reviewer:
-      model: claude-haiku-4-5-20251001
+      model: gpt-5-codex
       timeoutMs: 600000
     tester:
       enabled: false
@@ -232,7 +252,7 @@ docker compose up -d         # Docker
   │  └───┬────┘   └──────────┘   └────────┘   └─────────────┘  │
   │      │  ↕ StuckDetector                                      │
   │  ┌───┴────────────────────────────────────────────────────┐  │
-  │  │ Adapters: Claude | Codex | GPT | Local (Ollama/LMS)   │  │
+  │  │ Adapters: Codex | GPT | OpenRouter | Local (Ollama)   │  │
   │  └────────────────────────────────────────────────────────┘  │
   └──────────────────────────────────────────────────────────────┘
            │                     │                     │
@@ -251,7 +271,7 @@ docker compose up -d         # Docker
 
 ## Features
 
-- **Multi-Provider Adapters** — Pluggable adapter system: **Claude Code**, **OpenAI GPT/Codex**, **OpenRouter** (any model, native agentic loop), and **local models** (Ollama, LMStudio, llama.cpp) with runtime provider switching
+- **Multi-Provider Adapters** — Pluggable adapter system: **OpenAI Codex/GPT**, **OpenRouter** (any model, native agentic loop), **local models** (Ollama, LM Studio), and **Claude Code** (`claude -p`, opt-in) with runtime provider switching
 - **Code Registry** — SQLite-backed entity registry tracking every function/class/type across 8 languages, with complexity scoring, test mapping, and risk assessment
 - **BS Detector** — Built-in static analysis engine that detects bad code patterns (empty catch, hardcoded secrets, `as any`, etc.) with pipeline guard integration
 - **Autonomous Pipeline** — Cron-driven heartbeat fetches Linear issues, runs Worker/Reviewer pair loops, and updates issue state automatically
@@ -280,7 +300,7 @@ Linear (Todo/In Progress)
   → DecisionEngine filters & prioritizes
   → Resolve project path via projectMapper
   → PairPipeline.run()
-    → Worker generates code (Claude CLI)
+    → Worker generates code (via the configured adapter)
     → Reviewer evaluates (APPROVE/REVISE/REJECT)
     → Loop up to N iterations
     → Optional: Tester → Documenter stages
@@ -373,7 +393,7 @@ and the harness defects the benchmark uncovered.
 | Command | Description |
 |---------|-------------|
 | `!ci` | GitHub CI failure status |
-| `!provider <claude\|codex>` | Switch CLI provider at runtime |
+| `!provider <codex\|codex-responses\|openrouter\|gpt\|lmstudio\|local>` | Switch CLI provider at runtime |
 | `!codex` | Recent session records |
 | `!memory search "<query>"` | Search cognitive memory |
 | `!help` | Full command reference |
@@ -389,7 +409,7 @@ src/
 ├── cli/                     # CLI subcommand handlers
 │   └── promptHandler.ts     # exec command: daemon submit, auto-start, polling
 ├── core/                    # Config, service lifecycle, types, event hub
-├── adapters/                # CLI provider adapters (claude, codex, gpt, local), process registry
+├── adapters/                # Provider adapters (codex, codex-responses, gpt, openrouter, local, lmstudio), agentic loop
 ├── agents/                  # Worker, reviewer, tester, documenter, auditor
 │   ├── pairPipeline.ts      # Worker → Reviewer → Tester → Documenter pipeline
 │   ├── agentBus.ts          # Inter-agent message bus
@@ -444,6 +464,34 @@ src/
 
 ## Changelog
 
+### v0.8.1
+- **License** — relicensed to **MIT** (was GPL-3.0)
+- **Docs** — README overhauled for first-time users (`openswarm init` walkthrough, accurate adapter registry, latest-build models) and contributor health files added (CONTRIBUTING, Code of Conduct, Security policy, PR template)
+
+### v0.8.0
+- **Interactive `openswarm init` wizard** — Linear OAuth (PKCE) sign-in with arrow-key team/project picker, provider auto-detection, and a validated `config.yaml` (INT-1808)
+- **`openswarm doctor`** — one-shot environment diagnostics: Node version, native modules, provider CLIs, ports, and config discovery
+- **Linear OAuth login** — `openswarm auth login --provider linear` (PKCE, no API-key entry)
+- **CLI polish** — ASCII banner and colored output (NO_COLOR / non-TTY aware)
+- **Autonomy hardening** — dependency-order gating + Backlog parking (INT-1809), daemon self-modify guards (INT-1810), `jobProfiles` partial roles carried through to runtime (INT-1812), and an `init` symlink guard that refuses to overwrite the daemon's global config
+- **Fix** — codex adapter `--full-auto` → `--sandbox workspace-write` (codex 0.137 deprecation) (INT-1699)
+
+### v0.5.0
+- **Native Codex Responses-API adapter** (`codex-responses`) — ChatGPT OAuth, no CLI binary required; live model discovery via the OAuth backend
+- **Linear-optional autonomy** — `ITaskSource` abstraction + local SQLite task source; the autonomous runner no longer requires Linear
+- **Notifier abstraction** — Discord / Slack / Telegram / webhook
+- **Agentic loop tools** — `web_fetch` + `web_search`
+- **Planner cockpit TUI** — `/plan` decompose → approve → dispatch
+- **Loop maturity (INT-1679)** — bad-edit guard + reflection self-repair loop
+- **Conflict-free concurrency (INT-1610)** — blocker/dependency ordering for parallel workers; worker instructions + actions logged to issue comments
+
+### v0.4.0
+- **Benchmarks (L0–L6)** — difficulty rubric, model-routing benchmark, and a real SWE-bench harness
+- **Repo knowledge loop** — workers learn each repository across tasks (per-repo success patterns + review-rejection pitfalls recalled into prompts)
+- **OpenRouter agentic adapter** — native tool loop with harness hardening from SWE-bench findings
+- **LM Studio adapter** with auto model selection
+- **CLI** — `openswarm dash`, `--tree` / `--ci` flags for `check`
+
 ### v0.3.0
 - **Code Registry**: `openswarm check --scan` scans repo, registers 1000+ entities across 8 languages (TS, Python, Go, Rust, Java, C, C++, C#) with test mapping, complexity scoring, and risk assessment
 - **BS Detector**: `openswarm check --bs` — built-in static analysis for bad code patterns, pipeline guard integration
@@ -478,6 +526,17 @@ src/
 
 ---
 
+## Contributing
+
+Contributions are welcome — OpenSwarm is MIT-licensed and accepts pull requests from anyone. See **[CONTRIBUTING.md](CONTRIBUTING.md)** for development setup, the local check gates, branch/commit conventions, and the PR process. By participating you agree to the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+- 🐛 [Report a bug](https://github.com/unohee/OpenSwarm/issues/new?template=bug_report.md)
+- 💡 [Share an idea](https://github.com/unohee/OpenSwarm/discussions) — the roadmap is built in the open
+- 🔧 Fork the repo, branch from `main`, and open a PR (CI runs lint → typecheck → build → test)
+- 🔒 Found a security issue? See [SECURITY.md](SECURITY.md) — please don't file it publicly
+
+---
+
 ## License
 
-GPL-3.0
+[MIT](LICENSE) © Heewon Oh
