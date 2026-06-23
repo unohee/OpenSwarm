@@ -204,6 +204,47 @@ describe('cliStreamParser', () => {
     });
   });
 
+  describe('thinking blocks (reasoning) → 💭', () => {
+    it('surfaces extended-thinking blocks from block.thinking as 💭 lines', () => {
+      const onLog = vi.fn();
+      const ndjson = JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'thinking', thinking: 'First I check the imports.\nThen I edit.', signature: 'x' }] },
+      });
+      parseCliStreamChunk(ndjson + '\n', onLog);
+      const lines = onLog.mock.calls.map((c) => c[0]);
+      expect(lines).toContain('💭 First I check the imports.');
+      expect(lines).toContain('💭 Then I edit.');
+    });
+
+    it('emits thinking, narration text, and tool_use together in order', () => {
+      const onLog = vi.fn();
+      const ndjson = JSON.stringify({
+        type: 'assistant',
+        message: { content: [
+          { type: 'thinking', thinking: 'Reasoning here' },
+          { type: 'text', text: 'I will edit the file.' },
+          { type: 'tool_use', name: 'Edit', input: { file_path: '/x/y.py' } },
+        ] },
+      });
+      parseCliStreamChunk(ndjson + '\n', onLog);
+      const lines = onLog.mock.calls.map((c) => c[0]);
+      expect(lines).toContain('💭 Reasoning here');
+      expect(lines).toContain('I will edit the file.');
+      expect(lines).toContain('▸ Edit  /x/y.py');
+    });
+
+    it('ignores empty thinking blocks', () => {
+      const onLog = vi.fn();
+      const ndjson = JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'thinking', thinking: '   ' }] },
+      });
+      parseCliStreamChunk(ndjson + '\n', onLog);
+      expect(onLog.mock.calls.every((c) => !c[0].startsWith('💭'))).toBe(true);
+    });
+  });
+
   describe('Advanced Stream Processing', () => {
     it('should handle assistant messages with text content', () => {
       const onLog = vi.fn();

@@ -43,6 +43,15 @@ function processNdjsonLine(line: string, onLog: (text: string) => void): void {
       onLog('───');
 
       for (const block of event.message.content) {
+        // Extended-thinking blocks carry the model's reasoning in `block.thinking`
+        // (NOT `block.text`). Surface it as 💭 so the live log shows the model
+        // thinking, not just its tool calls. (claude emits these by default.)
+        if (block.type === 'thinking' && block.thinking?.trim()) {
+          for (const tline of block.thinking.split('\n')) {
+            const t = tline.trim();
+            if (t) onLog('💭 ' + truncate(t, 300));
+          }
+        }
         if (block.type === 'text' && block.text?.trim()) {
           emitFormattedText(block.text, onLog);
         }
