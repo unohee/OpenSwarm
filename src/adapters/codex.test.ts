@@ -4,7 +4,7 @@ import { CodexCliAdapter, coerceCodexModel } from './codex.js';
 describe('CodexCliAdapter', () => {
   const adapter = new CodexCliAdapter();
 
-  it('builds a codex exec command with full-auto json mode', () => {
+  it('builds a codex exec command with sandbox json mode', () => {
     const { command } = adapter.buildCommand({
       prompt: '/tmp/prompt.txt',
       cwd: '/tmp/project',
@@ -13,7 +13,9 @@ describe('CodexCliAdapter', () => {
 
     expect(command).toContain('codex exec');
     expect(command).toContain('--json');
-    expect(command).toContain('--full-auto');
+    // --full-auto was deprecated in codex 0.137 → --sandbox workspace-write (INT-1699)
+    expect(command).toContain('--sandbox workspace-write');
+    expect(command).not.toContain('--full-auto');
     expect(command).toContain('--skip-git-repo-check');
     expect(command).toContain("-m 'gpt-5-codex'");
   });

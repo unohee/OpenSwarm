@@ -65,7 +65,10 @@ export class CodexCliAdapter implements CliAdapter {
     const promptFile = options.prompt;
     const resolvedModel = options.model ? coerceCodexModel(options.model) : undefined;
     const modelFlag = resolvedModel ? ` -m ${shellEscape(resolvedModel)}` : '';
-    const cmd = `cat ${shellEscape(promptFile)} | codex exec --json --full-auto --skip-git-repo-check${modelFlag}`;
+    // `--full-auto` was deprecated in codex 0.137 (warns, still runs). Its documented
+    // replacement is `--sandbox workspace-write`: same low-friction policy (writes
+    // confined to the workspace, no approval prompts in non-interactive `exec`). (INT-1699)
+    const cmd = `cat ${shellEscape(promptFile)} | codex exec --json --sandbox workspace-write --skip-git-repo-check${modelFlag}`;
     return { command: cmd, args: [] };
   }
 
