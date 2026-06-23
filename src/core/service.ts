@@ -62,11 +62,25 @@ export async function startService(config: SwarmConfig): Promise<void> {
   initRateLimiters();
   console.log('✅ Rate limiters ready');
 
-  // Linear initialization (optional)
-  if (config.linearApiKey && config.linearTeamId) {
-    console.log('🔗 Initializing Linear client...');
-    linear.initLinear(config.linearApiKey, config.linearTeamId);
-    console.log('✅ Linear client connected');
+  // Linear initialization (optional). Prefer an OAuth profile (linear:default,
+  // from `openswarm auth login --provider linear`) over a personal API key.
+  // Startup uses ensureValidToken (refreshes if near expiry). NOTE: long-running
+  // OAuth-token refresh during runtime is a follow-up — startup token is used.
+  if (config.linearTeamId) {
+    const { AuthProfileStore, ensureValidToken } = await import('../auth/index.js');
+    const authStore = new AuthProfileStore();
+    if (authStore.getProfile('linear:default')) {
+      console.log('🔗 Initializing Linear client (OAuth)...');
+      const token = await ensureValidToken(authStore, 'linear:default');
+      linear.initLinear(token, config.linearTeamId, true);
+      console.log('✅ Linear client connected (OAuth)');
+    } else if (config.linearApiKey) {
+      console.log('🔗 Initializing Linear client...');
+      linear.initLinear(config.linearApiKey, config.linearTeamId);
+      console.log('✅ Linear client connected');
+    } else {
+      console.log('⏭ Linear not configured — skipping');
+    }
   } else {
     console.log('⏭ Linear not configured — skipping');
   }

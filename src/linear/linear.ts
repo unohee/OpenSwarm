@@ -170,12 +170,14 @@ export function getDailyIssueCount(): number {
  * Initialize the Linear client
  * Rate limiting is applied at the function level in this file
  */
-export function initLinear(apiKey: string, team: string): void {
-  client = new LinearClient({ apiKey });
+export function initLinear(credential: string, team: string, isOAuth = false): void {
+  // OAuth access tokens use the Bearer `accessToken` path; personal API keys use
+  // the raw `apiKey` path. (Linear OAuth tokens fail if sent as a raw apiKey.)
+  client = new LinearClient(isOAuth ? { accessToken: credential } : { apiKey: credential });
   teamId = team;
   teamIds = team.split(',').map(id => id.trim()).filter(Boolean);
   setLinearClient(client);
-  console.log('[Linear] Client initialized');
+  console.log(`[Linear] Client initialized (${isOAuth ? 'OAuth' : 'apiKey'})`);
 }
 
 /**
@@ -202,23 +204,36 @@ export interface LinearTeamInfo {
   name: string;
 }
 
+/** Credential for one-off Linear calls before initLinear() (init picker). */
+export interface LinearCredential {
+  apiKey?: string;
+  /** OAuth access token (Bearer) — takes precedence over apiKey. */
+  accessToken?: string;
+}
+
+function linearClientFor(cred?: LinearCredential): LinearClient {
+  if (cred?.accessToken) return new LinearClient({ accessToken: cred.accessToken });
+  if (cred?.apiKey) return new LinearClient({ apiKey: cred.apiKey });
+  return getClient();
+}
+
 /**
- * List all Linear teams the API key can see — for the `openswarm init` picker.
- * Accepts an explicit apiKey so init can call it before initLinear() runs (the
- * user has only just pasted the key); falls back to the initialized client.
+ * List all Linear teams the credential can see — for the `openswarm init` picker.
+ * Accepts an explicit credential (apiKey or OAuth accessToken) so init can call
+ * it before initLinear() runs; falls back to the initialized client.
  */
-export async function listTeams(apiKey?: string): Promise<LinearTeamInfo[]> {
-  const c = apiKey ? new LinearClient({ apiKey }) : getClient();
+export async function listTeams(cred?: LinearCredential): Promise<LinearTeamInfo[]> {
+  const c = linearClientFor(cred);
   const res: any = await withRateLimit('linear', () => c.teams({ first: 250 })); // cxt-ignore: type_safety — SDK TeamConnection
   return (res?.nodes ?? []).map((t: any) => ({ id: t.id, key: t.key, name: t.name }));
 }
 
 /**
  * List projects within a team — for the `openswarm init` picker. Accepts an
- * explicit apiKey so init can call it before initLinear() runs.
+ * explicit credential (apiKey or OAuth accessToken).
  */
-export async function listProjects(teamId: string, apiKey?: string): Promise<LinearProjectInfo[]> {
-  const c = apiKey ? new LinearClient({ apiKey }) : getClient();
+export async function listProjects(teamId: string, cred?: LinearCredential): Promise<LinearProjectInfo[]> {
+  const c = linearClientFor(cred);
   const team: any = await withRateLimit('linear', () => c.team(teamId)); // cxt-ignore: type_safety — SDK Team
   const res: any = await withRateLimit('linear', () => team.projects({ first: 250 }));
   return (res?.nodes ?? []).map((p: any) => ({

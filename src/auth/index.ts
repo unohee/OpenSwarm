@@ -17,3 +17,9 @@ export {
   type OpenRouterFlowResult,
   type OpenRouterFlowOptions,
 } from './openrouterPkce.js';
+export {
+  runLinearPkceFlow,
+  loginAndSaveLinearProfile,
+  type LinearFlowResult,
+  type LinearFlowOptions,
+} from './linearPkce.js';

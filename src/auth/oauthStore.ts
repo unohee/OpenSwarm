@@ -40,6 +40,13 @@ const STORE_DIR = join(homedir(), '.openswarm');
 const STORE_PATH = join(STORE_DIR, 'auth-profiles.json');
 const REFRESH_BUFFER_MS = 5 * 60 * 1000; // 5분 전에 갱신
 const OPENAI_TOKEN_ENDPOINT = 'https://auth.openai.com/oauth/token';
+const LINEAR_TOKEN_ENDPOINT = 'https://api.linear.app/oauth/token';
+
+/** OAuth refresh token endpoints by provider. */
+const TOKEN_ENDPOINTS: Record<string, string> = {
+  'openai-gpt': OPENAI_TOKEN_ENDPOINT,
+  linear: LINEAR_TOKEN_ENDPOINT,
+};
 
 // AuthProfileStore
 
@@ -122,7 +129,8 @@ export async function ensureValidToken(store: AuthProfileStore, profileKey: stri
     client_id: profile.clientId,
   });
 
-  const res = await fetch(OPENAI_TOKEN_ENDPOINT, {
+  const endpoint = TOKEN_ENDPOINTS[profile.provider] ?? OPENAI_TOKEN_ENDPOINT;
+  const res = await fetch(endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: body.toString(),
@@ -130,8 +138,9 @@ export async function ensureValidToken(store: AuthProfileStore, profileKey: stri
 
   if (!res.ok) {
     const errText = await res.text().catch(() => '');
+    const reauth = profile.provider === 'linear' ? 'linear' : 'gpt';
     throw new Error(
-      `Token refresh failed (${res.status}): ${errText.slice(0, 200)}. Run: openswarm auth login --provider gpt`,
+      `Token refresh failed (${res.status}): ${errText.slice(0, 200)}. Run: openswarm auth login --provider ${reauth}`,
     );
   }
 

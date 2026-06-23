@@ -14,9 +14,9 @@ import { basename, join } from 'node:path';
 import { select, checkbox, input, password, confirm } from '@inquirer/prompts';
 import { writeEnvVars } from '../core/envFile.js';
 import { generateSampleConfig } from '../core/config.js';
-import { AuthProfileStore } from '../auth/index.js';
+import { AuthProfileStore, loginAndSaveLinearProfile } from '../auth/index.js';
 import { getAdapter } from '../adapters/index.js';
-import { listTeams, listProjects } from '../linear/index.js';
+import { listTeams, listProjects, type LinearCredential } from '../linear/index.js';
 import { saveRepoMetadata } from '../support/repoMetadata.js';
 
 type ProviderId = 'codex-responses' | 'openrouter' | 'gpt' | 'lmstudio' | 'local' | 'codex' | 'claude';
@@ -126,17 +126,44 @@ async function bootstrapProvider(
  * team-id entry if the Linear API can't be reached.
  */
 async function setupLinear(envVars: Record<string, string>, cwd: string): Promise<void> {
-  console.log('   Get a key at https://linear.app/settings/api');
-  const apiKey = (await password({ message: '   LINEAR_API_KEY (hidden):' })).trim();
-  if (!apiKey) {
-    console.log('   Skipped Linear (no key).');
-    return;
+  // OAuth (browser, no key to paste) vs personal API key.
+  const method = await select({
+    message: '   Linear authentication:',
+    choices: [
+      { name: 'OAuth (browser login)', value: 'oauth', description: 'no API key to paste — recommended' },
+      { name: 'API key (paste)', value: 'apikey', description: 'personal key from linear.app/settings/api' },
+    ],
+  });
+
+  let cred: LinearCredential;
+  if (method === 'oauth') {
+    try {
+      const token = await loginAndSaveLinearProfile(); // browser PKCE → linear:default profile
+      cred = { accessToken: token };
+    } catch (err) { // cxt-ignore: error_swallow,exception_hiding — OAuth failure → API-key fallback
+      console.log(`   ⚠ Linear OAuth failed (${(err as Error).message}). Falling back to API key.`);
+      const apiKey = (await password({ message: '   LINEAR_API_KEY (hidden):' })).trim();
+      if (!apiKey) {
+        console.log('   Skipped Linear (no key).');
+        return;
+      }
+      envVars.LINEAR_API_KEY = apiKey;
+      cred = { apiKey };
+    }
+  } else {
+    console.log('   Get a key at https://linear.app/settings/api');
+    const apiKey = (await password({ message: '   LINEAR_API_KEY (hidden):' })).trim();
+    if (!apiKey) {
+      console.log('   Skipped Linear (no key).');
+      return;
+    }
+    envVars.LINEAR_API_KEY = apiKey;
+    cred = { apiKey };
   }
-  envVars.LINEAR_API_KEY = apiKey;
 
   let teams: Awaited<ReturnType<typeof listTeams>> = [];
   try {
-    teams = await listTeams(apiKey);
+    teams = await listTeams(cred);
   } catch (err) { // cxt-ignore: error_swallow,exception_hiding — surfaced to the user + manual team-id fallback
     console.log(`   ⚠ Could not fetch teams (${(err as Error).message}). Enter the team id manually.`);
   }
@@ -167,7 +194,7 @@ async function setupLinear(envVars: Record<string, string>, cwd: string): Promis
 
   let projects: Awaited<ReturnType<typeof listProjects>> = [];
   try {
-    projects = await listProjects(mapTeamId, apiKey);
+    projects = await listProjects(mapTeamId, cred);
   } catch (err) { // cxt-ignore: error_swallow,exception_hiding — surfaced to the user; repo mapping skipped
     console.log(`   ⚠ Could not fetch projects (${(err as Error).message}).`);
     return;

@@ -13,16 +13,18 @@ import {
   loginAndSaveOpenRouterProfile,
   saveOpenRouterApiKey,
 } from '../auth/openrouterPkce.js';
+import { loginAndSaveLinearProfile } from '../auth/linearPkce.js';
 import { getCodexModelIds } from '../adapters/codexModels.js';
 
-type Provider = 'gpt' | 'openrouter';
+type Provider = 'gpt' | 'openrouter' | 'linear';
 
 const PROFILE_KEYS: Record<Provider, string> = {
   gpt: 'openai-gpt:default',
   openrouter: 'openrouter:default',
+  linear: 'linear:default',
 };
 
-const VALID_PROVIDERS: Provider[] = ['gpt', 'openrouter'];
+const VALID_PROVIDERS: Provider[] = ['gpt', 'openrouter', 'linear'];
 
 function assertProvider(provider: string): asserts provider is Provider {
   if (!VALID_PROVIDERS.includes(provider as Provider)) {
@@ -55,6 +57,9 @@ export async function handleAuthLogin(
         opts.clientId ?? process.env.OPENAI_CLIENT_ID ?? DEFAULT_OPENAI_CLIENT_ID;
       await loginAndSaveProfile(clientId, opts.port);
       printGptPostLoginHint();
+    } else if (provider === 'linear') {
+      await loginAndSaveLinearProfile(opts.port);
+      console.log('✓ Linear 연동 완료. `openswarm init`에서 팀/프로젝트를 선택하세요.'); // cxt-ignore: fake_execution — after real OAuth token exchange
     } else {
       await loginOpenRouter(opts);
       printOpenRouterPostLoginHint();
