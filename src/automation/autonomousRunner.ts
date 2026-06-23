@@ -457,12 +457,12 @@ export class AutonomousRunner {
       return {
         worker: {
           enabled: true,
-          model: this.config.workerModel || 'claude-sonnet-4-6',
+          model: this.config.workerModel,  // unset → role adapter's getDefaultModel()
           timeoutMs: this.config.workerTimeoutMs ?? 0,
         },
         reviewer: {
           enabled: true,
-          model: this.config.reviewerModel || 'claude-haiku-4-5-20251001',
+          model: this.config.reviewerModel,  // unset → role adapter's getDefaultModel()
           timeoutMs: this.config.reviewerTimeoutMs ?? 0,
         },
       };
@@ -470,8 +470,9 @@ export class AutonomousRunner {
 
     // Apply per-project overrides
     const base = this.config.defaultRoles || {
-      worker: { enabled: true, model: 'claude-sonnet-4-6', timeoutMs: 0 },
-      reviewer: { enabled: true, model: 'claude-haiku-4-5-20251001', timeoutMs: 0 },
+      // No model → each role's adapter resolves its own default (getDefaultModel).
+      worker: { enabled: true, timeoutMs: 0 },
+      reviewer: { enabled: true, timeoutMs: 0 },
     };
 
     if (!projectConfig?.roles) {
@@ -1086,12 +1087,12 @@ export class AutonomousRunner {
       defaultAdapter,
       worker: {
         adapter: defaultRoles?.worker?.adapter ?? defaultAdapter,
-        model: defaultRoles?.worker?.model ?? this.config.workerModel ?? 'gpt-5-codex',
+        model: defaultRoles?.worker?.model ?? this.config.workerModel,
         enabled: defaultRoles?.worker?.enabled !== false,
       },
       reviewer: {
         adapter: defaultRoles?.reviewer?.adapter ?? defaultAdapter,
-        model: defaultRoles?.reviewer?.model ?? this.config.reviewerModel ?? 'gpt-5-codex',
+        model: defaultRoles?.reviewer?.model ?? this.config.reviewerModel,
         enabled: defaultRoles?.reviewer?.enabled !== false,
       },
       tester: defaultRoles?.tester ? {
@@ -1108,23 +1109,19 @@ export class AutonomousRunner {
   }
 
   switchProvider(adapter: AdapterName): void {
-    const mapModelForProvider = (model: string | undefined, role: 'worker' | 'reviewer' | 'tester' | 'documenter' | 'auditor' | 'skill-documenter'): string => {
-      const current = model || '';
-      const isClaudeModel = current.startsWith('claude-');
-      // ChatGPT 계정 Codex에서는 gpt-5.x / gpt-*-codex 계열만 지원
-      // o-series (o3, o4-mini 등)는 사용 불가
-      const isCodexCompatible = current.startsWith('gpt-');
-
+    // On a provider switch, keep the model only if it clearly belongs to the new
+    // provider; otherwise drop it (undefined) so the target adapter resolves its
+    // own default via getDefaultModel(). No hardcoded per-provider model ids.
+    const mapModelForProvider = (model: string | undefined, _role?: string): string | undefined => {
+      const current = (model || '').trim();
+      if (!current) return undefined;
       if (adapter === 'codex' || adapter === 'codex-responses') {
-        if (isCodexCompatible) return current;
-        // 비호환 모델(o-series·claude 등). codex CLI는 빈 플래그로 기본값을 위임할 수
-        // 있지만, codex-responses 어댑터는 API model 필드가 필수라 기본 모델로 채운다.
-        return adapter === 'codex-responses' ? 'gpt-5.5' : '';
+        // ChatGPT-account Codex only runs gpt-* slugs; anything else → adapter default.
+        return current.startsWith('gpt-') ? current : undefined;
       }
-
-      if (isClaudeModel) return current;
-      if (role === 'reviewer') return 'claude-sonnet-4-6';
-      return 'claude-haiku-4-5-20251001';
+      // openrouter/gpt/local/lmstudio: a namespaced id ("vendor/model") may carry
+      // over; a bare id from another provider usually won't — drop to the default.
+      return current.includes('/') ? current : undefined;
     };
 
     this.config.defaultAdapter = adapter;

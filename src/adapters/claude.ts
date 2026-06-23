@@ -54,6 +54,14 @@ export class ClaudeCliAdapter implements CliAdapter {
     return { command: cmd, args: [] };
   }
 
+  /**
+   * Version-agnostic alias — the claude CLI resolves "sonnet" to the current
+   * Sonnet, so it never goes stale the way a pinned model id would.
+   */
+  async getDefaultModel(): Promise<string> {
+    return 'sonnet';
+  }
+
   parseWorkerOutput(raw: CliRunResult): WorkerResult {
     try {
       const costInfo = extractCostFromStreamJson(raw.stdout);

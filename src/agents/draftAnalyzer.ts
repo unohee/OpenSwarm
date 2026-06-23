@@ -283,8 +283,9 @@ export async function runDraftAnalysis(options: DraftAnalyzerOptions): Promise<D
     onLog?.(`[Draft] Registry: ${codeContext.projectStats}`);
   }
 
-  // 3. Fast model draft analysis (~3s)
-  const model = options.model ?? 'gpt-5-codex';
+  // 3. Fast model draft analysis (~3s) — model resolves from the adapter when unset
+  const adapter = getAdapter();
+  const model = options.model ?? await adapter.getDefaultModel();
   const prompt = buildDraftPrompt(options, codeContext, impactAnalysis);
 
   let haikuResult: Partial<DraftAnalysis> = {
@@ -295,7 +296,6 @@ export async function runDraftAnalysis(options: DraftAnalyzerOptions): Promise<D
   };
 
   try {
-    const adapter = getAdapter();
     const raw = await spawnCli(adapter, {
       prompt,
       cwd: '/tmp',  // 중립 디렉토리 (Planner와 동일)

@@ -115,7 +115,7 @@ export async function fetchLinearTasks(): Promise<{ tasks: TaskItem[]; error?: s
 
 export interface ExecutionContext {
   allowedProjects: string[];
-  /** Draft analyzer 모델 (기본: claude-haiku-4-5-20251001) */
+  /** Draft analyzer 모델. 미설정 시 어댑터의 getDefaultModel()로 동적 해석. */
   draftModel?: string;
   /** Draft analyzer 활성화 (기본: true) */
   enableDraftAnalysis?: boolean;

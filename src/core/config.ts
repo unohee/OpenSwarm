@@ -112,8 +112,8 @@ const RoleConfigSchema = z.object({
   enabled: z.boolean().default(true),
   /** CLI adapter */
   adapter: AdapterNameSchema.optional(),
-  /** Model ID */
-  model: z.string(),
+  /** Model ID. Omit → resolved dynamically from the role's adapter (getDefaultModel). */
+  model: z.string().optional(),
   /** Timeout (ms), 0 = unlimited */
   timeoutMs: z.number().min(0).default(0),
   /** Model to escalate to on repeated failure */

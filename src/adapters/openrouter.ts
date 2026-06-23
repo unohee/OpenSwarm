@@ -65,6 +65,10 @@ export class OpenRouterCliAdapter implements CliAdapter {
     return { command: 'echo', args: ['"OpenRouter adapter uses run() — not shell spawn"'] };
   }
 
+  async getDefaultModel(): Promise<string> {
+    return DEFAULT_MODEL;
+  }
+
   async run(options: CliRunOptions): Promise<CliRunResult> {
     const startTime = Date.now();
 
@@ -84,7 +88,7 @@ export class OpenRouterCliAdapter implements CliAdapter {
       }
     }
 
-    const model = options.model ?? DEFAULT_MODEL;
+    const model = options.model ?? await this.getDefaultModel();
     const callApi = createApiCaller(apiKey, model, {
       disableReasoning: options.disableReasoning,
       onToken: options.onToken,

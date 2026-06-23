@@ -48,6 +48,10 @@ export class GptCliAdapter implements CliAdapter {
     return { command: 'echo', args: ['"GPT adapter uses run() — not shell spawn"'] };
   }
 
+  async getDefaultModel(): Promise<string> {
+    return DEFAULT_MODEL;
+  }
+
   async run(options: CliRunOptions): Promise<CliRunResult> {
     const store = new AuthProfileStore();
     const startTime = Date.now();
@@ -65,7 +69,7 @@ export class GptCliAdapter implements CliAdapter {
       };
     }
 
-    const model = options.model ?? DEFAULT_MODEL;
+    const model = options.model ?? await this.getDefaultModel();
 
     // 2. 에이전틱 루프로 실행 (도구 사용 가능)
     const callApi = this.createApiCaller(accessToken, store, model, options.onToken, options.signal);

@@ -263,8 +263,8 @@ export type RoleConfig = {
   enabled: boolean;
   /** CLI adapter name */
   adapter?: 'codex' | 'codex-responses' | 'gpt' | 'local' | 'lmstudio' | 'openrouter';
-  /** Model ID */
-  model: string;
+  /** Model ID. Omit → resolved dynamically from the role's adapter (getDefaultModel). */
+  model?: string;
   /** Timeout (ms), 0 = unlimited */
   timeoutMs: number;
   /** Model to escalate to on repeated failure */

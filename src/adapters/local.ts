@@ -122,6 +122,12 @@ export class LocalModelAdapter implements CliAdapter {
     return { command: 'echo', args: ['"Local adapter uses run() — not shell spawn"'] };
   }
 
+  /** Default = first model the running server reports (live), else the constant. */
+  async getDefaultModel(): Promise<string> {
+    const [first] = await this.listModels();
+    return first ?? this.defaultModel;
+  }
+
   async run(options: CliRunOptions): Promise<CliRunResult> {
     const startTime = Date.now();
 
@@ -139,7 +145,7 @@ export class LocalModelAdapter implements CliAdapter {
       }
     }
 
-    const model = options.model ?? this.defaultModel;
+    const model = options.model ?? await this.getDefaultModel();
     const baseUrl = this.activeUrl!;
 
     // 도구 지원 여부 감지 (모델에 따라 다를 수 있음)

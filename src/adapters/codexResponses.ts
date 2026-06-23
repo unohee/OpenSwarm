@@ -18,6 +18,8 @@ import { runAgenticLoop, loopResultToCliResult, type ChatMessage, type AgenticLo
 import { parseWorkerResult, parseReviewerResult } from './resultParsing.js';
 import type { ToolDefinition } from './tools.js';
 
+import { getCodexModelIds } from './codexModels.js';
+
 const CODEX_RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses';
 const DEFAULT_MODEL = 'gpt-5.5';
 const PROFILE_KEY = 'openai-gpt:default';
@@ -240,6 +242,12 @@ export class CodexResponsesAdapter implements CliAdapter {
     return { command: 'echo', args: ['"codex-responses adapter uses run() — not shell spawn"'] };
   }
 
+  /** Default = top model from the Codex OAuth catalog (live/local), else constant. */
+  async getDefaultModel(): Promise<string> {
+    const [first] = await getCodexModelIds();
+    return first ?? DEFAULT_MODEL;
+  }
+
   async run(options: CliRunOptions): Promise<CliRunResult> {
     const store = new AuthProfileStore();
     const startTime = Date.now();
@@ -263,7 +271,7 @@ export class CodexResponsesAdapter implements CliAdapter {
       };
     }
 
-    const model = options.model ?? DEFAULT_MODEL;
+    const model = options.model ?? await this.getDefaultModel();
     const callApi = this.createApiCaller(accessToken, accountId, store, model, options.onToken, options.signal);
 
     const loopOptions: AgenticLoopOptions = {

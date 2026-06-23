@@ -103,6 +103,15 @@ export interface CliAdapter {
   /** Check if the CLI tool is installed and available */
   isAvailable(): Promise<boolean>;
 
+  /**
+   * The provider's default model, resolved dynamically — from the provider's
+   * live model list where one is exposed (codex backend, local /v1/models),
+   * else the adapter's own provider-appropriate default. Used when no explicit
+   * model is configured, so callers never hardcode a (possibly wrong-provider
+   * or stale) model id.
+   */
+  getDefaultModel(): Promise<string>;
+
   /** Build the shell command and args for execution */
   buildCommand(options: CliRunOptions): { command: string; args: string[] };
 

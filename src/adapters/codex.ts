@@ -62,6 +62,12 @@ export class CodexCliAdapter implements CliAdapter {
     return getCodexModelIds(accessToken);
   }
 
+  /** Default = the top model the account can use (live list), else the constant. */
+  async getDefaultModel(): Promise<string> {
+    const [first] = await this.listModels();
+    return first ?? CODEX_DEFAULT_MODEL;
+  }
+
   buildCommand(options: CliRunOptions): { command: string; args: string[] } {
     const promptFile = options.prompt;
     const resolvedModel = options.model ? coerceCodexModel(options.model) : undefined;
