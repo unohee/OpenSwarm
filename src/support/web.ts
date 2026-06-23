@@ -213,17 +213,18 @@ export function setWebRunner(runner: AutonomousRunner): void {
   // Restore persisted enabled state. INT-1810 R6: removedConfigPaths is a HARD denylist —
   // never re-enable a removed/isolated repo, even if it lingers in the persisted enabled list
   // (auto-rediscovery used to re-add isolated repos and silently un-isolate them).
-  for (const path of _reposCfg.enabled) {
-    if (removedConfigPaths.has(path)) continue;
+  const enabledNow = _reposCfg.enabled.filter((p) => !removedConfigPaths.has(p));
+  for (const path of enabledNow) {
     runner.enableProject(path);
   }
-  // 대시보드에서 제거된 config 경로를 runner의 allowedProjects에서도 제거
-  if (removedConfigPaths.size > 0) {
-    const current = runner.getAllowedProjects();
-    const filtered = current.filter(p => !removedConfigPaths.has(p));
-    if (filtered.length !== current.length) {
-      runner.updateAllowedProjects(filtered);
-    }
+  // INT-1877: a CLI/dashboard-registered repo (repos.json `enabled`) must also be
+  // ALLOWED — otherwise the DecisionEngine allowedProjects filter drops it. Merge the
+  // enabled set into allowedProjects, then strip the denylist (INT-1810 R6: a removed
+  // path never returns, even if it lingers in the persisted enabled list).
+  const current = runner.getAllowedProjects();
+  const merged = [...new Set([...current, ...enabledNow])].filter((p) => !removedConfigPaths.has(p));
+  if (merged.length !== current.length || merged.some((p) => !current.includes(p))) {
+    runner.updateAllowedProjects(merged);
   }
   // Pre-seed path cache from pinned + enabled projects so tasks without execution history are still matched
   const allSeeded = new Set([...pinnedProjects, ..._reposCfg.enabled]);

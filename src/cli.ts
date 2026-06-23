@@ -397,6 +397,38 @@ authCmd
     handleAuthLogout(opts.provider);
   });
 
+// openswarm project — manage work repos the daemon picks up
+
+const projectCmd = program
+  .command('project')
+  .description('Manage work repositories the daemon operates on');
+
+projectCmd
+  .command('add')
+  .description('Register a repository as a work repo (enabled + pinned)')
+  .argument('<path>', 'Path to the git repository')
+  .action(async (path: string) => {
+    const { handleProjectAdd } = await import('./cli/projectHandler.js');
+    handleProjectAdd(path);
+  });
+
+projectCmd
+  .command('list')
+  .description('List registered work repositories')
+  .action(async () => {
+    const { handleProjectList } = await import('./cli/projectHandler.js');
+    handleProjectList();
+  });
+
+projectCmd
+  .command('rm')
+  .description('Unregister a work repository (adds it to the denylist)')
+  .argument('<path>', 'Path to the repository')
+  .action(async (path: string) => {
+    const { handleProjectRm } = await import('./cli/projectHandler.js');
+    handleProjectRm(path);
+  });
+
 // 서브커맨드 없이 `openswarm`만 입력 시 → TUI chat 실행 (`openswarm chat`과 동일)
 
 async function launchChatTui(): Promise<void> {
