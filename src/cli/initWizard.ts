@@ -14,7 +14,7 @@ import { basename, join } from 'node:path';
 import { select, checkbox, input, password, confirm } from '@inquirer/prompts';
 import { writeEnvVars } from '../core/envFile.js';
 import { generateSampleConfig } from '../core/config.js';
-import { AuthProfileStore, loginAndSaveLinearProfile } from '../auth/index.js';
+import { AuthProfileStore, loginAndSaveLinearProfile, ensureValidToken } from '../auth/index.js';
 import { getAdapter } from '../adapters/index.js';
 import { listTeams, listProjects, type LinearCredential } from '../linear/index.js';
 import { saveRepoMetadata } from '../support/repoMetadata.js';
@@ -138,7 +138,14 @@ async function setupLinear(envVars: Record<string, string>, cwd: string): Promis
   let cred: LinearCredential;
   if (method === 'oauth') {
     try {
-      const token = await loginAndSaveLinearProfile(); // browser PKCE → linear:default profile
+      const authStore = new AuthProfileStore();
+      let token: string;
+      if (authStore.getProfile('linear:default')) {
+        token = await ensureValidToken(authStore, 'linear:default'); // reuse — no browser
+        console.log('   ✓ Reusing existing Linear OAuth profile.');
+      } else {
+        token = await loginAndSaveLinearProfile(); // browser PKCE → linear:default profile
+      }
       cred = { accessToken: token };
     } catch (err) { // cxt-ignore: error_swallow,exception_hiding — OAuth failure → API-key fallback
       console.log(`   ⚠ Linear OAuth failed (${(err as Error).message}). Falling back to API key.`);

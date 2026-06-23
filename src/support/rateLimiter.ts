@@ -279,6 +279,12 @@ export async function withRateLimit<T>(
   service: 'claude' | 'linear' | 'github',
   operation: () => Promise<T>
 ): Promise<T> {
+  // Limiters are set up by the daemon (initRateLimiters). One-off CLI commands
+  // (init, auth) never call that, so fall back to running the operation directly
+  // instead of throwing "No limiter configured".
+  if (!limiters.has(service)) {
+    return operation();
+  }
   await acquireRateLimit(service);
   return operation();
 }
