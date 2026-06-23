@@ -25,7 +25,7 @@ describe('workerAuditLog', () => {
       expect(body).toContain('Wire a logout action');
       expect(body).toContain('`src/header.tsx`');
       expect(body).toContain('claude-opus-4-8');
-      expect(body).toContain('Max turns: 20');
+      expect(body).toContain('Max turns 20');
       // Convention: no decorative emoji in comment bodies.
       expect(body).not.toMatch(/[🛠️🤖✅❌⚠️📋]/u);
     });

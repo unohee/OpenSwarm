@@ -22,16 +22,16 @@ describe('linear/format', () => {
   });
 
   describe('formatAutomationComment', () => {
-    it('leads with a bold conclusion-first heading and a footer with absolute date', () => {
+    it('leads with a bold heading and a quiet italic sign-off with an absolute date', () => {
       const body = formatAutomationComment({
         heading: 'Task complete',
         date: new Date('2026-06-23T00:00:00Z'),
       });
       expect(body.startsWith('**Task complete**')).toBe(true);
-      expect(body).toContain('Automated by OpenSwarm · 2026-06-23');
+      expect(body).toContain('_via OpenSwarm · 2026-06-23_');
     });
 
-    it('renders string bodies as paragraphs and array bodies as bullet lists', () => {
+    it('keeps short facts inline and renders lists as bullets', () => {
       const body = formatAutomationComment({
         heading: 'Revision requested',
         summary: 'Worker will revise.',
@@ -40,8 +40,8 @@ describe('linear/format', () => {
           { label: 'Issues', body: ['missing test', 'wrong path'] },
         ],
       });
-      expect(body).toContain('**Feedback**\nFix the null guard');
-      expect(body).toContain('**Issues**\n- missing test\n- wrong path');
+      expect(body).toContain('**Feedback:** Fix the null guard');
+      expect(body).toContain('**Issues:**\n- missing test\n- wrong path');
     });
 
     it('drops empty sections and empty meta values', () => {
@@ -50,9 +50,9 @@ describe('linear/format', () => {
         sections: [{ label: 'Empty', body: [] }, { label: 'Kept', body: 'x' }],
         meta: { Agent: 'main', Skipped: undefined, Blank: '' },
       });
-      expect(body).not.toContain('**Empty**');
-      expect(body).toContain('**Kept**');
-      expect(body).toContain('Agent: main');
+      expect(body).not.toContain('**Empty');
+      expect(body).toContain('**Kept:** x');
+      expect(body).toContain('Agent main');
       expect(body).not.toContain('Skipped');
       expect(body).not.toContain('Blank');
     });
@@ -60,10 +60,10 @@ describe('linear/format', () => {
     it('uses a custom attribution and carries no decorative emoji', () => {
       const body = formatAutomationComment({
         heading: 'Task complete',
-        sections: [{ label: 'Worker', body: 'done' }],
+        sections: [{ label: 'Reviewer', body: 'looks good' }],
         attribution: 'Worker/Reviewer/Tester pipeline',
       });
-      expect(body).toContain('Worker/Reviewer/Tester pipeline ·');
+      expect(body).toContain('_Worker/Reviewer/Tester pipeline ·');
       expect(body).not.toMatch(/[🤖✅❌⚠️📋🔨🧪]/u);
     });
   });
@@ -92,7 +92,7 @@ describe('linear/format', () => {
       expect(body).toContain('- Depends on: INT-100');
       expect(body).toContain('- File scope: src/header.tsx');
       expect(body).toContain('- Estimate: 20 min');
-      expect(body).toContain('_Auto-decomposed from "Auth epic" by Planner_');
+      expect(body).toContain('_Split out from "Auth epic" during planning._');
     });
 
     it('omits optional blocks when absent', () => {

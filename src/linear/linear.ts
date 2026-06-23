@@ -942,11 +942,8 @@ export async function logPairComplete(
 
   const sections: CommentSection[] = [];
 
-  if (stats.workerSummary) {
-    sections.push({ label: 'Worker', body: stats.workerSummary.trim() });
-    if (stats.workerCommands && stats.workerCommands.length > 0) {
-      sections.push({ label: 'Commands', body: stats.workerCommands.slice(0, 5).map((c) => `\`${c}\``) });
-    }
+  if (stats.workerCommands && stats.workerCommands.length > 0) {
+    sections.push({ label: 'Commands run', body: stats.workerCommands.slice(0, 5).map((c) => `\`${c}\``) });
   }
 
   if (stats.reviewerFeedback) {
@@ -982,6 +979,7 @@ export async function logPairComplete(
 
   await addComment(issueId, formatAutomationComment({
     heading: 'Task complete',
+    summary: stats.workerSummary?.trim() || undefined,
     sections,
     meta: {
       Session: sessionId,

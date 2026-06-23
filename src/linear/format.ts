@@ -2,13 +2,13 @@
 // OpenSwarm — Linear output formatter
 // ============================================
 //
-// Implements the scannable-update convention used across the workspace
-// (conclusion-first, structured bullets, code references, absolute dates,
-// and NO decorative emoji in issue/comment bodies). Structure — not emoji —
-// carries the scannability.
+// Writes Linear comments/issues the way an engineer would: a plain-language lead,
+// short facts kept inline, lists only where they help, and a quiet sign-off — not
+// a telemetry dump. Still scannable (conclusion first, code refs, absolute dates),
+// just without the robotic feel.
 //
-// Pure string builders: no I/O, no side effects. This keeps the rules in one
-// place and makes the formatting unit-testable.
+// Pure string builders: no I/O, no side effects, so the style lives in one place
+// and stays unit-testable.
 
 /** Absolute date `YYYY-MM-DD` — bodies never use relative or full-ISO dates. */
 export function isoDate(d: Date = new Date()): string {
@@ -22,43 +22,48 @@ export function codeRef(file: string, line?: number): string {
 
 const BULLET = '- ';
 
-/** Render a section body: a string becomes a paragraph, an array becomes a bullet list. */
-function renderBody(body: string | string[]): string {
-  if (Array.isArray(body)) {
-    return body
-      .filter((line) => line && line.trim())
-      .map((line) => `${BULLET}${line}`)
-      .join('\n');
-  }
-  return body.trim();
-}
-
 export interface CommentSection {
-  /** Bold sub-label, e.g. "Worker". Rendered as `**label**`. */
+  /** Short label, e.g. "Reviewer". */
   label: string;
-  /** Body under the label — string → paragraph, array → bullet list. */
+  /** A one-liner (kept inline), a multi-line note, or a list (rendered as bullets). */
   body: string | string[];
 }
 
+/**
+ * Render a section the way someone would jot it down: a short single-line fact
+ * goes inline (`**Label:** value`); a list or a multi-line note gets its own block.
+ */
+function renderSection(section: CommentSection): string {
+  if (Array.isArray(section.body)) {
+    const items = section.body.filter((line) => line && line.trim());
+    return items.length ? `**${section.label}:**\n${items.map((l) => `${BULLET}${l}`).join('\n')}` : '';
+  }
+  const text = section.body.trim();
+  if (!text) return '';
+  return text.includes('\n')
+    ? `**${section.label}:**\n${text}`
+    : `**${section.label}:** ${text}`;
+}
+
 export interface AutomationCommentInput {
-  /** Conclusion-first heading, e.g. "Task complete". Rendered bold. */
+  /** Short bold lead, e.g. "Task complete". */
   heading: string;
-  /** Optional one-line TL;DR directly under the heading. */
+  /** A natural one- or two-line summary in plain language — the voice of the comment. */
   summary?: string;
-  /** Structured sections — empty ones are dropped. */
+  /** Supporting details — empty ones are dropped. */
   sections?: CommentSection[];
-  /** Footer key→value facts (session, attempts, …), joined on one muted line. */
+  /** Trace facts for the quiet sign-off (session, attempts, …). */
   meta?: Record<string, string | number | undefined>;
-  /** Footer attribution. Default: "Automated by OpenSwarm". */
+  /** Sign-off attribution. Default: "via OpenSwarm". */
   attribution?: string;
-  /** Footer date (absolute). Defaults to today. */
+  /** Sign-off date (absolute). Defaults to today. */
   date?: Date;
 }
 
 /**
- * Build a scannable automation comment: bold conclusion-first heading, optional
- * TL;DR, structured sections, and a single muted footer line (facts + attribution
- * + absolute date). No decorative emoji in the body.
+ * Build a comment that reads like a person wrote it: bold lead, a plain-language
+ * summary, a few supporting details, and a single muted (italic) sign-off line
+ * carrying just enough trace to find the run later.
  */
 export function formatAutomationComment(input: AutomationCommentInput): string {
   const parts: string[] = [`**${input.heading}**`];
@@ -66,18 +71,21 @@ export function formatAutomationComment(input: AutomationCommentInput): string {
   if (input.summary?.trim()) parts.push(input.summary.trim());
 
   for (const section of input.sections ?? []) {
-    const rendered = renderBody(section.body);
-    if (rendered) parts.push(`**${section.label}**\n${rendered}`);
+    const rendered = renderSection(section);
+    if (rendered) parts.push(rendered);
   }
 
-  const facts = input.meta
-    ? Object.entries(input.meta)
-        .filter(([, v]) => v !== undefined && v !== '')
-        .map(([k, v]) => `${k}: ${v}`)
-    : [];
-  facts.push(`${input.attribution ?? 'Automated by OpenSwarm'} · ${isoDate(input.date)}`);
+  const trace: string[] = [];
+  const attribution = input.attribution ?? 'via OpenSwarm';
+  if (attribution) trace.push(attribution);
+  if (input.meta) {
+    for (const [key, value] of Object.entries(input.meta)) {
+      if (value !== undefined && value !== '') trace.push(`${key} ${value}`);
+    }
+  }
+  trace.push(isoDate(input.date));
 
-  return `${parts.join('\n\n')}\n\n---\n${facts.join(' · ')}`;
+  return `${parts.join('\n\n')}\n\n_${trace.join(' · ')}_`;
 }
 
 export interface IssueDescriptionInput {
@@ -112,23 +120,23 @@ export interface TaskDescriptionInput {
   dependsOn?: string[];
   fileScope?: string[];
   estimateMinutes?: number;
-  /** Parent title for the auto-decomposition attribution footer. */
+  /** Parent title for the auto-decomposition sign-off. */
   parentTitle?: string;
 }
 
 /**
  * Build a decomposition sub-issue description: a summary, then scannable
- * Scope / Verify sections and a facts list (depends-on, file scope, estimate),
- * with an attribution footer.
+ * Scope / Verify sections and a short facts list (depends-on, file scope,
+ * estimate), with a quiet sign-off.
  */
 export function formatTaskDescription(input: TaskDescriptionInput): string {
   const parts: string[] = [input.summary.trim()];
 
   if (input.scope?.length) {
-    parts.push(`**Scope**\n${input.scope.map((s) => `${BULLET}${s}`).join('\n')}`);
+    parts.push(`**Scope:**\n${input.scope.map((s) => `${BULLET}${s}`).join('\n')}`);
   }
   if (input.verify?.length) {
-    parts.push(`**Verify**\n${input.verify.map((s) => `${BULLET}${s}`).join('\n')}`);
+    parts.push(`**Verify:**\n${input.verify.map((s) => `${BULLET}${s}`).join('\n')}`);
   }
 
   const facts: string[] = [];
@@ -139,7 +147,7 @@ export function formatTaskDescription(input: TaskDescriptionInput): string {
 
   let body = parts.join('\n\n');
   if (input.parentTitle) {
-    body += `\n\n---\n_Auto-decomposed from "${input.parentTitle}" by Planner_`;
+    body += `\n\n_Split out from "${input.parentTitle}" during planning._`;
   }
   return body;
 }
