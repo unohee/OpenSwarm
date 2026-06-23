@@ -32,6 +32,7 @@ import {
   removeWorktree,
 } from '../support/worktreeManager.js';
 import type { WorktreeInfo } from '../support/worktreeManager.js';
+import { loadRepoMetadata } from '../support/repoMetadata.js';
 import {
   getDecompositionDepth,
   getChildrenCount,
@@ -154,6 +155,22 @@ export async function resolveProjectPath(
   if (!projectId || !projectName) {
     console.error(`[AutonomousRunner] Task "${task.title}" has no Linear project info - SKIP`);
     return null;
+  }
+
+  // 0순위: explicit openswarm.json mapping — the Linear projectId the user picked
+  // in `openswarm add` (written to <repo>/openswarm.json). Highest confidence, no
+  // name guessing; this is the source of truth for repo↔Linear connection.
+  for (const allowed of ctx.allowedProjects) {
+    const expanded = allowed.replace('~', process.env.HOME || '');
+    try {
+      const meta = await loadRepoMetadata(expanded);
+      if (meta?.linear?.projectId === projectId && (await isValidProjectPath(expanded))) {
+        console.log(`[AutonomousRunner] openswarm.json mapping: ${projectName} → ${expanded}`);
+        return expanded;
+      }
+    } catch (e) {
+      console.warn(`[AutonomousRunner] openswarm.json unreadable at ${expanded}: ${(e as Error).message}`);
+    }
   }
 
   // 1순위: allowedProjects에서 정확한 basename 매칭 (fuzzy보다 신뢰도 높음)

@@ -43,6 +43,7 @@ import { reportToDiscord, fetchLinearTasks, getTaskSource } from './runnerExecut
 import { t } from '../locale/index.js';
 import { broadcastEvent, type SwarmStats } from '../core/eventHub.js';
 import { pruneWorktrees } from '../support/worktreeManager.js';
+import { loadRepoMetadata } from '../support/repoMetadata.js';
 import { refreshGraph, toProjectSlug } from '../knowledge/index.js';
 import { checkAllMonitors, getActiveMonitors } from './longRunningMonitor.js';
 import { detectFileConflicts } from '../orchestration/conflictDetector.js';
@@ -721,14 +722,33 @@ export class AutonomousRunner {
 
     let tasksForEngine = executableTasks;
     if (this.enabledProjects.size > 0) {
+      // Explicit repo↔Linear mapping — match fetched issues to repos by the Linear
+      // projectId the user picked in `openswarm add` (written to <repo>/openswarm.json),
+      // NOT by guessing from the repo directory name. Built fresh each cycle so a
+      // newly-mapped repo is picked up without a restart. Name matching stays only as
+      // a best-effort fallback for repos that never ran the picker.
+      const byProjectId = new Map<string, string>();
+      for (const repoPath of this.enabledProjects) {
+        try {
+          const meta = await loadRepoMetadata(repoPath);
+          if (meta?.linear?.projectId) byProjectId.set(meta.linear.projectId, repoPath);
+        } catch (e) {
+          this.syslog(`  ⚠ openswarm.json unreadable for ${repoPath.split('/').pop()}: ${(e as Error).message}`);
+        }
+      }
+
       tasksForEngine = executableTasks.filter(task => {
         const projName = task.linearProject?.name;
-        if (!projName) return false;
-        const cachedPath = this.projectPathCache.get(projName)
-          ?? this.projectPathCache.get(projName.toLowerCase())
-          ?? this.projectPathCache.get(projName.replace(/-/g, ' '));
+        const projId = task.linearProject?.id;
+        // 1) Explicit projectId mapping (openswarm.json) wins.
+        const mappedPath = projId ? byProjectId.get(projId) : undefined;
+        // 2) Fallback: repo-name path cache (only for repos without an explicit mapping).
+        const cachedPath = mappedPath
+          ?? (projName && (this.projectPathCache.get(projName)
+            ?? this.projectPathCache.get(projName.toLowerCase())
+            ?? this.projectPathCache.get(projName.replace(/-/g, ' '))));
         if (!cachedPath) {
-          this.syslog(`  ⚠ No path cache for project "${projName}" — skipping ${task.issueIdentifier}`);
+          this.syslog(`  ⚠ No repo mapped to Linear project "${projName ?? projId}" — run \`openswarm add\` and pick it. Skipping ${task.issueIdentifier}`);
           return false;
         }
         const enabled = this.isProjectEnabled(cachedPath);
