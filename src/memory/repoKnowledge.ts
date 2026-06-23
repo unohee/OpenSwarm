@@ -71,6 +71,32 @@ export async function recallRepoKnowledge(
   }
 }
 
+/**
+ * Free-form, repo-scoped memory search rendered as plain text. Shared by the
+ * in-loop `search_memory` tool (tools.ts) and the MCP memory server so both
+ * surface identical results. Always non-throwing — returns a human-readable line.
+ */
+export async function searchRepoMemoryText(
+  projectPath: string,
+  query: string,
+  limit = 5,
+): Promise<string> {
+  const q = (query ?? '').trim();
+  if (!q) return 'A non-empty query is required.';
+  const res = await searchMemorySafe(q, {
+    repo: repoKey(projectPath),
+    types: ['system_pattern', 'constraint', 'fact', 'strategy', 'belief'],
+    limit: Math.min(Math.max(limit, 1), 10),
+    minSimilarity: 0.3,
+  });
+  if (!res.success) return `Memory unavailable (${res.errorCode ?? 'unknown'}); proceed without it.`;
+  if (res.memories.length === 0) return 'No matching repo knowledge yet for this query.';
+  const formatted = res.memories
+    .map((m) => `- [${m.type}] ${m.title}\n  ${m.content.replace(/\s+/g, ' ').slice(0, 300)}`)
+    .join('\n');
+  return `Repository knowledge (${res.memories.length}):\n${formatted}`;
+}
+
 export interface TaskOutcomeInput {
   taskTitle: string;
   /** Provenance tracker, e.g. Linear issue ID */

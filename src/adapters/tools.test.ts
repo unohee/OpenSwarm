@@ -4,17 +4,14 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { TOOL_DEFINITIONS, executeTool, createReadCache, ToolCall } from './tools.js';
 
-// search_memory loads the memory core lazily; stub it so the tool test stays fast
-// and deterministic (no LanceDB / embedding model).
-vi.mock('../memory/index.js', () => ({
-  searchMemorySafe: async (_query: string, opts: { repo?: string }) => ({
-    success: true,
-    memories: opts?.repo
-      ? [{ type: 'constraint', title: 'Avoid double migrations', content: 'two paths touched prod tables' }]
-      : [],
-  }),
+// search_memory loads the memory core lazily; stub the shared helper so the tool
+// test stays fast and deterministic (no LanceDB / embedding model).
+vi.mock('../memory/repoKnowledge.js', () => ({
+  searchRepoMemoryText: async (_cwd: string, query: string) =>
+    query.trim()
+      ? 'Repository knowledge (1):\n- [constraint] Avoid double migrations\n  two paths touched prod tables'
+      : 'A non-empty query is required.',
 }));
-vi.mock('../memory/repoKnowledge.js', () => ({ repoKey: (p: string) => p }));
 
 // Check if rg binary is available (not just a shell function wrapper)
 let hasRg = false;

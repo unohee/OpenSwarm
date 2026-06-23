@@ -420,27 +420,10 @@ export async function executeTool(
         try {
           // Loaded lazily: the memory core pulls in LanceDB + the embedding model,
           // which we don't want as a static dependency of every tools.ts consumer.
-          const [{ searchMemorySafe }, { repoKey }] = await Promise.all([
-            import('../memory/index.js'),
-            import('../memory/repoKnowledge.js'),
-          ]);
-          const limit = Math.min(Math.max(Number(args.limit) || 5, 1), 10);
-          const res = await searchMemorySafe(query, {
-            repo: repoKey(cwd),
-            types: ['system_pattern', 'constraint', 'fact', 'strategy', 'belief'],
-            limit,
-            minSimilarity: 0.3,
-          });
-          if (!res.success) {
-            return { tool_call_id: callId, content: `Memory unavailable (${res.errorCode ?? 'unknown'}); proceed without it.`, is_error: false };
-          }
-          if (res.memories.length === 0) {
-            return { tool_call_id: callId, content: 'No matching repo knowledge yet for this query.', is_error: false };
-          }
-          const formatted = res.memories
-            .map((m) => `- [${m.type}] ${m.title}\n  ${m.content.replace(/\s+/g, ' ').slice(0, 300)}`)
-            .join('\n');
-          return { tool_call_id: callId, content: `Repository knowledge (${res.memories.length}):\n${formatted}`, is_error: false };
+          // Same helper backs the MCP memory server so results stay identical.
+          const { searchRepoMemoryText } = await import('../memory/repoKnowledge.js');
+          const text = await searchRepoMemoryText(cwd, query, Number(args.limit) || 5);
+          return { tool_call_id: callId, content: text, is_error: false };
         } catch (err) {
           return { tool_call_id: callId, content: `search_memory failed: ${err instanceof Error ? err.message : String(err)}`, is_error: false };
         }

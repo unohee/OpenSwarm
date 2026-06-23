@@ -18,6 +18,9 @@ describe('CodexCliAdapter', () => {
     expect(command).not.toContain('--full-auto');
     expect(command).toContain('--skip-git-repo-check');
     expect(command).toContain("-m 'gpt-5-codex'");
+    // Memory MCP server is registered so codex can call search_memory (INT-1855)
+    expect(command).toContain("-c 'mcp_servers.openswarm_memory.command=");
+    expect(command).toContain("-c 'mcp_servers.openswarm_memory.args=[");
   });
 
   it('substitutes a claude model with the codex default and warns', () => {

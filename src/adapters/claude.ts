@@ -17,6 +17,7 @@ import type { ReviewDecision } from '../agents/agentPair.js';
 import { extractCostFromStreamJson, formatCost } from '../support/costTracker.js';
 import { extractResultFromStreamJson } from '../agents/cliStreamParser.js';
 import { t } from '../locale/index.js';
+import { writeClaudeMcpConfig } from './memoryMcp.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -47,7 +48,9 @@ export class ClaudeCliAdapter implements CliAdapter {
     const promptFile = options.prompt;
     const modelFlag = options.model ? ` --model ${options.model}` : '';
     const maxTurnsFlag = options.maxTurns ? ` --max-turns ${options.maxTurns}` : '';
-    const cmd = `echo "" | claude -p "$(cat ${promptFile})" --output-format stream-json --verbose --permission-mode bypassPermissions${modelFlag}${maxTurnsFlag}`;
+    // Register OpenSwarm's memory MCP server; bypassPermissions auto-allows its tool.
+    const mcpConfig = writeClaudeMcpConfig();
+    const cmd = `echo "" | claude -p "$(cat ${promptFile})" --output-format stream-json --verbose --permission-mode bypassPermissions --mcp-config ${mcpConfig}${modelFlag}${maxTurnsFlag}`;
     return { command: cmd, args: [] };
   }
 

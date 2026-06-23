@@ -16,6 +16,7 @@ import type {
 import { t } from '../locale/index.js';
 import { AuthProfileStore, ensureValidToken } from '../auth/index.js';
 import { getCodexModelIds } from './codexModels.js';
+import { codexMcpConfigFlags } from './memoryMcp.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -68,7 +69,8 @@ export class CodexCliAdapter implements CliAdapter {
     // `--full-auto` was deprecated in codex 0.137 (warns, still runs). Its documented
     // replacement is `--sandbox workspace-write`: same low-friction policy (writes
     // confined to the workspace, no approval prompts in non-interactive `exec`). (INT-1699)
-    const cmd = `cat ${shellEscape(promptFile)} | codex exec --json --sandbox workspace-write --skip-git-repo-check${modelFlag}`;
+    // Register OpenSwarm's memory MCP server so codex can call `search_memory`.
+    const cmd = `cat ${shellEscape(promptFile)} | codex exec --json --sandbox workspace-write --skip-git-repo-check${modelFlag} ${codexMcpConfigFlags()}`;
     return { command: cmd, args: [] };
   }
 
