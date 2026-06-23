@@ -1,5 +1,5 @@
 // ============================================
-// OpenSwarm - `openswarm project` CLI
+// OpenSwarm - work-repo CLI (`openswarm add` / `projects` / `remove`)
 // ============================================
 //
 // Manage the work-repo registry the daemon reads at startup
