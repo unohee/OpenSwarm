@@ -550,6 +550,7 @@ export async function executePipeline(
   ctx: ExecutionContext,
   task: TaskItem,
   projectPath: string,
+  signal?: AbortSignal,
 ): Promise<PipelineResult> {
   console.log(`[AutonomousRunner] executePipeline: ${task.title}`);
 
@@ -774,8 +775,9 @@ export async function executePipeline(
       }
     }
 
-    // Run pipeline in worktree path
-    const result = await pipeline.run(task, actualPath);
+    // Run pipeline in worktree path. The signal aborts the pipeline + in-flight
+    // adapter call on cancel/disable; the finally below removes the worktree.
+    const result = await pipeline.run(task, actualPath, { signal });
 
     // Create PR (worktree mode + pipeline success = finalStatus 'approved')
     if (worktreeInfo && result.success && result.finalStatus === 'approved') {

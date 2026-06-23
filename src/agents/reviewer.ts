@@ -21,6 +21,8 @@ export interface ReviewerOptions {
   maxTurns?: number;           // Max agentic turns per CLI invocation
   adapterName?: AdapterName;
   processContext?: ProcessContext;
+  /** Abort the run + in-flight adapter call (pipeline cancel / project disable). */
+  signal?: AbortSignal;
 }
 
 export interface PreCheckResult {
@@ -122,6 +124,7 @@ export async function runPreCheck(options: ReviewerOptions): Promise<PreCheckRes
       model: options.model,
       maxTurns: options.maxTurns,
       processContext: options.processContext,
+      signal: options.signal,
     });
 
     // DEBUG: Log raw Haiku output for troubleshooting
@@ -194,6 +197,7 @@ export async function runReviewer(options: ReviewerOptions): Promise<ReviewResul
       maxTurns: options.maxTurns,
       processContext: options.processContext,
       systemPrompt: getPrompts().systemPrompt,
+      signal: options.signal,
     });
 
     // Parse result via adapter

@@ -36,6 +36,8 @@ export interface WorkerOptions {
   bashTimeoutMs?: number;
   /** Expose web_fetch + web_search tools (default true). Set false for SWE-bench integrity. */
   webTools?: boolean;
+  /** Abort the run + in-flight adapter call (pipeline cancel / project disable). */
+  signal?: AbortSignal;
 }
 
 // Prompts
@@ -89,6 +91,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       protectedFiles: options.protectedFiles,
       bashTimeoutMs: options.bashTimeoutMs,
       webTools: options.webTools,
+      signal: options.signal,
     });
 
     // Parse result via adapter

@@ -2102,14 +2102,15 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         if (res.ok) { processesData = await res.json(); renderMonitorsAndProcesses(); }
       } catch {}
     }
-    async function killProcess(pid) {
-      if (!confirm("Kill process PID " + pid + "?")) return;
+    async function stopProcess(id, isPipeline) {
+      var verb = isPipeline ? "Cancel task" : "Kill process";
+      if (!confirm(verb + " " + id + "?")) return;
       try {
-        await fetch("/api/processes/" + pid, { method: "DELETE" });
-        processesData = processesData.filter(p => p.pid !== pid);
+        await fetch("/api/processes/" + encodeURIComponent(id), { method: "DELETE" });
+        processesData = processesData.filter(p => String(p.id) !== String(id));
         renderMonitorsAndProcesses();
       } catch(e) {
-        addLogLine({ taskId: "system", stage: "error", line: "Kill failed: " + e.message });
+        addLogLine({ taskId: "system", stage: "error", line: "Stop failed: " + e.message });
       }
     }
     function procActivityIcon(lastActivityAt) {
@@ -2140,17 +2141,24 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         html += "<div class=\\"issue-sec-label\\">processes</div>";
         html += processesData.map(function(p) {
           var dur = fmtDur(Date.now() - p.spawnedAt);
-          var act = procActivityIcon(p.lastActivityAt);
+          var isPipeline = p.kind === "pipeline";
+          var act = isPipeline ? "\\u2699" : procActivityIcon(p.lastActivityAt);
           var modelStr = p.model ? shortModel(p.model) : "";
-          var projName = p.projectPath ? p.projectPath.split("/").pop() : "";
+          var projName = p.project || (p.projectPath ? p.projectPath.split("/").pop() : "");
+          // In-process pipeline tasks have no OS PID — show the issue id instead, and
+          // a CANCEL button (aborts the pipeline + its in-flight adapter call).
+          var lead = isPipeline ? escapeHtml(p.taskId || "task") : p.pid;
+          var btn = isPipeline
+            ? '<button class="proc-kill" onclick="stopProcess(\\'' + escapeAttr(String(p.id)) + '\\', true)">CANCEL</button>'
+            : '<button class="proc-kill" onclick="stopProcess(\\'' + escapeAttr(String(p.id)) + '\\', false)">KILL</button>';
           return '<div class="proc-row">' +
-            '<span class="proc-pid">' + p.pid + '</span>' +
+            '<span class="proc-pid">' + lead + '</span>' +
             '<span class="proc-stage">' + escapeHtml(p.stage) + '</span>' +
             '<span class="proc-model">' + escapeHtml(modelStr) + '</span>' +
             '<span style="color:var(--dim);font-size:9px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escapeAttr(p.projectPath || "") + '">' + escapeHtml(projName) + '</span>' +
             '<span class="proc-activity">' + act + '</span>' +
             '<span class="proc-dur">' + dur + '</span>' +
-            '<button class="proc-kill" onclick="killProcess(' + p.pid + ')">KILL</button>' +
+            btn +
           '</div>';
         }).join("");
       }

@@ -188,10 +188,25 @@ export type PipelineEventType =
 
 // Pair Pipeline
 
+/** Thrown when the pipeline is cancelled mid-run (project disable / manual stop). */
+export class PipelineCancelledError extends Error {
+  constructor() {
+    super('Pipeline cancelled');
+    this.name = 'PipelineCancelledError';
+  }
+}
+
 export class PairPipeline extends EventEmitter {
   private config: PipelineConfig;
   private stuckDetector: StuckDetector;
   private jobProfiles: JobProfile[];
+  /** Set per run() — aborts the pipeline + in-flight adapter call on cancel/disable. */
+  private abortSignal?: AbortSignal;
+
+  /** Throw if this run has been cancelled. Called at iteration/stage boundaries. */
+  private throwIfAborted(): void {
+    if (this.abortSignal?.aborted) throw new PipelineCancelledError();
+  }
 
   constructor(config: PipelineConfig) {
     super();
@@ -238,10 +253,11 @@ export class PairPipeline extends EventEmitter {
    * 1 iteration = full pass through Worker → Reviewer → Tester
    * On failure at any stage, returns to Worker (up to maxIterations)
    */
-  async run(task: TaskItem, projectPath: string): Promise<PipelineResult> {
+  async run(task: TaskItem, projectPath: string, opts?: { signal?: AbortSignal }): Promise<PipelineResult> {
     const startTime = Date.now();
     const stages: StageResult[] = [];
     const maxIterations = this.config.maxIterations ?? 3;
+    this.abortSignal = opts?.signal;
 
     // Reset stuck detector (new pipeline run)
     this.stuckDetector.reset();
@@ -328,13 +344,20 @@ export class PairPipeline extends EventEmitter {
       return this.buildResult(context, stages, startTime);
 
     } catch (error) {
-      console.error('[%s] Error:', context.taskPrefix, error);
+      // Cancellation (project disable / manual stop) is not a failure — surface it
+      // as 'cancelled' so the scheduler doesn't count it failed or trigger a retry.
+      const cancelled = error instanceof PipelineCancelledError || !!this.abortSignal?.aborted;
+      if (cancelled) {
+        console.log(`[${context.taskPrefix}] Pipeline cancelled`);
+      } else {
+        console.error('[%s] Error:', context.taskPrefix, error);
+      }
       agentPair.updateSessionStatus(session.id, 'failed');
       return {
         success: false,
         sessionId: session.id,
         stages,
-        finalStatus: 'failed',
+        finalStatus: cancelled ? 'cancelled' : 'failed',
         totalDuration: Date.now() - startTime,
         iterations: context.currentIteration,
         workerResult: context.workerResult,
@@ -540,6 +563,7 @@ export class PairPipeline extends EventEmitter {
             onLog,
             processContext: { taskId: context.task.id, stage: 'worker' },
             workerContext,
+            signal: this.abortSignal,
           });
           agentPair.saveWorkerResult(context.session.id, result as WorkerResult);
           context.workerResult = result as WorkerResult;
@@ -602,6 +626,7 @@ export class PairPipeline extends EventEmitter {
             maxTurns: reviewerMaxTurns,
             adapterName: this.config.roles?.reviewer?.adapter,
             processContext: { taskId: context.task.id, stage: 'reviewer' },
+            signal: this.abortSignal,
           });
 
           agentPair.saveReviewerResult(context.session.id, result as ReviewResult);
@@ -840,6 +865,7 @@ export class PairPipeline extends EventEmitter {
     }
 
     while (context.currentIteration < maxIterations) {
+      this.throwIfAborted(); // bail before starting another iteration
       context.currentIteration++;
 
       // Stuck detection check (before iteration starts)

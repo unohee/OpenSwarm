@@ -21,6 +21,10 @@ export interface RunningTask {
   projectPath: string;
   startedAt: number;
   promise: Promise<PipelineResult>;
+  /** Aborts this task's pipeline + in-flight adapter call (cancel / project disable). */
+  abortController: AbortController;
+  /** Current pipeline stage (worker/reviewer/…), for the dashboard process view. */
+  stage?: string;
 }
 
 export interface SchedulerConfig {
@@ -210,13 +214,15 @@ export class TaskScheduler extends EventEmitter {
   startTask(
     task: TaskItem,
     projectPath: string,
-    executor: () => Promise<PipelineResult>
+    executor: (signal: AbortSignal) => Promise<PipelineResult>
   ): void {
+    const abortController = new AbortController();
     const runningTask: RunningTask = {
       task,
       projectPath,
       startedAt: Date.now(),
-      promise: executor(),
+      abortController,
+      promise: executor(abortController.signal),
     };
 
     this.runningTasks.set(task.id, runningTask);
@@ -242,7 +248,12 @@ export class TaskScheduler extends EventEmitter {
 
     this.runningTasks.delete(taskId);
 
-    if (result.success) {
+    if (result.finalStatus === 'cancelled') {
+      // A cancelled task is neither a success nor a failure — don't bump counts
+      // or trigger the failure/retry path. Just free the slot.
+      console.log(`[Scheduler] Task cancelled: ${running.task.title}`);
+      this.emit('cancelled', { task: running.task, result });
+    } else if (result.success) {
       this.completedCount++;
       console.log(`[Scheduler] Task completed: ${running.task.title}`);
       this.emit('completed', { task: running.task, result });
@@ -276,7 +287,7 @@ export class TaskScheduler extends EventEmitter {
    * @param executor Task execution function
    */
   async runAvailable(
-    executor: (task: TaskItem, projectPath: string) => Promise<PipelineResult>
+    executor: (task: TaskItem, projectPath: string, signal: AbortSignal) => Promise<PipelineResult>
   ): Promise<number> {
     let started = 0;
 
@@ -289,14 +300,50 @@ export class TaskScheduler extends EventEmitter {
         break;
       }
 
-      this.startTask(next.task, next.projectPath, () =>
-        executor(next.task, next.projectPath)
+      this.startTask(next.task, next.projectPath, (signal) =>
+        executor(next.task, next.projectPath, signal)
       );
       started++;
     }
 
     console.log(`[Scheduler] runAvailable: started ${started} tasks`);
     return started;
+  }
+
+  /** Record the current pipeline stage of a running task (dashboard process view). */
+  setTaskStage(taskId: string, stage: string): void {
+    const running = this.runningTasks.get(taskId);
+    if (running) running.stage = stage;
+  }
+
+  /**
+   * Cancel one running task — aborts its pipeline + in-flight adapter call. The
+   * pipeline returns a 'cancelled' result and its worktree is cleaned up by the
+   * executor's finally block. Returns true if the task was running.
+   */
+  cancelTask(taskId: string): boolean {
+    const running = this.runningTasks.get(taskId);
+    if (!running) return false;
+    console.log(`[Scheduler] Cancelling task: ${running.task.title}`);
+    running.abortController.abort();
+    return true;
+  }
+
+  /**
+   * Cancel every running task belonging to a project (e.g. when the project is
+   * disabled). Matches by repo path or worktree-path prefix. Returns the count.
+   */
+  cancelProjectTasks(projectPath: string): number {
+    let n = 0;
+    for (const running of this.runningTasks.values()) {
+      const p = running.projectPath;
+      if (p === projectPath || p.startsWith(projectPath) || projectPath.startsWith(p)) {
+        running.abortController.abort();
+        n++;
+      }
+    }
+    if (n > 0) console.log(`[Scheduler] Cancelled ${n} running task(s) for ${projectPath}`);
+    return n;
   }
 
   /**

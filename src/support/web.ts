@@ -943,20 +943,38 @@ export async function startWebServer(port: number = 3847): Promise<void> {
 
       // ---- Processes: list ----
       } else if (url === '/api/processes' && req.method === 'GET') {
+        // Spawned CLI subprocesses (PID-tracked) + in-process pipeline tasks. Native
+        // adapters (codex-responses/openrouter/local) run the worker/reviewer in-process
+        // with no child PID, so without the pipeline entries the panel looks empty even
+        // while tasks are actively running.
+        const subprocs = getAllProcesses().map((p) => ({ ...p, kind: 'subprocess', id: String(p.pid) }));
+        const pipelines = (runnerRef?.getRunningPipelines() ?? []).map((t) => ({
+          kind: 'pipeline',
+          id: t.id,
+          pid: null,
+          taskId: t.issue ?? t.title,
+          project: t.project,
+          stage: t.stage ?? 'running',
+          projectPath: t.projectPath,
+          spawnedAt: t.startedAt,
+          lastActivityAt: t.startedAt,
+        }));
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(getAllProcesses()));
+        res.end(JSON.stringify([...pipelines, ...subprocs]));
 
-      // ---- Processes: kill ----
+      // ---- Processes: kill (PID) or cancel (pipeline task id) ----
       } else if (url.startsWith('/api/processes/') && req.method === 'DELETE') {
-        const pidStr = url.replace('/api/processes/', '');
-        const pid = parseInt(pidStr, 10);
-        if (isNaN(pid)) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Invalid PID' }));
-        } else {
+        const idStr = decodeURIComponent(url.replace('/api/processes/', ''));
+        const pid = parseInt(idStr, 10);
+        if (!isNaN(pid) && String(pid) === idStr) {
           const killed = await killProcess(pid);
           res.writeHead(killed ? 200 : 404, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: killed }));
+        } else {
+          // Non-numeric id → in-process pipeline task: abort it (and its adapter call).
+          const cancelled = runnerRef?.cancelTask(idStr) ?? false;
+          res.writeHead(cancelled ? 200 : 404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: cancelled }));
         }
 
       // ---- Scan Paths: list ----

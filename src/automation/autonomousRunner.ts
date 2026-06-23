@@ -441,8 +441,8 @@ export class AutonomousRunner {
       return; // Parallel processing disabled
     }
 
-    await this.scheduler.runAvailable(async (task, projectPath) => {
-      return this.executePipeline(task, projectPath);
+    await this.scheduler.runAvailable(async (task, projectPath, signal) => {
+      return this.executePipeline(task, projectPath, signal);
     });
   }
 
@@ -991,8 +991,8 @@ export class AutonomousRunner {
     return execution.decomposeTask(this.getExecCtx(), task, projectPath, targetMinutes);
   }
 
-  private async executePipeline(task: TaskItem, projectPath: string): Promise<PipelineResult> {
-    return execution.executePipeline(this.getExecCtx(), task, projectPath);
+  private async executePipeline(task: TaskItem, projectPath: string, signal?: AbortSignal): Promise<PipelineResult> {
+    return execution.executePipeline(this.getExecCtx(), task, projectPath, signal);
   }
 
   private async requestApproval(decision: DecisionResult): Promise<void> {
@@ -1202,6 +1202,12 @@ export class AutonomousRunner {
   disableProject(projectPath: string): void {
     this.enabledProjects.delete(projectPath);
     console.log(`[AutonomousRunner] Project disabled: ${projectPath}`);
+    // Disabling gates new selection AND cancels any in-flight pipeline for this
+    // project — otherwise a running task keeps working a now-disabled repo.
+    const cancelled = this.scheduler.cancelProjectTasks(projectPath);
+    if (cancelled > 0) {
+      this.syslog(`⏹ Cancelled ${cancelled} in-flight task(s) for disabled project ${projectPath.split('/').pop()}`);
+    }
   }
 
   enableProject(projectPath: string): void {
@@ -1212,6 +1218,31 @@ export class AutonomousRunner {
   /** Get all currently enabled project paths */
   getEnabledProjects(): string[] {
     return Array.from(this.enabledProjects);
+  }
+
+  /**
+   * Running pipeline tasks for the dashboard process view. With native in-process
+   * adapters (codex-responses/openrouter/local) there is no child PID to show in
+   * the OS process registry, so the dashboard reads these instead.
+   */
+  getRunningPipelines(): Array<{
+    id: string; issue?: string; title: string; project: string;
+    projectPath: string; startedAt: number; stage?: string;
+  }> {
+    return this.scheduler.getRunningTasks().map((r) => ({
+      id: r.task.id,
+      issue: r.task.issueIdentifier,
+      title: r.task.title,
+      project: r.task.linearProject?.name ?? r.projectPath.split('/').pop() ?? r.projectPath,
+      projectPath: r.projectPath,
+      startedAt: r.startedAt,
+      stage: r.stage,
+    }));
+  }
+
+  /** Cancel a running pipeline task by id (manual stop from the dashboard). */
+  cancelTask(taskId: string): boolean {
+    return this.scheduler.cancelTask(taskId);
   }
 
   /** Pre-register project path in cache (name → path) */
