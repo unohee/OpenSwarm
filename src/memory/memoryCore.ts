@@ -616,6 +616,8 @@ export async function saveCognitiveMemory(
     derivedFrom?: string;
     supports?: string[];
     contradicts?: string[];
+    /** Repo scope for the record. Defaults to 'cognitive' (unscoped) for back-compat. */
+    repo?: string;
   }
 ): Promise<string | null> {
   await initDatabase();
@@ -646,7 +648,7 @@ export async function saveCognitiveMemory(
     derivedFrom: options?.derivedFrom || 'unknown',
 
     // Legacy fields (minimal)
-    repo: 'cognitive',
+    repo: options?.repo ?? 'cognitive',
     title: content.slice(0, 100),
     metadata: '{}',
     trust: options?.confidence ?? 0.7,
@@ -656,6 +658,25 @@ export async function saveCognitiveMemory(
   await table.add([record]);
   console.log(`[Memory] Saved cognitive ${type} (importance: ${importance.toFixed(2)}): ${content.slice(0, 50)}...`);
   return id;
+}
+
+/**
+ * Delete all memories tagged with a given `derivedFrom` value. Used to
+ * refresh regenerable insights (e.g. knowledge-graph health) in place instead of
+ * appending a new row every scan. Best-effort — returns false if no table.
+ */
+export async function deleteMemoriesByDerivedFrom(derivedFrom: string): Promise<number> {
+  await initDatabase();
+  if (!table) return 0;
+  // Resolve matching ids in JS, then delete by the lowercase `id` column. A direct
+  // predicate on the camelCase `derivedFrom` column is unreliable — datafusion
+  // lowercases unquoted identifiers and the quoted form matched nothing here.
+  const rows = (await table.query().limit(100_000).toArray()) as unknown as CognitiveMemoryRecord[];
+  const ids = rows.filter((r) => r.derivedFrom === derivedFrom).map((r) => String(r.id));
+  if (ids.length === 0) return 0;
+  const list = ids.map((id) => `'${id.replace(/'/g, "''")}'`).join(', ');
+  await table.delete(`id IN (${list})`);
+  return ids.length;
 }
 
 /**

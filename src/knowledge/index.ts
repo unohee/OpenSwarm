@@ -9,7 +9,8 @@ import { saveGraph, loadGraph, listGraphs } from './store.js';
 import { enrichWithGitInfo, getRecentlyChangedFiles } from './gitInfo.js';
 import { analyzeIssueImpact, getProjectHealth, suggestReviewFocus, getModuleHealth } from './analyzer.js';
 import type { ImpactAnalysis, ProjectSummary } from './types.js';
-import { saveCognitiveMemory } from '../memory/index.js';
+import { saveCognitiveMemory, deleteMemoriesByDerivedFrom } from '../memory/index.js';
+import { repoKey } from '../memory/repoKnowledge.js';
 import { exportRepoGraph, hasRepoSnapshot, loadRepoSnapshot, snapshotAgeMinutes } from './graphqlExporter.js';
 
 // Re-exports
@@ -224,13 +225,23 @@ export async function saveGraphInsights(projectPath: string): Promise<void> {
 
   const { summary, riskModules } = getProjectHealth(graph);
 
+  // Scope insights to the canonical repo (not the default 'cognitive' bucket) and
+  // tag them with a stable per-repo key so each scan REFRESHES them in place
+  // instead of appending duplicates every run. (INT-1857)
+  const repo = repoKey(projectPath);
+  const insightKey = `knowledge-graph:${repo}`;
+  await deleteMemoriesByDerivedFrom(insightKey).catch((err) =>
+    console.warn('[Knowledge] insight refresh delete failed:', err instanceof Error ? err.message : err));
+  const insightOpts = (importance: number, confidence: number) =>
+    ({ confidence, importance, derivedFrom: insightKey, repo });
+
   // Hot modules insight
   if (summary.hotModules.length > 0) {
     const hotList = summary.hotModules.slice(0, 3).join(', ');
     try {
       await saveCognitiveMemory('system_pattern',
         `[${slug}] Frequently changed modules: ${hotList}. Watch for change impact.`,
-        { confidence: 0.8, importance: 0.6, derivedFrom: `knowledge-graph:${slug}` }
+        insightOpts(0.6, 0.8)
       );
     } catch (err) {
       console.warn(`[Knowledge] 메모리 저장 실패 (hot modules):`, err instanceof Error ? err.message : err);
@@ -244,7 +255,7 @@ export async function saveGraphInsights(projectPath: string): Promise<void> {
     try {
       await saveCognitiveMemory('system_pattern',
         `[${slug}] High-risk modules (no tests + high churn): ${riskList}. Adding tests recommended.`,
-        { confidence: 0.85, importance: 0.7, derivedFrom: `knowledge-graph:${slug}` }
+        insightOpts(0.7, 0.85)
       );
     } catch (err) {
       console.warn(`[Knowledge] 메모리 저장 실패 (high risk):`, err instanceof Error ? err.message : err);
@@ -257,7 +268,7 @@ export async function saveGraphInsights(projectPath: string): Promise<void> {
     try {
       await saveCognitiveMemory('system_pattern',
         `[${slug}] Test coverage: ${coverage}% (${summary.totalTestFiles} tests / ${summary.totalModules} modules). ${summary.untestedModules.length} untested.`,
-        { confidence: 0.9, importance: 0.5, derivedFrom: `knowledge-graph:${slug}` }
+        insightOpts(0.5, 0.9)
       );
     } catch (err) {
       console.warn(`[Knowledge] 메모리 저장 실패 (coverage):`, err instanceof Error ? err.message : err);
