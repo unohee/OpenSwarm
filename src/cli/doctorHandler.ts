@@ -9,14 +9,16 @@ import { promisify } from 'node:util';
 import { createServer } from 'node:net';
 import { listAvailableAdapters } from '../adapters/index.js';
 import { findConfigFile } from '../core/config.js';
+import { banner } from '../support/banner.js';
+import { c } from '../support/colors.js';
 
 const execFileAsync = promisify(execFile);
 
 type Status = 'ok' | 'warn' | 'fail';
 
 function line(status: Status, label: string, detail = ''): void {
-  const icon = status === 'ok' ? '✓' : status === 'warn' ? '⚠' : '✗';
-  console.log(`${icon} ${label}${detail ? ` — ${detail}` : ''}`);
+  const icon = status === 'ok' ? c.green('✓') : status === 'warn' ? c.yellow('⚠') : c.red('✗');
+  console.log(`${icon} ${c.bold(label)}${detail ? ` ${c.dim('—')} ${c.dim(detail)}` : ''}`);
 }
 
 async function which(bin: string): Promise<string | null> {
@@ -39,7 +41,7 @@ async function portFree(port: number): Promise<boolean> {
 }
 
 export async function handleDoctor(): Promise<void> {
-  console.log('OpenSwarm doctor\n');
+  console.log(banner('doctor — environment check'));
   let fatal = false;
 
   // 1) Node.js runtime
@@ -110,8 +112,8 @@ export async function handleDoctor(): Promise<void> {
 
   console.log('');
   if (fatal) {
-    console.log('✗ Critical issues found — fix the ✗ items above.');
+    console.log(c.red(c.bold('✗ Critical issues found — fix the ✗ items above.')));
     process.exit(1);
   }
-  console.log('✓ No critical issues.');
+  console.log(c.green(c.bold('✓ No critical issues.')));
 }

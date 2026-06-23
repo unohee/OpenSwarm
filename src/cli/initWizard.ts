@@ -18,6 +18,7 @@ import { AuthProfileStore, loginAndSaveLinearProfile, ensureValidToken } from '.
 import { getAdapter } from '../adapters/index.js';
 import { listTeams, listProjects, type LinearCredential } from '../linear/index.js';
 import { saveRepoMetadata } from '../support/repoMetadata.js';
+import { banner } from '../support/banner.js';
 
 type ProviderId = 'codex-responses' | 'openrouter' | 'gpt' | 'lmstudio' | 'local' | 'codex' | 'claude';
 type TaskBackend = 'linear' | 'local';
@@ -256,7 +257,7 @@ export async function runInitWizard(opts: InitWizardOptions = {}): Promise<void>
   let plan: ReturnType<typeof authPlanFor> = null;
 
   try {
-    console.log('OpenSwarm first-run setup.\n');
+    console.log(banner('first-run setup'));
 
     // 1) AI provider
     provider = await select({
