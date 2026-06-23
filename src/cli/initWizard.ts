@@ -329,6 +329,7 @@ export async function runInitWizard(opts: InitWizardOptions = {}): Promise<void>
       console.log(`  2. Authenticate: openswarm auth login --provider ${plan.providerArg}`);
     }
   }
+  console.log('  • Diagnose: openswarm doctor   (verify providers, native deps, ports, config)');
   console.log('  • Validate: openswarm validate');
   console.log('  • Start:    openswarm start    (or `openswarm` for the TUI)');
   if (taskBackend === 'local') {
