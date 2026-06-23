@@ -30,4 +30,20 @@ describe('buildWizardConfig', () => {
     expect(cfg).toMatch(/^ {2}# slackWebhookUrl:/m);
     expect(cfg).toMatch(/^ {2}# telegramBotToken:/m);
   });
+
+  it('replaces placeholder agents with a single agent for this repo', () => {
+    const cfg = buildWizardConfig('codex', 'none', { name: 'WAVE', projectPath: '/Users/x/dev/WAVE' });
+    expect(cfg).toMatch(/^ {2}- name: WAVE$/m);
+    expect(cfg).toMatch(/^ {4}projectPath: \/Users\/x\/dev\/WAVE$/m);
+    // sample placeholders are gone
+    expect(cfg).not.toContain('~/dev/my-project');
+    expect(cfg).not.toContain('- name: backend');
+    // defaultHeartbeatInterval still follows the agents block
+    expect(cfg).toMatch(/defaultHeartbeatInterval:/);
+  });
+
+  it('keeps the sample agents when no agent is given (back-compat)', () => {
+    const cfg = buildWizardConfig('codex', 'none');
+    expect(cfg).toContain('~/dev/my-project');
+  });
 });

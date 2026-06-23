@@ -49,10 +49,22 @@ function authPlanFor(provider: ProviderId): { providerArg: 'gpt' | 'openrouter';
 }
 
 /** Apply the wizard's choices onto the static sample config via targeted replaces. */
-export function buildWizardConfig(adapter: ProviderId, channel: NotifyChannel): string {
+export function buildWizardConfig(
+  adapter: ProviderId,
+  channel: NotifyChannel,
+  agent?: { name: string; projectPath: string },
+): string {
   let cfg = generateSampleConfig();
   cfg = cfg.replace(/^adapter: codex$/m, `adapter: ${adapter}`);
   cfg = cfg.replace(/^ {2}channel: discord$/m, `  channel: ${channel === 'none' ? 'none' : channel}`);
+  // Replace the sample's placeholder agents (main/backend) with a single agent
+  // for THIS repo so the user doesn't have to hand-edit projectPath.
+  if (agent) {
+    cfg = cfg.replace(
+      /agents:\n[\s\S]*?\n\n(# Default heartbeat)/,
+      `agents:\n  - name: ${agent.name}\n    projectPath: ${agent.projectPath}\n    heartbeatInterval: 1800000\n    enabled: true\n    paused: false\n\n$1`,
+    );
+  }
   const uncomment = (field: string) => {
     cfg = cfg.replace(`  # ${field}:`, `  ${field}:`);
   };
@@ -298,7 +310,7 @@ export async function runInitWizard(opts: InitWizardOptions = {}): Promise<void>
     writeEnvVars(envPath, envVars);
     console.log(`\nWrote ${envPath} (${Object.keys(envVars).join(', ')}) — chmod 600.`);
   }
-  writeFileSync(configPath, buildWizardConfig(provider, notify), 'utf-8');
+  writeFileSync(configPath, buildWizardConfig(provider, notify, { name: basename(cwd), projectPath: cwd }), 'utf-8');
   console.log(`Wrote ${configPath}.`);
 
   // Inline auth last (browser OAuth) — after all prompts.
