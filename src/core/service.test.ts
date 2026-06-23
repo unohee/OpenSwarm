@@ -11,6 +11,18 @@ import {
 import { setDefaultAdapter } from '../adapters/index.js';
 
 // Mock external dependencies
+// Mock auth so service.test never reads the real ~/.openswarm/auth-profiles.json
+// (a present linear:default OAuth profile would route Linear init down the OAuth
+// path and break the apiKey assertion). Default: no profile → apiKey path.
+vi.mock('../auth/index.js', () => ({
+  AuthProfileStore: class {
+    getProfile() {
+      return null;
+    }
+  },
+  ensureValidToken: vi.fn(),
+}));
+
 vi.mock('../linear/index.js', () => ({
   initLinear: vi.fn(),
   getClient: vi.fn(),

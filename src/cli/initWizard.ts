@@ -11,7 +11,7 @@
 
 import { existsSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
-import { select, checkbox, input, password, confirm } from '@inquirer/prompts';
+import { select, input, password, confirm } from '@inquirer/prompts';
 import { writeEnvVars } from '../core/envFile.js';
 import { generateSampleConfig } from '../core/config.js';
 import { AuthProfileStore, loginAndSaveLinearProfile, ensureValidToken } from '../auth/index.js';
@@ -181,23 +181,13 @@ async function setupLinear(envVars: Record<string, string>, cwd: string): Promis
     return;
   }
 
-  const pickedTeamIds = await checkbox({
-    message: '   Teams the daemon should watch (space = select, enter = confirm):',
+  // One repo = one team. (Multi-team daemon watch lives in the main
+  // ~/.config/openswarm config, not per-repo init — keeps this picker simple.)
+  const mapTeamId = await select({
+    message: `   Linear team for "${basename(cwd)}":`,
     choices: teams.map((t) => ({ name: `${t.key} — ${t.name}`, value: t.id })),
   });
-  if (pickedTeamIds.length > 0) envVars.LINEAR_TEAM_ID = pickedTeamIds.join(',');
-
-  // Map THIS repo to a single project.
-  const mapTeamId =
-    pickedTeamIds.length === 1
-      ? pickedTeamIds[0]
-      : await select({
-          message: '   Which team owns THIS repo?',
-          choices: teams
-            .filter((t) => pickedTeamIds.includes(t.id))
-            .map((t) => ({ name: `${t.key} — ${t.name}`, value: t.id })),
-        });
-  if (!mapTeamId) return;
+  envVars.LINEAR_TEAM_ID = mapTeamId;
 
   let projects: Awaited<ReturnType<typeof listProjects>> = [];
   try {
