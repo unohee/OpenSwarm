@@ -14,7 +14,19 @@ vi.mock('./memoryCore.js', () => ({
   },
 }));
 
-import { searchRepoMemoryText } from './repoKnowledge.js';
+import { searchRepoMemoryText, repoKey } from './repoKnowledge.js';
+
+describe('repoKey', () => {
+  it('normalizes a per-issue worktree path back to the repo', () => {
+    expect(repoKey('/Users/x/dev/vega-agent/worktree/abc-123')).toBe('/Users/x/dev/vega-agent');
+  });
+  it('leaves a plain repo path unchanged', () => {
+    expect(repoKey('/Users/x/dev/vega-agent')).toBe('/Users/x/dev/vega-agent');
+  });
+  it('strips a worktree path with a trailing slash too', () => {
+    expect(repoKey('/Users/x/dev/vega-agent/worktree/id/')).toBe('/Users/x/dev/vega-agent');
+  });
+});
 
 describe('searchRepoMemoryText', () => {
   it('requires a non-empty query', async () => {
