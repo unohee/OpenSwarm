@@ -405,7 +405,7 @@ program
   .argument('<path>', 'Path to the git repository')
   .action(async (path: string) => {
     const { handleProjectAdd } = await import('./cli/projectHandler.js');
-    handleProjectAdd(path);
+    await handleProjectAdd(path);
   });
 
 program

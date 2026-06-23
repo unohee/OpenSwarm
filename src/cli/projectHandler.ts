@@ -6,12 +6,18 @@
 // (~/.claude/openswarm-repos.json — the same file the web dashboard writes).
 // `setWebRunner` (src/support/web.ts) merges `enabled` into both the runner's
 // enabled set AND its allowedProjects, so a repo added here is actually worked.
+//
+// `add` also offers a Linear team/project picker (shared with `openswarm init`
+// via ./linearMapping) and writes the repo↔Linear mapping into the repo's
+// openswarm.json — registering a path alone wouldn't tell the daemon which
+// Linear project's issues belong to it.
 
 import { existsSync, readFileSync, writeFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { expandPath } from '../core/config.js';
 import { c } from '../support/colors.js';
+import { loadRepoMetadata, RepoMetadataError } from '../support/repoMetadata.js';
 
 /** Persisted dashboard/CLI repo registry. Mirrors web.ts ReposConfig. */
 export interface ReposConfig {
@@ -68,7 +74,7 @@ export function removeProject(cfg: ReposConfig, path: string): ReposConfig {
   };
 }
 
-export function handleProjectAdd(rawPath: string): void {
+export async function handleProjectAdd(rawPath: string): Promise<void> {
   const path = expandPath(rawPath, true);
   if (!existsSync(path) || !statSync(path).isDirectory()) {
     console.error(c.red(`✗ Not a directory: ${path}`));
@@ -79,7 +85,62 @@ export function handleProjectAdd(rawPath: string): void {
   }
   saveRepos(addProject(loadRepos(), path));
   console.log(c.green(`✓ Added work repo: ${path}`));
+
+  // Registering the path is not enough: the daemon works Linear issues, which
+  // belong to a Linear project. Map this repo to a team/project (written into
+  // <repo>/openswarm.json) so it resolves without fuzzy name matching.
+  await mapRepoToLinear(path);
+
   console.log(c.dim('  Restart the daemon (openswarm start) to pick it up.'));
+}
+
+/**
+ * Best-effort interactive Linear mapping for a freshly added repo. Never throws:
+ * the path is registered regardless. Skips silently when already mapped, when
+ * stdin is not a TTY (scripted/CI), or when Linear isn't configured.
+ */
+async function mapRepoToLinear(path: string): Promise<void> {
+  try {
+    const meta = await loadRepoMetadata(path);
+    if (meta?.linear?.projectId) {
+      const label = meta.linear.projectName ?? meta.linear.projectId;
+      console.log(c.dim(`  Linear: already mapped → ${meta.linear.teamKey ?? '?'}/${label}`));
+      return;
+    }
+  } catch (err) {
+    if (err instanceof RepoMetadataError) {
+      console.error(c.yellow(`  ⚠ ${err.message} — re-mapping.`));
+    }
+  }
+
+  if (!process.stdin.isTTY) {
+    console.log(c.dim('  Linear mapping skipped (non-interactive) — run `openswarm add` in a terminal, or add openswarm.json manually.'));
+    return;
+  }
+
+  const { resolveLinearCredential, pickAndSaveLinearMapping } = await import('./linearMapping.js');
+  const cred = await resolveLinearCredential();
+  if (!cred) {
+    console.log(c.dim('  Linear not configured — run `openswarm auth login --provider linear` to map this repo, or add openswarm.json manually.'));
+    return;
+  }
+
+  console.log(c.bold('  Map this repo to a Linear project:'));
+  try {
+    const result = await pickAndSaveLinearMapping(path, cred);
+    if (result.kind === 'no-teams') {
+      console.log(c.dim('  No Linear teams visible — skipped. Add openswarm.json manually if needed.'));
+    } else if (result.kind === 'skipped') {
+      console.log(c.dim('  Repo mapping skipped — add openswarm.json later to pin the Linear project.'));
+    }
+  } catch (err) {
+    // @inquirer throws ExitPromptError on Ctrl-C — treat as a skip, not a crash.
+    if (err instanceof Error && err.name === 'ExitPromptError') {
+      console.log(c.dim('  Linear mapping skipped.'));
+      return;
+    }
+    throw err;
+  }
 }
 
 export function handleProjectList(): void {

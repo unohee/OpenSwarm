@@ -17,8 +17,8 @@ import { writeEnvVars } from '../core/envFile.js';
 import { generateSampleConfig } from '../core/config.js';
 import { AuthProfileStore, loginAndSaveLinearProfile, ensureValidToken } from '../auth/index.js';
 import { getAdapter } from '../adapters/index.js';
-import { listTeams, listProjects, type LinearCredential } from '../linear/index.js';
-import { saveRepoMetadata } from '../support/repoMetadata.js';
+import { type LinearCredential } from '../linear/index.js';
+import { pickAndSaveLinearMapping } from './linearMapping.js';
 import { banner } from '../support/banner.js';
 
 type ProviderId = 'codex-responses' | 'openrouter' | 'gpt' | 'lmstudio' | 'local' | 'codex' | 'claude';
@@ -182,62 +182,16 @@ async function setupLinear(envVars: Record<string, string>, cwd: string): Promis
     cred = { apiKey };
   }
 
-  let teams: Awaited<ReturnType<typeof listTeams>> = [];
-  try {
-    teams = await listTeams(cred);
-  } catch (err) { // cxt-ignore: error_swallow,exception_hiding — surfaced to the user + manual team-id fallback
-    console.log(`   ⚠ Could not fetch teams (${(err as Error).message}). Enter the team id manually.`);
-  }
-
-  if (teams.length === 0) {
+  // Team→project picker + openswarm.json write is shared with `openswarm add`.
+  const result = await pickAndSaveLinearMapping(cwd, cred);
+  if (result.kind === 'no-teams') {
+    // Manual team-id fallback keeps init usable when the Linear API is unreachable.
     const tid = (await input({ message: '   LINEAR_TEAM_ID:' })).trim();
     if (tid) envVars.LINEAR_TEAM_ID = tid;
     return;
   }
-
-  // One repo = one team. (Multi-team daemon watch lives in the main
-  // ~/.config/openswarm config, not per-repo init — keeps this picker simple.)
-  const mapTeamId = await select({
-    message: `   Linear team for "${basename(cwd)}":`,
-    choices: teams.map((t) => ({ name: `${t.key} — ${t.name}`, value: t.id })),
-  });
-  envVars.LINEAR_TEAM_ID = mapTeamId;
-
-  let projects: Awaited<ReturnType<typeof listProjects>> = [];
-  try {
-    projects = await listProjects(mapTeamId, cred);
-  } catch (err) { // cxt-ignore: error_swallow,exception_hiding — surfaced to the user; repo mapping skipped
-    console.log(`   ⚠ Could not fetch projects (${(err as Error).message}).`);
-    return;
-  }
-  if (projects.length === 0) {
-    console.log('   No projects in that team — skipping repo mapping.');
-    return;
-  }
-
-  const repoName = basename(cwd);
-  const projectId = await select({
-    message: `   Linear project for "${repoName}":`,
-    choices: [
-      { name: '(skip — no repo mapping)', value: '' },
-      ...projects.map((p) => ({ name: p.name, value: p.id })),
-    ],
-  });
-  if (!projectId) return;
-
-  const proj = projects.find((p) => p.id === projectId);
-  const team = teams.find((t) => t.id === mapTeamId);
-  const filePath = await saveRepoMetadata(cwd, {
-    schemaVersion: 1,
-    projectName: proj?.name,
-    linear: {
-      teamId: mapTeamId,
-      teamKey: team?.key,
-      projectId,
-      projectName: proj?.name,
-    },
-  });
-  console.log(`   Wrote ${filePath} → ${team?.key ?? '?'}/${proj?.name ?? projectId}`);
+  // Record the selected team for the daemon even if the project pick was skipped.
+  if (result.teamId) envVars.LINEAR_TEAM_ID = result.teamId;
 }
 
 export async function runInitWizard(opts: InitWizardOptions = {}): Promise<void> {
