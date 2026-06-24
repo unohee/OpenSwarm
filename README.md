@@ -198,6 +198,8 @@ autonomous:
       enabled: false
 ```
 
+When a worker exceeds `escalateAfterIteration` consecutive review failures, the daemon automatically switches it to the `escalateModel` for subsequent attempts.
+
 ### Running the daemon
 
 With the global install, the `openswarm` CLI manages the daemon directly — no repo or `npm run` scripts needed:
