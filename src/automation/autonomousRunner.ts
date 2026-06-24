@@ -373,9 +373,18 @@ export class AutonomousRunner {
   private filterAlreadyProcessed(tasks: TaskItem[]): TaskItem[] {
     let recovered = 0;
     let backoffSkipped = 0;
+    let noProject = 0;
     const recoverableStates = new Set(['Todo', 'In Progress', 'In Review']);
     const filtered = tasks.filter(task => {
       const id = task.issueId || task.id;
+
+      // No Linear project → can't be routed to a repo. Drop here (quietly, once per
+      // heartbeat) instead of letting a whole batch of project-less Todos reach the
+      // per-task selector and spam "No repo mapped to ... undefined" every cycle.
+      if (!task.linearProject?.id) {
+        noProject++;
+        return false;
+      }
 
       // Check rejection limit first
       if (isRejectionLimitReached(id)) {
@@ -410,6 +419,9 @@ export class AutonomousRunner {
     }
     if (backoffSkipped > 0) {
       this.syslog(`⏰ Skipped ${backoffSkipped} tasks in exponential backoff period`);
+    }
+    if (noProject > 0) {
+      this.syslog(`— Skipped ${noProject} issue(s) with no Linear project (assign a project in Linear to enable)`);
     }
     return filtered;
   }
