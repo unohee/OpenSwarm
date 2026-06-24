@@ -412,9 +412,11 @@ async function refreshProjectOverview(projectId: string, projectPath?: string): 
     // The full overview section is posted via Status Updates instead.
     const currentDesc = project.description ?? '';
     const markerIdx = currentDesc.indexOf(AUTOMATION_SECTION_MARKER);
-    const baseDesc = markerIdx >= 0
+    const stripped = markerIdx >= 0
       ? currentDesc.slice(0, markerIdx).trimEnd()
       : currentDesc;
+    // Strip any previously-appended compact summary so it isn't doubled on each call.
+    const baseDesc = stripped.replace(/\s*\[Done:\d+ InProgress:\d+ Todo:\d+\]$/, '').trimEnd();
 
     // Build a compact summary line for description (fits within 255 chars)
     const doneCount = stateCounts.get('Done') ?? 0;
