@@ -55,59 +55,76 @@ function teamFilter() {
  */
 const FETCH_PAGE_SIZE = 100;
 
+/**
+ * Plain issue node from the nested GraphQL query below — project/state/labels are
+ * embedded, so reading them needs NO extra per-issue API call. This is the fix
+ * for the N+1 that made the bulk fetch time out (INT-1909): the old path resolved
+ * `issue.project`/`issue.state`/`issue.labels()` lazily (1 request each) for every
+ * issue, so 150+ issues × Linear's ~40/min limit blew the 90s budget.
+ */
+interface RawIssueNode {
+  id: string;
+  identifier: string;
+  title: string;
+  description?: string | null;
+  priority: number;
+  state?: { name?: string } | null;
+  project?: { id: string; name: string; icon?: string | null; color?: string | null } | null;
+  labels?: { nodes: Array<{ name: string }> } | null;
+}
+
+const ISSUES_QUERY = `
+  query OswIssues($filter: IssueFilter, $first: Int, $after: String) {
+    issues(filter: $filter, first: $first, after: $after) {
+      nodes {
+        id
+        identifier
+        title
+        description
+        priority
+        state { name }
+        project { id name icon color }
+        labels { nodes { name } }
+      }
+      pageInfo { hasNextPage endCursor }
+    }
+  }`;
+
 async function fetchIssuesForStates(
   linear: LinearClient,
   stateNames: string[],
   extraFilter: Record<string, unknown> = {},
-): Promise<{ nodes: Array<Awaited<ReturnType<LinearClient['issues']>>['nodes'][number]> }> {
+): Promise<{ nodes: RawIssueNode[] }> {
   const ids = teamIds.length > 0 ? teamIds : (teamId ? [teamId] : []);
+  const teamPart = ids.length === 1 ? { id: { eq: ids[0] } } : { id: { in: ids } };
+  const filter = {
+    ...extraFilter,
+    ...(ids.length ? { team: teamPart } : {}),
+    state: { name: { in: stateNames } },
+  };
 
-  // Single-team / no-team fallback uses the shared filter path.
-  if (ids.length <= 1) {
-    const res = await withRateLimit('linear', async () =>
-      linear.issues({
-        filter: { ...extraFilter, team: teamFilter(), state: { name: { in: stateNames } } },
-        first: FETCH_PAGE_SIZE,
-      }),
-    );
-    return { nodes: res.nodes };
-  }
+  // graphql-request client under the SDK — one query returns the nested fields.
+  const gql = (linear as unknown as {
+    client: { rawRequest: <T>(q: string, v?: Record<string, unknown>) => Promise<{ data: T }> };
+  }).client;
 
-  // Multi-team: issue one `in: [...]` query rather than fanning out, but run a
-  // second query *only if* the first page filled up — that's the signal that
-  // some team's issues may have been truncated. This bounds the request count
-  // to at most 1 + teams when the result set is actually wide.
-  const primary = await withRateLimit('linear', async () =>
-    linear.issues({
-      filter: { ...extraFilter, team: { id: { in: ids } }, state: { name: { in: stateNames } } },
-      first: FETCH_PAGE_SIZE,
-    }),
-  );
-
-  if (primary.nodes.length < FETCH_PAGE_SIZE) {
-    return { nodes: primary.nodes };
-  }
-
-  // First page was saturated → fall back to per-team fan-out so no team is starved.
-  // Dedup by issue id when concatenating.
-  const pages = await Promise.all(
-    ids.map((tid) =>
-      withRateLimit('linear', async () =>
-        linear.issues({
-          filter: { ...extraFilter, team: { id: { eq: tid } }, state: { name: { in: stateNames } } },
-          first: FETCH_PAGE_SIZE,
-        }),
+  const nodes: RawIssueNode[] = [];
+  let after: string | undefined;
+  // Hard page cap (10 × 100 = 1000) so a runaway never loops forever.
+  for (let page = 0; page < 10; page++) {
+    const res = await withRateLimit('linear', () =>
+      gql.rawRequest<{ issues: { nodes: RawIssueNode[]; pageInfo: { hasNextPage: boolean; endCursor: string } } }>(
+        ISSUES_QUERY,
+        { filter, first: FETCH_PAGE_SIZE, after },
       ),
-    ),
-  );
-  const seen = new Set<string>();
-  const merged: typeof primary.nodes = [];
-  for (const node of [...primary.nodes, ...pages.flatMap((p) => p.nodes)]) {
-    if (seen.has(node.id)) continue;
-    seen.add(node.id);
-    merged.push(node);
+    );
+    const conn = res?.data?.issues;
+    if (!conn) break;
+    nodes.push(...conn.nodes);
+    if (!conn.pageInfo?.hasNextPage) break;
+    after = conn.pageInfo.endCursor;
   }
-  return { nodes: merged };
+  return { nodes };
 }
 
 // Daily issue creation limit
@@ -549,24 +566,9 @@ export async function getMyIssues(
         ...backlogIssues.nodes.map(i => ({ issue: i, state: 'Backlog' })),
       ];
 
-      // Resolve all project info in parallel (one API call per issue, but batched)
-      // issue.project returns id+name together, cache by project id to avoid duplicates
-      const projectCache = new Map<string, LinearProjectInfo>();
-      const projectResolutions = await Promise.all(
-        withState.map(({ issue }) =>
-          withRateLimit('linear', () => Promise.resolve(issue.project) as Promise<any>).catch(() => null)
-        )
-      );
-      for (const p of projectResolutions) {
-        if (p && !projectCache.has(p.id)) {
-          projectCache.set(p.id, { id: p.id, name: p.name, icon: p.icon ?? undefined, color: p.color ?? undefined });
-        }
-      }
-
-      for (let i = 0; i < withState.length; i++) {
-        const { issue, state } = withState[i];
-        const p = projectResolutions[i];
-        const project = p ? projectCache.get(p.id) : undefined;
+      // project is embedded in each node (nested GraphQL) — no per-issue resolver call.
+      for (const { issue, state } of withState) {
+        const p = issue.project;
         result.push({
           id: issue.id,
           identifier: issue.identifier,
@@ -576,7 +578,7 @@ export async function getMyIssues(
           priority: issue.priority,
           labels: [],
           comments: [],
-          project,
+          project: p ? { id: p.id, name: p.name, icon: p.icon ?? undefined, color: p.color ?? undefined } : undefined,
         } as LinearIssueInfo);
       }
 
@@ -591,30 +593,23 @@ export async function getMyIssues(
     ]);
 
     {
-      // Full mode: load all details (comments, labels, project)
+      // project/state/labels are embedded in each node (nested GraphQL) — no
+      // per-issue resolver calls. comments are no longer bulk-fetched (the only
+      // consumer, task-state hydration, is also persisted locally); fetch lazily
+      // per issue if a caller ever needs them.
       const allNodes = [...executableIssues.nodes, ...backlogIssues.nodes];
       for (const issue of allNodes) {
-        const [comments, labels, project] = await Promise.all([
-          issue.comments(),
-          issue.labels(),
-          getProjectInfo(issue),
-        ]);
-
+        const p = issue.project;
         result.push({
           id: issue.id,
           identifier: issue.identifier,
           title: issue.title,
           description: issue.description ?? undefined,
-          state: (await issue.state)?.name ?? 'Unknown',
+          state: issue.state?.name ?? 'Unknown',
           priority: issue.priority,
-          labels: labels.nodes.map((l: { name: string }) => l.name),
-          comments: comments.nodes.map((c: { id: string; body: string; createdAt: Date }) => ({
-            id: c.id,
-            body: c.body,
-            createdAt: c.createdAt.toISOString(),
-            user: undefined,
-          })),
-          project,
+          labels: issue.labels?.nodes?.map((l) => l.name) ?? [],
+          comments: [],
+          project: p ? { id: p.id, name: p.name, icon: p.icon ?? undefined, color: p.color ?? undefined } : undefined,
         });
       }
 
