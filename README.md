@@ -308,7 +308,7 @@ Background: decay, consolidation, contradiction detection, distillation.
 (success → `system_pattern` with files changed + approach, review rejection →
 `constraint` pitfall), and the next task on the same repo recalls the most
 relevant entries into the worker prompt as a "Repository Knowledge" section.
-Workers get better at a codebase the more they work on it.
+Workers get better at a codebase the more they work on it. Workers can also actively query accumulated repo knowledge mid-task via the `search_memory` tool.
 
 ### Benchmarks (L0–L6)
 
