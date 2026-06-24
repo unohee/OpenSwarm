@@ -80,6 +80,13 @@ export interface CliRunOptions {
   mcpTools?: ToolDefinition[];
   /** Abort the run (and in-flight API/stream) — e.g. Esc/Ctrl+C in chat. */
   signal?: AbortSignal;
+  /**
+   * Edit format for file modifications. See AgenticLoopOptions.editFormat for details.
+   * - 'json' (default): edit_file tool call.
+   * - 'search-replace': Aider-style text blocks (better for weaker/untrained models).
+   * - 'whole-file': write_file only.
+   */
+  editFormat?: 'json' | 'search-replace' | 'whole-file';
 }
 
 /**

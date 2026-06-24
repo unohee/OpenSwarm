@@ -402,6 +402,24 @@ export async function applyEditBlock(
 }
 
 /**
+ * System prompt injection for whole-file write mode.
+ * Used when editFormat === 'whole-file': edit_file is hidden, model must use write_file.
+ */
+export const WHOLE_FILE_PROMPT = `
+## Code Edit Format (Whole-File Rewrite)
+
+When modifying files, rewrite the entire file using the \`write_file\` tool.
+Do NOT use \`edit_file\` — it is not available in this mode.
+
+Steps:
+1. Read the current file content with \`read_file\`.
+2. Apply your changes mentally.
+3. Write the complete new file content with \`write_file\`.
+
+Only use this approach when you must change a file. Leave unchanged files alone.
+`;
+
+/**
  * Format description for Worker prompts
  */
 export const SEARCH_REPLACE_PROMPT = `

@@ -8,7 +8,9 @@
 
 import { TOOL_DEFINITIONS, executeToolCalls, createReadCache, type ToolCall, type ToolResult, type ToolDefinition } from './tools.js';
 import { WEB_TOOL_DEFINITIONS } from './webTools.js';
+import { parseSearchReplaceBlocks, applyEditBlock } from '../support/editParser.js';
 import type { CliRunResult } from './types.js';
+import path from 'node:path';
 
 // ============ 토큰 카운팅 (VEGA token_count.py 이식) ============
 
@@ -122,6 +124,16 @@ export interface AgenticLoopOptions {
   mcpTools?: ToolDefinition[];
   /** Abort the loop (checked each turn) — Esc/Ctrl+C in chat. */
   signal?: AbortSignal;
+  /**
+   * Edit format for file modifications.
+   * - 'json' (default): edit_file tool call with {path, old_string, new_string}.
+   * - 'search-replace': Aider-style SEARCH/REPLACE blocks parsed from response text.
+   *   edit_file tool is hidden; model emits blocks, harness applies them.
+   * - 'whole-file': edit_file hidden; model writes entire files via write_file.
+   * Match to model capability: json for frontier models, search-replace for
+   * weaker/untrained models (20 → 61% pass-rate delta observed in Aider data).
+   */
+  editFormat?: 'json' | 'search-replace' | 'whole-file';
 }
 
 /** 루프 실행 결과 */
@@ -170,6 +182,7 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
     webTools = true,
     mcpTools,
     signal,
+    editFormat = 'json',
   } = options;
 
   const startTime = Date.now();
@@ -190,9 +203,15 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
     `or absolute paths under this root. Do NOT use "/" or a bare repo name — those are outside the project and will be rejected.\n\n`;
   messages.push({ role: 'user', content: cwdNote + prompt });
 
+  // For search-replace and whole-file formats, hide edit_file — the model
+  // edits via text blocks (S/R) or whole write_file calls instead.
+  const baseDefs = editFormat === 'json'
+    ? TOOL_DEFINITIONS
+    : TOOL_DEFINITIONS.filter(t => t.function.name !== 'edit_file');
+
   const tools = enableTools
     ? [
-        ...TOOL_DEFINITIONS,
+        ...baseDefs,
         ...(webTools ? WEB_TOOL_DEFINITIONS : []),
         ...(mcpTools ?? []),
       ]
@@ -273,17 +292,73 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
 
     // 도구 호출이 없으면 최종 응답
     if (!assistantMsg.tool_calls || assistantMsg.tool_calls.length === 0) {
+      // --- SEARCH/REPLACE format: parse edit blocks from response text ---
+      if (editFormat === 'search-replace' && assistantMsg.content) {
+        const srResult = parseSearchReplaceBlocks(assistantMsg.content);
+        if (srResult.blocks.length > 0) {
+          onLog?.(`📝 Found ${srResult.blocks.length} SEARCH/REPLACE block(s)`);
+
+          // Apply each block, skipping protected files
+          const applyResults = await Promise.all(
+            srResult.blocks.map(block => {
+              const resolved = path.isAbsolute(block.filePath)
+                ? block.filePath
+                : path.join(cwd, block.filePath);
+              if (protectedFiles?.some(p => resolved === p || resolved.endsWith(`/${p}`))) {
+                return Promise.resolve({
+                  success: false,
+                  error: `${block.filePath} is a protected harness file and cannot be modified`,
+                });
+              }
+              return applyEditBlock(block, cwd);
+            }),
+          );
+
+          const successCount = applyResults.filter(r => r.success).length;
+          editToolCount += successCount;
+
+          const resultLines = srResult.blocks.map((block, i) => {
+            const r = applyResults[i];
+            return r.success
+              ? `✓ Applied: ${block.filePath}`
+              : `✗ Failed: ${block.filePath} — ${r.error}`;
+          });
+
+          onLog?.(`📝 Applied ${successCount}/${srResult.blocks.length} edit block(s)`);
+
+          messages.push({ role: 'assistant', content: assistantMsg.content });
+
+          const hasErrors = applyResults.some(r => !r.success);
+          messages.push({
+            role: 'user',
+            content: `Edit results:\n${resultLines.join('\n')}\n\n${
+              hasErrors
+                ? 'Some edits failed — please fix and retry.'
+                : 'All edits applied. Verify changes and finish when done.'
+            }`,
+          });
+
+          continue;
+        }
+      }
+
       // no-edit 종료 가드 — 수정 필수 작업인데 edit/write를 한 번도 안 하고 끝내려 하면
       // 되밀어 계속하게 한다(경량 모델의 조기 결론 패턴 차단).
       if (editToolCount === 0 && nudgesUsed < nudgeMaxOnNoEdit) {
         nudgesUsed++;
         onLog?.(`↩ No-edit guard: model tried to finish without editing (nudge ${nudgesUsed}/${nudgeMaxOnNoEdit})`);
+        const editInstruction =
+          editFormat === 'search-replace'
+            ? 'Apply the fix now using SEARCH/REPLACE blocks, then verify.'
+            : editFormat === 'whole-file'
+            ? 'Apply the fix now using the write_file tool to rewrite the entire file, then verify.'
+            : 'Apply the fix now with edit_file, then verify.';
         messages.push({ role: 'assistant', content: assistantMsg.content ?? '' });
         messages.push({
           role: 'user',
           content:
             'You have not modified any files yet, but this task REQUIRES code changes. ' +
-            'Do not conclude with analysis only. Apply the fix now with edit_file, then verify. ' +
+            `Do not conclude with analysis only. ${editInstruction} ` +
             'Continue working.',
         });
         continue;

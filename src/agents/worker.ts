@@ -10,6 +10,7 @@ import type { WorkerContext } from '../locale/types.js';
 import type { AdapterName, ProcessContext } from '../adapters/types.js';
 import { getAdapter, spawnCli } from '../adapters/index.js';
 import { expandPath } from '../core/config.js';
+import { SEARCH_REPLACE_PROMPT, WHOLE_FILE_PROMPT } from '../support/editParser.js';
 
 // Types
 
@@ -38,6 +39,13 @@ export interface WorkerOptions {
   webTools?: boolean;
   /** Abort the run + in-flight adapter call (pipeline cancel / project disable). */
   signal?: AbortSignal;
+  /**
+   * Edit format matched to model capability.
+   * - 'json' (default): edit_file tool call — frontier models only.
+   * - 'search-replace': Aider-style blocks in response text — better for weaker models.
+   * - 'whole-file': write_file replacement only.
+   */
+  editFormat?: 'json' | 'search-replace' | 'whole-file';
 }
 
 // Prompts
@@ -74,6 +82,17 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
   }
 
   try {
+    // Inject format-specific instruction into system prompt.
+    // In search-replace mode the harness hides edit_file; model must use SEARCH/REPLACE blocks.
+    // In whole-file mode the harness hides edit_file; model must use write_file for full rewrites.
+    const baseSystemPrompt = getPrompts().systemPrompt;
+    let systemPrompt = baseSystemPrompt;
+    if (options.editFormat === 'search-replace') {
+      systemPrompt = baseSystemPrompt + SEARCH_REPLACE_PROMPT;
+    } else if (options.editFormat === 'whole-file') {
+      systemPrompt = baseSystemPrompt + WHOLE_FILE_PROMPT;
+    }
+
     // Run CLI via adapter
     const raw = await spawnCli(adapter, {
       prompt,
@@ -83,7 +102,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       maxTurns: options.maxTurns,
       onLog: options.onLog,
       processContext: options.processContext,
-      systemPrompt: getPrompts().systemPrompt,
+      systemPrompt,
       // Worker is a mechanical execution role — file edits, not deep reasoning.
       // Disable reasoning tokens to cut cost/latency (no-op on non-thinking models).
       disableReasoning: true,
@@ -92,6 +111,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       bashTimeoutMs: options.bashTimeoutMs,
       webTools: options.webTools,
       signal: options.signal,
+      editFormat: options.editFormat,
     });
 
     // Parse result via adapter
