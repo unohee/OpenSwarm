@@ -150,10 +150,13 @@ export class TaskScheduler extends EventEmitter {
   }
 
   /**
-   * Check if project is currently busy
+   * Check if project is currently busy. One worker per project at a time (so the
+   * global slot budget spreads across projects instead of piling onto one). Only
+   * `allowSameProjectConcurrent` opts out — worktreeMode keeps per-task isolation
+   * but no longer implies same-project parallelism.
    */
   isProjectBusy(projectPath: string): boolean {
-    if (this.config.worktreeMode || this.config.allowSameProjectConcurrent) {
+    if (this.config.allowSameProjectConcurrent) {
       return false;
     }
 
@@ -169,7 +172,7 @@ export class TaskScheduler extends EventEmitter {
    * Return list of currently busy projects
    */
   getBusyProjects(): string[] {
-    if (this.config.worktreeMode || this.config.allowSameProjectConcurrent) {
+    if (this.config.allowSameProjectConcurrent) {
       return [];
     }
 

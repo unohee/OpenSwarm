@@ -407,12 +407,21 @@ export class DecisionEngine {
     const downstream = computeDownstreamCounts(tasks);
     const sorted = this.prioritizeTasks(executableTasks, downstream);
 
-    // 6. Select multiple tasks (max maxTasks, blocker-based filtering only)
+    // 6. Select multiple tasks. One per project per cycle: the scheduler runs at
+    // most one worker per project, so selecting several from the same project just
+    // queues them and starves other projects. Spreading across projects keeps all
+    // bots active (the deferred same-project tasks get picked next cycle).
     const selectedTasks: Array<{ task: TaskItem; workflow: WorkflowConfig }> = [];
+    const selectedProjects = new Set<string>();
     let skippedCount = 0;
 
     for (const task of sorted) {
       if (selectedTasks.length >= maxTasks) break;
+
+      const projectKey = task.linearProject?.id || task.projectPath || task.id;
+      if (selectedProjects.has(projectKey)) {
+        continue; // already picked a task for this project this cycle
+      }
 
       // Scope validation
       const scopeCheck = this.validateScope(task);
@@ -429,6 +438,7 @@ export class DecisionEngine {
       }
 
       selectedTasks.push({ task, workflow });
+      selectedProjects.add(projectKey);
     }
 
     if (selectedTasks.length === 0) {
