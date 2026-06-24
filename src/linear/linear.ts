@@ -479,38 +479,24 @@ async function populateBlockedBy(
   const fetchedIds = new Set(result.map((r) => r.id));
   const identifierToId = new Map(result.map((r) => [r.identifier.toUpperCase(), r.id]));
 
-  await Promise.all(
-    result.map(async (info) => {
-      const blockers = new Set<string>();
-
-      // Source 1: structured relations. `_issue` carries the blocker's id on the
-      // fragment, so we read it without a per-blocker fetch.
-      const node = sdkNodeById.get(info.id);
-      if (node && typeof node.inverseRelations === 'function') {
-        try {
-          const rels: any = await withRateLimit('linear', () => node.inverseRelations()); // cxt-ignore: type_safety — SDK IssueRelationConnection
-          for (const rel of rels?.nodes ?? []) {
-            if (rel?.type !== 'blocks') continue;
-            const blockerId = rel?._issue?.id;
-            if (blockerId) blockers.add(blockerId);
-          }
-        } catch { // cxt-ignore: error_swallow,exception_hiding — best-effort, optional enrichment
-          // Relations enrichment is optional; the text parser below still applies.
-        }
-      }
-
-      // Source 2: description prose → identifiers → resolve to UUIDs.
-      for (const ident of parseBlockerIdentifiers(info.description)) {
-        const id = identifierToId.get(ident.toUpperCase());
-        if (id) blockers.add(id);
-      }
-
-      // Keep only blockers still in the fetch set (excludes Done/out-of-scope →
-      // avoids false-blocking); never self-reference.
-      const filtered = [...blockers].filter((id) => id !== info.id && fetchedIds.has(id));
-      if (filtered.length > 0) info.blockedBy = filtered;
-    }),
-  );
+  // Text-only blocker resolution — NO per-issue API calls. The structured
+  // `inverseRelations()` source was removed: it cost one API request per issue,
+  // which (at Linear's ~40/min limit) pushed the bulk fetch past its timeout and
+  // stalled the whole pipeline. Description prose ("Blocked by: KT-302") covers
+  // the common case for free; structured-relation enrichment can return as a
+  // batched GraphQL query later if needed.
+  void sdkNodeById;
+  for (const info of result) {
+    const blockers = new Set<string>();
+    for (const ident of parseBlockerIdentifiers(info.description)) {
+      const id = identifierToId.get(ident.toUpperCase());
+      if (id) blockers.add(id);
+    }
+    // Keep only blockers still in the fetch set (excludes Done/out-of-scope →
+    // avoids false-blocking); never self-reference.
+    const filtered = [...blockers].filter((id) => id !== info.id && fetchedIds.has(id));
+    if (filtered.length > 0) info.blockedBy = filtered;
+  }
 }
 
 /**

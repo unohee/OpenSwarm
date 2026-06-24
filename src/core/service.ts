@@ -169,7 +169,7 @@ export async function startService(config: SwarmConfig): Promise<void> {
     const linearConfigured = !!(config.linearApiKey && config.linearTeamId);
     autonomous.setTaskSource(selectTaskSource(linearConfigured, async () => {
       await linear.ensureLinearAuthFresh(); // refresh OAuth token (no-op for API key) each heartbeat
-      const issues = await linear.getMyIssues({ slim: true, timeoutMs: 90000 });
+      const issues = await linear.getMyIssues({ slim: true, timeoutMs: 300000 });
       const { linearIssueToTask } = await import('../orchestration/decisionEngine.js');
       return issues.map((issue: any) => {
         updateTaskLinearState(issue.id, issue.state);
