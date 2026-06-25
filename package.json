@@ -78,6 +78,7 @@
     "node": ">=22"
   },
   "overrides": {
-    "protobufjs": "^7.5.5"
+    "protobufjs": "^7.6.3",
+    "undici": "^6.27.0"
   }
 }
