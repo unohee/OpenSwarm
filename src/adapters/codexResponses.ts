@@ -313,8 +313,13 @@ export class CodexResponsesAdapter implements CliAdapter {
     const model = options.model ?? await this.getDefaultModel();
     // Stream the model's reasoning summary to the live log as 💭 thoughts.
     const onReasoning = options.onLog ? (line: string) => options.onLog!(`💭 ${line}`) : undefined;
+    // Stable prompt_cache_key so every turn of THIS run routes to the same cache
+    // node — the static prefix (systemPrompt + worker prompt with File Map /
+    // repoMemories / completionCriteria) then reuses the cache across tool turns.
+    // Keyed by task+stage+model so concurrent tasks don't collide on one node.
+    const cacheKey = `osw-${options.processContext?.taskId ?? 'cli'}-${options.processContext?.stage ?? 'run'}-${model}`;
     const callApi = this.createApiCaller(
-      accessToken, accountId, store, model, options.onToken, options.signal, onReasoning, options.disableReasoning, options.reasoningEffort,
+      accessToken, accountId, store, model, options.onToken, options.signal, onReasoning, options.disableReasoning, options.reasoningEffort, cacheKey,
     );
 
     const loopOptions: AgenticLoopOptions = {
@@ -363,6 +368,7 @@ export class CodexResponsesAdapter implements CliAdapter {
     onReasoning?: (line: string) => void,
     disableReasoning?: boolean,
     reasoningEffort?: 'low' | 'medium' | 'high',
+    cacheKey?: string,
   ) {
     let token = initialToken;
     let retried = false;
@@ -377,6 +383,9 @@ export class CodexResponsesAdapter implements CliAdapter {
       };
       if (instructions) body.instructions = instructions;
       if (tools.length > 0) body.tools = toolsToResponsesTools(tools);
+      // Route every turn of this run to the same prompt cache so the stable prefix
+      // (instructions + worker prompt) reuses cached tokens across tool turns.
+      if (cacheKey) body.prompt_cache_key = cacheKey;
       // Surface the model's thinking: request a reasoning summary so the live log
       // shows 💭 thoughts (codex-responses keeps thinking in the reasoning channel
       // and emits little output_text on tool-call turns). Worker (disableReasoning)
