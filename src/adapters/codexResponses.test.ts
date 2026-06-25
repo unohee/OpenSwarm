@@ -66,7 +66,15 @@ describe('reduceResponsesEvents', () => {
     expect(res.choices[0].message.content).toBe('Hello');
     expect(res.choices[0].message.tool_calls).toBeUndefined();
     expect(res.choices[0].finish_reason).toBe('stop');
-    expect(res.usage).toEqual({ prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 });
+    expect(res.usage).toEqual({ prompt_tokens: 5, completion_tokens: 2, total_tokens: 7, cached_tokens: 0 });
+  });
+
+  it('surfaces cached_tokens from input_tokens_details (prompt-cache observability)', () => {
+    const res = reduceResponsesEvents([
+      { type: 'response.output_text.delta', delta: 'ok' },
+      { type: 'response.completed', response: { usage: { input_tokens: 1000, output_tokens: 10, input_tokens_details: { cached_tokens: 800 } } } },
+    ]);
+    expect(res.usage).toEqual({ prompt_tokens: 1000, completion_tokens: 10, total_tokens: 1010, cached_tokens: 800 });
   });
 
   it('assembles a function_call from added + arguments.delta, keyed by item id, emitting call_id', () => {

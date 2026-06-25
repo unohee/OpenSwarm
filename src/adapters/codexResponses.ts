@@ -56,7 +56,7 @@ interface ChatLikeResponse {
     message: { role: string; content: string | null; tool_calls?: ApiToolCallShape[] };
     finish_reason: string;
   }>;
-  usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+  usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number; cached_tokens?: number };
 }
 
 interface ApiToolCallShape {
@@ -155,7 +155,8 @@ export function reduceResponsesEvents(events: SseEvent[]): ChatLikeResponse {
         if (u) {
           const pt = u.input_tokens ?? 0;
           const ct = u.output_tokens ?? 0;
-          usage = { prompt_tokens: pt, completion_tokens: ct, total_tokens: pt + ct };
+          const cached = u.input_tokens_details?.cached_tokens ?? 0;
+          usage = { prompt_tokens: pt, completion_tokens: ct, total_tokens: pt + ct, cached_tokens: cached };
         }
         break;
       }
@@ -337,7 +338,8 @@ export class CodexResponsesAdapter implements CliAdapter {
     try {
       const result = await runAgenticLoop(loopOptions);
       if (options.onLog) {
-        options.onLog(`[Codex ${model}] ${result.apiCallCount} API calls, ${result.toolCallCount} tool uses, ${result.totalTokens} tokens`);
+        const pct = result.totalTokens > 0 ? Math.round((result.cachedTokens / result.totalTokens) * 100) : 0;
+        options.onLog(`[Codex ${model}] ${result.apiCallCount} API calls, ${result.toolCallCount} tool uses, ${result.totalTokens} tokens (${result.cachedTokens} cached, ${pct}%)`);
       }
       return loopResultToCliResult(result);
     } catch (err) {

@@ -76,6 +76,8 @@ interface ChatCompletionResponse {
     prompt_tokens: number;
     completion_tokens: number;
     total_tokens: number;
+    /** Cached input tokens (prompt-cache hits). Subset of prompt_tokens. */
+    cached_tokens?: number;
   };
 }
 
@@ -134,6 +136,8 @@ export interface AgenticLoopResult {
   apiCallCount: number;
   /** 총 토큰 사용량 (추적 가능한 경우) */
   totalTokens: number;
+  /** 캐시 적중 입력 토큰 누적 (totalTokens의 부분집합) — prompt-cache 효율 측정용 */
+  cachedTokens: number;
   /** 소요 시간 (ms) */
   durationMs: number;
 }
@@ -209,6 +213,7 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
   let nudgesUsed = 0;
   let apiCallCount = 0;
   let totalTokens = 0;
+  let cachedTokens = 0;
   let finalText = '';
 
   for (let turn = 0; turn < maxTurns + 1; turn++) {
@@ -260,6 +265,7 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
 
     if (response.usage) {
       totalTokens += response.usage.prompt_tokens + response.usage.completion_tokens;
+      cachedTokens += response.usage.cached_tokens ?? 0;
     }
 
     const choice = response.choices?.[0];
@@ -388,6 +394,7 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
     toolCallCount,
     apiCallCount,
     totalTokens,
+    cachedTokens,
     durationMs: Date.now() - startTime,
   };
 }
