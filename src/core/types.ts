@@ -285,6 +285,8 @@ export type JobProfile = {
   minMinutes?: number;
   maxMinutes?: number;
   priority?: number;
+  /** Reasoning effort for matched tasks (codex-responses: low|medium|high). */
+  effort?: 'low' | 'medium' | 'high';
   roles?: Partial<Record<PipelineStage, string>>;
 };
 

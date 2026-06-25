@@ -21,6 +21,8 @@ export interface ReviewerOptions {
   maxTurns?: number;           // Max agentic turns per CLI invocation
   adapterName?: AdapterName;
   processContext?: ProcessContext;
+  /** Reasoning effort from a jobProfile (codex-responses: low|medium|high). */
+  reasoningEffort?: 'low' | 'medium' | 'high';
   /** Execution-grounded definition of done to hard-gate on (INT-1914). */
   completionCriteria?: string[];
   /** Abort the run + in-flight adapter call (pipeline cancel / project disable). */
@@ -200,6 +202,7 @@ export async function runReviewer(options: ReviewerOptions): Promise<ReviewResul
       maxTurns: options.maxTurns,
       processContext: options.processContext,
       systemPrompt: getPrompts().systemPrompt,
+      reasoningEffort: options.reasoningEffort,
       signal: options.signal,
     });
 

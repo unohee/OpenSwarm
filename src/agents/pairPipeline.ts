@@ -245,6 +245,11 @@ export class PairPipeline extends EventEmitter {
     return profile?.roles?.[stage] || this.config.roles?.[stage]?.model;
   }
 
+  /** Reasoning effort from the matched jobProfile (heavy tasks reason harder). */
+  private getEffortForTask(task: TaskItem): 'low' | 'medium' | 'high' | undefined {
+    return this.getProfileForTask(task)?.effort;
+  }
+
   // ============================================
   // Main Execution
   // ============================================
@@ -562,6 +567,7 @@ export class PairPipeline extends EventEmitter {
             model: overrides?.model ?? this.config.roles?.worker?.model,
             maxTurns: this.config.roles?.worker?.maxTurns,
             adapterName: this.config.roles?.worker?.adapter,
+            reasoningEffort: this.getEffortForTask(context.task),
             issueIdentifier: context.task.issueIdentifier || context.task.issueId,
             projectName: context.task.linearProject?.name,
             onLog,
@@ -627,6 +633,7 @@ export class PairPipeline extends EventEmitter {
             model: this.config.roles?.reviewer?.model,
             maxTurns: reviewerMaxTurns,
             adapterName: this.config.roles?.reviewer?.adapter,
+            reasoningEffort: this.getEffortForTask(context.task),
             completionCriteria: this.config.draftAnalysis?.completionCriteria,
             processContext: { taskId: context.task.id, stage: 'reviewer' },
             signal: this.abortSignal,

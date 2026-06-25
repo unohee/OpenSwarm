@@ -49,6 +49,12 @@ export interface CliRunOptions {
    */
   disableReasoning?: boolean;
   /**
+   * Reasoning effort for the model's thinking (codex-responses: low|medium|high).
+   * Set from a jobProfile's `effort` so heavy tasks reason harder. Overrides the
+   * disableReasoning default when present. Adapters that don't support it ignore it.
+   */
+  reasoningEffort?: 'low' | 'medium' | 'high';
+  /**
    * 수정 필수 작업의 no-edit 종료 가드 횟수 (agenticLoop). 모델이 edit/write 없이
    * 끝내려 하면 N회까지 되민다. 기본 0(비활성).
    */

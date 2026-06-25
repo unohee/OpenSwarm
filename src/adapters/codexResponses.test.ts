@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { chatToResponsesInput, toolsToResponsesTools, reduceResponsesEvents } from './codexResponses.js';
+import { chatToResponsesInput, toolsToResponsesTools, reduceResponsesEvents, resolveReasoningEffort } from './codexResponses.js';
 import type { ChatMessage } from './agenticLoop.js';
 import type { ToolDefinition } from './tools.js';
 
@@ -91,3 +91,20 @@ describe('reduceResponsesEvents', () => {
     expect(res.choices[0].message.tool_calls![0].function.arguments).toBe('{"cmd":"ls"}');
   });
 });
+
+describe('resolveReasoningEffort — jobProfile effort wiring', () => {
+  it('explicit profile effort wins over disableReasoning', () => {
+    expect(resolveReasoningEffort('high', true)).toBe('high');
+    expect(resolveReasoningEffort('high', false)).toBe('high');
+    expect(resolveReasoningEffort('low', false)).toBe('low');
+  });
+
+  it('falls back to low when reasoning is disabled (worker default)', () => {
+    expect(resolveReasoningEffort(undefined, true)).toBe('low');
+  });
+
+  it('falls back to medium otherwise', () => {
+    expect(resolveReasoningEffort(undefined, false)).toBe('medium');
+    expect(resolveReasoningEffort(undefined, undefined)).toBe('medium');
+  });
+})

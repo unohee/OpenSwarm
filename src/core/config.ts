@@ -203,6 +203,7 @@ const JobProfileSchema = z.object({
   minMinutes: z.number().min(0).optional(),
   maxMinutes: z.number().min(0).optional(),
   priority: z.number().int().min(1).max(4).optional(),
+  effort: z.enum(['low', 'medium', 'high']).optional(),
   // partialRecord, not record: a profile overrides only the stages it names
   // (e.g. worker+reviewer). In Zod v4 `z.record(enum, …)` requires every enum
   // key, which rejected valid partial profiles and crashed daemon startup.

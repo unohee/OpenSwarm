@@ -8,7 +8,7 @@ import * as gitTracker from '../support/gitTracker.js';
 import { t, getPrompts } from '../locale/index.js';
 import type { WorkerContext } from '../locale/types.js';
 import type { AdapterName, ProcessContext } from '../adapters/types.js';
-import { getAdapter, spawnCli } from '../adapters/index.js';
+import { getAdapter, getDefaultAdapterName, spawnCli } from '../adapters/index.js';
 import { expandPath } from '../core/config.js';
 
 // Types
@@ -22,6 +22,8 @@ export interface WorkerOptions {
   model?: string;              // Model ID (default: adapter default)
   maxTurns?: number;           // Max agentic turns per CLI invocation
   adapterName?: AdapterName;
+  /** Reasoning effort from a jobProfile (codex-responses: low|medium|high). When set, reasoning is enabled at this effort. */
+  reasoningEffort?: 'low' | 'medium' | 'high';
   issueIdentifier?: string;    // Linear issue ID (e.g., INT-123)
   projectName?: string;        // Linear project name
   onLog?: (line: string) => void;  // Callback for stdout streaming
@@ -54,6 +56,50 @@ function buildWorkerPrompt(options: WorkerOptions): string {
   });
 }
 
+function getWorkerFallbackAdapters(primary: AdapterName): AdapterName[] {
+  const fallbackMap: Partial<Record<AdapterName, AdapterName>> = {
+    codex: 'claude',
+    'codex-responses': 'claude',
+    claude: 'codex',
+  };
+
+  const fallback = fallbackMap[primary];
+  return fallback && fallback !== primary ? [primary, fallback] : [primary];
+}
+
+function isProviderQuotaError(message?: string): boolean {
+  if (!message) return false;
+  const text = message.toLowerCase();
+
+  const hasQuotaSignal = /\bquota\b/.test(text);
+  const hasRateLimit = /\brate[-\s]?limit\b/.test(text);
+  const hasTooManyRequests = /\btoo many requests\b/.test(text);
+  const hasInsufficientQuota = /\binsufficient[_-]?quota\b/.test(text);
+  const hasUsageLimit = /\busage\b.*\blimit\b/.test(text) || /\blimit\b.*\busage\b/.test(text);
+  const hasExceededPair = /\bexceeded\b/.test(text) && /\b(quota|limit|usage)\b/.test(text);
+  const has429 = /\b429\b/.test(text) && (/\brequest\b/.test(text) || /rate/.test(text));
+  const hasBilling = /\bbilling\b/.test(text);
+
+  return (
+    hasQuotaSignal ||
+    hasRateLimit ||
+    hasTooManyRequests ||
+    hasInsufficientQuota ||
+    hasUsageLimit ||
+    hasExceededPair ||
+    has429 ||
+    hasBilling
+  );
+}
+
+function isWorkerQuotaFailure(result: WorkerResult): boolean {
+  return (
+    isProviderQuotaError(result.error) ||
+    isProviderQuotaError(result.summary) ||
+    isProviderQuotaError(result.haltReason)
+  );
+}
+
 // Worker Execution
 
 /**
@@ -63,7 +109,8 @@ function buildWorkerPrompt(options: WorkerOptions): string {
 export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
   const prompt = buildWorkerPrompt(options);
   const cwd = expandPath(options.projectPath);
-  const adapter = getAdapter(options.adapterName);
+  const primaryAdapterName = options.adapterName ?? getDefaultAdapterName();
+  const adaptersToTry = [...new Set(getWorkerFallbackAdapters(primaryAdapterName))];
 
   // Git snapshot (pre-work state)
   let snapshotHash = '';
@@ -73,20 +120,29 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
     console.log(`[Worker] Git snapshot: ${snapshotHash.slice(0, 8)}`);
   }
 
-  try {
-    // Run CLI via adapter
+  const runAttempt = async (
+    adapterName: AdapterName,
+    isFallbackAttempt: boolean
+  ): Promise<WorkerResult> => {
+    const adapter = getAdapter(adapterName);
+    // Keep user model on primary attempt; when switching adapters, let provider
+    // default resolve the model to avoid provider/model mismatch.
+    const model = isFallbackAttempt ? undefined : options.model;
+
     const raw = await spawnCli(adapter, {
       prompt,
       cwd,
       timeoutMs: options.timeoutMs,
-      model: options.model,
+      model,
       maxTurns: options.maxTurns,
       onLog: options.onLog,
       processContext: options.processContext,
       systemPrompt: getPrompts().systemPrompt,
       // Worker is a mechanical execution role — file edits, not deep reasoning.
       // Disable reasoning tokens to cut cost/latency (no-op on non-thinking models).
-      disableReasoning: true,
+      // BUT when a jobProfile sets an effort (e.g. heavy tasks), reason at that effort.
+      disableReasoning: !options.reasoningEffort,
+      reasoningEffort: options.reasoningEffort,
       nudgeMaxOnNoEdit: options.nudgeMaxOnNoEdit,
       protectedFiles: options.protectedFiles,
       bashTimeoutMs: options.bashTimeoutMs,
@@ -131,22 +187,58 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
     }
 
     return parsedResult;
-  } catch (error) {
-    const errMsg = error instanceof Error ? error.message : String(error);
-    console.error(`[Worker] Execution failed: ${errMsg}`);
-    // Log stderr hint if available (CLI spawn errors often contain useful info)
-    if (error instanceof Error && error.message.includes('code')) {
-      console.error(`[Worker] CLI exited with non-zero code — check adapter auth and permissions`);
+  };
+
+  for (let i = 0; i < adaptersToTry.length; i += 1) {
+    const adapterName = adaptersToTry[i];
+    const isFallbackAttempt = i > 0;
+
+    try {
+      if (isFallbackAttempt) {
+        const prev = adaptersToTry[i - 1];
+        const logLine = `[Worker] Usage limit on ${prev}, fallback to ${adapterName}`;
+        console.log(logLine);
+        options.onLog?.(logLine);
+      }
+
+      const result = await runAttempt(adapterName, isFallbackAttempt);
+      if (!isFallbackAttempt && isWorkerQuotaFailure(result) && adaptersToTry.length > 1) {
+        continue;
+      }
+      if (isFallbackAttempt && result.error) {
+        result.error = `[${adapterName}] ${result.error}`;
+      }
+      return result;
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      console.error(`[Worker] Execution failed (${adapterName}): ${errMsg}`);
+      if (error instanceof Error && error.message.includes('code')) {
+        console.error('[Worker] CLI exited with non-zero code — check adapter auth and permissions');
+      }
+
+      if (!isFallbackAttempt && isProviderQuotaError(errMsg) && adaptersToTry.length > 1) {
+        continue;
+      }
+
+      return {
+        success: false,
+        summary: isFallbackAttempt ? `[${adapterName}] Worker execution failed` : 'Worker execution failed',
+        filesChanged: [],
+        commands: [],
+        output: '',
+        error: isFallbackAttempt ? `[${adapterName}] ${errMsg}` : errMsg,
+      };
     }
-    return {
-      success: false,
-      summary: 'Worker execution failed',
-      filesChanged: [],
-      commands: [],
-      output: '',
-      error: errMsg,
-    };
   }
+
+  return {
+    success: false,
+    summary: 'Worker execution failed',
+    filesChanged: [],
+    commands: [],
+    output: '',
+    error: 'Worker execution failed for all configured providers',
+  };
 }
 
 // Formatting

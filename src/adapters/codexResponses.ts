@@ -38,6 +38,18 @@ type ResponsesInputItem =
   | { type: 'function_call'; call_id: string; name: string; arguments: string }
   | { type: 'function_call_output'; call_id: string; output: string };
 
+/**
+ * Resolve the reasoning effort for a Responses API request. An explicit effort
+ * (from a jobProfile) always wins; otherwise the worker's disableReasoning flag
+ * picks the cheap floor ('low'), and everything else uses 'medium'.
+ */
+export function resolveReasoningEffort(
+  reasoningEffort?: 'low' | 'medium' | 'high',
+  disableReasoning?: boolean,
+): 'low' | 'medium' | 'high' {
+  return reasoningEffort ?? (disableReasoning ? 'low' : 'medium');
+}
+
 /** The agenticLoop callApi return shape (structurally equals its ChatCompletionResponse). */
 interface ChatLikeResponse {
   choices: Array<{
@@ -301,7 +313,7 @@ export class CodexResponsesAdapter implements CliAdapter {
     // Stream the model's reasoning summary to the live log as 💭 thoughts.
     const onReasoning = options.onLog ? (line: string) => options.onLog!(`💭 ${line}`) : undefined;
     const callApi = this.createApiCaller(
-      accessToken, accountId, store, model, options.onToken, options.signal, onReasoning, options.disableReasoning,
+      accessToken, accountId, store, model, options.onToken, options.signal, onReasoning, options.disableReasoning, options.reasoningEffort,
     );
 
     const loopOptions: AgenticLoopOptions = {
@@ -348,6 +360,7 @@ export class CodexResponsesAdapter implements CliAdapter {
     signal?: AbortSignal,
     onReasoning?: (line: string) => void,
     disableReasoning?: boolean,
+    reasoningEffort?: 'low' | 'medium' | 'high',
   ) {
     let token = initialToken;
     let retried = false;
@@ -366,7 +379,7 @@ export class CodexResponsesAdapter implements CliAdapter {
       // shows 💭 thoughts (codex-responses keeps thinking in the reasoning channel
       // and emits little output_text on tool-call turns). Worker (disableReasoning)
       // uses low effort to stay cheap; other roles use medium. effort ∈ low|medium|high.
-      body.reasoning = { effort: disableReasoning ? 'low' : 'medium', summary: 'auto' };
+      body.reasoning = { effort: resolveReasoningEffort(reasoningEffort, disableReasoning), summary: 'auto' };
       // NOTE: never set max_output_tokens — the Codex backend rejects it with HTTP 400.
 
       const doCall = async (accessToken: string): Promise<ChatLikeResponse> => {
