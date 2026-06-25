@@ -7,7 +7,7 @@
 // ============================================
 
 import { describe, it, expect } from 'vitest';
-import { compactPriorTurns, toolCallKey, allToolCallsSeen, type ChatMessage } from './agenticLoop.js';
+import { compactPriorTurns, toolCallKey, allToolCallsSeen, shouldNudgeReadLoop, READ_LOOP_NUDGE_AT, type ChatMessage } from './agenticLoop.js';
 import type { ToolCall } from './tools.js';
 
 describe('progress-based stop helpers', () => {
@@ -132,5 +132,21 @@ describe('compactPriorTurns', () => {
       (m) => m.role === 'assistant' && typeof m.content === 'string' && m.content.startsWith('[Prior turns compacted]'),
     );
     expect(summaries.length).toBeLessThanOrEqual(1);
+  });
+});
+
+describe('shouldNudgeReadLoop — early read-loop nudge (ported 8a1420f)', () => {
+  it('nudges once past the early turn with zero edits and budget left', () => {
+    expect(shouldNudgeReadLoop(0, 0, 3, READ_LOOP_NUDGE_AT)).toBe(true);
+    expect(shouldNudgeReadLoop(0, 0, 3, READ_LOOP_NUDGE_AT + 5)).toBe(true);
+  });
+  it('does NOT nudge before the early turn', () => {
+    expect(shouldNudgeReadLoop(0, 0, 3, READ_LOOP_NUDGE_AT - 1)).toBe(false);
+  });
+  it('does NOT nudge once an edit has happened', () => {
+    expect(shouldNudgeReadLoop(1, 0, 3, READ_LOOP_NUDGE_AT + 5)).toBe(false);
+  });
+  it('stops nudging once the budget is exhausted', () => {
+    expect(shouldNudgeReadLoop(0, 3, 3, READ_LOOP_NUDGE_AT + 5)).toBe(false);
   });
 });

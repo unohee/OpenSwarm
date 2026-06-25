@@ -325,8 +325,11 @@ describe('ReadCache', () => {
     expect(first.content).not.toContain('unchanged');
 
     const second = await executeTool(makeCall('read_file', { path: filePath }), TMP_DIR, cache);
-    expect(second.content).toContain('unchanged since last read');
-    expect(second.content).toContain('hello'); // still carries the content
+    // New behavior: a re-read returns a STUB (content omitted to save context),
+    // not the full content again — re-injecting it is what bloats read-heavy workers.
+    expect(second.content).toContain('already read');
+    expect(second.content).toContain('UNCHANGED');
+    expect(second.content).not.toContain('hello'); // content NOT re-injected
   });
 
   it('invalidates the cache after edit_file so the next read is fresh', async () => {
@@ -385,12 +388,12 @@ describe('ReadCache', () => {
       await executeTool(makeCall('read_file', { path: filePath, offset: off, limit: 1 }), TMP_DIR, cache);
     }
 
-    // The evicted entry re-reads from disk (no "unchanged" marker)...
+    // The evicted entry re-reads from disk (no cache-stub marker)...
     const evicted = await executeTool(makeCall('read_file', { path: filePath, offset: 0, limit: 1 }), TMP_DIR, cache);
-    expect(evicted.content).not.toContain('unchanged');
-    // ...while a recently-read entry is still cached.
+    expect(evicted.content).not.toContain('already read');
+    // ...while a recently-read entry is still cached (returns the stub).
     const recent = await executeTool(makeCall('read_file', { path: filePath, offset: 64, limit: 1 }), TMP_DIR, cache);
-    expect(recent.content).toContain('unchanged since last read');
+    expect(recent.content).toContain('already read');
   });
 });
 

@@ -271,9 +271,14 @@ export async function executeTool(
         // 모델에게 "변경 없음"을 알려 추가 확인 read를 유도하지 않는다.
         const cached = cache ? cacheGet(cache, cacheKey) : undefined;
         if (cached !== undefined) {
+          // Re-read of the same range: return a STUB, not the full content. Re-
+          // injecting the content every time is what bloats a read-heavy worker's
+          // context (measured: 37 identical reads → 575k tokens). The content is
+          // already earlier in the conversation; point the model back to it instead
+          // of duplicating it. (Use a different offset to see other parts.)
           return {
             tool_call_id: callId,
-            content: `(unchanged since last read — cached)\n${cached}`,
+            content: `(already read ${args.path} [lines ${offset + 1}-${offset + limit}] earlier this turn-loop — UNCHANGED. Content omitted to save context; use what you already read above. To see other parts, read with a different offset. Otherwise stop reading and act.)`,
             is_error: false,
           };
         }

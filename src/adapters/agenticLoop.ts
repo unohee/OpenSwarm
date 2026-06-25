@@ -359,6 +359,22 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
         onLog?.(`  ✖ ${content.slice(0, 100)}`);
       }
     }
+
+    // Early read-loop nudge (ported from stranded feat/v0.7.0 8a1420f): a read-heavy
+    // model can burn its whole budget reading/searching and never edit — the
+    // finish-turn no-edit guard above never engages because it never tries to finish.
+    // Fire DURING the loop at a fixed early turn so the model still has budget to edit.
+    if (shouldNudgeReadLoop(editToolCount, nudgesUsed, nudgeMaxOnNoEdit, turn)) {
+      nudgesUsed++;
+      onLog?.(`↩ Read-loop nudge: turn ${turn}, no edits yet (nudge ${nudgesUsed}/${nudgeMaxOnNoEdit})`);
+      messages.push({
+        role: 'user',
+        content:
+          'You have spent several turns reading/searching with ZERO edits. You have enough ' +
+          'context now — STOP reading and apply the fix with edit_file immediately, then verify. ' +
+          'Do not read more files unless an edit actually fails.',
+      });
+    }
   }
 
   // Final answer turn — maxTurns/타임아웃으로 끊겼는데 모델이 최종 텍스트를 못 낸 경우,
@@ -424,6 +440,23 @@ export function toolCallKey(tc: ToolCall): string {
 export function allToolCallsSeen(toolCalls: ToolCall[], seen: Set<string>): boolean {
   if (toolCalls.length === 0) return false;
   return toolCalls.every((tc) => seen.has(toolCallKey(tc)));
+}
+
+/**
+ * Fixed early turn after which a read-heavy worker with zero edits gets nudged to
+ * act. Ported from stranded feat/v0.7.0 (8a1420f): the old guard fired at
+ * maxTurns-2 (too late). Fire EARLY so the model still has budget to apply edits.
+ */
+export const READ_LOOP_NUDGE_AT = 6;
+
+/** True when a worker has read/searched past the early budget with no edits yet. */
+export function shouldNudgeReadLoop(
+  editToolCount: number,
+  nudgesUsed: number,
+  nudgeMax: number,
+  turn: number,
+): boolean {
+  return editToolCount === 0 && nudgesUsed < nudgeMax && turn >= READ_LOOP_NUDGE_AT;
 }
 
 // ============ 히스토리 압축 (VEGA compaction.py 패턴 이식) ============

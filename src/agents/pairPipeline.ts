@@ -568,6 +568,12 @@ export class PairPipeline extends EventEmitter {
             maxTurns: this.config.roles?.worker?.maxTurns,
             adapterName: this.config.roles?.worker?.adapter,
             reasoningEffort: this.getEffortForTask(context.task),
+            // No-edit guard (re-applied from stranded feat/v0.7.0 commit 2eea3bc):
+            // reasoning workers frequently end with analysis only and never call
+            // edit_file. Without this the guard defaults to 0 (disabled) — measured:
+            // codex spark AND gpt-5.5 both read 30-37× and shipped 0 edits. Push the
+            // worker to actually edit before concluding.
+            nudgeMaxOnNoEdit: 3,
             issueIdentifier: context.task.issueIdentifier || context.task.issueId,
             projectName: context.task.linearProject?.name,
             onLog,
