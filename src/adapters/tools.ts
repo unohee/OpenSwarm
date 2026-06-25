@@ -11,6 +11,7 @@ import { promisify } from 'node:util';
 import path from 'node:path';
 import { webFetch, webSearch } from './webTools.js';
 import { isMcpTool, callMcpTool } from '../mcp/mcpClient.js';
+import { applyV4APatch } from './applyPatch.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -120,6 +121,39 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
 ];
+
+// apply_patch — gated to codex adapters only (codex models are RLHF-trained on the
+// V4A format; non-codex models emit valid-looking-but-wrong V4A, so they keep
+// edit_file). NOT part of TOOL_DEFINITIONS; the agentic loop adds it when
+// `applyPatch` is enabled. The V4A spec lives in the description so the model gets
+// it with the tool schema.
+export const APPLY_PATCH_TOOL: ToolDefinition = {
+  type: 'function',
+  function: {
+    name: 'apply_patch',
+    description:
+      'Edit files with a V4A patch. The "input" argument MUST be exactly:\n' +
+      '*** Begin Patch\n' +
+      '*** Update File: <relative path>\n' +
+      '@@ <optional symbol/context to disambiguate>\n' +
+      ' <unchanged context line>\n' +
+      '-<line to remove>\n' +
+      '+<line to add>\n' +
+      ' <unchanged context line>\n' +
+      '*** End Patch\n' +
+      'Rules: relative paths only; include ~3 unchanged context lines around each change so the hunk anchors uniquely; ' +
+      'context/removed lines must match the file EXACTLY. Use "*** Add File: <path>" (body is all "+" lines) to create, ' +
+      '"*** Delete File: <path>" to remove, and "*** Move to: <path>" after an Update File header to rename. ' +
+      'Prefer this over editing by hand — it is the most reliable way to change code.',
+    parameters: {
+      type: 'object',
+      properties: {
+        input: { type: 'string', description: 'The full V4A patch (one "*** Begin Patch" … "*** End Patch" envelope).' },
+      },
+      required: ['input'],
+    },
+  },
+};
 
 // ============ 안전 가드 ============
 
@@ -347,6 +381,39 @@ export async function executeTool(
           content: `Edited: ${filePath}\nResulting region:\n${snippet}`,
           is_error: false,
         };
+      }
+
+      case 'apply_patch': {
+        // V4A patch (codex-native edit format). Validate each touched path + protect
+        // the verification harness, then apply via the shared applier.
+        const patchText: string = args.input ?? args.patch ?? '';
+        if (!/\*\*\* Begin Patch/.test(patchText)) {
+          return { tool_call_id: callId, content: 'apply_patch: "input" must be a V4A patch starting with "*** Begin Patch".', is_error: true };
+        }
+        const protectedHit = patchText
+          .split('\n')
+          .map((l) => l.match(/^\*\*\* (?:Update|Add|Delete) File: (.+)$/)?.[1]?.trim())
+          .filter((p): p is string => !!p)
+          .find((p) => isProtected(validatePath(p, cwd), execOptions?.protectedFiles));
+        if (protectedHit) {
+          return {
+            tool_call_id: callId,
+            content: `PROTECTED: ${protectedHit} is part of the verification harness and must not be modified. ` +
+              `If tests fail, the cause is in the SOURCE code (or your fix) — debug from the test output instead.`,
+            is_error: true,
+          };
+        }
+        const { changed, errors } = await applyV4APatch(patchText, cwd, (p) => validatePath(p, cwd));
+        for (const rel of changed) invalidateCache(cache, validatePath(rel, cwd));
+        if (errors.length > 0) {
+          return {
+            tool_call_id: callId,
+            content: `apply_patch ${changed.length ? `partially applied (${changed.join(', ')}); ` : 'failed; '}errors:\n${errors.join('\n')}\n` +
+              `Fix: ensure context/removed lines match the file EXACTLY (read the file first), then resend the patch.`,
+            is_error: true,
+          };
+        }
+        return { tool_call_id: callId, content: `Patched: ${changed.join(', ')}`, is_error: false };
       }
 
       case 'search_files': {

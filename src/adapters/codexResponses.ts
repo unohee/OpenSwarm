@@ -283,8 +283,15 @@ export class CodexResponsesAdapter implements CliAdapter {
 
   /** Default = top model from the Codex OAuth catalog (live/local), else constant. */
   async getDefaultModel(): Promise<string> {
-    const [first] = await getCodexModelIds();
-    return first ?? DEFAULT_MODEL;
+    // gpt-5.3-codex-spark read-paralyzes in our agentic worker harness — 0 edits at
+    // 458k tokens (verified 2026-06-25), while every other codex model from
+    // gpt-5.4-mini up edits fine (mini: 182k, 2 apply_patch). It's the live list's
+    // first entry, so a no-model fallthrough (e.g. a task with no estimate that
+    // matches no jobProfile) would silently pick the one broken model. Exclude it and
+    // prefer the cheapest capable model. Roles/profiles that pass an explicit model
+    // are unaffected.
+    const ids = (await getCodexModelIds()).filter((m) => m !== 'gpt-5.3-codex-spark');
+    return ids.find((m) => m === 'gpt-5.4-mini') ?? ids[0] ?? DEFAULT_MODEL;
   }
 
   async run(options: CliRunOptions): Promise<CliRunResult> {
@@ -337,6 +344,10 @@ export class CodexResponsesAdapter implements CliAdapter {
       bashTimeoutMs: options.bashTimeoutMs,
       webTools: options.webTools,
       mcpTools: options.mcpTools,
+      // codex models are RLHF-trained on the V4A apply_patch format — expose it as
+      // the primary edit tool (edit_file stays as fallback). Verified: gpt-5.3-codex-spark
+      // emits clean V4A here, whereas non-codex adapters keep edit_file only.
+      applyPatch: true,
       signal: options.signal,
     };
 

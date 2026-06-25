@@ -6,7 +6,7 @@
 //          VEGA token_count.py 패턴 이식 — 토큰 기반 히스토리 압축.
 // ============================================
 
-import { TOOL_DEFINITIONS, executeToolCalls, createReadCache, type ToolCall, type ToolResult, type ToolDefinition } from './tools.js';
+import { TOOL_DEFINITIONS, APPLY_PATCH_TOOL, executeToolCalls, createReadCache, type ToolCall, type ToolResult, type ToolDefinition } from './tools.js';
 import { WEB_TOOL_DEFINITIONS } from './webTools.js';
 import type { CliRunResult } from './types.js';
 
@@ -120,6 +120,9 @@ export interface AgenticLoopOptions {
   bashTimeoutMs?: number;
   /** Expose web_fetch + web_search tools (default true). Disabled e.g. for SWE-bench integrity. */
   webTools?: boolean;
+  /** Expose the apply_patch (V4A) tool — codex adapters only (codex models are
+   * RLHF-trained on V4A; non-codex models emit malformed V4A). Default false. */
+  applyPatch?: boolean;
   /** MCP tools (named `server__tool`) discovered from mcp.json, exposed alongside the native tools. */
   mcpTools?: ToolDefinition[];
   /** Abort the loop (checked each turn) — Esc/Ctrl+C in chat. */
@@ -172,6 +175,7 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
     protectedFiles,
     bashTimeoutMs,
     webTools = true,
+    applyPatch = false,
     mcpTools,
     signal,
   } = options;
@@ -197,6 +201,7 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
   const tools = enableTools
     ? [
         ...TOOL_DEFINITIONS,
+        ...(applyPatch ? [APPLY_PATCH_TOOL] : []),
         ...(webTools ? WEB_TOOL_DEFINITIONS : []),
         ...(mcpTools ?? []),
       ]
@@ -330,7 +335,7 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
     // (old_string not found, protected file) has not modified anything, and
     // counting attempts would let it slip past the no-edit guard.
     editToolCount += toolCalls.filter((tc, i) =>
-      (tc.function.name === 'edit_file' || tc.function.name === 'write_file') && !results[i]?.is_error,
+      (tc.function.name === 'edit_file' || tc.function.name === 'write_file' || tc.function.name === 'apply_patch') && !results[i]?.is_error,
     ).length;
 
     // Progress-based stop: if every tool call this turn repeats a prior one

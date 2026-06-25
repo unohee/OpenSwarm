@@ -1,0 +1,150 @@
+// V4A patch applier — the format codex models (gpt-5.x, gpt-5.3-codex-spark) are
+// RLHF-trained to emit. The ChatGPT codex backend has NO built-in apply_patch tool
+// (verified: HTTP 400 "Unsupported tool type: apply_patch"), so apply_patch is
+// exposed as an ordinary function tool and the patch is applied here. Non-codex
+// models emit structurally-valid-but-wrong V4A (phantom context), so this tool is
+// gated to codex adapters only — others keep edit_file.
+
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
+
+export interface ApplyPatchResult {
+  changed: string[]; // paths touched (as written in the patch)
+  errors: string[];
+}
+
+interface Hunk {
+  oldBlock: string[]; // context + removed lines, in order (the text to find)
+  newBlock: string[]; // context + added lines, in order (the replacement)
+}
+interface FileOp {
+  kind: 'update' | 'add' | 'delete';
+  filePath: string;
+  moveTo?: string;
+  hunks: Hunk[];
+  addLines: string[];
+}
+
+const BEGIN = '*** Begin Patch';
+const END = '*** End Patch';
+
+/** Parse a V4A patch envelope into file operations. Throws on malformed envelope. */
+export function parseV4A(patchText: string): FileOp[] {
+  const lines = patchText.replace(/\r\n/g, '\n').split('\n');
+  let i = 0;
+  while (i < lines.length && lines[i].trim() !== BEGIN) i++;
+  if (i >= lines.length) throw new Error('missing "*** Begin Patch"');
+  i++; // skip Begin
+
+  const ops: FileOp[] = [];
+  let cur: FileOp | null = null;
+  let curHunk: Hunk | null = null;
+
+  const pushHunk = () => {
+    if (cur && curHunk && (curHunk.oldBlock.length || curHunk.newBlock.length)) cur.hunks.push(curHunk);
+    curHunk = null;
+  };
+  const pushOp = () => { pushHunk(); if (cur) ops.push(cur); cur = null; };
+
+  for (; i < lines.length; i++) {
+    const line = lines[i];
+    const t = line.trim();
+    if (t === END) { pushOp(); return ops; }
+
+    let m: RegExpMatchArray | null;
+    if ((m = t.match(/^\*\*\* Update File: (.+)$/))) {
+      pushOp();
+      cur = { kind: 'update', filePath: m[1].trim(), hunks: [], addLines: [] };
+    } else if ((m = t.match(/^\*\*\* Add File: (.+)$/))) {
+      pushOp();
+      cur = { kind: 'add', filePath: m[1].trim(), hunks: [], addLines: [] };
+    } else if ((m = t.match(/^\*\*\* Delete File: (.+)$/))) {
+      pushOp();
+      cur = { kind: 'delete', filePath: m[1].trim(), hunks: [], addLines: [] };
+    } else if ((m = t.match(/^\*\*\* Move to: (.+)$/))) {
+      if (cur) cur.moveTo = m[1].trim();
+    } else if (t.startsWith('@@')) {
+      pushHunk();
+      curHunk = { oldBlock: [], newBlock: [] };
+    } else if (cur?.kind === 'add') {
+      // Add File: body is all '+' lines.
+      cur.addLines.push(line.startsWith('+') ? line.slice(1) : line);
+    } else if (cur?.kind === 'update') {
+      if (!curHunk) curHunk = { oldBlock: [], newBlock: [] };
+      const marker = line[0];
+      const body = line.slice(1);
+      if (marker === '-') { curHunk.oldBlock.push(body); }
+      else if (marker === '+') { curHunk.newBlock.push(body); }
+      else { // context line (leading space, or a bare line)
+        const ctx = marker === ' ' ? body : line;
+        curHunk.oldBlock.push(ctx);
+        curHunk.newBlock.push(ctx);
+      }
+    }
+  }
+  // No explicit End marker — finalize what we have.
+  pushOp();
+  return ops;
+}
+
+/** Locate `block` in `content` lines; return start index, or -1. Tries exact, then trimEnd-fuzzy. */
+function findBlock(contentLines: string[], block: string[]): number {
+  if (block.length === 0) return -1;
+  const eq = (a: string, b: string) => a === b;
+  const fuzzy = (a: string, b: string) => a.trimEnd() === b.trimEnd();
+  for (const cmp of [eq, fuzzy]) {
+    outer: for (let i = 0; i + block.length <= contentLines.length; i++) {
+      for (let j = 0; j < block.length; j++) if (!cmp(contentLines[i + j], block[j])) continue outer;
+      return i;
+    }
+  }
+  return -1;
+}
+
+/** Apply a parsed V4A patch under `cwd`. Returns touched paths + per-op errors. */
+export async function applyV4APatch(
+  patchText: string,
+  cwd: string,
+  resolvePath: (p: string) => string,
+): Promise<ApplyPatchResult> {
+  const ops = parseV4A(patchText);
+  const changed: string[] = [];
+  const errors: string[] = [];
+
+  for (const op of ops) {
+    try {
+      const abs = resolvePath(op.filePath);
+      if (op.kind === 'delete') {
+        await fs.rm(abs);
+        changed.push(op.filePath);
+        continue;
+      }
+      if (op.kind === 'add') {
+        await fs.mkdir(path.dirname(abs), { recursive: true });
+        await fs.writeFile(abs, op.addLines.join('\n'), 'utf-8');
+        changed.push(op.filePath);
+        continue;
+      }
+      // update
+      const original = await fs.readFile(abs, 'utf-8');
+      let lines = original.split('\n');
+      for (const hunk of op.hunks) {
+        const at = findBlock(lines, hunk.oldBlock);
+        if (at < 0) {
+          throw new Error(`hunk context not found in ${op.filePath} (old block: ${JSON.stringify(hunk.oldBlock.slice(0, 2))}…)`);
+        }
+        lines = [...lines.slice(0, at), ...hunk.newBlock, ...lines.slice(at + hunk.oldBlock.length)];
+      }
+      const target = op.moveTo ? resolvePath(op.moveTo) : abs;
+      if (op.moveTo) {
+        await fs.mkdir(path.dirname(target), { recursive: true });
+        await fs.rm(abs).catch(() => {});
+      }
+      await fs.writeFile(target, lines.join('\n'), 'utf-8');
+      changed.push(op.moveTo ?? op.filePath);
+    } catch (err) {
+      errors.push(`${op.filePath}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  return { changed, errors };
+}
