@@ -200,9 +200,12 @@ ${workerReport}
   "decision": "approve" | "revise" | "reject",
   "feedback": "전체적인 피드백 (1-3문장)",
   "issues": ["발견된 문제점 목록 (없으면 빈 배열)"],
-  "suggestions": ["개선 제안 목록 (없으면 빈 배열)"]
+  "suggestions": ["개선 제안 목록 (없으면 빈 배열)"],
+  "recommendedActions": [{ "type": "test|refactor|bug|docs|perf", "title": "별도 이슈로 등록할 후속 작업", "location": "file:line (선택)" }]
 }
 \`\`\`
+
+\`recommendedActions\`는 이번 변경의 blocker가 아니라 별도 이슈로 추적할 만한 구체적 후속 작업이다. 없으면 빈 배열.
 
 `;
   },

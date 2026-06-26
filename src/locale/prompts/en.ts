@@ -200,9 +200,12 @@ After review, output results in the following JSON format:
   "decision": "approve" | "revise" | "reject",
   "feedback": "Overall feedback (1-3 sentences)",
   "issues": ["List of found issues (empty array if none)"],
-  "suggestions": ["List of improvement suggestions (empty array if none)"]
+  "suggestions": ["List of improvement suggestions (empty array if none)"],
+  "recommendedActions": [{ "type": "test|refactor|bug|docs|perf", "title": "Short follow-up to file as its own issue", "location": "file:line (optional)" }]
 }
 \`\`\`
+
+\`recommendedActions\` are concrete follow-ups worth tracking as separate issues (NOT blockers for this change). Use an empty array if none.
 
 `;
   },

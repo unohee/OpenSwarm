@@ -466,6 +466,16 @@ function normalizeReviewResult(parsed: Record<string, unknown>): ReviewResult {
     suggestions: Array.isArray(parsed.suggestions)
       ? parsed.suggestions.filter((v): v is string => typeof v === 'string')
       : [],
+    recommendedActions: Array.isArray(parsed.recommendedActions)
+      ? parsed.recommendedActions
+          .filter((a): a is Record<string, unknown> => !!a && typeof a === 'object')
+          .map((a) => ({
+            type: typeof a.type === 'string' && a.type ? a.type : 'follow-up',
+            title: typeof a.title === 'string' ? a.title.trim() : '',
+            location: typeof a.location === 'string' ? a.location : undefined,
+          }))
+          .filter((a) => a.title.length > 0)
+      : undefined,
   };
 }
 

@@ -74,10 +74,28 @@ function extractReviewerResultJson(text: string): ReviewResult | null {
       suggestions: Array.isArray(parsed.suggestions)
         ? parsed.suggestions.filter((v: unknown): v is string => typeof v === 'string')
         : [],
+      recommendedActions: parseRecommendedActions(parsed.recommendedActions),
     };
   } catch {
     return null;
   }
+}
+
+/**
+ * Parse the reviewer's `recommendedActions` into structured follow-ups. Filed as
+ * sub-issues on approve by fileReviewerFollowups (INT-1704). (INT-1954)
+ */
+function parseRecommendedActions(raw: unknown): ReviewResult['recommendedActions'] {
+  if (!Array.isArray(raw)) return undefined;
+  const actions = raw
+    .filter((a): a is Record<string, unknown> => !!a && typeof a === 'object')
+    .map((a) => ({
+      type: typeof a.type === 'string' && a.type ? a.type : 'follow-up',
+      title: typeof a.title === 'string' ? a.title.trim() : '',
+      location: typeof a.location === 'string' ? a.location : undefined,
+    }))
+    .filter((a) => a.title.length > 0);
+  return actions.length ? actions : undefined;
 }
 
 /** Text fallback when no JSON reviewer result is present. */
