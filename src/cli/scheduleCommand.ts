@@ -18,7 +18,10 @@ export function formatScheduleList(jobs: ScheduledJob[]): string {
     .map((j) => {
       const state = j.enabled ? '▶' : '⏸';
       const last = j.lastRun ? ` (last: ${new Date(j.lastRun).toISOString()})` : '';
-      return `  ${state} ${j.name} — ${j.schedule} — ${j.prompt}${last}`;
+      const fails = j.consecutiveFailures
+        ? ` ⚠ ${j.consecutiveFailures} consecutive failure(s)${j.enabled ? '' : ' — auto-paused'}`
+        : '';
+      return `  ${state} ${j.name} — ${j.schedule} — ${j.prompt}${last}${fails}`;
     })
     .join('\n');
 }

@@ -27,6 +27,25 @@ export interface ScheduledJob {
   createdAt: number;
   lastRun?: number;
   createdBy?: string; // Discord user
+  /** Consecutive failed runs; reset on success. Auto-paused at the threshold. (INT-1958) */
+  consecutiveFailures?: number;
+}
+
+/** Consecutive failures before a schedule auto-pauses itself. (INT-1958) */
+export const MAX_CONSECUTIVE_FAILURES = 3;
+
+/**
+ * Pure: next failure state for a run. Success resets the counter; failures
+ * increment and trigger auto-pause once the threshold is reached. (INT-1958)
+ */
+export function nextFailureState(
+  current: number,
+  success: boolean,
+  threshold = MAX_CONSECUTIVE_FAILURES,
+): { consecutiveFailures: number; autoPause: boolean } {
+  if (success) return { consecutiveFailures: 0, autoPause: false };
+  const consecutiveFailures = current + 1;
+  return { consecutiveFailures, autoPause: consecutiveFailures >= threshold };
 }
 
 // Job result interface
@@ -244,12 +263,28 @@ async function runScheduledJob(job: ScheduledJob): Promise<void> {
       resultListener(result);
     }
 
-    // Update last run time
+    // Update last run + consecutive-failure tracking; auto-pause on repeated failure.
+    const fs = nextFailureState(job.consecutiveFailures ?? 0, success);
     const schedules = await loadSchedules();
     const updated = schedules.map((s) =>
-      s.id === job.id ? { ...s, lastRun: Date.now() } : s
+      s.id === job.id
+        ? {
+            ...s,
+            lastRun: Date.now(),
+            consecutiveFailures: fs.consecutiveFailures,
+            enabled: fs.autoPause ? false : s.enabled,
+          }
+        : s
     );
     await saveSchedules(updated);
+
+    if (fs.autoPause) {
+      activeJobs.get(job.id)?.stop();
+      activeJobs.delete(job.id);
+      const msg = `[Scheduler] Job "${job.name}" auto-paused after ${fs.consecutiveFailures} consecutive failures — fix it and re-enable with \`openswarm schedule pause ${job.name}\``;
+      console.warn(msg);
+      resultListener?.({ ...result, output: `${result.output}\n${msg}`.trim() });
+    }
 
     console.log(
       `[Scheduler] Job ${job.name} ${success ? 'completed' : 'failed'} (${Math.round((result.finishedAt - startedAt) / 1000)}s)`

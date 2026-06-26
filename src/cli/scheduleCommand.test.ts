@@ -30,6 +30,11 @@ describe('formatScheduleList (INT-1957)', () => {
   it('helps when empty', () => {
     expect(formatScheduleList([])).toMatch(/No schedules/);
   });
+
+  it('flags consecutive failures and auto-pause (INT-1958)', () => {
+    expect(formatScheduleList([job({ consecutiveFailures: 2 })])).toContain('⚠ 2 consecutive failure(s)');
+    expect(formatScheduleList([job({ enabled: false, consecutiveFailures: 3 })])).toContain('auto-paused');
+  });
 });
 
 describe('runScheduleCommand (INT-1957)', () => {
