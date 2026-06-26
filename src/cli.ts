@@ -171,6 +171,24 @@ program
     }
   });
 
+// openswarm schedule add|list|remove|pause
+
+program
+  .command('schedule')
+  .description('Schedule agent tasks on a cron/interval (run by the daemon)')
+  .argument('<action>', 'add | list | remove | pause')
+  .argument('[args...]', 'add: <name> <cron|interval> <task...>; remove/pause: <name>')
+  .option('--path <path>', 'Project path for the task (default: cwd)')
+  .action(async (action: string, args: string[], opts: { path?: string }) => {
+    const { runScheduleCommand } = await import('./cli/scheduleCommand.js');
+    try {
+      console.log(await runScheduleCommand(action, args ?? [], { path: opts.path }));
+    } catch (e) {
+      console.error(e instanceof Error ? e.message : String(e));
+      process.exitCode = 1;
+    }
+  });
+
 // openswarm design-pipeline
 
 program
