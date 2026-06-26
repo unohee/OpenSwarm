@@ -13,10 +13,23 @@ export function spinnerFrame(tick: number): string {
   return FRAMES[((tick % FRAMES.length) + FRAMES.length) % FRAMES.length];
 }
 
+/** Collapse newlines/whitespace runs to single spaces so a note stays one line. Pure. */
+export function oneLine(s: string): string {
+  return s.replace(/\s+/g, ' ').trim();
+}
+
+/** Truncate to width (with an ellipsis) so the spinner never wraps. Pure. */
+export function truncateLine(s: string, width: number): string {
+  if (width <= 0 || s.length <= width) return s;
+  if (width <= 1) return s.slice(0, width);
+  return `${s.slice(0, width - 1)}…`;
+}
+
 /** One progress line: `⠙ reviewing… 3s · 🔧 read_file`. Pure. */
-export function formatProgress(tick: number, elapsedSec: number, last?: string): string {
+export function formatProgress(tick: number, elapsedSec: number, last?: string, width?: number): string {
   const base = `${spinnerFrame(tick)} reviewing… ${elapsedSec}s`;
-  return last ? `${base} · ${last}` : base;
+  const line = last ? `${base} · ${last}` : base;
+  return width ? truncateLine(line, width) : line;
 }
 
 export interface ReviewProgressDeps {
@@ -25,6 +38,8 @@ export interface ReviewProgressDeps {
   setIntervalFn?: (fn: () => void, ms: number) => ReturnType<typeof setInterval>;
   clearIntervalFn?: (h: ReturnType<typeof setInterval>) => void;
   intervalMs?: number;
+  /** Terminal width to truncate the line to (default stdout.columns ?? 80). */
+  columns?: number;
 }
 
 export interface ReviewProgress {
@@ -46,6 +61,7 @@ export function startReviewProgress(deps: ReviewProgressDeps = {}): ReviewProgre
   const setIntervalFn = deps.setIntervalFn ?? setInterval;
   const clearIntervalFn = deps.clearIntervalFn ?? clearInterval;
   const intervalMs = deps.intervalMs ?? 200;
+  const columns = deps.columns ?? process.stdout.columns ?? 80;
 
   const start = now();
   let tick = 0;
@@ -53,7 +69,8 @@ export function startReviewProgress(deps: ReviewProgressDeps = {}): ReviewProgre
 
   const render = () => {
     const elapsedSec = Math.max(0, Math.floor((now() - start) / 1000));
-    write(`${CLEAR_LINE}${formatProgress(tick, elapsedSec, last)}`);
+    // Single line, truncated to width — a multi-line note must never stack. (INT-1966)
+    write(`${CLEAR_LINE}${formatProgress(tick, elapsedSec, last, columns)}`);
     tick += 1;
   };
 
@@ -62,7 +79,7 @@ export function startReviewProgress(deps: ReviewProgressDeps = {}): ReviewProgre
 
   return {
     note: (line: string) => {
-      last = line.trim() || last;
+      last = oneLine(line) || last;
     },
     stop: () => {
       clearIntervalFn(handle);

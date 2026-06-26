@@ -26,6 +26,14 @@ describe('formatReviewOutput (INT-1955)', () => {
     expect(out).toContain('- add a test');
     expect(out).toContain('[test] cover edge case (a.ts:3)');
   });
+
+  it('color mode wraps with ANSI but keeps plain substrings (INT-1966)', () => {
+    const review: ReviewResult = { decision: 'reject', feedback: 'nope' };
+    const colored = formatReviewOutput(review, true);
+    expect(colored).toContain('\x1b['); // has ANSI codes
+    expect(colored).toContain('Decision: REJECT'); // substring still intact
+    expect(formatReviewOutput(review, false)).not.toContain('\x1b['); // plain by default
+  });
 });
 
 describe('runReviewCommand (INT-1955)', () => {
@@ -104,6 +112,23 @@ describe('runReviewCommand (INT-1955)', () => {
     expect(stop).toHaveBeenCalled();
     // activity went to the spinner, not the plain log
     expect(logs.join('\n')).not.toContain('· 🔧 edit_file');
+  });
+
+  it('hints about --file when follow-ups exist but no parent issue is given (INT-1966)', async () => {
+    const logs: string[] = [];
+    await runReviewCommand(
+      {},
+      {
+        getChangedFiles: async () => ['x.ts'],
+        review: async () =>
+          ({ decision: 'approve', feedback: 'ok', recommendedActions: [{ type: 'test', title: 't' }] }) as ReviewResult,
+        startProgress: () => null,
+        log: (l) => logs.push(l),
+      },
+    );
+    const out = logs.join('\n');
+    expect(out).toMatch(/1 follow-up\(s\) suggested/);
+    expect(out).toContain('--file');
   });
 
   it('does not file when there are no recommendedActions', async () => {

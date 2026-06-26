@@ -22,24 +22,46 @@ export function buildReviewWorkerResult(changedFiles: string[], summary?: string
   };
 }
 
-/** Render a review verdict for the terminal. */
-export function formatReviewOutput(review: ReviewResult): string {
+// Minimal ANSI helpers — no extra dep. Wrappers only, so plain substrings
+// (e.g. 'Decision: APPROVE') survive for tests/grep. (INT-1966)
+const ANSI = {
+  reset: '\x1b[0m',
+  bold: '\x1b[1m',
+  dim: '\x1b[2m',
+  green: '\x1b[32m',
+  yellow: '\x1b[33m',
+  red: '\x1b[31m',
+  cyan: '\x1b[36m',
+};
+
+/**
+ * Render a review verdict for the terminal. `color` adds ANSI styling (decision
+ * green/yellow/red, bold section headers, dim locations); off → plain text. (INT-1966)
+ */
+export function formatReviewOutput(review: ReviewResult, color = false): string {
+  const c = (code: string, s: string) => (color ? `${code}${s}${ANSI.reset}` : s);
+  const header = (s: string) => c(ANSI.bold, s);
+  const decisionColor =
+    review.decision === 'approve' ? ANSI.green : review.decision === 'reject' ? ANSI.red : ANSI.yellow;
+
   const lines: string[] = [];
   const mark = review.decision === 'approve' ? '✓' : review.decision === 'reject' ? '✗' : '✎';
-  lines.push(`${mark} Decision: ${review.decision.toUpperCase()}`);
+  lines.push(c(decisionColor, `${c(ANSI.bold, mark)} Decision: ${review.decision.toUpperCase()}`));
   if (review.feedback) lines.push(`  ${review.feedback}`);
   if (review.issues?.length) {
-    lines.push('  Issues:');
-    review.issues.forEach((i) => lines.push(`    - ${i}`));
+    lines.push(`  ${header('Issues:')}`);
+    review.issues.forEach((i) => lines.push(`    ${c(ANSI.red, '-')} ${i}`));
   }
   if (review.suggestions?.length) {
-    lines.push('  Suggestions:');
-    review.suggestions.forEach((s) => lines.push(`    - ${s}`));
+    lines.push(`  ${header('Suggestions:')}`);
+    review.suggestions.forEach((s) => lines.push(`    ${c(ANSI.cyan, '-')} ${s}`));
   }
   if (review.recommendedActions?.length) {
-    lines.push('  Recommended follow-ups:');
+    lines.push(`  ${header('Recommended follow-ups:')}`);
     review.recommendedActions.forEach((a) =>
-      lines.push(`    - [${a.type}] ${a.title}${a.location ? ` (${a.location})` : ''}`),
+      lines.push(
+        `    - ${c(ANSI.cyan, `[${a.type}]`)} ${a.title}${a.location ? ` ${c(ANSI.dim, `(${a.location})`)}` : ''}`,
+      ),
     );
   }
   return lines.join('\n');
@@ -110,9 +132,10 @@ export async function runReviewCommand(
   } finally {
     progress?.stop();
   }
-  log(formatReviewOutput(result));
+  log(formatReviewOutput(result, !!process.stdout.isTTY));
 
-  if (opts.fileIssue && result.recommendedActions?.length) {
+  const followups = result.recommendedActions?.length ?? 0;
+  if (opts.fileIssue && followups) {
     const fileFollowups =
       deps.fileFollowups ??
       (async (parent: string, r: ReviewResult) => {
@@ -121,6 +144,9 @@ export async function runReviewCommand(
       });
     const filed = await fileFollowups(opts.fileIssue, result);
     log(`Filed ${filed} follow-up sub-issue(s) under ${opts.fileIssue}.`);
+  } else if (followups) {
+    // Suggestions were made but nothing was filed — make the --file flag discoverable. (INT-1966)
+    log(`\n${followups} follow-up(s) suggested. Re-run with \`--file <issue-id>\` to create them as Linear sub-issues.`);
   }
 
   return result;

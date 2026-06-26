@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { spinnerFrame, formatProgress, startReviewProgress } from './reviewProgress.js';
+import { spinnerFrame, formatProgress, startReviewProgress, oneLine, truncateLine } from './reviewProgress.js';
 
 describe('spinnerFrame / formatProgress (INT-1963)', () => {
   it('cycles spinner frames and is safe for any tick', () => {
@@ -11,6 +11,45 @@ describe('spinnerFrame / formatProgress (INT-1963)', () => {
   it('formats elapsed seconds and an optional activity note', () => {
     expect(formatProgress(0, 3)).toBe('⠋ reviewing… 3s');
     expect(formatProgress(0, 5, '🔧 read_file')).toBe('⠋ reviewing… 5s · 🔧 read_file');
+  });
+});
+
+describe('oneLine / truncateLine (INT-1966)', () => {
+  it('collapses newlines and whitespace runs to one line', () => {
+    expect(oneLine('first line\nsecond   line\t\nthird')).toBe('first line second line third');
+    expect(oneLine('  trim  ')).toBe('trim');
+  });
+  it('truncates with an ellipsis and is a no-op under width', () => {
+    expect(truncateLine('hello world', 8)).toBe('hello w…');
+    expect(truncateLine('short', 80)).toBe('short');
+  });
+  it('formatProgress truncates to width and never wraps', () => {
+    const out = formatProgress(0, 3, 'a'.repeat(100), 20);
+    expect(out.length).toBe(20);
+  });
+});
+
+describe('startReviewProgress multi-line note (INT-1966)', () => {
+  it('renders a multi-line note as a single truncated line (no stacking)', () => {
+    const writes: string[] = [];
+    let intervalFn: (() => void) | null = null;
+    const p = startReviewProgress({
+      write: (s) => writes.push(s),
+      now: () => 0,
+      setIntervalFn: (fn) => {
+        intervalFn = fn as () => void;
+        return 1 as never;
+      },
+      clearIntervalFn: () => {},
+      columns: 40,
+    });
+    p.note('line one\nline two\nline three with lots of detail here');
+    intervalFn!();
+    const frame = writes.at(-1)!;
+    // exactly one line of content after the clear sequence — no embedded newlines
+    expect(frame.replace('\r\x1b[2K', '')).not.toContain('\n');
+    expect(frame.replace('\r\x1b[2K', '').length).toBeLessThanOrEqual(40);
+    p.stop();
   });
 });
 
