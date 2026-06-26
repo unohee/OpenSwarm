@@ -125,6 +125,11 @@ export class AutonomousRunner {
   // Set when any adapter returns a 429 / usage_limit_reached response (INT-1906).
   private rateLimitUntil = 0;
 
+  // Issues whose Linear project can't be mapped to a local repo path. Recorded on
+  // the first resolve failure so they aren't re-picked every heartbeat (which
+  // starved other actionable tasks — they were top-priority but never runnable). (INT-1875)
+  private unresolvableIssueIds = new Set<string>();
+
   private get taskStateRef(): TaskState {
     return {
       completedTaskIds: this.completedTaskIds,
@@ -402,6 +407,7 @@ export class AutonomousRunner {
     let stuckSkipped = 0;
     let backoffSkipped = 0;
     let noProject = 0;
+    let unresolvable = 0;
     const toUnstick: string[] = [];
     const filtered = tasks.filter(task => {
       const id = task.issueId || task.id;
@@ -412,6 +418,13 @@ export class AutonomousRunner {
       // per-task selector and spam "No repo mapped to ... undefined" every cycle.
       if (!task.linearProject?.id) {
         noProject++;
+        return false;
+      }
+
+      // Project resolved to no local repo on a previous heartbeat → don't re-pick
+      // it (it would starve runnable tasks behind it). (INT-1875)
+      if (this.unresolvableIssueIds.has(id)) {
+        unresolvable++;
         return false;
       }
 
@@ -473,6 +486,9 @@ export class AutonomousRunner {
     }
     if (noProject > 0) {
       this.syslog(`— Skipped ${noProject} issue(s) with no Linear project (assign a project in Linear to enable)`);
+    }
+    if (unresolvable > 0) {
+      this.syslog(`— Skipped ${unresolvable} issue(s) whose Linear project maps to no local repo (fix the project or add the repo)`);
     }
     return filtered;
   }
@@ -868,6 +884,8 @@ export class AutonomousRunner {
       const projectPath = await this.resolveProjectPath(task);
       if (!projectPath) {
         this.syslog(`✗ Cannot resolve project path for "${task.linearProject?.name || task.title}" — skipping`);
+        // Record so it isn't re-picked every heartbeat (starvation). (INT-1875)
+        this.unresolvableIssueIds.add(task.issueId || task.id);
         continue;
       }
 
@@ -974,7 +992,12 @@ export class AutonomousRunner {
     if (!projectPath) {
       const errorMsg = `Failed to resolve project path for "${task.linearProject?.name || task.title}"`;
       console.error(`[AutonomousRunner] ${errorMsg}`);
+      // Record so this issue isn't re-picked every heartbeat (it would starve
+      // runnable tasks behind it). Cleared on restart. (INT-1875)
+      this.unresolvableIssueIds.add(task.issueId || task.id);
       await reportToDiscord(t('runner.projectMappingFailed', { title: task.title, project: task.linearProject?.name || 'unknown' }));
+      // Move on to the next actionable task instead of ending the heartbeat here.
+      this.scheduleNextHeartbeat();
       return;
     }
 
