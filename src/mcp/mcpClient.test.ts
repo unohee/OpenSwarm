@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadRegistry, isMcpTool, registryFromConfigServers, loadEffectiveRegistry } from './mcpClient.js';
+import { loadRegistry, isMcpTool, registryFromConfigServers, loadEffectiveRegistry, resolveMcpTools } from './mcpClient.js';
+import type { ToolDefinition } from '../adapters/tools.js';
 
 let dir: string | null = null;
 function writeMcpJson(content: unknown): string {
@@ -84,5 +85,34 @@ describe('loadEffectiveRegistry (INT-1949)', () => {
 
   it('returns only config servers when the mcp.json path is absent', () => {
     expect(Object.keys(loadEffectiveRegistry({ only: { command: 'c' } }, join(tmpdir(), 'no-such-mcp.json')))).toEqual(['only']);
+  });
+});
+
+describe('resolveMcpTools (INT-1951)', () => {
+  const tool: ToolDefinition = {
+    type: 'function',
+    function: { name: 'srv__t', description: '', parameters: { type: 'object', properties: {} } },
+  };
+
+  it('returns the caller-provided set without sourcing', async () => {
+    let sourced = false;
+    const out = await resolveMcpTools([tool], async () => {
+      sourced = true;
+      return [];
+    });
+    expect(out).toEqual([tool]);
+    expect(sourced).toBe(false);
+  });
+
+  it('self-sources when none provided', async () => {
+    expect(await resolveMcpTools(undefined, async () => [tool])).toEqual([tool]);
+  });
+
+  it('degrades to [] when the source throws', async () => {
+    expect(
+      await resolveMcpTools(undefined, async () => {
+        throw new Error('unreachable');
+      }),
+    ).toEqual([]);
   });
 });
