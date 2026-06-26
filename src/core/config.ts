@@ -319,6 +319,8 @@ const NotificationsSchema = z.object({
 // Mirrors the ~/.openswarm/mcp.json shape so config.yaml is a single source. (INT-1949)
 const McpServerSchema = z
   .object({
+    /** Reference a built-in preset (e.g. `linear`) instead of command/url. (INT-1952) */
+    preset: z.string().optional(),
     command: z.string().optional(),
     args: z.array(z.string()).optional(),
     env: z.record(z.string(), z.string()).optional(),
@@ -326,8 +328,8 @@ const McpServerSchema = z
     headers: z.record(z.string(), z.string()).optional(),
     transport: z.enum(['stdio', 'http', 'sse']).optional(),
   })
-  .refine((s) => !!s.command || !!s.url, {
-    message: 'MCP server needs a `command` (stdio) or a `url` (remote)',
+  .refine((s) => !!s.preset || !!s.command || !!s.url, {
+    message: 'MCP server needs a `preset`, a `command` (stdio), or a `url` (remote)',
   });
 
 const McpConfigSchema = z

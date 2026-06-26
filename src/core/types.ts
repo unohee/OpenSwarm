@@ -96,6 +96,8 @@ export type SwarmEvent = {
  * (`url`/`headers`). Mirrors the ~/.openswarm/mcp.json shape. (INT-1949)
  */
 export type McpServerConfig = {
+  /** Reference a built-in preset (e.g. `linear`) instead of command/url. (INT-1952) */
+  preset?: string;
   command?: string;
   args?: string[];
   env?: Record<string, string>;

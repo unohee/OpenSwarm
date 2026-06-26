@@ -31,8 +31,25 @@ interface ServerConfig {
   headers?: Record<string, string>;
 }
 
-/** A persisted entry: `{command,args,env}` (stdio) or `{url,headers,transport?}` (remote). */
+/**
+ * Built-in MCP server presets — referenced by `{ preset: '<name>' }` in
+ * config.yaml / mcp.json so common servers don't need hand-written commands.
+ * `linear` gives the worker/CLI Linear access (issue read, comment, sub-issue
+ * create) via the official remote MCP server. (INT-1952)
+ */
+export const BUILTIN_MCP_SERVERS: Record<string, ServerConfig> = {
+  linear: {
+    transport: 'stdio',
+    command: 'npx',
+    args: ['-y', 'mcp-remote', 'https://mcp.linear.app/mcp'],
+  },
+};
+
+/** A persisted entry: `{preset}`, `{command,args,env}` (stdio) or `{url,headers,transport?}` (remote). */
 function normalizeEntry(raw: Record<string, unknown>): ServerConfig | null {
+  if (typeof raw.preset === 'string' && raw.preset) {
+    return BUILTIN_MCP_SERVERS[raw.preset] ?? null;
+  }
   if (typeof raw.command === 'string' && raw.command) {
     return {
       transport: 'stdio',

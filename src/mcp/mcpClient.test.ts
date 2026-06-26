@@ -69,6 +69,16 @@ describe('registryFromConfigServers (INT-1949)', () => {
   it('handles undefined input', () => {
     expect(registryFromConfigServers(undefined)).toEqual({});
   });
+
+  it('expands a built-in preset (linear) and drops unknown presets (INT-1952)', () => {
+    const reg = registryFromConfigServers({
+      linear: { preset: 'linear' },
+      bogus: { preset: 'nope' },
+    });
+    expect(reg.linear).toMatchObject({ transport: 'stdio', command: 'npx' });
+    expect(reg.linear.args).toContain('https://mcp.linear.app/mcp');
+    expect(reg.bogus).toBeUndefined();
+  });
 });
 
 describe('loadEffectiveRegistry (INT-1949)', () => {

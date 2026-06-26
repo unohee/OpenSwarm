@@ -192,6 +192,21 @@ agents:
       expect(config.mcp?.servers.docs.url).toBe('https://example.com/mcp');
     });
 
+    it('should accept an mcp server declared via preset (INT-1952)', () => {
+      const jsonContent = JSON.stringify({
+        language: 'en',
+        linear: { apiKey: 'k', teamId: 't' },
+        agents: [{ name: 'main', projectPath: '/p', enabled: true, paused: false }],
+        mcp: { servers: { linear: { preset: 'linear' } } },
+      });
+
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockReturnValue(jsonContent);
+
+      const config = loadConfig('/tmp/config.json');
+      expect(config.mcp?.servers.linear.preset).toBe('linear');
+    });
+
     it('should reject an mcp server with neither command nor url (INT-1949)', () => {
       const jsonContent = JSON.stringify({
         language: 'en',
