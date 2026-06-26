@@ -454,7 +454,17 @@ async function launchChatTui(): Promise<void> {
   const { loadDefaultProvider } = await import('./support/chatSession.js');
   const { getDefaultChatModel } = await import('./support/chatBackend.js');
   const provider = loadDefaultProvider();
-  await startInkTui({ version: VERSION, provider, model: getDefaultChatModel(provider), port: 3847 });
+  const cwd = process.cwd();
+  let branch: string | undefined;
+  try {
+    const { execFileSync } = await import('node:child_process');
+    branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd, stdio: ['ignore', 'pipe', 'ignore'] })
+      .toString()
+      .trim() || undefined;
+  } catch {
+    // not a git repo — omit the branch
+  }
+  await startInkTui({ version: VERSION, provider, model: getDefaultChatModel(provider), port: 3847, cwd, branch });
 }
 
 program.action(launchChatTui);

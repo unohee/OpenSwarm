@@ -1,9 +1,11 @@
-// ChatInput — controlled single-line input driven by useInput (S4).
-// Korean/IME caveat: terminals deliver committed code points to useInput, so
-// typed/pasted Hangul appends fine; in-progress IME composition is terminal-
-// dependent and not echoed mid-composition. Nav keys (Tab/arrows) are left for
-// the App router; Enter submits, Backspace deletes.
+// ChatInput — bordered prompt box, Claude-Code style (INT-1943).
+// Controlled single-line input via useInput. Korean/IME caveat: terminals
+// deliver committed code points, so typed/pasted Hangul appends fine; in-flight
+// IME composition is terminal-dependent. Nav keys (Tab/arrows) are left to the
+// App router; Enter submits, Backspace deletes.
 import { Box, Text, useInput } from 'ink';
+import Spinner from 'ink-spinner';
+import { theme, ICON } from '../theme.js';
 
 export interface ChatInputProps {
   value: string;
@@ -24,7 +26,6 @@ export function ChatInput({ value, active, busy, onChange, onSubmit }: ChatInput
         onChange(value.slice(0, -1));
         return;
       }
-      // Leave navigation keys to the App-level router.
       if (key.tab || key.leftArrow || key.rightArrow || key.upArrow || key.downArrow || key.escape) return;
       if (input && !key.ctrl && !key.meta) onChange(value + input);
     },
@@ -32,10 +33,19 @@ export function ChatInput({ value, active, busy, onChange, onSubmit }: ChatInput
   );
 
   return (
-    <Box>
-      <Text color="cyan">{'> '}</Text>
-      <Text>{value}</Text>
-      {busy ? <Text dimColor> …working (Esc to leave)</Text> : <Text inverse> </Text>}
+    <Box borderStyle="round" borderColor={active ? theme.borderActive : theme.border} paddingX={1}>
+      {busy ? (
+        <Text color={theme.dim}>
+          <Spinner type="dots" />
+          <Text>{' working… (Esc to leave)'}</Text>
+        </Text>
+      ) : (
+        <Box>
+          <Text color={theme.accent}>{`${ICON.prompt} `}</Text>
+          {value ? <Text>{value}</Text> : <Text color={theme.dim}>{'type a message…   / for commands'}</Text>}
+          {active ? <Text inverse> </Text> : null}
+        </Box>
+      )}
     </Box>
   );
 }
