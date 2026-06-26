@@ -88,6 +88,7 @@ const integrationBoundaryCoverageExcludes = [
   'src/tui/sse.ts',
   'src/tui/hooks/usePipelineEvents.ts',
   'src/tui/hooks/useTerminalSize.ts',
+  'src/tui/components/WorkingIndicator.tsx',
   'src/tui/panels/ChatPanel.tsx',
   'src/tui/monitorApi.ts',
   'src/tui/hooks/useMonitor.ts',

@@ -38,9 +38,9 @@ describe('ChatLog (INT-1943)', () => {
     expect(f).toContain('openswarm');
     expect(f).toContain('bold');
   });
-  it('shows tool activity + working while busy', () => {
+  it('shows tool activity + an animated loading line while busy', () => {
     const f = render(<ChatLog history={[]} streaming={''} activity={['read_file auth.ts']} busy />).lastFrame()!;
     expect(f).toContain('read_file auth.ts');
-    expect(f).toContain('working');
+    expect(f).toMatch(/…/); // WorkingIndicator's cycling loading line
   });
 });

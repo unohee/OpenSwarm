@@ -8,10 +8,10 @@
 // render wipes them, so messages never accumulate. The reconciler already
 // diff-renders, so a normal (windowed) map keeps history without flicker.
 import { Box, Text } from 'ink';
-import Spinner from 'ink-spinner';
 import type { ChatLine } from '../chatModel.js';
 import { renderMarkdown } from '../markdown.js';
 import { theme, ICON } from '../theme.js';
+import { WorkingIndicator } from './WorkingIndicator.js';
 
 const ROLE_COLOR: Record<ChatLine['role'], string> = {
   user: theme.user,
@@ -67,12 +67,7 @@ export function ChatLog({ history, streaming, activity = [], busy, maxMessages =
               <Text key={i} color={theme.dim}>{`${ICON.tool} ${line}`}</Text>
             ))}
             {streaming ? <Text>{streaming}</Text> : null}
-            {busy ? (
-              <Text color={theme.dim}>
-                <Spinner type="dots" />
-                <Text>{' working…'}</Text>
-              </Text>
-            ) : null}
+            {busy ? <WorkingIndicator /> : null}
           </Box>
         </Box>
       ) : null}
