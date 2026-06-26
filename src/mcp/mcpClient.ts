@@ -163,16 +163,52 @@ export async function initMcpTools(registry = loadRegistry()): Promise<ToolDefin
 // Cache the discovered tools so chat doesn't re-list every message.
 let cachedTools: ToolDefinition[] | null = null;
 
-/** Discovered MCP tools (cached). Empty when no mcp.json / no reachable servers. */
+/**
+ * The effective registry for auto-discovery: mcp.json merged with the servers
+ * declared in config.yaml (`mcp.servers`, INT-1949). config is loaded lazily so
+ * mcpClient stays free of a static dependency on core/config. (INT-1951)
+ */
+async function loadConfiguredRegistry(): Promise<Record<string, ServerConfig>> {
+  let configServers: Record<string, Record<string, unknown>> | undefined;
+  try {
+    const { loadConfig } = await import('../core/config.js');
+    configServers = loadConfig().mcp?.servers as Record<string, Record<string, unknown>> | undefined;
+  } catch {
+    // No/invalid config → fall back to mcp.json only.
+  }
+  return loadEffectiveRegistry(configServers);
+}
+
+/**
+ * Discovered MCP tools (cached). Sources from mcp.json + config.yaml mcp.servers.
+ * Empty when nothing is configured / no reachable servers. (INT-1951)
+ */
 export async function getMcpTools(): Promise<ToolDefinition[]> {
   if (cachedTools) return cachedTools;
-  cachedTools = await initMcpTools();
+  cachedTools = await initMcpTools(await loadConfiguredRegistry());
   return cachedTools;
 }
 
 /** Drop the cache (after editing mcp.json). */
 export function resetMcpTools(): void {
   cachedTools = null;
+}
+
+/**
+ * Resolve the MCP tools for an adapter run: use the caller-provided set if any,
+ * otherwise self-source from the registry. A failing source degrades to no
+ * tools (never blocks the run). `source` is injectable for tests. (INT-1951)
+ */
+export async function resolveMcpTools(
+  provided?: ToolDefinition[],
+  source: () => Promise<ToolDefinition[]> = getMcpTools,
+): Promise<ToolDefinition[]> {
+  if (provided) return provided;
+  try {
+    return await source();
+  } catch {
+    return [];
+  }
 }
 
 /** Execute a `server__tool` call against its MCP server. Returns text content. */

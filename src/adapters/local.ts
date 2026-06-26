@@ -13,6 +13,7 @@ import type {
   ReviewResult,
 } from './types.js';
 import { runAgenticLoop, loopResultToCliResult, type ChatMessage, type AgenticLoopOptions } from './agenticLoop.js';
+import { resolveMcpTools } from '../mcp/mcpClient.js';
 import { parseWorkerResult, parseReviewerResult } from './resultParsing.js';
 import { consumeChatCompletionsStream } from './chatStream.js';
 import type { ToolDefinition } from './tools.js';
@@ -155,6 +156,9 @@ export class LocalModelAdapter implements CliAdapter {
     // 에이전틱 루프로 실행
     const callApi = this.createApiCaller(baseUrl, model, options.onToken, options.signal);
 
+    // MCP tools: caller-provided, else self-source from the registry. (INT-1951)
+    const mcpTools = await resolveMcpTools(options.mcpTools);
+
     const loopOptions: AgenticLoopOptions = {
       systemPrompt: options.systemPrompt,
       prompt: options.prompt,
@@ -169,7 +173,7 @@ export class LocalModelAdapter implements CliAdapter {
       protectedFiles: options.protectedFiles,
       bashTimeoutMs: options.bashTimeoutMs,
       webTools: options.webTools,
-      mcpTools: options.mcpTools,
+      mcpTools,
       signal: options.signal,
       editFormat: options.editFormat,
     };

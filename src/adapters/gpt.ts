@@ -14,6 +14,7 @@ import type {
 } from './types.js';
 import { AuthProfileStore, ensureValidToken } from '../auth/index.js';
 import { runAgenticLoop, loopResultToCliResult, type ChatMessage, type AgenticLoopOptions } from './agenticLoop.js';
+import { resolveMcpTools } from '../mcp/mcpClient.js';
 import { parseWorkerResult, parseReviewerResult } from './resultParsing.js';
 import { consumeChatCompletionsStream } from './chatStream.js';
 import type { ToolDefinition } from './tools.js';
@@ -75,6 +76,11 @@ export class GptCliAdapter implements CliAdapter {
     // 2. 에이전틱 루프로 실행 (도구 사용 가능)
     const callApi = this.createApiCaller(accessToken, store, model, options.onToken, options.signal);
 
+    // MCP tools: caller-provided, else self-source from the registry
+    // (mcp.json + config.mcp.servers) so standalone chat/exec and the worker
+    // path all get MCP without each caller threading them. (INT-1951)
+    const mcpTools = await resolveMcpTools(options.mcpTools);
+
     const loopOptions: AgenticLoopOptions = {
       systemPrompt: options.systemPrompt,
       prompt: options.prompt,
@@ -89,7 +95,7 @@ export class GptCliAdapter implements CliAdapter {
       protectedFiles: options.protectedFiles,
       bashTimeoutMs: options.bashTimeoutMs,
       webTools: options.webTools,
-      mcpTools: options.mcpTools,
+      mcpTools,
       signal: options.signal,
       editFormat: options.editFormat,
     };
