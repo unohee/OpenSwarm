@@ -89,6 +89,9 @@ const integrationBoundaryCoverageExcludes = [
   'src/tui/hooks/usePipelineEvents.ts',
   'src/tui/hooks/useTerminalSize.ts',
   'src/tui/panels/ChatPanel.tsx',
+  'src/tui/monitorApi.ts',
+  'src/tui/hooks/useMonitor.ts',
+  'src/tui/panels/MonitorPanel.tsx',
 ];
 
 export default defineConfig({

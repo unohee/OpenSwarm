@@ -19,9 +19,9 @@ describe('Ink shell (EPIC INT-1813 S3/S4/S5)', () => {
 
   it('switches tab on a digit key (from a non-chat tab)', async () => {
     const { lastFrame, stdin } = render(<App version="1.0.0" initialTab={1} />); // start on Pipeline
-    stdin.write('4'); // 4 → Tasks (chat,pipeline,projects,tasks)
+    stdin.write('7'); // 7 → Logs (distinct placeholder text)
     await tick();
-    expect(lastFrame()).toContain('Tasks — panel');
+    expect(lastFrame()).toContain('live log lands');
   });
 
   it('renders the Pipeline panel (idle, no port) at initialTab 1', () => {
@@ -30,16 +30,21 @@ describe('Ink shell (EPIC INT-1813 S3/S4/S5)', () => {
     expect(f).toContain('daemon port unknown');
   });
 
+  it('renders a monitor panel (idle, no port) on the Projects tab', () => {
+    const f = render(<App initialTab={2} />).lastFrame()!; // Projects
+    expect(f).toContain('daemon port unknown');
+  });
+
   it('cycles forward with Tab, wrapping from the last tab back to Chat', async () => {
     const { lastFrame, stdin } = render(<App initialTab={6} />); // start at Logs
-    expect(lastFrame()).toContain('Logs — panel');
+    expect(lastFrame()).toContain('live log lands');
     stdin.write('\t'); // Tab → wrap forward to Chat
     await tick();
     expect(lastFrame()).toContain('>'); // chat prompt back
   });
 
   it('honors an initialTab', () => {
-    const { lastFrame } = render(<App initialTab={5} />); // Issues
-    expect(lastFrame()).toContain('Issues — panel');
+    const { lastFrame } = render(<App initialTab={6} />); // Logs
+    expect(lastFrame()).toContain('live log lands');
   });
 });

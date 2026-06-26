@@ -14,7 +14,16 @@ import { TabBar } from './components/TabBar.js';
 import { HelpBar } from './components/HelpBar.js';
 import { PipelinePanel } from './panels/PipelinePanel.js';
 import { ChatPanel } from './panels/ChatPanel.js';
+import { MonitorPanel } from './panels/MonitorPanel.js';
+import { fetchProjects, fetchTasks, fetchStuck, fetchIssues } from './monitorApi.js';
 import { useTerminalSize } from './hooks/useTerminalSize.js';
+
+const MONITOR_FETCHERS = {
+  projects: fetchProjects,
+  tasks: fetchTasks,
+  stuck: fetchStuck,
+  issues: fetchIssues,
+} as const;
 
 export interface AppProps {
   version?: string;
@@ -55,8 +64,10 @@ export function App({ version, provider, model, port, initialTab = 0 }: AppProps
           <ChatPanel active={chatActive} provider={provider} model={model} />
         ) : activeTab.id === 'pipeline' ? (
           <PipelinePanel port={port} />
+        ) : activeTab.id in MONITOR_FETCHERS ? (
+          <MonitorPanel port={port} fetcher={MONITOR_FETCHERS[activeTab.id as keyof typeof MONITOR_FETCHERS]} />
         ) : (
-          <Text>{`${activeTab.label} — panel arrives in a later sub-issue (S6).`}</Text>
+          <Text>{`${activeTab.label} — live log lands with the bin cutover (S9).`}</Text>
         )}
       </Box>
       <HelpBar />
