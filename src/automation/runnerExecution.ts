@@ -9,7 +9,7 @@ import type { ExecutorResult } from '../orchestration/workflow.js';
 import type { PipelineResult } from '../agents/pairPipeline.js';
 import type { DefaultRolesConfig, PipelineStage, JobProfile } from '../core/types.js';
 import { createPipelineFromConfig, buildTaskPrefix } from '../agents/pairPipeline.js';
-import type { WorkerResult } from '../agents/agentPair.js';
+import type { WorkerResult, ReviewResult } from '../agents/agentPair.js';
 import { buildWorkerStartComment, buildWorkerCompleteComment } from './workerAuditLog.js';
 import { formatParsedTaskSummary, loadParsedTask } from '../orchestration/taskParser.js';
 import { saveCognitiveMemory } from '../memory/index.js';
@@ -253,6 +253,37 @@ export async function isValidProjectPath(path: string): Promise<boolean> {
  * dispatch endpoint so both behave identically (no logic fork). The caller must
  * have already created the parent issue (`parentIssueId`).
  */
+/**
+ * File the reviewer's recommendedActions as follow-up sub-issues when it
+ * approves (INT-1611 restore / INT-1704). Gated by `autoFile` (default OFF);
+ * caps at 10; each create is best-effort (failures logged, never throw).
+ * Returns the count filed.
+ */
+export async function fileReviewerFollowups(
+  source: ITaskSource | null,
+  parentIssueId: string,
+  review: ReviewResult,
+  opts: { autoFile?: boolean; projectId?: string } = {},
+): Promise<number> {
+  if (!opts.autoFile || !source || review.decision !== 'approve') return 0;
+  const actions = (review.recommendedActions ?? []).slice(0, 10);
+  let filed = 0;
+  for (const a of actions) {
+    try {
+      await source.createSubIssue(
+        parentIssueId,
+        `[${a.type}] ${a.title}`,
+        a.location ? `Follow-up from reviewer.\n\nLocation: ${a.location}` : 'Follow-up recommended by the reviewer.',
+        { priority: 3, projectId: opts.projectId },
+      );
+      filed += 1;
+    } catch (err) {
+      console.error(`[Runner] follow-up sub-issue create failed (${a.title}):`, err);
+    }
+  }
+  return filed;
+}
+
 export async function createSubIssuesWithDependencies(
   parentIssueId: string,
   task: { title: string; issueIdentifier?: string; parentId?: string; linearProject?: { id?: string; name?: string } },
@@ -717,6 +748,19 @@ export async function executePipeline(
           }));
         } catch (err) {
           console.error(`[${taskPrefix}] Worker complete audit comment failed:`, err);
+        }
+      }
+      // On reviewer approval, optionally file recommendedActions as follow-up
+      // sub-issues (gated OFF by default). INT-1611 restore (INT-1704).
+      if (stage === 'reviewer' && task.issueId && ctx.guards?.autoFileFollowups && result.result) {
+        try {
+          const filed = await fileReviewerFollowups(taskSource, task.issueId, result.result as ReviewResult, {
+            autoFile: true,
+            projectId: task.linearProject?.id,
+          });
+          if (filed > 0) console.log(`[${taskPrefix}] Filed ${filed} follow-up sub-issue(s) from reviewer.`);
+        } catch (err) {
+          console.error(`[${taskPrefix}] Follow-up sub-issue filing failed:`, err);
         }
       }
     });

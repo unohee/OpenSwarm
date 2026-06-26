@@ -402,6 +402,11 @@ export interface PipelineGuardsConfig {
   haltToLinear: boolean;
   registryCheck: boolean;
   bsDetector: boolean;
+  /**
+   * When the reviewer approves, file its recommendedActions as follow-up
+   * sub-issues (INT-1611 / INT-1704). Optional, default OFF. (INT-1704)
+   */
+  autoFileFollowups?: boolean;
 }
 
 export type AutonomousStartupConfig = {

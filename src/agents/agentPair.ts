@@ -65,12 +65,22 @@ export type ReviewDecision = 'approve' | 'revise' | 'reject';
 /**
  * Reviewer result
  */
+/** A follow-up the reviewer recommends (filed as a sub-issue when approved). INT-1611. */
+export interface RecommendedAction {
+  type: string;
+  title: string;
+  /** Optional file:line or area the follow-up concerns. */
+  location?: string;
+}
+
 export interface ReviewResult {
   decision: ReviewDecision;
   feedback: string;
   issues?: string[];
   suggestions?: string[];
   costInfo?: CostInfo;
+  /** Reviewer-recommended follow-ups, filed as sub-issues on approve (INT-1704). */
+  recommendedActions?: RecommendedAction[];
 }
 
 /**
