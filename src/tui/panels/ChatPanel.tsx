@@ -21,6 +21,8 @@ import {
 import { ChatLog } from '../components/ChatLog.js';
 import { ChatInput } from '../components/ChatInput.js';
 import { CommandPalette } from '../components/CommandPalette.js';
+import { SelectList } from '../components/SelectList.js';
+import { listAdapterNames } from '../../adapters/index.js';
 import { callChatModel, loadDefaultProvider } from '../../support/chatSession.js';
 import { getDefaultChatModel } from '../../support/chatBackend.js';
 import { runPlanCommand, type PlanIO } from '../../support/planCommand.js';
@@ -45,8 +47,12 @@ export function ChatPanel({ active, provider: providerProp, model: modelProp, pr
   // instead of being treated as chat — the Ink analogue of blessed pendingInput.
   const [pending, setPending] = useState<{ resolve: (value: string) => void } | null>(null);
 
-  const provider = (providerProp as AdapterName | undefined) ?? loadDefaultProvider();
-  const model = modelProp ?? getDefaultChatModel(provider);
+  // provider/model are runtime-switchable via /provider and /model (INT-1960/1961).
+  const [provider, setProvider] = useState<AdapterName>((providerProp as AdapterName | undefined) ?? loadDefaultProvider());
+  const [model, setModel] = useState<string>(modelProp ?? getDefaultChatModel((providerProp as AdapterName | undefined) ?? loadDefaultProvider()));
+  // Active /provider | /model selector overlay (null = none). (INT-1960/1961)
+  const [selector, setSelector] = useState<{ kind: 'provider' | 'model'; title: string; items: string[] } | null>(null);
+  const [selectorIndex, setSelectorIndex] = useState(0);
   const cwd = projectPath ?? process.cwd();
 
   const ask = useCallback(
@@ -147,16 +153,51 @@ export function ChatPanel({ active, provider: providerProp, model: modelProp, pr
           // complex → decompose & dispatch. Shared, UI-agnostic goalCommand.
           void runGoal(args);
           break;
+        case '/provider': {
+          // `/provider <name>` switches directly; bare `/provider` opens a selector. (INT-1960)
+          const items = listAdapterNames();
+          const target = args.trim();
+          if (target) {
+            if (!items.includes(target as AdapterName)) {
+              dispatch({ type: 'system', content: `Unknown provider "${target}". Options: ${items.join(', ')}` });
+            } else {
+              setProvider(target as AdapterName);
+              setModel(getDefaultChatModel(target as AdapterName));
+              dispatch({ type: 'system', content: `Provider → ${target} (model: ${getDefaultChatModel(target as AdapterName)})` });
+            }
+            break;
+          }
+          setSelectorIndex(Math.max(0, items.indexOf(provider)));
+          setSelector({ kind: 'provider', title: 'Switch provider:', items });
+          break;
+        }
         case '/model':
-        case '/provider':
-          dispatch({ type: 'system', content: `${name} switching from the Ink TUI is not wired yet — set it via config/flags.` });
+          dispatch({ type: 'system', content: `${name} switching is not wired yet — set it via config/flags.` });
           break;
         default:
           dispatch({ type: 'system', content: `Unknown command: ${name}` });
       }
     },
-    [runPlan, runGoal],
+    [runPlan, runGoal, provider],
   );
+
+  // Apply the highlighted choice in the /provider | /model selector. (INT-1960/1961)
+  const applySelector = useCallback(() => {
+    if (!selector) return;
+    const choice = selector.items[selectorIndex];
+    if (choice) {
+      if (selector.kind === 'provider') {
+        setProvider(choice as AdapterName);
+        setModel(getDefaultChatModel(choice as AdapterName));
+        dispatch({ type: 'system', content: `Provider → ${choice} (model: ${getDefaultChatModel(choice as AdapterName)})` });
+      } else {
+        setModel(choice);
+        dispatch({ type: 'system', content: `Model → ${choice}` });
+      }
+    }
+    setSelector(null);
+    setSelectorIndex(0);
+  }, [selector, selectorIndex]);
 
   const submit = useCallback(
     async (raw: string) => {
@@ -184,13 +225,16 @@ export function ChatPanel({ active, provider: providerProp, model: modelProp, pr
   const inputActive = active && (!busy || pending !== null);
 
   // Interactive command palette (INT-1959): ↑/↓ select, Enter/Tab complete.
+  // A /provider|/model selector (INT-1960/1961) takes precedence when open.
   const matches = matchSlash(input);
-  const paletteOpen = inputActive && pending === null && matches.length > 0;
+  const selectorOpen = inputActive && selector !== null;
+  const slashOpen = inputActive && pending === null && selector === null && matches.length > 0;
+  const menuOpen = selectorOpen || slashOpen;
   const handleChange = useCallback((v: string) => {
     setInput(v);
     setPaletteIndex(0);
   }, []);
-  const onPaletteSelect = useCallback(() => {
+  const onSlashSelect = useCallback(() => {
     const cmd = matches[paletteIndex];
     if (!cmd) return;
     if (cmd.args) {
@@ -212,12 +256,27 @@ export function ChatPanel({ active, provider: providerProp, model: modelProp, pr
         busy={busy && pending === null}
         onChange={handleChange}
         onSubmit={submit}
-        paletteOpen={paletteOpen}
-        onPaletteMove={(delta) => setPaletteIndex((i) => movePaletteSelection(i, delta, matches.length))}
-        onPaletteSelect={onPaletteSelect}
-        onPaletteClose={() => setInput('')}
+        paletteOpen={menuOpen}
+        onPaletteMove={(delta) =>
+          selectorOpen
+            ? setSelectorIndex((i) => movePaletteSelection(i, delta, selector!.items.length))
+            : setPaletteIndex((i) => movePaletteSelection(i, delta, matches.length))
+        }
+        onPaletteSelect={() => (selectorOpen ? applySelector() : onSlashSelect())}
+        onPaletteClose={() => {
+          if (selectorOpen) {
+            setSelector(null);
+            setSelectorIndex(0);
+          } else {
+            setInput('');
+          }
+        }}
       />
-      <CommandPalette matches={matches} selectedIndex={paletteIndex} />
+      {selectorOpen ? (
+        <SelectList title={selector!.title} items={selector!.items} selectedIndex={selectorIndex} />
+      ) : (
+        <CommandPalette matches={matches} selectedIndex={paletteIndex} />
+      )}
     </Box>
   );
 }

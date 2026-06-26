@@ -53,8 +53,8 @@ export interface SlashCommand {
 export const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: '/goal', args: '<goal>', desc: 'Set a goal & pursue it autonomously' },
   { name: '/plan', args: '<goal>', desc: 'Decompose a goal & dispatch to the loop' },
-  { name: '/model', args: '[name]', desc: 'Switch model' },
-  { name: '/provider', args: '[name]', desc: 'Switch provider' },
+  { name: '/model', args: '', desc: 'Switch model (interactive)' },
+  { name: '/provider', args: '', desc: 'Switch provider (interactive)' },
   { name: '/clear', args: '', desc: 'Clear the conversation' },
   { name: '/help', args: '', desc: 'Show all commands' },
 ];
