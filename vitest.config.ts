@@ -88,6 +88,7 @@ const integrationBoundaryCoverageExcludes = [
   'src/tui/sse.ts',
   'src/tui/hooks/usePipelineEvents.ts',
   'src/tui/hooks/useTerminalSize.ts',
+  'src/tui/panels/ChatPanel.tsx',
 ];
 
 export default defineConfig({

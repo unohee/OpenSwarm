@@ -5,7 +5,7 @@ import { App } from './App.js';
 // Input handling is async (ink processes stdin on the next ticks).
 const tick = () => new Promise((r) => setTimeout(r, 40));
 
-describe('Ink shell (EPIC INT-1813 S3)', () => {
+describe('Ink shell (EPIC INT-1813 S3/S4/S5)', () => {
   it('renders status bar, tab strip, and the default Chat panel', () => {
     const { lastFrame } = render(<App version="9.9.9" provider="codex" model="gpt-5.2-codex" />);
     const f = lastFrame()!;
@@ -14,31 +14,28 @@ describe('Ink shell (EPIC INT-1813 S3)', () => {
     expect(f).toContain('1:Chat');
     expect(f).toContain('2:Pipeline');
     expect(f).toContain('7:Logs');
-    expect(f).toContain('Chat — panel');
+    expect(f).toContain('>'); // chat input prompt
   });
 
-  it('switches tab on a digit key', async () => {
-    const { lastFrame, stdin } = render(<App version="1.0.0" />);
+  it('switches tab on a digit key (from a non-chat tab)', async () => {
+    const { lastFrame, stdin } = render(<App version="1.0.0" initialTab={1} />); // start on Pipeline
     stdin.write('4'); // 4 → Tasks (chat,pipeline,projects,tasks)
     await tick();
     expect(lastFrame()).toContain('Tasks — panel');
   });
 
-  it('renders the Pipeline panel (idle, no port) on tab 2', async () => {
-    const { lastFrame, stdin } = render(<App />);
-    stdin.write('2');
-    await tick();
-    const f = lastFrame()!;
+  it('renders the Pipeline panel (idle, no port) at initialTab 1', () => {
+    const f = render(<App initialTab={1} />).lastFrame()!;
     expect(f).toContain('Pipeline stages');
     expect(f).toContain('daemon port unknown');
   });
 
-  it('cycles forward with Tab, wrapping past the last tab', async () => {
+  it('cycles forward with Tab, wrapping from the last tab back to Chat', async () => {
     const { lastFrame, stdin } = render(<App initialTab={6} />); // start at Logs
     expect(lastFrame()).toContain('Logs — panel');
     stdin.write('\t'); // Tab → wrap forward to Chat
     await tick();
-    expect(lastFrame()).toContain('Chat — panel');
+    expect(lastFrame()).toContain('>'); // chat prompt back
   });
 
   it('honors an initialTab', () => {
