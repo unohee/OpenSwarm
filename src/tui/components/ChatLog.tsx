@@ -1,8 +1,13 @@
 // ChatLog — Claude-Code-style conversation (INT-1943).
-// Finalized messages render once in <Static> (no flicker); assistant text is
-// markdown-rendered. A live area below shows the streaming reply + inline tool
-// activity + a spinner while the agent works.
-import { Box, Text, Static } from 'ink';
+// Renders the recent message history (assistant text as markdown) plus a live
+// area with the streaming reply, inline tool activity, and a spinner.
+//
+// NOTE: this deliberately does NOT use Ink's <Static>. <Static> prints items to
+// the scrollback ABOVE the live region, which is incompatible with the
+// full-screen alternate-screen buffer (fullscreen-ink) — the next full-frame
+// render wipes them, so messages never accumulate. The reconciler already
+// diff-renders, so a normal (windowed) map keeps history without flicker.
+import { Box, Text } from 'ink';
 import Spinner from 'ink-spinner';
 import type { ChatLine } from '../chatModel.js';
 import { renderMarkdown } from '../markdown.js';
@@ -42,13 +47,18 @@ export interface ChatLogProps {
   /** Recent tool-activity lines shown under the in-flight reply. */
   activity?: string[];
   busy?: boolean;
+  /** Keep the last N messages on screen (bounds height in the full-screen layout). */
+  maxMessages?: number;
 }
 
-export function ChatLog({ history, streaming, activity = [], busy }: ChatLogProps) {
+export function ChatLog({ history, streaming, activity = [], busy, maxMessages = 40 }: ChatLogProps) {
   const live = streaming !== null || busy;
+  const shown = history.slice(-maxMessages);
   return (
     <Box flexDirection="column">
-      <Static items={history}>{(line, i) => <Message key={i} line={line} />}</Static>
+      {shown.map((line, i) => (
+        <Message key={history.length - shown.length + i} line={line} />
+      ))}
       {live ? (
         <Box flexDirection="column">
           <Text color={theme.assistant} bold>{`${ICON.assistant} ${ROLE_LABEL.assistant}`}</Text>
