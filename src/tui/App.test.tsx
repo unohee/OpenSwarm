@@ -14,7 +14,7 @@ describe('Ink shell (EPIC INT-1813 S3/S4/S5)', () => {
     expect(f).toContain('1:Chat');
     expect(f).toContain('2:Pipeline');
     expect(f).toContain('7:Logs');
-    expect(f).toContain('>'); // chat input prompt
+    expect(f).toContain('type a message'); // chat input placeholder
   });
 
   it('switches tab on a digit key (from a non-chat tab)', async () => {
@@ -40,7 +40,7 @@ describe('Ink shell (EPIC INT-1813 S3/S4/S5)', () => {
     expect(lastFrame()).toContain('live log lands');
     stdin.write('\t'); // Tab → wrap forward to Chat
     await tick();
-    expect(lastFrame()).toContain('>'); // chat prompt back
+    expect(lastFrame()).toContain('type a message'); // chat input back
   });
 
   it('honors an initialTab', () => {

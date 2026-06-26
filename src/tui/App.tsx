@@ -1,6 +1,6 @@
 // ============================================
 // OpenSwarm - Ink TUI shell (EPIC INT-1813 S3 / INT-1936)
-// App composes the cockpit chrome (StatusBar / TabBar / HelpBar) around the
+// App composes the cockpit chrome (ContextBar / TabBar / HelpBar) around the
 // active tab panel and owns tab navigation (number keys, Tab/Shift-Tab, arrows,
 // q to quit). Tab panels are placeholders here — the real Chat (S4), Pipeline/
 // SSE (S5) and monitor (S6) panels slot into the content area next.
@@ -9,7 +9,7 @@
 import { Box, Text, useInput, useApp } from 'ink';
 import { useState } from 'react';
 import { TABS, nextTab, tabFromDigit } from './tabs.js';
-import { StatusBar } from './components/StatusBar.js';
+import { ContextBar } from './components/ContextBar.js';
 import { TabBar } from './components/TabBar.js';
 import { HelpBar } from './components/HelpBar.js';
 import { PipelinePanel } from './panels/PipelinePanel.js';
@@ -31,11 +31,15 @@ export interface AppProps {
   model?: string;
   /** Daemon HTTP port — used by the Pipeline tab's SSE connection. */
   port?: number;
+  /** Project root (shown in the context bar). */
+  cwd?: string;
+  /** Git branch (shown in the context bar). */
+  branch?: string;
   /** Initial active tab index (deep-link / tests). Defaults to Chat. */
   initialTab?: number;
 }
 
-export function App({ version, provider, model, port, initialTab = 0 }: AppProps) {
+export function App({ version, provider, model, port, cwd, branch, initialTab = 0 }: AppProps) {
   const [active, setActive] = useState(initialTab);
   const { columns, rows } = useTerminalSize();
   const { exit } = useApp();
@@ -57,7 +61,7 @@ export function App({ version, provider, model, port, initialTab = 0 }: AppProps
 
   return (
     <Box flexDirection="column" width={columns}>
-      <StatusBar version={version} provider={provider} model={model} />
+      <ContextBar version={version} provider={provider} model={model} cwd={cwd} branch={branch} />
       <TabBar active={active} />
       <Box flexDirection="column" paddingY={1} minHeight={Math.max(1, rows - 4)}>
         {activeTab.id === 'chat' ? (

@@ -36,6 +36,7 @@ export function ChatPanel({ active, provider: providerProp, model: modelProp, pr
   const [state, dispatch] = useReducer(chatReducer, initialChatState);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
+  const [activity, setActivity] = useState<string[]>([]);
   // When set, the next submitted line is routed here (a /plan confirm or edit)
   // instead of being treated as chat — the Ink analogue of blessed pendingInput.
   const [pending, setPending] = useState<{ resolve: (value: string) => void } | null>(null);
@@ -121,13 +122,21 @@ export function ChatPanel({ active, provider: providerProp, model: modelProp, pr
       }
       dispatch({ type: 'user', content: parsed.text });
       dispatch({ type: 'stream', chunk: '' });
+      setActivity([]);
       setBusy(true);
       try {
-        await callChatModel(parsed.text, provider, model, (t) => dispatch({ type: 'stream', chunk: t }));
+        await callChatModel(
+          parsed.text,
+          provider,
+          model,
+          (t) => dispatch({ type: 'stream', chunk: t }),
+          (line) => setActivity((a) => [...a, line].slice(-10)),
+        );
       } catch (e) {
         dispatch({ type: 'stream', chunk: `\n[error] ${e instanceof Error ? e.message : String(e)}` });
       } finally {
         dispatch({ type: 'commit' });
+        setActivity([]);
         setBusy(false);
       }
     },
@@ -139,7 +148,7 @@ export function ChatPanel({ active, provider: providerProp, model: modelProp, pr
 
   return (
     <Box flexDirection="column">
-      <ChatLog history={state.history} streaming={state.streaming} />
+      <ChatLog history={state.history} streaming={state.streaming} activity={activity} busy={busy && pending === null} />
       <ChatInput value={input} active={inputActive} busy={busy && pending === null} onChange={setInput} onSubmit={submit} />
       <CommandPalette matches={matchSlash(input)} />
     </Box>

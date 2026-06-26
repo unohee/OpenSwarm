@@ -13,6 +13,8 @@ export interface StartInkTuiOptions {
   model?: string;
   /** Daemon HTTP port for the Pipeline/monitor tabs. */
   port?: number;
+  cwd?: string;
+  branch?: string;
 }
 
 /**
@@ -21,7 +23,14 @@ export interface StartInkTuiOptions {
  */
 export async function startInkTui(opts: StartInkTuiOptions = {}): Promise<void> {
   const app = withFullScreen(
-    <App version={opts.version} provider={opts.provider} model={opts.model} port={opts.port} />,
+    <App
+      version={opts.version}
+      provider={opts.provider}
+      model={opts.model}
+      port={opts.port}
+      cwd={opts.cwd}
+      branch={opts.branch}
+    />,
     { exitOnCtrlC: true },
   );
   await app.start();
