@@ -16,6 +16,7 @@ import { runAgenticLoop, loopResultToCliResult, type ChatMessage, type AgenticLo
 import { parseWorkerResult, parseReviewerResult } from './resultParsing.js';
 import { consumeChatCompletionsStream } from './chatStream.js';
 import type { ToolDefinition } from './tools.js';
+import { RateLimitError } from './rateLimitError.js';
 
 // 로컬 프로바이더 기본 URL 후보 (우선순위 순)
 const DEFAULT_ENDPOINTS = [
@@ -180,6 +181,8 @@ export class LocalModelAdapter implements CliAdapter {
       }
       return loopResultToCliResult(result);
     } catch (err) {
+      // Rate-limit must propagate so the scheduler pauses (INT-1906).
+      if (err instanceof RateLimitError) throw err;
       const message = err instanceof Error ? err.message : String(err);
       const isTimeout = message.includes('abort') || message.includes('timeout');
 

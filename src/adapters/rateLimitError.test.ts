@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { detectRateLimit, RateLimitError } from './rateLimitError.js';
+import { runAgenticLoop } from './agenticLoop.js';
 
 describe('detectRateLimit (INT-1906)', () => {
   it('detects a Codex usage_limit_reached payload and parses resets_at', () => {
@@ -37,5 +38,25 @@ describe('detectRateLimit (INT-1906)', () => {
     const err = detectRateLimit('partial output', 'error: usage_limit_reached "resets_at": 1782343811');
     expect(err).toBeInstanceOf(RateLimitError);
     expect(err?.resetsAt).toBe(1782343811);
+  });
+});
+
+describe('runAgenticLoop rate-limit propagation (INT-1906 blocker)', () => {
+  it('re-throws a 429 raised by callApi as a RateLimitError', async () => {
+    // The in-process adapters surface a 429 by throwing from callApi. The loop
+    // used to swallow it into finalText; it must now propagate so the pipeline
+    // pauses instead of returning a normal failed result.
+    const callApi = async () => {
+      throw new Error('OpenRouter API error (429): {"error":{"message":"Rate limit exceeded"}}');
+    };
+    await expect(
+      runAgenticLoop({ prompt: 'x', cwd: process.cwd(), model: 't', callApi, webTools: false, maxTurns: 2 }),
+    ).rejects.toBeInstanceOf(RateLimitError);
+  });
+
+  it('does NOT re-throw an ordinary (non-rate-limit) API error', async () => {
+    const callApi = async () => { throw new Error('500 Internal Server Error'); };
+    const res = await runAgenticLoop({ prompt: 'x', cwd: process.cwd(), model: 't', callApi, webTools: false, maxTurns: 2 });
+    expect(res.text).toContain('API error');
   });
 });

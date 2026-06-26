@@ -17,6 +17,7 @@ import { AuthProfileStore, ensureValidToken } from '../auth/index.js';
 import { runAgenticLoop, loopResultToCliResult, type ChatMessage, type AgenticLoopOptions } from './agenticLoop.js';
 import { parseWorkerResult, parseReviewerResult } from './resultParsing.js';
 import type { ToolDefinition } from './tools.js';
+import { RateLimitError } from './rateLimitError.js';
 
 import { getCodexModelIds } from './codexModels.js';
 
@@ -374,6 +375,8 @@ export class CodexResponsesAdapter implements CliAdapter {
       }
       return loopResultToCliResult(result);
     } catch (err) {
+      // Rate-limit must propagate so the scheduler pauses (INT-1906).
+      if (err instanceof RateLimitError) throw err;
       return {
         exitCode: 1,
         stdout: '',

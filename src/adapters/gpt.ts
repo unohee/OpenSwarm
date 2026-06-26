@@ -17,6 +17,7 @@ import { runAgenticLoop, loopResultToCliResult, type ChatMessage, type AgenticLo
 import { parseWorkerResult, parseReviewerResult } from './resultParsing.js';
 import { consumeChatCompletionsStream } from './chatStream.js';
 import type { ToolDefinition } from './tools.js';
+import { RateLimitError } from './rateLimitError.js';
 
 const OPENAI_API_BASE = 'https://api.openai.com/v1';
 const DEFAULT_MODEL = 'gpt-4o';
@@ -99,6 +100,9 @@ export class GptCliAdapter implements CliAdapter {
       }
       return loopResultToCliResult(result);
     } catch (err) {
+      // Rate-limit must propagate so the scheduler pauses (INT-1906) — don't bury
+      // it in a failed CliRunResult.
+      if (err instanceof RateLimitError) throw err;
       return {
         exitCode: 1,
         stdout: '',

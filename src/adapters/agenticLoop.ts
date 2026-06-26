@@ -8,6 +8,7 @@
 
 import { TOOL_DEFINITIONS, APPLY_PATCH_TOOL, executeToolCalls, createReadCache, type ToolCall, type ToolResult, type ToolDefinition } from './tools.js';
 import { WEB_TOOL_DEFINITIONS } from './webTools.js';
+import { detectRateLimit } from './rateLimitError.js';
 import type { CliRunResult } from './types.js';
 
 // ============ 토큰 카운팅 (VEGA token_count.py 이식) ============
@@ -274,6 +275,16 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
         break;
       }
       const msg = err instanceof Error ? err.message : String(err);
+      // A 429/usage-limit raised by the in-process API caller (gpt/local/
+      // openrouter/codex-responses) would otherwise be swallowed into finalText
+      // here and returned as a normal result — the scheduler never learns it was
+      // rate-limited. Re-throw it as a typed RateLimitError so it propagates up to
+      // the pipeline, which pauses instead of failing/spamming. (INT-1906)
+      const rl = detectRateLimit('', msg);
+      if (rl) {
+        onLog?.(`■ ${rl.message}`);
+        throw rl;
+      }
       onLog?.(`✖ API error: ${msg}`);
       finalText = `API error: ${msg}`;
       break;

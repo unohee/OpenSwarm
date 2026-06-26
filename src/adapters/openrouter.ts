@@ -20,6 +20,7 @@ import {
   type AgenticLoopOptions,
 } from './agenticLoop.js';
 import { parseWorkerResult, parseReviewerResult } from './resultParsing.js';
+import { RateLimitError } from './rateLimitError.js';
 import { consumeChatCompletionsStream } from './chatStream.js';
 import type { ToolDefinition } from './tools.js';
 
@@ -120,6 +121,8 @@ export class OpenRouterCliAdapter implements CliAdapter {
       );
       return loopResultToCliResult(result);
     } catch (err) {
+      // Rate-limit must propagate so the scheduler pauses (INT-1906).
+      if (err instanceof RateLimitError) throw err;
       return {
         exitCode: 1,
         stdout: '',

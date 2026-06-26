@@ -1018,6 +1018,20 @@ export class AutonomousRunner {
 
     // Single execution (legacy)
     const result = await this.executePipeline(task, projectPath);
+
+    // Rate-limited: pause until quota resets. Return before any Discord/Linear
+    // reporting or state change — no failure count, no card spam. Same as the
+    // scheduler 'failed' handler's rate_limited branch. (INT-1906)
+    if (result.finalStatus === 'rate_limited') {
+      const resetsAt = result.rateLimitResetsAt ?? Date.now() + 60_000;
+      this.rateLimitUntil = resetsAt;
+      const waitSec = Math.max(0, Math.ceil((resetsAt - Date.now()) / 1000));
+      const resetsLabel = new Date(resetsAt).toISOString();
+      console.warn(`[AutonomousRunner] Rate limit hit for ${this.formatTaskContext(task)} — pausing until ${resetsLabel} (~${waitSec}s)`);
+      broadcastEvent({ type: 'log', data: { taskId: task.issueId || task.id, stage: 'rate_limit', line: `⏸ Rate limited — pausing ~${waitSec}s (until ${resetsLabel})` } });
+      return;
+    }
+
     await reportToDiscord(formatPipelineResultEmbed(result));
 
     // Update Linear issue state
