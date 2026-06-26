@@ -171,6 +171,26 @@ program
     }
   });
 
+// openswarm design-pipeline
+
+program
+  .command('design-pipeline')
+  .description('Analyze the project and generate a CI workflow (.github/workflows/ci.yml)')
+  .option('--path <path>', 'Project path (default: cwd)')
+  .option('--dry-run', 'Print the generated workflow without writing')
+  .option('--force', 'Overwrite an existing ci.yml')
+  .action(async (opts: { path?: string; dryRun?: boolean; force?: boolean }) => {
+    const { runDesignPipeline } = await import('./cli/designPipeline.js');
+    try {
+      const r = runDesignPipeline({ path: opts.path, dryRun: opts.dryRun, force: opts.force });
+      if (r.wrote) console.log(`Wrote ${r.path}`);
+      else console.log(r.yaml);
+    } catch (e) {
+      console.error(e instanceof Error ? e.message : String(e));
+      process.exitCode = 1;
+    }
+  });
+
 // openswarm review
 
 program
