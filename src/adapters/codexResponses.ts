@@ -302,7 +302,17 @@ export class CodexResponsesAdapter implements CliAdapter {
     // matches no jobProfile) would silently pick the one broken model. Exclude it and
     // prefer the cheapest capable model. Roles/profiles that pass an explicit model
     // are unaffected.
-    const ids = (await getCodexModelIds()).filter((m) => m !== SPARK_MODEL);
+    // Resolve the LIVE catalog with the account's OAuth token (INT-1872): the
+    // curated offline list is account-stale (e.g. gpt-5-codex 400s
+    // "model is not supported … with a ChatGPT account"). With a token,
+    // getCodexModelIds returns what this account actually supports.
+    let token: string | undefined;
+    try {
+      token = await ensureValidToken(new AuthProfileStore(), PROFILE_KEY);
+    } catch {
+      // no/expired auth → getCodexModelIds falls back to the offline curated list
+    }
+    const ids = (await getCodexModelIds(token)).filter((m) => m !== SPARK_MODEL);
     return ids.find((m) => m === SAFE_CHEAP_MODEL) ?? ids[0] ?? DEFAULT_MODEL;
   }
 
@@ -402,6 +412,7 @@ export class CodexResponsesAdapter implements CliAdapter {
   ) {
     let token = initialToken;
     let retried = false;
+    let modelRetried = false;
 
     return async (messages: ChatMessage[], tools: ToolDefinition[]): Promise<ChatLikeResponse> => {
       const { instructions, input } = chatToResponsesInput(messages);
@@ -445,6 +456,18 @@ export class CodexResponsesAdapter implements CliAdapter {
             retried = true;
             token = await refreshAndRetry(store);
             return doCall(token);
+          }
+          // 400 "model is not supported" — this account can't use body.model.
+          // Fall forward to the next live-catalog model once (INT-1872): account
+          // model availability varies, so adapt instead of failing the task.
+          if (res.status === 400 && /not supported/i.test(errText) && !modelRetried) {
+            modelRetried = true;
+            const alt = (await getCodexModelIds(token)).find((m) => m !== SPARK_MODEL && m !== body.model);
+            if (alt) {
+              onReasoning?.(`model ${String(body.model)} not supported on this account — retrying with ${alt}`);
+              body.model = alt;
+              return doCall(token);
+            }
           }
           throw new Error(`Codex responses error (${res.status}): ${errText.slice(0, 500)}`);
         }
