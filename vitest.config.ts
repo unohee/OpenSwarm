@@ -76,6 +76,7 @@ const integrationBoundaryCoverageExcludes = [
   'src/support/projectMapper.ts',
   'src/support/promptHelper.ts',
   'src/support/planCommand.ts',
+  'src/support/chatSession.ts',
   'src/support/rateLimiter.ts',
   'src/support/repoMetadata.ts',
   'src/support/timeWindow.ts',

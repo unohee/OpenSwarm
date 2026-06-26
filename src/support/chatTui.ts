@@ -3,16 +3,20 @@
 // OpenSwarm - Rich TUI Chat Interface
 // Claude Code style tabbed interface with real-time updates
 import blessed from 'blessed';
-import { homedir } from 'node:os';
 import { resolve } from 'node:path';
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
-import { loadConfig, expandPath } from '../core/config.js';
-import { getDefaultAdapterName, isKnownAdapter, type AdapterName } from '../adapters/index.js';
-import { getDefaultChatModel, resolveChatModel, runChatCompletion, shortenChatModel } from './chatBackend.js';
+import { writeFile } from 'node:fs/promises';
+import { expandPath } from '../core/config.js';
+import { type AdapterName } from '../adapters/index.js';
+import { getDefaultChatModel, resolveChatModel, shortenChatModel } from './chatBackend.js';
 import { runPlanCommand, type PlanIO } from './planCommand.js';
-// Constants
-const CHAT_DIR = resolve(homedir(), '.openswarm', 'chat');
+import {
+  type Session,
+  saveSession,
+  loadSession,
+  generateSessionId,
+  loadDefaultProvider,
+  callChatModel,
+} from './chatSession.js';
 
 // Render guard: blessed는 동시 render() 호출 시 화면이 검은색으로 깨질 수 있음
 let renderScheduled = false;
@@ -36,22 +40,7 @@ function safeRender() {
     }
   });
 }
-// Types
-type Message = { role: 'user' | 'assistant'; content: string; cost?: number };
-
-type Session = {
-  id: string;
-  provider: AdapterName;
-  model: string;
-  messages: Message[];
-  totalCost: number;
-  totalTokens: number;
-  createdAt: string;
-  updatedAt: string;
-  /** Session goal set via /goal; the agent pursues it autonomously. */
-  goal?: string;
-};
-
+// Types — Session/Message live in chatSession.ts (UI-agnostic, INT-1935)
 type AppState = {
   session: Session;
   currentTab: number;
@@ -68,84 +57,9 @@ type AppState = {
   /** Set while an agent run is in flight; Esc/Ctrl+C aborts it. */
   activeRun?: AbortController;
 };
-// Session Management
-async function ensureChatDir(): Promise<void> {
-  await mkdir(CHAT_DIR, { recursive: true });
-}
+// Session management, provider resolution, and the model-call wrapper now live
+// in chatSession.ts (UI-agnostic, INT-1935) and are imported above.
 
-async function saveSession(session: Session): Promise<void> {
-  await ensureChatDir();
-  session.updatedAt = new Date().toISOString();
-  const path = resolve(CHAT_DIR, `${session.id}.json`);
-  await writeFile(path, JSON.stringify(session, null, 2));
-}
-
-async function loadSession(id: string): Promise<Session | null> {
-  const path = resolve(CHAT_DIR, `${id}.json`);
-  if (!existsSync(path)) return null;
-  const data = JSON.parse(await readFile(path, 'utf-8'));
-  // Validate the persisted provider — a stale/removed adapter (e.g. `claude`)
-  // must not pass through, or downstream model lookups crash. If it's replaced,
-  // its model no longer applies → use the provider's default.
-  const provider = inferProvider(data.provider, data.model);
-  const model = data.provider === provider && data.model ? data.model : getDefaultChatModel(provider);
-  return {
-    ...data,
-    provider,
-    model,
-    totalCost: data.totalCost ?? 0,
-    totalTokens: data.totalTokens ?? 0,
-  };
-}
-
-function generateSessionId(): string {
-  const now = new Date();
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
-}
-
-function inferProvider(provider?: AdapterName, model?: string): AdapterName {
-  if (provider && isKnownAdapter(provider)) return provider;
-  if (model?.startsWith('gpt-') || model?.includes('codex')) return 'codex';
-  return loadDefaultProvider();
-}
-
-function loadDefaultProvider(): AdapterName {
-  try {
-    return loadConfig().adapter ?? getDefaultAdapterName();
-  } catch {
-    return getDefaultAdapterName();
-  }
-}
-
-// Shared chat backend
-async function callChatModel(
-  prompt: string,
-  provider: AdapterName,
-  model: string,
-  onStream: (text: string, isThinking: boolean) => void,
-  onToolLog?: (line: string) => void,
-  maxTurns?: number,
-  signal?: AbortSignal,
-): Promise<{ response: string; sessionId: string; cost: number; tokens: number }> {
-  const result = await runChatCompletion({
-    prompt,
-    provider,
-    model,
-    timeoutMs: 300000,
-    onText: onStream,
-    onLog: onToolLog,
-    maxTurns,
-    signal,
-  });
-
-  return {
-    response: result.response,
-    sessionId: result.sessionId ?? '',
-    cost: result.cost ?? 0,
-    tokens: result.tokens ?? 0,
-  };
-}
 // Warhammer 40k Loading Messages
 const LOADING_MESSAGES = [
   'Initializing cogitator arrays',

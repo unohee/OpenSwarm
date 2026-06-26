@@ -1,0 +1,101 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { promises as fs } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+// callChatModel is a thin wrapper over chatBackend.runChatCompletion; mock the
+// backend so the wrapper is exercised without spawning a real provider.
+vi.mock('./chatBackend.js', () => ({
+  getDefaultChatModel: (p: string) => `default-${p}`,
+  runChatCompletion: vi.fn(async (opts: { onText?: (t: string, k: boolean) => void }) => {
+    opts.onText?.('streamed', false);
+    return { response: 'streamed', sessionId: 'sess-1', cost: 0.25, tokens: 12 };
+  }),
+}));
+
+import {
+  generateSessionId,
+  inferProvider,
+  saveSession,
+  loadSession,
+  callChatModel,
+  type Session,
+} from './chatSession.js';
+
+describe('generateSessionId', () => {
+  it('produces a YYYYMMDD-HHMM id', () => {
+    expect(generateSessionId()).toMatch(/^\d{8}-\d{4}$/);
+  });
+});
+
+describe('inferProvider', () => {
+  it('passes through a known adapter', () => {
+    expect(inferProvider('codex')).toBe('codex');
+    expect(inferProvider('openrouter')).toBe('openrouter');
+  });
+
+  it('infers codex from a gpt-/codex model when no valid provider', () => {
+    expect(inferProvider(undefined, 'gpt-4o')).toBe('codex');
+    expect(inferProvider(undefined, 'something-codex-mini')).toBe('codex');
+    // An unknown provider string is not trusted; the model still routes it.
+    expect(inferProvider('bogus' as never, 'gpt-4o')).toBe('codex');
+  });
+
+  it('falls back to the default provider for an unknown model', () => {
+    // Whatever the env default is, it must be a non-empty adapter name.
+    expect(inferProvider(undefined, 'mystery-model')).toBeTruthy();
+  });
+});
+
+describe('saveSession / loadSession (injectable dir)', () => {
+  let dir: string;
+  beforeEach(async () => { dir = await fs.mkdtemp(path.join(os.tmpdir(), 'chatsess-')); });
+  afterEach(async () => { await fs.rm(dir, { recursive: true, force: true }); });
+
+  const mk = (over: Partial<Session> = {}): Session => ({
+    id: '20260626-1200',
+    provider: 'codex',
+    model: 'gpt-5.2-codex',
+    messages: [{ role: 'user', content: 'hi' }],
+    totalCost: 0.5,
+    totalTokens: 42,
+    createdAt: '2026-06-26T12:00:00.000Z',
+    updatedAt: '2026-06-26T12:00:00.000Z',
+    ...over,
+  });
+
+  it('round-trips a session, preserving a valid provider/model', async () => {
+    await saveSession(mk(), dir);
+    const loaded = await loadSession('20260626-1200', dir);
+    expect(loaded).not.toBeNull();
+    expect(loaded!.provider).toBe('codex');
+    expect(loaded!.model).toBe('gpt-5.2-codex');
+    expect(loaded!.messages).toEqual([{ role: 'user', content: 'hi' }]);
+    expect(loaded!.totalTokens).toBe(42);
+  });
+
+  it('returns null for a missing session', async () => {
+    expect(await loadSession('does-not-exist', dir)).toBeNull();
+  });
+
+  it('repairs an unknown persisted provider on load (default model from backend)', async () => {
+    // Hand-write a session whose provider is no longer a valid adapter.
+    await fs.writeFile(
+      path.join(dir, 'bad.json'),
+      JSON.stringify({ id: 'bad', provider: 'bogus', model: 'gpt-4o', messages: [], createdAt: '', updatedAt: '' }),
+    );
+    const loaded = await loadSession('bad', dir);
+    expect(loaded!.provider).toBe('codex'); // inferred from the gpt- model
+    expect(loaded!.model).toBe('default-codex'); // provider changed → default model
+    expect(loaded!.totalCost).toBe(0); // missing fields defaulted
+  });
+});
+
+describe('callChatModel', () => {
+  it('forwards to the backend and normalizes the result', async () => {
+    const streamed: string[] = [];
+    const out = await callChatModel('hi', 'codex', 'gpt-5.2-codex', (t) => streamed.push(t));
+    expect(out).toEqual({ response: 'streamed', sessionId: 'sess-1', cost: 0.25, tokens: 12 });
+    expect(streamed).toContain('streamed');
+  });
+});
