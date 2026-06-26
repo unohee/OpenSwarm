@@ -1055,67 +1055,6 @@ export class PairPipeline extends EventEmitter {
         }
       }
 
-      // ========== REVIEWER ==========
-      if (hasReviewer) {
-        agentPair.updateSessionStatus(context.session.id, 'reviewing');
-
-        // Reviewer escalation: 로컬 모델이 N회 이상 REVISE → 상위 모델로 spot check
-        const reviewerCfg = this.config.roles?.reviewer;
-        const reviewerEscalateModel = reviewerCfg?.escalateModel;
-        const reviewerEscalateThreshold = reviewerCfg?.escalateAfterIteration ?? 3;
-        const shouldEscalateReviewer = context.currentIteration >= reviewerEscalateThreshold && !!reviewerEscalateModel;
-
-        const reviewerOverrides = shouldEscalateReviewer
-          ? { model: reviewerEscalateModel }
-          : undefined;
-
-        if (shouldEscalateReviewer && reviewerEscalateModel) {
-          console.log(`[${context.taskPrefix}] Reviewer escalation → ${reviewerEscalateModel} (iteration ${context.currentIteration})`);
-          this.emit('log', {
-            line: `🔍 Reviewer spot check: escalating to ${reviewerEscalateModel}`,
-          });
-        }
-
-        const reviewerResult = await this.runStage('reviewer', context, reviewerOverrides);
-        stages.push(reviewerResult);
-
-        const decision = (reviewerResult.result as ReviewResult).decision;
-
-        // Record Reviewer result in stuck detector
-        this.stuckDetector.addEntry({
-          stage: 'reviewer',
-          success: reviewerResult.success,
-          decision: decision,
-          output: (reviewerResult.result as ReviewResult).feedback,
-          timestamp: Date.now(),
-        });
-
-        if (decision === 'reject') {
-          // reject = terminate immediately
-          console.log(`[${context.taskPrefix}] Reviewer rejected`);
-          agentPair.updateSessionStatus(context.session.id, 'rejected');
-          return { success: false };
-        }
-
-        if (decision === 'revise') {
-          // revise = next iteration. Reviewer feedback is subjective → it travels
-          // through the reviewer channel and is dropped on a fresh-context reset.
-          console.log(`[${context.taskPrefix}] Reviewer requested revision`);
-          context.feedbackSource = 'review';
-          agentPair.trackFailure(context.session.id); // Track for fresh context decision
-          this.emit('iteration:fail', {
-            iteration: context.currentIteration,
-            stage: 'reviewer',
-            context,
-          });
-          agentPair.updateSessionStatus(context.session.id, 'revising');
-          continue;
-        }
-
-        // approve → proceed to Tester
-        agentPair.resetFailureStreak(context.session.id); // Reset on approval
-      }
-
       // ========== TESTER ==========
       if (hasTester) {
         // Skip tester if no code files changed (configurable, default true)
@@ -1168,6 +1107,59 @@ export class PairPipeline extends EventEmitter {
           continue;
         }
         } // end else (has code change)
+      }
+
+      // ========== REVIEWER ==========
+      if (hasReviewer) {
+        agentPair.updateSessionStatus(context.session.id, 'reviewing');
+
+        // Reviewer escalation: 로컬 모델이 N회 이상 REVISE → 상위 모델로 spot check
+        const reviewerCfg = this.config.roles?.reviewer;
+        const reviewerEscalateModel = reviewerCfg?.escalateModel;
+        const reviewerEscalateThreshold = reviewerCfg?.escalateAfterIteration ?? 3;
+        const shouldEscalateReviewer = context.currentIteration >= reviewerEscalateThreshold && !!reviewerEscalateModel;
+
+        const reviewerOverrides = shouldEscalateReviewer
+          ? { model: reviewerEscalateModel }
+          : undefined;
+
+        if (shouldEscalateReviewer && reviewerEscalateModel) {
+          console.log(`[${context.taskPrefix}] Reviewer escalation → ${reviewerEscalateModel} (iteration ${context.currentIteration})`);
+          this.emit('log', {
+            line: `🔍 Reviewer spot check: escalating to ${reviewerEscalateModel}`,
+          });
+        }
+
+        const reviewerResult = await this.runStage('reviewer', context, reviewerOverrides);
+        stages.push(reviewerResult);
+
+        const decision = (reviewerResult.result as ReviewResult).decision;
+
+        // Record Reviewer result in stuck detector
+        this.stuckDetector.addEntry({
+          stage: 'reviewer',
+          success: reviewerResult.success,
+          decision: decision,
+          output: (reviewerResult.result as ReviewResult).feedback,
+          timestamp: Date.now(),
+        });
+
+        if (decision === 'reject') {
+          console.log(`[${context.taskPrefix}] Reviewer rejected`);
+          agentPair.updateSessionStatus(context.session.id, 'rejected');
+          return { success: false };
+        }
+
+        if (decision === 'revise') {
+          console.log(`[${context.taskPrefix}] Reviewer requested revision`);
+          context.feedbackSource = 'review';
+          agentPair.trackFailure(context.session.id);
+          this.emit('iteration:fail', { iteration: context.currentIteration, stage: 'reviewer', context });
+          agentPair.updateSessionStatus(context.session.id, 'revising');
+          continue;
+        }
+
+        agentPair.resetFailureStreak(context.session.id);
       }
 
       // ========== ALL PASSED ==========
