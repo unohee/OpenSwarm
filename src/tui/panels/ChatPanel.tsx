@@ -24,7 +24,7 @@ import { CommandPalette } from '../components/CommandPalette.js';
 import { SelectList } from '../components/SelectList.js';
 import { listAdapterNames } from '../../adapters/index.js';
 import { callChatModel, loadDefaultProvider } from '../../support/chatSession.js';
-import { getDefaultChatModel } from '../../support/chatBackend.js';
+import { getDefaultChatModel, listChatModels } from '../../support/chatBackend.js';
 import { runPlanCommand, type PlanIO } from '../../support/planCommand.js';
 import { runGoalCommand, buildGoalPursuitPrompt, GOAL_PURSUIT_MAX_TURNS } from '../../support/goalCommand.js';
 import type { AdapterName } from '../../adapters/types.js';
@@ -136,6 +136,22 @@ export function ChatPanel({ active, provider: providerProp, model: modelProp, pr
     [cwd, model, provider, streamChat], // eslint-disable-line react-hooks/exhaustive-deps
   );
 
+  // Open the /model selector for the current provider (async catalog). (INT-1961)
+  const openModelSelector = useCallback(async () => {
+    dispatch({ type: 'system', content: `Fetching models for ${provider}…` });
+    try {
+      const models = await listChatModels(provider);
+      if (!models.length) {
+        dispatch({ type: 'system', content: `No models listed for ${provider}. Use /model <name>.` });
+        return;
+      }
+      setSelectorIndex(Math.max(0, models.indexOf(model)));
+      setSelector({ kind: 'model', title: `Switch model (${provider}):`, items: models });
+    } catch (e) {
+      dispatch({ type: 'system', content: `✖ failed to list models: ${e instanceof Error ? e.message : String(e)}` });
+    }
+  }, [provider, model]);
+
   const runCommand = useCallback(
     (name: string, args: string) => {
       switch (name) {
@@ -171,14 +187,22 @@ export function ChatPanel({ active, provider: providerProp, model: modelProp, pr
           setSelector({ kind: 'provider', title: 'Switch provider:', items });
           break;
         }
-        case '/model':
-          dispatch({ type: 'system', content: `${name} switching is not wired yet — set it via config/flags.` });
+        case '/model': {
+          // `/model <name>` switches directly; bare `/model` opens an async selector. (INT-1961)
+          const target = args.trim();
+          if (target) {
+            setModel(target);
+            dispatch({ type: 'system', content: `Model → ${target}` });
+            break;
+          }
+          void openModelSelector();
           break;
+        }
         default:
           dispatch({ type: 'system', content: `Unknown command: ${name}` });
       }
     },
-    [runPlan, runGoal, provider],
+    [runPlan, runGoal, provider, openModelSelector],
   );
 
   // Apply the highlighted choice in the /provider | /model selector. (INT-1960/1961)

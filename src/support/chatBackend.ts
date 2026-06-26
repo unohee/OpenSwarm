@@ -111,6 +111,31 @@ export function resolveChatModel(input: string | undefined, provider: AdapterNam
   return alias || input;
 }
 
+/** Curated model ids for a provider, derived from CHAT_MODEL_ALIASES. Pure. (INT-1961) */
+export function curatedModels(provider: AdapterName): string[] {
+  const fromAliases = Array.from(new Set(Object.values(CHAT_MODEL_ALIASES[provider] ?? {})));
+  const def = getDefaultChatModel(provider);
+  return Array.from(new Set([def, ...fromAliases]));
+}
+
+/**
+ * Models offered by the /model switcher: the adapter's live catalog when it
+ * exposes listModels(), else the curated list. Network failures fall back to
+ * curated. (INT-1961)
+ */
+export async function listChatModels(provider: AdapterName): Promise<string[]> {
+  try {
+    const adapter = getAdapter(provider) as { listModels?: () => Promise<string[]> };
+    if (typeof adapter.listModels === 'function') {
+      const live = await adapter.listModels();
+      if (live?.length) return Array.from(new Set(live));
+    }
+  } catch {
+    // fall through to curated
+  }
+  return curatedModels(provider);
+}
+
 export function shortenChatModel(model: string): string {
   // OpenRouter: "anthropic/claude-sonnet-4" → "claude-sonnet-4"
   if (model.includes('/')) return model.split('/').pop() ?? model;
