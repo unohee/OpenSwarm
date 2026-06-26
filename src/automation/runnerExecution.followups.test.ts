@@ -50,6 +50,16 @@ describe('fileReviewerFollowups (INT-1704)', () => {
     expect(create).not.toHaveBeenCalled();
   });
 
+  it('files regardless of decision when requireApprove is false (INT-1969)', async () => {
+    const create = vi.fn(async () => ({}));
+    const filed = await fileReviewerFollowups(mockSource(create), 'INT-1', review({ decision: 'revise' }), {
+      autoFile: true,
+      requireApprove: false,
+    });
+    expect(filed).toBe(2);
+    expect(create).toHaveBeenCalledTimes(2);
+  });
+
   it('caps at 10 actions', async () => {
     const create = vi.fn(async () => ({}));
     const many = Array.from({ length: 14 }, (_, i) => ({ type: 'test', title: `t${i}` }));

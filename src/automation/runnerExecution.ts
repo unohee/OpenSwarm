@@ -265,9 +265,13 @@ export async function fileReviewerFollowups(
   source: ITaskSource | null,
   parentIssueId: string | null | undefined,
   review: ReviewResult,
-  opts: { autoFile?: boolean; projectId?: string } = {},
+  opts: { autoFile?: boolean; projectId?: string; requireApprove?: boolean } = {},
 ): Promise<number> {
-  if (!opts.autoFile || !source || review.decision !== 'approve') return 0;
+  // Autonomous pipeline files only on approve; the manual `review` command files
+  // regardless of decision (requireApprove: false). (INT-1704 / INT-1969)
+  const requireApprove = opts.requireApprove ?? true;
+  if (!opts.autoFile || !source) return 0;
+  if (requireApprove && review.decision !== 'approve') return 0;
   const actions = (review.recommendedActions ?? []).slice(0, 10);
   let filed = 0;
   for (const a of actions) {

@@ -9,6 +9,7 @@
 // command shell wires git + reviewer + Linear.
 
 import type { ReviewResult, WorkerResult } from '../agents/agentPair.js';
+import type { ITaskSource } from '../automation/taskSource.js';
 import { startReviewProgress } from './reviewProgress.js';
 
 /** Synthesize a WorkerResult describing the working-tree changes for the reviewer. */
@@ -84,6 +85,40 @@ async function resolveProjectId(cwd: string): Promise<string | undefined> {
     return meta?.linear?.projectId;
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * A Linear-backed task source for the standalone `review` CLI. The daemon
+ * registers one at startup, but a bare `openswarm review` does not — so init
+ * Linear from config (OAuth profile or apiKey) and build a LinearTaskSource.
+ * Returns null when Linear isn't configured. (INT-1969)
+ */
+async function ensureTaskSource(): Promise<ITaskSource | null> {
+  const { getTaskSource } = await import('../automation/runnerExecution.js');
+  const existing = getTaskSource();
+  if (existing) return existing;
+  try {
+    const linear = await import('../linear/linear.js');
+    if (!linear.isLinearInitialized()) {
+      const { loadConfig } = await import('../core/config.js');
+      const config = loadConfig();
+      if (config.linearTeamId) {
+        const { AuthProfileStore, ensureValidToken } = await import('../auth/index.js');
+        const authStore = new AuthProfileStore();
+        if (authStore.getProfile('linear:default')) {
+          const token = await ensureValidToken(authStore, 'linear:default');
+          linear.initLinear(token, config.linearTeamId, true);
+        } else if (config.linearApiKey) {
+          linear.initLinear(config.linearApiKey, config.linearTeamId);
+        }
+      }
+    }
+    if (!linear.isLinearInitialized()) return null;
+    const { LinearTaskSource } = await import('../automation/taskSource.js');
+    return new LinearTaskSource(async () => []); // fetch unused for filing
+  } catch {
+    return null;
   }
 }
 
@@ -180,19 +215,29 @@ export async function runReviewCommand(
       if (parent) log(`Filing follow-ups under ${parent} (inferred from branch "${branch}").`);
     }
     // No parent → create top-level (standalone) issues rather than refusing. (INT-1968)
+    // Default path initializes a Linear task source itself (the daemon isn't
+    // running here), and files regardless of decision. (INT-1969)
     const fileFollowups =
       deps.fileFollowups ??
       (async (p: string | undefined, r: ReviewResult) => {
-        const { fileReviewerFollowups, getTaskSource } = await import('../automation/runnerExecution.js');
+        const { fileReviewerFollowups } = await import('../automation/runnerExecution.js');
+        const source = await ensureTaskSource();
+        if (!source) return 0;
         const projectId = p ? undefined : await resolveProjectId(cwd);
-        return fileReviewerFollowups(getTaskSource(), p, r, { autoFile: true, projectId });
+        return fileReviewerFollowups(source, p, r, { autoFile: true, projectId, requireApprove: false });
       });
     const filed = await fileFollowups(parent, result);
-    log(
-      parent
-        ? `Filed ${filed} follow-up sub-issue(s) under ${parent}.`
-        : `Filed ${filed} standalone follow-up issue(s) (no issue id on the branch — pass \`--issues <id>\` to nest them).`,
-    );
+    if (filed > 0) {
+      log(
+        parent
+          ? `Filed ${filed} follow-up sub-issue(s) under ${parent}.`
+          : `Filed ${filed} standalone follow-up issue(s) (pass \`--issues <id>\` to nest them under an issue).`,
+      );
+    } else {
+      log(
+        `Could not file follow-ups (0 created). Is Linear connected? Run \`openswarm auth login --provider linear\` (or set linearApiKey in config).`,
+      );
+    }
   } else if (followups) {
     // Suggestions were made but nothing was filed — make the flag discoverable. (INT-1966/1967)
     log(`\n${followups} follow-up(s) suggested. Re-run with \`--issues\` to create them as Linear sub-issues (parent inferred from the branch, or pass \`--issues <id>\`).`);
