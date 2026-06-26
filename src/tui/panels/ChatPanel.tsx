@@ -23,6 +23,7 @@ import { CommandPalette } from '../components/CommandPalette.js';
 import { callChatModel, loadDefaultProvider } from '../../support/chatSession.js';
 import { getDefaultChatModel } from '../../support/chatBackend.js';
 import { runPlanCommand, type PlanIO } from '../../support/planCommand.js';
+import { runGoalCommand, buildGoalPursuitPrompt, GOAL_PURSUIT_MAX_TURNS } from '../../support/goalCommand.js';
 import type { AdapterName } from '../../adapters/types.js';
 
 export interface ChatPanelProps {
@@ -76,6 +77,57 @@ export function ChatPanel({ active, provider: providerProp, model: modelProp, pr
     [cwd, model], // eslint-disable-line react-hooks/exhaustive-deps
   );
 
+  // Stream an agentic chat turn into the reducer. Shared by free chat and simple
+  // /goal pursuit (the latter raises maxTurns). (INT-1821)
+  const streamChat = useCallback(
+    async (prompt: string, maxTurns?: number) => {
+      dispatch({ type: 'stream', chunk: '' });
+      setActivity([]);
+      setBusy(true);
+      try {
+        await callChatModel(
+          prompt,
+          provider,
+          model,
+          (t) => dispatch({ type: 'stream', chunk: t }),
+          (line) => {
+            if (isActivityNoise(line)) return;
+            setActivity((a) => [...a, line].slice(-10));
+          },
+          maxTurns,
+        );
+      } catch (e) {
+        dispatch({ type: 'stream', chunk: `\n[error] ${e instanceof Error ? e.message : String(e)}` });
+      } finally {
+        dispatch({ type: 'commit' });
+        setActivity([]);
+        setBusy(false);
+      }
+    },
+    [provider, model],
+  );
+
+  // /goal routes by complexity: simple → pursue in-session (streamed), complex →
+  // decompose & dispatch via the /plan flow. (INT-1821 / S8)
+  const runGoal = useCallback(
+    async (goal: string) => {
+      setBusy(true);
+      try {
+        await runGoalCommand(
+          goal,
+          planIO,
+          { projectPath: cwd, model, provider },
+          { pursue: (g) => streamChat(buildGoalPursuitPrompt(g), GOAL_PURSUIT_MAX_TURNS) },
+        );
+      } catch (e) {
+        dispatch({ type: 'system', content: `✖ goal failed: ${e instanceof Error ? e.message : String(e)}` });
+      } finally {
+        setBusy(false);
+      }
+    },
+    [cwd, model, provider, streamChat], // eslint-disable-line react-hooks/exhaustive-deps
+  );
+
   const runCommand = useCallback(
     (name: string, args: string) => {
       switch (name) {
@@ -89,10 +141,9 @@ export function ChatPanel({ active, provider: providerProp, model: modelProp, pr
           void runPlan(args);
           break;
         case '/goal':
-          // /goal reuses the plan→dispatch path so it works in main (the feat-only
-          // runGoalPipeline never landed); decompose the goal and dispatch it.
-          dispatch({ type: 'system', content: `🎯 Goal set: ${args}` });
-          void runPlan(args);
+          // /goal routes by complexity (INT-1821): simple → pursue in-session,
+          // complex → decompose & dispatch. Shared, UI-agnostic goalCommand.
+          void runGoal(args);
           break;
         case '/model':
         case '/provider':
@@ -102,7 +153,7 @@ export function ChatPanel({ active, provider: providerProp, model: modelProp, pr
           dispatch({ type: 'system', content: `Unknown command: ${name}` });
       }
     },
-    [runPlan],
+    [runPlan, runGoal],
   );
 
   const submit = useCallback(
@@ -122,29 +173,9 @@ export function ChatPanel({ active, provider: providerProp, model: modelProp, pr
         return;
       }
       dispatch({ type: 'user', content: parsed.text });
-      dispatch({ type: 'stream', chunk: '' });
-      setActivity([]);
-      setBusy(true);
-      try {
-        await callChatModel(
-          parsed.text,
-          provider,
-          model,
-          (t) => dispatch({ type: 'stream', chunk: t }),
-          (line) => {
-            if (isActivityNoise(line)) return;
-            setActivity((a) => [...a, line].slice(-10));
-          },
-        );
-      } catch (e) {
-        dispatch({ type: 'stream', chunk: `\n[error] ${e instanceof Error ? e.message : String(e)}` });
-      } finally {
-        dispatch({ type: 'commit' });
-        setActivity([]);
-        setBusy(false);
-      }
+      await streamChat(parsed.text);
     },
-    [pending, runCommand, provider, model],
+    [pending, runCommand, streamChat],
   );
 
   // While a /plan confirm is pending, keep the field active even though busy.
