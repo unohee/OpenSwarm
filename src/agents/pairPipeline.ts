@@ -558,12 +558,16 @@ export class PairPipeline extends EventEmitter {
           }
 
           // Self-repair feedback: objective lint/test errors (reflection trail)
-          // are always carried forward — they are ground truth and survive a
-          // fresh-context reset. Subjective reviewer feedback is dropped on fresh
-          // context and only included when it was the latest revise reason.
+          // are always carried forward — ground truth that survives a fresh-context
+          // reset. The reviewer's revision prompt is ALSO preserved across fresh
+          // context (INT-1705): it carries the task requirement (e.g. "wire it into
+          // the heartbeat / add the call site"), not chat pollution — dropping it
+          // made the worker repeat the same partial impl forever. Fresh context
+          // still clears the worker's own chat history; only the reviewer's task
+          // signal is kept.
           const reflectionPart = buildReflectionFeedback(context.reflection);
           const includeReview =
-            !useFreshContext && context.feedbackSource === 'review' && !!context.reviewResult;
+            context.feedbackSource === 'review' && !!context.reviewResult;
           const reviewPart = includeReview
             ? reviewerAgent.buildRevisionPrompt(context.reviewResult!)
             : undefined;
