@@ -80,19 +80,22 @@ const integrationBoundaryCoverageExcludes = [
   'src/support/repoMetadata.ts',
   'src/support/timeWindow.ts',
   'src/taskState/store.ts',
+
+  // Ink TUI alt-screen render entry (needs a real TTY) — EPIC INT-1813.
+  'src/tui/index.tsx',
 ];
 
 export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
-    include: ['src/**/*.test.ts', 'tests/**/*.test.ts'],
+    include: ['src/**/*.test.ts', 'src/**/*.test.tsx', 'tests/**/*.test.ts'],
     exclude: ['node_modules', 'dist'],
     testTimeout: 30000,
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov'],
-      exclude: ['node_modules', 'dist', '**/*.test.ts', ...integrationBoundaryCoverageExcludes],
+      exclude: ['node_modules', 'dist', '**/*.test.ts', '**/*.test.tsx', ...integrationBoundaryCoverageExcludes],
       thresholds: {
         lines: 100,
         statements: 100,
