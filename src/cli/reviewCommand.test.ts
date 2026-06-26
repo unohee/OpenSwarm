@@ -70,6 +70,22 @@ describe('runReviewCommand --issues branch inference (INT-1967)', () => {
     expect(logs.join('\n')).toContain('inferred from branch');
   });
 
+  it('warns to connect Linear when nothing is filed (INT-1969)', async () => {
+    const logs: string[] = [];
+    await runReviewCommand(
+      { fileIssue: true },
+      {
+        getChangedFiles: async () => ['x.ts'],
+        review: approveWithFollowups,
+        getBranch: async () => 'main',
+        fileFollowups: async () => 0, // e.g. Linear not configured
+        startProgress: () => null,
+        log: (l) => logs.push(l),
+      },
+    );
+    expect(logs.join('\n')).toMatch(/Linear connected|auth login/);
+  });
+
   it('uses an explicit id over branch inference', async () => {
     const fileFollowups = vi.fn(async () => 1);
     const getBranch = vi.fn(async () => 'feat/int-9999-x');
