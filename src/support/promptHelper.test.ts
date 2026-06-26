@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest';
-import { resolveChoice, resolveConfirm, type ChoiceOption } from './promptHelper.js';
+import { describe, it, expect, vi } from 'vitest';
+import { prepareInput, resolveChoice, resolveConfirm, type ChoiceOption } from './promptHelper.js';
+import { PassThrough } from 'node:stream';
 
 const opts: ChoiceOption<string>[] = [
   { label: 'local', value: 'L' },
@@ -20,6 +21,29 @@ describe('resolveChoice', () => {
     expect(resolveChoice('3', opts)).toBeNull();
     expect(resolveChoice('nope', opts)).toBeNull();
     expect(resolveChoice('', opts)).toBeNull();
+  });
+});
+
+describe('prepareInput', () => {
+  it('disables raw mode on TTY streams and sets utf8 encoding', () => {
+    const input = new PassThrough() as PassThrough & { setRawMode?: ReturnType<typeof vi.fn> };
+    const setRawMode = vi.fn();
+    const setEncoding = vi.fn();
+    input.setRawMode = setRawMode;
+    input.setEncoding = setEncoding;
+
+    expect(prepareInput(input)).toBe(input);
+    expect(setRawMode).toHaveBeenCalledWith(false);
+    expect(setEncoding).toHaveBeenCalledWith('utf8');
+  });
+
+  it('sets utf8 encoding even when raw mode is unavailable', () => {
+    const input = new PassThrough() as PassThrough & { setEncoding?: ReturnType<typeof vi.fn> };
+    const setEncoding = vi.fn();
+    input.setEncoding = setEncoding;
+
+    expect(prepareInput(input)).toBe(input);
+    expect(setEncoding).toHaveBeenCalledWith('utf8');
   });
 });
 

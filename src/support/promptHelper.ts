@@ -10,6 +10,17 @@ import { createInterface } from 'node:readline';
 import { stdin as processStdin, stdout as processStdout } from 'node:process';
 import type { Readable, Writable } from 'node:stream';
 
+export function prepareInput(input: Readable): Readable {
+  const stream = input as Readable & Partial<Pick<NodeJS.ReadStream, 'setRawMode'>>;
+  if (typeof stream.setRawMode === 'function') {
+    stream.setRawMode(false);
+  }
+  if (typeof input.setEncoding === 'function') {
+    input.setEncoding('utf8');
+  }
+  return input;
+}
+
 export interface ChoiceOption<T> {
   label: string;
   value: T;
@@ -53,7 +64,7 @@ export function createPrompter(input: Readable = processStdin, output: Writable 
   // rl.question (both callback and promises forms) drops lines when a pipe
   // delivers several at once and then EOFs; queueing the line events is robust
   // for both piped stdin and a live TTY.
-  const rl = createInterface({ input, output });
+  const rl = createInterface({ input: prepareInput(input), output });
   const lineQueue: string[] = [];
   const waiters: Array<{ resolve: (l: string) => void; reject: (e: Error) => void }> = [];
   let closed = false;
