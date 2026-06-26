@@ -265,7 +265,7 @@ function isProtected(resolved: string, protectedFiles?: string[]): boolean {
 }
 
 /** 프로젝트 경로 내로 접근을 제한하는 경로 검증 */
-function validatePath(filePath: string, cwd: string): string {
+export function validatePath(filePath: string, cwd: string): string {
   const resolved = path.resolve(cwd, filePath);
   // cwd 하위이거나, /tmp 하위만 허용
   if (!resolved.startsWith(cwd) && !resolved.startsWith('/tmp')) {

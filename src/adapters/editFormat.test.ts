@@ -99,6 +99,55 @@ describe('agenticLoop edit-format wiring (INT-1676)', () => {
     expect(call).toBe(2); // looped once after applying, then finished
   });
 
+  it('rejects a SEARCH/REPLACE block whose path escapes the project root', async () => {
+    const srBlock =
+      '../../escape.ts\n```ts\n<<<<<<< SEARCH\nx\n=======\ny\n>>>>>>> REPLACE\n```\n';
+    let call = 0;
+    const callApi = async () => { call++; return call === 1 ? finalResp(srBlock) : finalResp('stopped'); };
+
+    await runAgenticLoop({
+      prompt: 'escape', cwd: tmp, model: 't', callApi,
+      webTools: false, maxTurns: 5, editFormat: 'search-replace',
+    });
+
+    // No file created outside the sandbox root.
+    await expect(fs.access(path.join(tmp, '..', '..', 'escape.ts'))).rejects.toThrow();
+  });
+
+  it('stops after consecutive turns where every SEARCH/REPLACE block fails (stall guard)', async () => {
+    await fs.writeFile(path.join(tmp, 'a.ts'), 'real content\n', 'utf-8');
+    // SEARCH text never matches → every turn fails to apply.
+    const badBlock =
+      'a.ts\n```ts\n<<<<<<< SEARCH\nDOES NOT EXIST\n=======\nnope\n>>>>>>> REPLACE\n```\n';
+    let call = 0;
+    const callApi = async () => { call++; return finalResp(badBlock); };
+
+    const res = await runAgenticLoop({
+      prompt: 'loop', cwd: tmp, model: 't', callApi,
+      webTools: false, maxTurns: 20, editFormat: 'search-replace',
+    });
+
+    // Bailed at the stall limit (2), not after maxTurns (20).
+    expect(call).toBeLessThanOrEqual(3);
+    expect(res.text).toContain('DOES NOT EXIST');
+    expect(await fs.readFile(path.join(tmp, 'a.ts'), 'utf-8')).toBe('real content\n');
+  });
+
+  it('whole-file mode hides edit_file/apply_patch but keeps write_file', async () => {
+    let seen: string[] = [];
+    const callApi = async (_m: ChatMessage[], tools: ToolDefinition[]) => {
+      seen = toolNames(tools);
+      return finalResp('done');
+    };
+    await runAgenticLoop({
+      prompt: 'x', cwd: tmp, model: 't', callApi,
+      webTools: false, maxTurns: 2, editFormat: 'whole-file', applyPatch: true,
+    });
+    expect(seen).not.toContain('edit_file');
+    expect(seen).not.toContain('apply_patch');
+    expect(seen).toContain('write_file');
+  });
+
   it('refuses to apply a SEARCH/REPLACE block targeting a protected file', async () => {
     const guard = path.join(tmp, 'guard.test.ts');
     await fs.writeFile(guard, 'keep me', 'utf-8');

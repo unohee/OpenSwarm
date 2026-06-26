@@ -6,11 +6,10 @@
 //          VEGA token_count.py 패턴 이식 — 토큰 기반 히스토리 압축.
 // ============================================
 
-import { TOOL_DEFINITIONS, APPLY_PATCH_TOOL, executeToolCalls, createReadCache, type ToolCall, type ToolResult, type ToolDefinition } from './tools.js';
+import { TOOL_DEFINITIONS, APPLY_PATCH_TOOL, executeToolCalls, createReadCache, validatePath, type ToolCall, type ToolResult, type ToolDefinition } from './tools.js';
 import { WEB_TOOL_DEFINITIONS } from './webTools.js';
 import { detectRateLimit } from './rateLimitError.js';
 import { parseSearchReplaceBlocks, applyEditBlock, type EditFormat } from '../support/editParser.js';
-import path from 'node:path';
 import type { CliRunResult } from './types.js';
 
 // ============ 토큰 카운팅 (VEGA token_count.py 이식) ============
@@ -239,6 +238,11 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
   // could exhaust it and then slip past the guard, ending analysis-only. (INT-1925)
   let noEditNudgesUsed = 0;
   let readLoopNudgesUsed = 0;
+  // search-replace stall guard: consecutive finish-turns where S/R blocks were
+  // present but ALL failed to apply. A model can re-emit the same non-matching
+  // block forever, burning turns at full API cost — bail after a couple. (INT-1676)
+  let srFailedTurns = 0;
+  const SR_FAILED_LIMIT = 2;
   let apiCallCount = 0;
   let totalTokens = 0;
   let cachedTokens = 0;
@@ -329,9 +333,16 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
         const parsed = parseSearchReplaceBlocks(assistantMsg.content);
         if (parsed.blocks.length > 0) {
           const resultLines = await Promise.all(parsed.blocks.map(async (block) => {
-            const resolved = path.isAbsolute(block.filePath) ? block.filePath : path.join(cwd, block.filePath);
-            // protectedFiles enforcement — applyEditBlock bypasses tools.ts guards.
-            if (protectedFiles?.some(p => resolved === p || resolved.endsWith(`/${p}`) || resolved.endsWith(path.sep + p))) {
+            // Containment + protection. applyEditBlock bypasses tools.ts guards, so
+            // run the same cwd-containment check (rejects ../ escapes) and the
+            // protectedFiles check here before touching disk.
+            let resolved: string;
+            try {
+              resolved = validatePath(block.filePath, cwd);
+            } catch {
+              return `✗ ${block.filePath} — outside project root, rejected`;
+            }
+            if (protectedFiles?.some(p => resolved === p || resolved.endsWith(`/${p}`))) {
               return `✗ ${block.filePath} — PROTECTED harness file, cannot modify`;
             }
             const r = await applyEditBlock(block, cwd);
@@ -339,13 +350,24 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
             return r.success ? `✓ Applied: ${block.filePath}` : `✗ Failed: ${block.filePath} — ${r.error}`;
           }));
           const failed = resultLines.filter(l => l.startsWith('✗')).length;
+          const allFailed = failed === parsed.blocks.length;
           onLog?.(`📝 SEARCH/REPLACE: applied ${parsed.blocks.length - failed}/${parsed.blocks.length} block(s)`);
+
+          // Stall guard: if every block failed for SR_FAILED_LIMIT turns running,
+          // the model is stuck re-emitting non-matching blocks — stop. (INT-1676)
+          srFailedTurns = allFailed ? srFailedTurns + 1 : 0;
+          if (srFailedTurns >= SR_FAILED_LIMIT) {
+            onLog?.(`■ SEARCH/REPLACE stalled: ${srFailedTurns} turns with no block applied — stopping`);
+            finalText = assistantMsg.content;
+            break;
+          }
+
           messages.push({ role: 'assistant', content: assistantMsg.content });
           messages.push({
             role: 'user',
             content: `Edit results:\n${resultLines.join('\n')}\n\n${
               failed > 0
-                ? 'Some edits failed — fix the SEARCH text to match the file exactly and retry.'
+                ? 'Some edits failed — copy the SEARCH text VERBATIM from the file (exact whitespace) and retry.'
                 : 'All edits applied. Verify the changes and finish when done.'
             }`,
           });
