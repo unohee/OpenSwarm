@@ -447,28 +447,14 @@ async function launchChatTui(): Promise<void> {
     // Non-fatal — chat works without the daemon.
   }
 
-  // chat is a blessed full-screen UI — mute config-load diagnostics
-  // ("Loading config…", "[Config] disabling…") AND blessed's terminfo noise.
-  // blessed 0.1.81 fails to compile xterm-256color's `Setulc` cap and dumps
-  // the function source via console.error on startup + terminal reset (exit);
-  // muting console.error hides it. The TUI renders via blessed and reports
-  // errors into the chat log (not console), so nothing useful is lost. On a
-  // hard exit (Ctrl+C → process.exit) the finally doesn't run, which keeps the
-  // reset noise muted too — exactly what we want.
-  const origLog = console.log;
-  const origWarn = console.warn;
-  const origError = console.error;
-  console.log = () => {};
-  console.warn = () => {};
-  console.error = () => {};
-  try {
-    const { main } = await import('./support/chatTui.js');
-    await main();
-  } finally {
-    console.log = origLog;
-    console.warn = origWarn;
-    console.error = origError;
-  }
+  // Ink cockpit (EPIC INT-1813): React reconciler diffs the screen, so there's
+  // no blessed terminfo noise to mute and no manual redraw/flicker. The old
+  // console-mute hack is gone with blessed.
+  const { startInkTui } = await import('./tui/index.js');
+  const { loadDefaultProvider } = await import('./support/chatSession.js');
+  const { getDefaultChatModel } = await import('./support/chatBackend.js');
+  const provider = loadDefaultProvider();
+  await startInkTui({ version: VERSION, provider, model: getDefaultChatModel(provider), port: 3847 });
 }
 
 program.action(launchChatTui);

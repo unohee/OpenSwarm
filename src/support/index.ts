@@ -6,7 +6,6 @@ export * from './rollback.js';
 export * from './stuckDetector.js';
 export * from './timeWindow.js';
 export * from './web.js';
-export * from './chat.js';
 export * from './dev.js';
 export * from './workflowLinear.js';
 export * from './costTracker.js';
