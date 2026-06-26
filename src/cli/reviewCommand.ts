@@ -76,6 +76,17 @@ export function resolveIssueFromBranch(branch: string): string | undefined {
   return m ? m[1].toUpperCase() : undefined;
 }
 
+/** Best-effort Linear project id from <repo>/openswarm.json, so standalone follow-ups land in the right project. (INT-1968) */
+async function resolveProjectId(cwd: string): Promise<string | undefined> {
+  try {
+    const { loadRepoMetadata } = await import('../support/repoMetadata.js');
+    const meta = await loadRepoMetadata(cwd);
+    return meta?.linear?.projectId;
+  } catch {
+    return undefined;
+  }
+}
+
 export interface ReviewCommandOptions {
   /** Project path (default cwd). */
   path?: string;
@@ -98,7 +109,7 @@ export async function runReviewCommand(
   deps: {
     getChangedFiles?: (cwd: string) => Promise<string[]>;
     review?: (wr: WorkerResult, cwd: string, onLog?: (line: string) => void) => Promise<ReviewResult>;
-    fileFollowups?: (parentIssueId: string, review: ReviewResult) => Promise<number>;
+    fileFollowups?: (parentIssueId: string | undefined, review: ReviewResult) => Promise<number>;
     log?: (line: string) => void;
     /** Override the progress indicator (default: TTY-gated spinner). Tests pass a stub. */
     startProgress?: () => { note: (line: string) => void; stop: () => void } | null;
@@ -168,21 +179,20 @@ export async function runReviewCommand(
       parent = resolveIssueFromBranch(branch);
       if (parent) log(`Filing follow-ups under ${parent} (inferred from branch "${branch}").`);
     }
-    if (!parent) {
-      log(
-        `\n${followups} follow-up(s) suggested, but no issue could be inferred from the branch. ` +
-          'Re-run with `--issues <issue-id>` to choose the parent.',
-      );
-      return result;
-    }
+    // No parent → create top-level (standalone) issues rather than refusing. (INT-1968)
     const fileFollowups =
       deps.fileFollowups ??
-      (async (p: string, r: ReviewResult) => {
+      (async (p: string | undefined, r: ReviewResult) => {
         const { fileReviewerFollowups, getTaskSource } = await import('../automation/runnerExecution.js');
-        return fileReviewerFollowups(getTaskSource(), p, r, { autoFile: true });
+        const projectId = p ? undefined : await resolveProjectId(cwd);
+        return fileReviewerFollowups(getTaskSource(), p, r, { autoFile: true, projectId });
       });
     const filed = await fileFollowups(parent, result);
-    log(`Filed ${filed} follow-up sub-issue(s) under ${parent}.`);
+    log(
+      parent
+        ? `Filed ${filed} follow-up sub-issue(s) under ${parent}.`
+        : `Filed ${filed} standalone follow-up issue(s) (no issue id on the branch — pass \`--issues <id>\` to nest them).`,
+    );
   } else if (followups) {
     // Suggestions were made but nothing was filed — make the flag discoverable. (INT-1966/1967)
     log(`\n${followups} follow-up(s) suggested. Re-run with \`--issues\` to create them as Linear sub-issues (parent inferred from the branch, or pass \`--issues <id>\`).`);

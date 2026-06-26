@@ -32,6 +32,18 @@ describe('fileReviewerFollowups (INT-1704)', () => {
     expect(create.mock.calls[0][3]).toMatchObject({ priority: 3 });
   });
 
+  it('creates top-level (standalone) issues when no parent is given (INT-1968)', async () => {
+    const createSubIssue = vi.fn(async () => ({}));
+    const createTask = vi.fn(async () => ({}));
+    const src = { createSubIssue, createTask } as unknown as ITaskSource;
+    const filed = await fileReviewerFollowups(src, undefined, review(), { autoFile: true, projectId: 'proj-1' });
+    expect(filed).toBe(2);
+    expect(createSubIssue).not.toHaveBeenCalled();
+    expect(createTask).toHaveBeenCalledTimes(2);
+    expect(createTask.mock.calls[0][0]).toBe('[test] add edge-case coverage'); // title
+    expect(createTask.mock.calls[0][2]).toBe('proj-1'); // projectId
+  });
+
   it('does nothing when the reviewer did not approve', async () => {
     const create = vi.fn(async () => ({}));
     expect(await fileReviewerFollowups(mockSource(create), 'INT-1', review({ decision: 'reject' }), { autoFile: true })).toBe(0);

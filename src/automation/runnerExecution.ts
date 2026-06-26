@@ -254,14 +254,16 @@ export async function isValidProjectPath(path: string): Promise<boolean> {
  * have already created the parent issue (`parentIssueId`).
  */
 /**
- * File the reviewer's recommendedActions as follow-up sub-issues when it
- * approves (INT-1611 restore / INT-1704). Gated by `autoFile` (default OFF);
+ * File the reviewer's recommendedActions as follow-ups when it approves
+ * (INT-1611 restore / INT-1704). With a `parentIssueId` they become sub-issues;
+ * without one (INT-1968) they are created as top-level issues so review can still
+ * "just file them" off a non-issue branch. Gated by `autoFile` (default OFF);
  * caps at 10; each create is best-effort (failures logged, never throw).
  * Returns the count filed.
  */
 export async function fileReviewerFollowups(
   source: ITaskSource | null,
-  parentIssueId: string,
+  parentIssueId: string | null | undefined,
   review: ReviewResult,
   opts: { autoFile?: boolean; projectId?: string } = {},
 ): Promise<number> {
@@ -269,16 +271,19 @@ export async function fileReviewerFollowups(
   const actions = (review.recommendedActions ?? []).slice(0, 10);
   let filed = 0;
   for (const a of actions) {
+    const title = `[${a.type}] ${a.title}`;
+    const body = a.location
+      ? `Follow-up from reviewer.\n\nLocation: ${a.location}`
+      : 'Follow-up recommended by the reviewer.';
     try {
-      await source.createSubIssue(
-        parentIssueId,
-        `[${a.type}] ${a.title}`,
-        a.location ? `Follow-up from reviewer.\n\nLocation: ${a.location}` : 'Follow-up recommended by the reviewer.',
-        { priority: 3, projectId: opts.projectId },
-      );
+      if (parentIssueId) {
+        await source.createSubIssue(parentIssueId, title, body, { priority: 3, projectId: opts.projectId });
+      } else {
+        await source.createTask(title, body, opts.projectId);
+      }
       filed += 1;
     } catch (err) {
-      console.error(`[Runner] follow-up sub-issue create failed (${a.title}):`, err);
+      console.error(`[Runner] follow-up issue create failed (${a.title}):`, err);
     }
   }
   return filed;

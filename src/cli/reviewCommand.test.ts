@@ -81,8 +81,8 @@ describe('runReviewCommand --issues branch inference (INT-1967)', () => {
     expect(getBranch).not.toHaveBeenCalled();
   });
 
-  it('guides when --issues is set but the branch has no issue id', async () => {
-    const fileFollowups = vi.fn(async () => 1);
+  it('files standalone issues when --issues is set but the branch has no issue id (INT-1968)', async () => {
+    const fileFollowups = vi.fn(async () => 2);
     const logs: string[] = [];
     await runReviewCommand(
       { fileIssue: true },
@@ -95,8 +95,8 @@ describe('runReviewCommand --issues branch inference (INT-1967)', () => {
         log: (l) => logs.push(l),
       },
     );
-    expect(fileFollowups).not.toHaveBeenCalled();
-    expect(logs.join('\n')).toMatch(/no issue could be inferred/);
+    expect(fileFollowups).toHaveBeenCalledWith(undefined, expect.anything()); // no parent → standalone
+    expect(logs.join('\n')).toMatch(/standalone follow-up issue/);
   });
 });
 
