@@ -8,6 +8,7 @@ import * as gitTracker from '../support/gitTracker.js';
 import { t, getPrompts } from '../locale/index.js';
 import type { WorkerContext } from '../locale/types.js';
 import type { AdapterName, ProcessContext } from '../adapters/types.js';
+import type { ToolDefinition } from '../adapters/tools.js';
 import { getAdapter, getDefaultAdapterName, spawnCli } from '../adapters/index.js';
 import { expandPath } from '../core/config.js';
 import { RateLimitError } from '../adapters/rateLimitError.js';
@@ -40,6 +41,9 @@ export interface WorkerOptions {
   bashTimeoutMs?: number;
   /** Expose web_fetch + web_search tools (default true). Set false for SWE-bench integrity. */
   webTools?: boolean;
+  /** MCP tools to expose to the agentic loop (server__tool). When unset the adapter
+   * self-sources from the registry (INT-1951); set to pin a specific set. (INT-1950) */
+  mcpTools?: ToolDefinition[];
   /** Abort the run + in-flight adapter call (pipeline cancel / project disable). */
   signal?: AbortSignal;
   /**
@@ -170,6 +174,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       protectedFiles: options.protectedFiles,
       bashTimeoutMs: options.bashTimeoutMs,
       webTools: options.webTools,
+      mcpTools: options.mcpTools,
       signal: options.signal,
     });
 

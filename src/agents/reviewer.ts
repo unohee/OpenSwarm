@@ -6,6 +6,7 @@
 import type { WorkerResult, ReviewResult } from './agentPair.js';
 import { t, getPrompts } from '../locale/index.js';
 import type { AdapterName, ProcessContext } from '../adapters/types.js';
+import type { ToolDefinition } from '../adapters/tools.js';
 import { getAdapter, spawnCli } from '../adapters/index.js';
 import { expandPath } from '../core/config.js';
 import { RateLimitError } from '../adapters/rateLimitError.js';
@@ -26,6 +27,8 @@ export interface ReviewerOptions {
   reasoningEffort?: 'low' | 'medium' | 'high';
   /** Execution-grounded definition of done to hard-gate on (INT-1914). */
   completionCriteria?: string[];
+  /** MCP tools to expose (e.g. linear__*). When unset the adapter self-sources (INT-1951). (INT-1950) */
+  mcpTools?: ToolDefinition[];
   /** Abort the run + in-flight adapter call (pipeline cancel / project disable). */
   signal?: AbortSignal;
 }
@@ -207,6 +210,7 @@ export async function runReviewer(options: ReviewerOptions): Promise<ReviewResul
       processContext: options.processContext,
       systemPrompt: getPrompts().systemPrompt,
       reasoningEffort: options.reasoningEffort,
+      mcpTools: options.mcpTools,
       signal: options.signal,
     });
 
