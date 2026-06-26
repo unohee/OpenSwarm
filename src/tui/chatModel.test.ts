@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { chatReducer, initialChatState, parseInput, matchSlash, normalizeConfirm } from './chatModel.js';
+import { chatReducer, initialChatState, parseInput, matchSlash, normalizeConfirm, isActivityNoise } from './chatModel.js';
 
 describe('chatReducer (EPIC INT-1813 S4)', () => {
   it('appends user and system lines', () => {
@@ -54,6 +54,19 @@ describe('normalizeConfirm', () => {
     expect(normalizeConfirm('edit')).toBe('edit');
     expect(normalizeConfirm('n')).toBe('no');
     expect(normalizeConfirm('whatever')).toBe('no');
+  });
+});
+
+describe('isActivityNoise', () => {
+  it('hides API-call loop chatter', () => {
+    expect(isActivityNoise('▸ API call #1')).toBe(true);
+    expect(isActivityNoise('▸ API call #2 (tool turn 1)')).toBe(true);
+    expect(isActivityNoise('[GPT] 3 API calls, 2 tool uses, 1200 tokens')).toBe(true);
+  });
+  it('keeps real tool activity and results', () => {
+    expect(isActivityNoise('🔧 read_file: src/auth.ts')).toBe(false);
+    expect(isActivityNoise('📝 SEARCH/REPLACE: applied 1/1 block(s)')).toBe(false);
+    expect(isActivityNoise('edit_file auth.ts')).toBe(false);
   });
 });
 

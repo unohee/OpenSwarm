@@ -76,6 +76,17 @@ export function parseInput(raw: string): ParsedInput | null {
   return { kind: 'chat', text: t };
 }
 
+/**
+ * Whether an adapter log line is internal loop chatter that shouldn't surface in
+ * the chat activity feed. Hides the "▸ API call #N" turns and the per-adapter
+ * "[GPT] N API calls, …" summary; real tool activity (🔧 read_file, edit
+ * results, errors) still shows. (INT-1813 follow-up)
+ */
+export function isActivityNoise(line: string): boolean {
+  const t = line.trim();
+  return /^▸\s*API call/i.test(t) || /\bAPI calls?\b,/i.test(t);
+}
+
 /** Normalize a typed confirm answer to the PlanIO decision vocabulary. */
 export function normalizeConfirm(input: string): 'yes' | 'no' | 'edit' {
   const t = input.trim().toLowerCase();
