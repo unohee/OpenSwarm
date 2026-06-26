@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { chatReducer, initialChatState, parseInput, matchSlash } from './chatModel.js';
+import { chatReducer, initialChatState, parseInput, matchSlash, normalizeConfirm } from './chatModel.js';
 
 describe('chatReducer (EPIC INT-1813 S4)', () => {
   it('appends user and system lines', () => {
@@ -43,6 +43,17 @@ describe('parseInput', () => {
   });
   it('returns null for empty input', () => {
     expect(parseInput('   ')).toBeNull();
+  });
+});
+
+describe('normalizeConfirm', () => {
+  it('maps y/yes → yes, e/edit → edit, everything else → no', () => {
+    expect(normalizeConfirm('y')).toBe('yes');
+    expect(normalizeConfirm('YES')).toBe('yes');
+    expect(normalizeConfirm(' e ')).toBe('edit');
+    expect(normalizeConfirm('edit')).toBe('edit');
+    expect(normalizeConfirm('n')).toBe('no');
+    expect(normalizeConfirm('whatever')).toBe('no');
   });
 });
 
