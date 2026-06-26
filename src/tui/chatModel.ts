@@ -95,6 +95,24 @@ export function normalizeConfirm(input: string): 'yes' | 'no' | 'edit' {
   return 'no';
 }
 
+/**
+ * Mobile-SSH multibyte input mitigation (INT-1964). Some terminals deliver a
+ * single multibyte keystroke as the character doubled in one input event
+ * ('이' → '이이'), so each Hangul syllable appears twice while ASCII is fine.
+ * Collapse an input event that is exactly one NON-ASCII grapheme repeated twice
+ * back to a single grapheme. ASCII, single graphemes, differing graphemes, and
+ * longer inputs (real pastes) pass through untouched — so normal typing is
+ * unaffected. The only false positive is pasting exactly two identical multibyte
+ * characters, which is vanishingly rare.
+ */
+export function dedupeDoubledGrapheme(input: string): string {
+  const graphemes = Array.from(input);
+  if (graphemes.length === 2 && graphemes[0] === graphemes[1] && (graphemes[0].codePointAt(0) ?? 0) > 0x7f) {
+    return graphemes[0];
+  }
+  return input;
+}
+
 /** Wrap-around move of the palette selection index. Returns 0 for an empty list. (INT-1959) */
 export function movePaletteSelection(current: number, delta: number, count: number): number {
   if (count <= 0) return 0;

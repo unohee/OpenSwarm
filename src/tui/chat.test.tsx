@@ -65,6 +65,15 @@ describe('ChatInput', () => {
     expect(onSubmit).toHaveBeenCalledWith('hi');
   });
 
+  it('collapses a doubled multibyte keystroke event to one (INT-1964)', async () => {
+    const onSubmit = vi.fn();
+    const { lastFrame, stdin } = render(<Harness onSubmit={onSubmit} />);
+    stdin.write('이이'); // mobile-SSH delivers the doubled syllable as one event
+    await tick();
+    expect(lastFrame()).toContain('이');
+    expect(lastFrame()).not.toContain('이이');
+  });
+
   it('routes nav/select keys to the palette when open, not submit (INT-1959)', async () => {
     const onSubmit = vi.fn();
     const onPaletteMove = vi.fn();

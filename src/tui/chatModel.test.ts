@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { chatReducer, initialChatState, parseInput, matchSlash, movePaletteSelection, normalizeConfirm, isActivityNoise } from './chatModel.js';
+import { chatReducer, initialChatState, parseInput, matchSlash, movePaletteSelection, dedupeDoubledGrapheme, normalizeConfirm, isActivityNoise } from './chatModel.js';
 
 describe('chatReducer (EPIC INT-1813 S4)', () => {
   it('appends user and system lines', () => {
@@ -78,6 +78,26 @@ describe('matchSlash', () => {
   it('does not match plain chat or once an argument is being typed', () => {
     expect(matchSlash('hello')).toEqual([]);
     expect(matchSlash('/model gpt')).toEqual([]);
+  });
+});
+
+describe('dedupeDoubledGrapheme (INT-1964)', () => {
+  it('collapses a doubled multibyte keystroke event', () => {
+    expect(dedupeDoubledGrapheme('이이')).toBe('이');
+    expect(dedupeDoubledGrapheme('렇렇')).toBe('렇');
+    expect(dedupeDoubledGrapheme('😀😀')).toBe('😀'); // astral grapheme, one code point each
+  });
+
+  it('leaves single graphemes, ASCII, and differing pairs untouched', () => {
+    expect(dedupeDoubledGrapheme('이')).toBe('이');
+    expect(dedupeDoubledGrapheme('aa')).toBe('aa'); // ASCII — not our bug
+    expect(dedupeDoubledGrapheme('이렇')).toBe('이렇'); // different graphemes
+    expect(dedupeDoubledGrapheme(' ')).toBe(' ');
+  });
+
+  it('leaves longer input (real pastes) untouched', () => {
+    expect(dedupeDoubledGrapheme('이이렇')).toBe('이이렇');
+    expect(dedupeDoubledGrapheme('가나다')).toBe('가나다');
   });
 });
 

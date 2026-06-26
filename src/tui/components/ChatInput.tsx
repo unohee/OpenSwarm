@@ -7,6 +7,7 @@ import { Box, Text, useInput } from 'ink';
 import Spinner from 'ink-spinner';
 import { theme, ICON } from '../theme.js';
 import { inputDebugEnabled, appendInputDebug } from '../inputDebug.js';
+import { dedupeDoubledGrapheme } from '../chatModel.js';
 
 // Read once at module load — toggling mid-session isn't a use case. (INT-1964)
 const INPUT_DEBUG = inputDebugEnabled();
@@ -55,7 +56,8 @@ export function ChatInput({
         return;
       }
       if (key.tab || key.leftArrow || key.rightArrow || key.upArrow || key.downArrow || key.escape) return;
-      if (input && !key.ctrl && !key.meta) onChange(value + input);
+      // dedupeDoubledGrapheme: mobile-SSH multibyte doubling mitigation (INT-1964).
+      if (input && !key.ctrl && !key.meta) onChange(value + dedupeDoubledGrapheme(input));
     },
     { isActive: active && !busy },
   );
