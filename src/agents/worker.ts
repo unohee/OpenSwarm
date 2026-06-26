@@ -11,6 +11,7 @@ import type { AdapterName, ProcessContext } from '../adapters/types.js';
 import { getAdapter, getDefaultAdapterName, spawnCli } from '../adapters/index.js';
 import { expandPath } from '../core/config.js';
 import { RateLimitError } from '../adapters/rateLimitError.js';
+import { resolveEditFormat, SEARCH_REPLACE_PROMPT, WHOLE_FILE_PROMPT, type EditFormat } from '../support/editParser.js';
 
 // Types
 
@@ -41,6 +42,12 @@ export interface WorkerOptions {
   webTools?: boolean;
   /** Abort the run + in-flight adapter call (pipeline cancel / project disable). */
   signal?: AbortSignal;
+  /**
+   * File-edit format (INT-1676). When unset it is resolved per adapter from model
+   * capability (resolveEditFormat) — weaker in-process adapters get SEARCH/REPLACE.
+   * Set explicitly to pin a format (e.g. roll back a regressing model to 'json').
+   */
+  editFormat?: EditFormat;
 }
 
 // Prompts
@@ -134,6 +141,16 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
     // default resolve the model to avoid provider/model mismatch.
     const model = isFallbackAttempt ? undefined : options.model;
 
+    // Edit format matched to THIS adapter's capability (INT-1676): a primary
+    // openrouter/local attempt edits via SEARCH/REPLACE, while a claude/codex
+    // fallback uses JSON tools — the format follows the adapter. The matching S/R
+    // or whole-file instruction is appended to the worker's system prompt so the
+    // model emits the format the agentic loop expects.
+    const editFormat = options.editFormat ?? resolveEditFormat(adapterName);
+    let systemPrompt = getPrompts().systemPrompt;
+    if (editFormat === 'search-replace') systemPrompt += SEARCH_REPLACE_PROMPT;
+    else if (editFormat === 'whole-file') systemPrompt += WHOLE_FILE_PROMPT;
+
     const raw = await spawnCli(adapter, {
       prompt,
       cwd,
@@ -142,7 +159,8 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       maxTurns: options.maxTurns,
       onLog: options.onLog,
       processContext: options.processContext,
-      systemPrompt: getPrompts().systemPrompt,
+      systemPrompt,
+      editFormat,
       // Worker is a mechanical execution role — file edits, not deep reasoning.
       // Disable reasoning tokens to cut cost/latency (no-op on non-thinking models).
       // BUT when a jobProfile sets an effort (e.g. heavy tasks), reason at that effort.

@@ -3,6 +3,42 @@
 // Aider-style SEARCH/REPLACE block parsing
 // ============================================
 
+/**
+ * File-edit format handed to a worker, matched to model capability (INT-1676).
+ * - 'json'          : structured edit_file / apply_patch tool calls — frontier models.
+ * - 'search-replace': Aider-style SEARCH/REPLACE blocks in the response text —
+ *   far higher edit success on weaker/untrained models.
+ * - 'whole-file'    : rewrite the whole file via write_file — weakest fallback.
+ */
+export type EditFormat = 'json' | 'search-replace' | 'whole-file';
+
+/**
+ * Pick an edit format by model capability (INT-1676). The structured JSON
+ * edit_file / apply_patch tools are the format frontier models are trained on,
+ * but weaker/untrained models botch them — Aider measured the SAME GPT-4-Turbo
+ * jump from 20% (JSON) to 61% (diff blocks). We route per ADAPTER, the same
+ * granularity the rest of the harness uses (getDefaultAdapterName, DRAFT_MODELS):
+ * the in-process small/non-frontier adapters (local/lmstudio, OpenRouter pool)
+ * get SEARCH/REPLACE; the capable paths (claude/codex/gpt) keep JSON.
+ *
+ * Rollback levers (issue requirement): an explicit `editFormat` on the call wins,
+ * and `OPENSWARM_EDIT_FORMAT` forces a format globally if a model regresses.
+ */
+export function resolveEditFormat(adapterName: string | undefined): EditFormat {
+  const env = process.env.OPENSWARM_EDIT_FORMAT;
+  if (env === 'json' || env === 'search-replace' || env === 'whole-file') return env;
+
+  switch (adapterName) {
+    case 'local':
+    case 'lmstudio':
+    case 'openrouter':
+      return 'search-replace';
+    default:
+      // claude / codex / codex-responses / gpt — capable with the JSON tools.
+      return 'json';
+  }
+}
+
 export interface EditBlock {
   filePath: string;
   search: string;
@@ -436,4 +472,22 @@ Rules:
 - SEARCH section must exactly match existing code in the file
 - When modifying multiple files, use separate blocks for each
 - Leave SEARCH section empty when creating a new file
+`;
+
+/**
+ * System-prompt injection for whole-file rewrite mode (editFormat === 'whole-file').
+ * edit_file / apply_patch are hidden; the model must rewrite entire files.
+ */
+export const WHOLE_FILE_PROMPT = `
+## Code Edit Format (Whole-File Rewrite)
+
+When you must change a file, rewrite it IN FULL with the \`write_file\` tool.
+The \`edit_file\` and \`apply_patch\` tools are not available in this mode.
+
+Steps:
+1. Read the current file with \`read_file\`.
+2. Produce the complete new contents.
+3. Write them with \`write_file\` (the whole file, not a fragment).
+
+Only rewrite files you actually need to change; leave the rest untouched.
 `;

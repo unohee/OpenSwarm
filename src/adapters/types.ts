@@ -86,6 +86,15 @@ export interface CliRunOptions {
   mcpTools?: ToolDefinition[];
   /** Abort the run (and in-flight API/stream) — e.g. Esc/Ctrl+C in chat. */
   signal?: AbortSignal;
+  /**
+   * File-edit format matched to model capability (INT-1676). Only the in-process
+   * adapters (gpt/local/openrouter/codex-responses) act on it via the agentic
+   * loop; the external-CLI adapters (claude/codex) ignore it. Defaults to 'json'.
+   * - 'json': edit_file / apply_patch tool calls.
+   * - 'search-replace': Aider-style blocks in response text (weaker models).
+   * - 'whole-file': write_file rewrites only.
+   */
+  editFormat?: 'json' | 'search-replace' | 'whole-file';
 }
 
 /**

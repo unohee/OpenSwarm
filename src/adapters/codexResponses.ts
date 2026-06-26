@@ -365,6 +365,7 @@ export class CodexResponsesAdapter implements CliAdapter {
       // emits clean V4A here, whereas non-codex adapters keep edit_file only.
       applyPatch: true,
       signal: options.signal,
+      editFormat: options.editFormat,
     };
 
     try {

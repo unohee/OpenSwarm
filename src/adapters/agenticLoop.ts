@@ -9,6 +9,8 @@
 import { TOOL_DEFINITIONS, APPLY_PATCH_TOOL, executeToolCalls, createReadCache, type ToolCall, type ToolResult, type ToolDefinition } from './tools.js';
 import { WEB_TOOL_DEFINITIONS } from './webTools.js';
 import { detectRateLimit } from './rateLimitError.js';
+import { parseSearchReplaceBlocks, applyEditBlock, type EditFormat } from '../support/editParser.js';
+import path from 'node:path';
 import type { CliRunResult } from './types.js';
 
 // ============ 토큰 카운팅 (VEGA token_count.py 이식) ============
@@ -128,6 +130,14 @@ export interface AgenticLoopOptions {
   mcpTools?: ToolDefinition[];
   /** Abort the loop (checked each turn) — Esc/Ctrl+C in chat. */
   signal?: AbortSignal;
+  /**
+   * File-edit format matched to model capability (INT-1676). Default 'json'.
+   * - 'json': keep the edit_file / apply_patch tools (frontier models).
+   * - 'search-replace': hide those tools; parse Aider-style SEARCH/REPLACE blocks
+   *   from the response text and apply them (much better for weaker models).
+   * - 'whole-file': hide edit_file / apply_patch; the model rewrites via write_file.
+   */
+  editFormat?: EditFormat;
 }
 
 /** 루프 실행 결과 */
@@ -179,6 +189,7 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
     applyPatch = false,
     mcpTools,
     signal,
+    editFormat = 'json',
   } = options;
 
   const startTime = Date.now();
@@ -199,10 +210,16 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
     `or absolute paths under this root. Do NOT use "/" or a bare repo name — those are outside the project and will be rejected.\n\n`;
   messages.push({ role: 'user', content: cwdNote + prompt });
 
+  // In search-replace / whole-file mode the model edits via response-text blocks
+  // (S/R) or whole write_file calls, so the structured edit_file tool is hidden to
+  // force that path; apply_patch is likewise suppressed (it's a structured edit). (INT-1676)
+  const baseTools = editFormat === 'json'
+    ? TOOL_DEFINITIONS
+    : TOOL_DEFINITIONS.filter(t => t.function.name !== 'edit_file');
   const tools = enableTools
     ? [
-        ...TOOL_DEFINITIONS,
-        ...(applyPatch ? [APPLY_PATCH_TOOL] : []),
+        ...baseTools,
+        ...(applyPatch && editFormat === 'json' ? [APPLY_PATCH_TOOL] : []),
         ...(webTools ? WEB_TOOL_DEFINITIONS : []),
         ...(mcpTools ?? []),
       ]
@@ -306,17 +323,52 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
 
     // 도구 호출이 없으면 최종 응답
     if (!assistantMsg.tool_calls || assistantMsg.tool_calls.length === 0) {
+      // SEARCH/REPLACE 모드 — 도구 호출이 아니라 응답 본문의 S/R 블록으로 편집한다.
+      // 블록이 있으면 직접 적용하고(보호 파일은 거부) 결과를 되돌려 루프를 잇는다. (INT-1676)
+      if (editFormat === 'search-replace' && assistantMsg.content) {
+        const parsed = parseSearchReplaceBlocks(assistantMsg.content);
+        if (parsed.blocks.length > 0) {
+          const resultLines = await Promise.all(parsed.blocks.map(async (block) => {
+            const resolved = path.isAbsolute(block.filePath) ? block.filePath : path.join(cwd, block.filePath);
+            // protectedFiles enforcement — applyEditBlock bypasses tools.ts guards.
+            if (protectedFiles?.some(p => resolved === p || resolved.endsWith(`/${p}`) || resolved.endsWith(path.sep + p))) {
+              return `✗ ${block.filePath} — PROTECTED harness file, cannot modify`;
+            }
+            const r = await applyEditBlock(block, cwd);
+            if (r.success) editToolCount++;
+            return r.success ? `✓ Applied: ${block.filePath}` : `✗ Failed: ${block.filePath} — ${r.error}`;
+          }));
+          const failed = resultLines.filter(l => l.startsWith('✗')).length;
+          onLog?.(`📝 SEARCH/REPLACE: applied ${parsed.blocks.length - failed}/${parsed.blocks.length} block(s)`);
+          messages.push({ role: 'assistant', content: assistantMsg.content });
+          messages.push({
+            role: 'user',
+            content: `Edit results:\n${resultLines.join('\n')}\n\n${
+              failed > 0
+                ? 'Some edits failed — fix the SEARCH text to match the file exactly and retry.'
+                : 'All edits applied. Verify the changes and finish when done.'
+            }`,
+          });
+          continue;
+        }
+      }
+
       // no-edit 종료 가드 — 수정 필수 작업인데 edit/write를 한 번도 안 하고 끝내려 하면
       // 되밀어 계속하게 한다(경량 모델의 조기 결론 패턴 차단).
       if (editToolCount === 0 && noEditNudgesUsed < nudgeMaxOnNoEdit) {
         noEditNudgesUsed++;
         onLog?.(`↩ No-edit guard: model tried to finish without editing (nudge ${noEditNudgesUsed}/${nudgeMaxOnNoEdit})`);
+        const howToEdit = editFormat === 'search-replace'
+          ? 'Apply the fix now using SEARCH/REPLACE blocks, then verify.'
+          : editFormat === 'whole-file'
+          ? 'Apply the fix now by rewriting the file with write_file, then verify.'
+          : 'Apply the fix now with edit_file, then verify.';
         messages.push({ role: 'assistant', content: assistantMsg.content ?? '' });
         messages.push({
           role: 'user',
           content:
             'You have not modified any files yet, but this task REQUIRES code changes. ' +
-            'Do not conclude with analysis only. Apply the fix now with edit_file, then verify. ' +
+            `Do not conclude with analysis only. ${howToEdit} ` +
             'Continue working.',
         });
         continue;

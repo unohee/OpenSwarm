@@ -91,6 +91,7 @@ export class GptCliAdapter implements CliAdapter {
       webTools: options.webTools,
       mcpTools: options.mcpTools,
       signal: options.signal,
+      editFormat: options.editFormat,
     };
 
     try {

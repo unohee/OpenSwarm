@@ -171,6 +171,7 @@ export class LocalModelAdapter implements CliAdapter {
       webTools: options.webTools,
       mcpTools: options.mcpTools,
       signal: options.signal,
+      editFormat: options.editFormat,
     };
 
     try {
