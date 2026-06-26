@@ -5,12 +5,13 @@
 // ============================================
 
 export interface TabDef {
-  id: 'chat' | 'projects' | 'tasks' | 'stuck' | 'issues' | 'logs';
+  id: 'chat' | 'pipeline' | 'projects' | 'tasks' | 'stuck' | 'issues' | 'logs';
   label: string;
 }
 
 export const TABS: readonly TabDef[] = [
   { id: 'chat', label: 'Chat' },
+  { id: 'pipeline', label: 'Pipeline' },
   { id: 'projects', label: 'Projects' },
   { id: 'tasks', label: 'Tasks' },
   { id: 'stuck', label: 'Stuck' },

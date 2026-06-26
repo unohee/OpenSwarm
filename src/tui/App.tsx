@@ -12,17 +12,20 @@ import { TABS, nextTab, tabFromDigit } from './tabs.js';
 import { StatusBar } from './components/StatusBar.js';
 import { TabBar } from './components/TabBar.js';
 import { HelpBar } from './components/HelpBar.js';
+import { PipelinePanel } from './panels/PipelinePanel.js';
 import { useTerminalSize } from './hooks/useTerminalSize.js';
 
 export interface AppProps {
   version?: string;
   provider?: string;
   model?: string;
+  /** Daemon HTTP port — used by the Pipeline tab's SSE connection. */
+  port?: number;
   /** Initial active tab index (deep-link / tests). Defaults to Chat. */
   initialTab?: number;
 }
 
-export function App({ version, provider, model, initialTab = 0 }: AppProps) {
+export function App({ version, provider, model, port, initialTab = 0 }: AppProps) {
   const [active, setActive] = useState(initialTab);
   const { columns, rows } = useTerminalSize();
   const { exit } = useApp();
@@ -43,7 +46,11 @@ export function App({ version, provider, model, initialTab = 0 }: AppProps) {
       <StatusBar version={version} provider={provider} model={model} />
       <TabBar active={active} />
       <Box flexDirection="column" paddingY={1} minHeight={Math.max(1, rows - 4)}>
-        <Text>{`${activeTab.label} — panel arrives in a later sub-issue (S4–S6).`}</Text>
+        {activeTab.id === 'pipeline' ? (
+          <PipelinePanel port={port} />
+        ) : (
+          <Text>{`${activeTab.label} — panel arrives in a later sub-issue (S4, S6).`}</Text>
+        )}
       </Box>
       <HelpBar />
     </Box>

@@ -82,8 +82,12 @@ const integrationBoundaryCoverageExcludes = [
   'src/support/timeWindow.ts',
   'src/taskState/store.ts',
 
-  // Ink TUI alt-screen render entry (needs a real TTY) — EPIC INT-1813.
+  // Ink TUI boundaries — alt-screen entry, network SSE, and effect hooks
+  // (real TTY / sockets); the pure parser+reducer carry the tested logic. EPIC INT-1813.
   'src/tui/index.tsx',
+  'src/tui/sse.ts',
+  'src/tui/hooks/usePipelineEvents.ts',
+  'src/tui/hooks/useTerminalSize.ts',
 ];
 
 export default defineConfig({
