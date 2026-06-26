@@ -76,6 +76,14 @@ export function parseInput(raw: string): ParsedInput | null {
   return { kind: 'chat', text: t };
 }
 
+/** Normalize a typed confirm answer to the PlanIO decision vocabulary. */
+export function normalizeConfirm(input: string): 'yes' | 'no' | 'edit' {
+  const t = input.trim().toLowerCase();
+  if (t === 'y' || t === 'yes') return 'yes';
+  if (t === 'e' || t === 'edit') return 'edit';
+  return 'no';
+}
+
 /** Slash commands whose name prefix-matches the current input (palette). */
 export function matchSlash(input: string): SlashCommand[] {
   if (!input.startsWith('/') || input.includes(' ')) return [];
