@@ -92,6 +92,24 @@ export type SwarmEvent = {
 };
 
 /**
+ * A single MCP server entry: stdio (`command`/`args`/`env`) or remote
+ * (`url`/`headers`). Mirrors the ~/.openswarm/mcp.json shape. (INT-1949)
+ */
+export type McpServerConfig = {
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+  headers?: Record<string, string>;
+  transport?: 'stdio' | 'http' | 'sse';
+};
+
+/** MCP servers declared in config.yaml (merged into the mcp.json registry). */
+export type McpConfig = {
+  servers: Record<string, McpServerConfig>;
+};
+
+/**
  * Global configuration
  */
 export type SwarmConfig = {
@@ -133,6 +151,8 @@ export type SwarmConfig = {
   monitors?: LongRunningMonitorConfig[];
   /** Daily status report scheduler config */
   dailyReporter?: DailyReporterConfig;
+  /** MCP servers declared in config (merged into ~/.openswarm/mcp.json registry) — INT-1949 */
+  mcp?: McpConfig;
 };
 
 /**

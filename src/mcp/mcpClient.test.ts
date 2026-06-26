@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadRegistry, isMcpTool } from './mcpClient.js';
+import { loadRegistry, isMcpTool, registryFromConfigServers, loadEffectiveRegistry } from './mcpClient.js';
 
 let dir: string | null = null;
 function writeMcpJson(content: unknown): string {
@@ -48,5 +48,41 @@ describe('loadRegistry', () => {
     const p = writeMcpJson({ mcpServers: { bad: { nonsense: true } } });
     expect(loadRegistry(p)).toEqual({});
     expect(loadRegistry(join(tmpdir(), 'does-not-exist-xyz.json'))).toEqual({});
+  });
+});
+
+describe('registryFromConfigServers (INT-1949)', () => {
+  it('normalizes config.mcp.servers (stdio + remote) and drops invalid', () => {
+    const reg = registryFromConfigServers({
+      linear: { command: 'npx', args: ['-y', 'x'] },
+      docs: { url: 'https://example.com/mcp' },
+      stream: { url: 'https://example.com/sse', transport: 'sse' },
+      broken: { args: ['x'] },
+    });
+    expect(reg.linear).toMatchObject({ transport: 'stdio', command: 'npx', args: ['-y', 'x'] });
+    expect(reg.docs).toMatchObject({ transport: 'http', url: 'https://example.com/mcp' });
+    expect(reg.stream).toMatchObject({ transport: 'sse' });
+    expect(reg.broken).toBeUndefined();
+  });
+
+  it('handles undefined input', () => {
+    expect(registryFromConfigServers(undefined)).toEqual({});
+  });
+});
+
+describe('loadEffectiveRegistry (INT-1949)', () => {
+  it('merges mcp.json with config servers, config winning on collision', () => {
+    const p = writeMcpJson({ mcpServers: { fromFile: { command: 'file-cmd' }, shared: { command: 'file-shared' } } });
+    const reg = loadEffectiveRegistry(
+      { fromConfig: { url: 'https://c/mcp' }, shared: { command: 'config-shared' } },
+      p,
+    );
+    expect(reg.fromFile).toMatchObject({ command: 'file-cmd' });
+    expect(reg.fromConfig).toMatchObject({ url: 'https://c/mcp' });
+    expect(reg.shared).toMatchObject({ command: 'config-shared' });
+  });
+
+  it('returns only config servers when the mcp.json path is absent', () => {
+    expect(Object.keys(loadEffectiveRegistry({ only: { command: 'c' } }, join(tmpdir(), 'no-such-mcp.json')))).toEqual(['only']);
   });
 });

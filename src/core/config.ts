@@ -7,7 +7,7 @@ import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { z } from 'zod';
 import YAML from 'yaml';
-import type { SwarmConfig, AgentSession, LongRunningMonitorConfig, ConflictResolverConfig } from './types.js';
+import type { SwarmConfig, AgentSession, LongRunningMonitorConfig, ConflictResolverConfig, McpConfig } from './types.js';
 import { setTimeWindowConfig, DEFAULT_TIME_WINDOW } from '../support/timeWindow.js';
 
 // Constants
@@ -315,6 +315,27 @@ const NotificationsSchema = z.object({
   webhookUrl: z.string().optional(),
 }).optional();
 
+// MCP server entry: stdio (`command`/`args`/`env`) or remote (`url`/`headers`).
+// Mirrors the ~/.openswarm/mcp.json shape so config.yaml is a single source. (INT-1949)
+const McpServerSchema = z
+  .object({
+    command: z.string().optional(),
+    args: z.array(z.string()).optional(),
+    env: z.record(z.string(), z.string()).optional(),
+    url: z.string().optional(),
+    headers: z.record(z.string(), z.string()).optional(),
+    transport: z.enum(['stdio', 'http', 'sse']).optional(),
+  })
+  .refine((s) => !!s.command || !!s.url, {
+    message: 'MCP server needs a `command` (stdio) or a `url` (remote)',
+  });
+
+const McpConfigSchema = z
+  .object({
+    servers: z.record(z.string(), McpServerSchema).default({}),
+  })
+  .optional();
+
 const RawConfigSchema = z.object({
   adapter: AdapterNameSchema.default('codex'),
   language: z.enum(['en', 'ko']).default('en'),
@@ -328,6 +349,7 @@ const RawConfigSchema = z.object({
   prProcessor: PRProcessorConfigSchema,
   ciWorker: CIWorkerConfigSchema,
   monitors: z.array(LongRunningMonitorConfigSchema).optional(),
+  mcp: McpConfigSchema,
   agents: z.array(AgentSessionSchema).min(1, 'At least one agent is required'),
   defaultHeartbeatInterval: z.number().positive().default(DEFAULT_HEARTBEAT_INTERVAL),
 });
@@ -532,6 +554,7 @@ function transformConfig(raw: RawConfig): SwarmConfig {
       maxAgeDays: raw.ciWorker.maxAgeDays,
     } : undefined,
     monitors: raw.monitors as LongRunningMonitorConfig[] | undefined,
+    mcp: raw.mcp ? { servers: raw.mcp.servers as McpConfig['servers'] } : undefined,
   };
 }
 

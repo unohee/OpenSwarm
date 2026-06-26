@@ -171,6 +171,41 @@ agents:
       expect(config.autonomous?.jobProfiles?.[0]?.roles).toEqual({ worker: 'm1', reviewer: 'm2' });
     });
 
+    it('should wire mcp.servers through to runtime config (INT-1949)', () => {
+      const jsonContent = JSON.stringify({
+        language: 'en',
+        linear: { apiKey: 'k', teamId: 't' },
+        agents: [{ name: 'main', projectPath: '/p', enabled: true, paused: false }],
+        mcp: {
+          servers: {
+            linear: { command: 'npx', args: ['-y', 'mcp-remote', 'https://mcp.linear.app/mcp'] },
+            docs: { url: 'https://example.com/mcp', transport: 'http' },
+          },
+        },
+      });
+
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockReturnValue(jsonContent);
+
+      const config = loadConfig('/tmp/config.json');
+      expect(config.mcp?.servers.linear.command).toBe('npx');
+      expect(config.mcp?.servers.docs.url).toBe('https://example.com/mcp');
+    });
+
+    it('should reject an mcp server with neither command nor url (INT-1949)', () => {
+      const jsonContent = JSON.stringify({
+        language: 'en',
+        linear: { apiKey: 'k', teamId: 't' },
+        agents: [{ name: 'main', projectPath: '/p', enabled: true, paused: false }],
+        mcp: { servers: { broken: { args: ['x'] } } },
+      });
+
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockReturnValue(jsonContent);
+
+      expect(() => loadConfig('/tmp/config.json')).toThrow();
+    });
+
     it('should throw error when config file not found', () => {
       vi.mocked(existsSync).mockReturnValue(false);
 

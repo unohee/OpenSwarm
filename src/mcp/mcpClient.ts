@@ -66,6 +66,33 @@ export function loadRegistry(path = MCP_JSON_PATH): Record<string, ServerConfig>
   return out;
 }
 
+/**
+ * Normalize MCP servers declared in config.yaml (`mcp.servers`) into the same
+ * registry shape loadRegistry produces. Invalid entries are dropped. (INT-1949)
+ */
+export function registryFromConfigServers(
+  servers: Record<string, Record<string, unknown>> | undefined,
+): Record<string, ServerConfig> {
+  const out: Record<string, ServerConfig> = {};
+  for (const [name, raw] of Object.entries(servers ?? {})) {
+    const cfg = normalizeEntry(raw);
+    if (cfg) out[name] = cfg;
+  }
+  return out;
+}
+
+/**
+ * The effective MCP registry = ~/.openswarm/mcp.json merged with the servers
+ * declared in config.yaml. Config entries win on name collision (config.yaml is
+ * the source of truth the user edits). (INT-1949)
+ */
+export function loadEffectiveRegistry(
+  configServers?: Record<string, Record<string, unknown>>,
+  path = MCP_JSON_PATH,
+): Record<string, ServerConfig> {
+  return { ...loadRegistry(path), ...registryFromConfigServers(configServers) };
+}
+
 function makeTransport(cfg: ServerConfig) {
   if (cfg.transport === 'stdio') {
     return new StdioClientTransport({
