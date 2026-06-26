@@ -14,6 +14,7 @@ import {
   parseInput,
   matchSlash,
   normalizeConfirm,
+  isActivityNoise,
   SLASH_COMMANDS,
 } from '../chatModel.js';
 import { ChatLog } from '../components/ChatLog.js';
@@ -130,7 +131,10 @@ export function ChatPanel({ active, provider: providerProp, model: modelProp, pr
           provider,
           model,
           (t) => dispatch({ type: 'stream', chunk: t }),
-          (line) => setActivity((a) => [...a, line].slice(-10)),
+          (line) => {
+            if (isActivityNoise(line)) return;
+            setActivity((a) => [...a, line].slice(-10));
+          },
         );
       } catch (e) {
         dispatch({ type: 'stream', chunk: `\n[error] ${e instanceof Error ? e.message : String(e)}` });
