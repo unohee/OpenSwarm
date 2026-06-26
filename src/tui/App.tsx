@@ -15,6 +15,7 @@ import { HelpBar } from './components/HelpBar.js';
 import { PipelinePanel } from './panels/PipelinePanel.js';
 import { ChatPanel } from './panels/ChatPanel.js';
 import { MonitorPanel } from './panels/MonitorPanel.js';
+import { LogsPanel } from './panels/LogsPanel.js';
 import { fetchProjects, fetchTasks, fetchStuck, fetchIssues } from './monitorApi.js';
 import { useTerminalSize } from './hooks/useTerminalSize.js';
 
@@ -68,10 +69,12 @@ export function App({ version, provider, model, port, cwd, branch, initialTab = 
           <ChatPanel active={chatActive} provider={provider} model={model} />
         ) : activeTab.id === 'pipeline' ? (
           <PipelinePanel port={port} />
+        ) : activeTab.id === 'logs' ? (
+          <LogsPanel port={port} />
         ) : activeTab.id in MONITOR_FETCHERS ? (
           <MonitorPanel port={port} fetcher={MONITOR_FETCHERS[activeTab.id as keyof typeof MONITOR_FETCHERS]} />
         ) : (
-          <Text>{`${activeTab.label} — live log lands with the bin cutover (S9).`}</Text>
+          <Text>{`${activeTab.label} — not yet implemented.`}</Text>
         )}
       </Box>
       <HelpBar />

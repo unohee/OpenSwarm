@@ -93,6 +93,7 @@ const integrationBoundaryCoverageExcludes = [
   'src/tui/monitorApi.ts',
   'src/tui/hooks/useMonitor.ts',
   'src/tui/panels/MonitorPanel.tsx',
+  'src/tui/panels/LogsPanel.tsx',
 ];
 
 export default defineConfig({
