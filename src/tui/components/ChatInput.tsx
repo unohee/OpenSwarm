@@ -6,6 +6,10 @@
 import { Box, Text, useInput } from 'ink';
 import Spinner from 'ink-spinner';
 import { theme, ICON } from '../theme.js';
+import { inputDebugEnabled, appendInputDebug } from '../inputDebug.js';
+
+// Read once at module load — toggling mid-session isn't a use case. (INT-1964)
+const INPUT_DEBUG = inputDebugEnabled();
 
 export interface ChatInputProps {
   value: string;
@@ -33,6 +37,8 @@ export function ChatInput({
 }: ChatInputProps) {
   useInput(
     (input, key) => {
+      // Diagnostics for mobile-SSH multibyte doubling (OPENSWARM_DEBUG_INPUT). (INT-1964)
+      if (INPUT_DEBUG) appendInputDebug(input, key);
       // When the palette is open it claims navigation + selection keys (INT-1959).
       if (paletteOpen) {
         if (key.upArrow) return onPaletteMove?.(-1);

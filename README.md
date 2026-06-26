@@ -513,6 +513,34 @@ src/
 
 ---
 
+## Troubleshooting
+
+### Korean / multibyte input doubles over mobile SSH (e.g. Termius)
+
+If the chat TUI shows each Hangul (or other multibyte) character twice —
+`이이렇렇게 쓰쓰이는것` — while ASCII characters look fine, the cause is almost
+always **client-side local / predictive echo** in the mobile SSH app drawing an
+extra copy of wide characters. The keystroke reaches OpenSwarm once; the terminal
+paints it twice.
+
+Fix it in the SSH client:
+
+- **Termius** → Host/Terminal settings → turn **Local Echo** (a.k.a. predictive
+  echo) **off**, and ensure the encoding is **UTF-8**.
+- Confirm the server side is fine by running with diagnostics:
+
+  ```bash
+  OPENSWARM_DEBUG_INPUT=1 openswarm chat
+  ```
+
+  Type a few Korean characters, then inspect `~/.openswarm/input-debug.log`. If a
+  single keypress logs **one** code point (`cp=[51060]`) but you saw two glyphs,
+  the doubling is terminal echo (client-side). If it logs the code point **twice**
+  in one event, it's an app-level issue — please attach the log to
+  [a bug report](https://github.com/unohee/OpenSwarm/issues/new?template=bug_report.md).
+
+---
+
 ## Contributing
 
 Contributions are welcome — OpenSwarm is MIT-licensed and accepts pull requests from anyone. See **[CONTRIBUTING.md](CONTRIBUTING.md)** for development setup, the local check gates, branch/commit conventions, and the PR process. By participating you agree to the [Code of Conduct](CODE_OF_CONDUCT.md).
