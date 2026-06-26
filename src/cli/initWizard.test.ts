@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { buildWizardConfig } from './initWizard.js';
+import { loadConfig } from '../core/config.js';
+import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 describe('buildWizardConfig', () => {
   it('injects the chosen adapter', () => {
@@ -45,5 +49,33 @@ describe('buildWizardConfig', () => {
   it('keeps the sample agents when no agent is given (back-compat)', () => {
     const cfg = buildWizardConfig('codex', 'none');
     expect(cfg).toContain('~/dev/my-project');
+  });
+});
+
+// AdapterNameSchema (src/core/config.ts) accepts exactly these.
+const VALID_ADAPTERS = ['codex', 'codex-responses', 'gpt', 'local', 'lmstudio', 'openrouter', 'claude'];
+const PROVIDERS = ['codex-responses', 'openrouter', 'gpt', 'lmstudio', 'local', 'codex', 'claude'] as const;
+const adapterOf = (cfg: string) =>
+  cfg.split('\n').find((l) => l.startsWith('adapter:'))?.replace('adapter:', '').trim();
+
+describe('buildWizardConfig adapter validity (INT-1844)', () => {
+  for (const p of PROVIDERS) {
+    it(`writes a schema-valid adapter for provider '${p}'`, () => {
+      expect(VALID_ADAPTERS).toContain(adapterOf(buildWizardConfig(p, 'none')));
+    });
+  }
+
+  // Regression: `openswarm init` once wrote `adapter: claude` while the schema
+  // allowed only 6 adapters, so `openswarm validate` failed. claude is now a
+  // first-class adapter (schema + registry); the generated config must load.
+  it('produces a config that loadConfig accepts when claude is chosen', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'initwiz-'));
+    try {
+      const p = join(dir, 'config.yaml');
+      writeFileSync(p, buildWizardConfig('claude', 'none', { name: 'x', projectPath: dir }));
+      expect(loadConfig(p).adapter).toBe('claude');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
