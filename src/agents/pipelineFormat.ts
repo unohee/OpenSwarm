@@ -23,6 +23,7 @@ export function formatPipelineResult(result: PipelineResult): string {
     failed: '💥',
     cancelled: '🚫',
     decomposed: '🔀',
+    rate_limited: '⏸',
   }[result.finalStatus];
 
   const lines: string[] = [];
@@ -78,6 +79,7 @@ export function formatPipelineResultEmbed(result: PipelineResult): EmbedBuilder 
     failed: { emoji: '💥', color: 0xFF6B6B, label: 'FAILED' },
     cancelled: { emoji: '🚫', color: 0xFFAA00, label: 'CANCELLED' },
     decomposed: { emoji: '🔀', color: 0x00AAFF, label: 'DECOMPOSED' },
+    rate_limited: { emoji: '⏸', color: 0xFFAA00, label: 'RATE LIMITED' },
   }[result.finalStatus] || { emoji: '❓', color: 0x808080, label: 'UNKNOWN' };
 
   const embed = new EmbedBuilder()

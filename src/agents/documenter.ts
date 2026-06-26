@@ -8,6 +8,7 @@ import type { AdapterName } from '../adapters/types.js';
 import { getAdapter, spawnCli } from '../adapters/index.js';
 import { type CostInfo, extractCostFromStreamJson, formatCost } from '../support/costTracker.js';
 import { expandPath } from '../core/config.js';
+import { RateLimitError } from '../adapters/rateLimitError.js';
 
 // Types
 
@@ -124,6 +125,7 @@ export async function runDocumenter(options: DocumenterOptions): Promise<Documen
 
     return parseDocumenterOutput(raw.stdout);
   } catch (error) {
+    if (error instanceof RateLimitError) throw error;
     return {
       success: false,
       updatedFiles: [],

@@ -1,0 +1,41 @@
+import { describe, it, expect } from 'vitest';
+import { detectRateLimit, RateLimitError } from './rateLimitError.js';
+
+describe('detectRateLimit (INT-1906)', () => {
+  it('detects a Codex usage_limit_reached payload and parses resets_at', () => {
+    const stdout =
+      'API error: Codex responses error (429): {"error":{"type":"usage_limit_reached",' +
+      '"message":"The usage limit has been reached","plan_type":"prolite","resets_at":1782343811}}';
+    const err = detectRateLimit(stdout, '');
+    expect(err).toBeInstanceOf(RateLimitError);
+    expect(err?.resetsAt).toBe(1782343811);
+    // The label embeds the ISO reset time for operator-facing logs.
+    expect(err?.message).toContain('2026'); // 1782343811 → 2026-06-…
+  });
+
+  it('detects a rate_limit_error type without resets_at (resetsAt undefined)', () => {
+    const err = detectRateLimit('{"type":"rate_limit_error","message":"slow down"}', '');
+    expect(err).toBeInstanceOf(RateLimitError);
+    expect(err?.resetsAt).toBeUndefined();
+  });
+
+  it('detects a 429 paired with rate-limit wording in stderr', () => {
+    const err = detectRateLimit('', 'HTTP 429 — rate limit exceeded, retry later');
+    expect(err).toBeInstanceOf(RateLimitError);
+  });
+
+  it('returns null for ordinary CLI failures (no false positive)', () => {
+    expect(detectRateLimit('TypeError: x is not a function', 'exit code 1')).toBeNull();
+  });
+
+  it('does not treat a bare "429" without rate-limit wording as a rate limit', () => {
+    // e.g. a diff line, a port number, or unrelated numeric output.
+    expect(detectRateLimit('listening on port 4290; processed 429 rows', '')).toBeNull();
+  });
+
+  it('scans both stdout and stderr (signal split across streams)', () => {
+    const err = detectRateLimit('partial output', 'error: usage_limit_reached "resets_at": 1782343811');
+    expect(err).toBeInstanceOf(RateLimitError);
+    expect(err?.resetsAt).toBe(1782343811);
+  });
+});

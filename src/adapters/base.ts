@@ -9,6 +9,7 @@ import type { CliAdapter, CliRunOptions, CliRunResult } from './types.js';
 import { parseCliStreamChunk } from '../agents/cliStreamParser.js';
 import { registerProcess } from './processRegistry.js';
 import { buildWorkerEnv } from './envPath.js';
+import { detectRateLimit } from './rateLimitError.js';
 
 /**
  * Spawn a CLI process using the given adapter and options.
@@ -105,6 +106,14 @@ export async function spawnCli(
           console.error(`[${adapter.name}] stderr: ${stderrSnippet || '(empty)'}`);
           console.error(`[${adapter.name}] stdout (first 300): ${stdoutSnippet || '(empty)'}`);
           console.error(`[${adapter.name}] Duration: ${durationMs}ms, CWD: ${options.cwd}`);
+
+          const rateLimitErr = detectRateLimit(stdout, stderr);
+          if (rateLimitErr) {
+            console.error(`[${adapter.name}] Rate limit detected: ${rateLimitErr.message}`);
+            reject(rateLimitErr);
+            return;
+          }
+
           reject(new Error(`${adapter.name} CLI failed with code ${code}: ${stderrSnippet.slice(0, 200)}`));
           return;
         }

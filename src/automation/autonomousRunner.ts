@@ -121,6 +121,10 @@ export class AutonomousRunner {
   private failedTaskRetryTimes = new Map<string, number>(); // issueId → next retry timestamp (ms)
   private static readonly MAX_RETRY_COUNT = 4; // Increased from 2 to allow more retries with backoff
 
+  // Rate-limit hold: epoch ms until which all task execution is paused.
+  // Set when any adapter returns a 429 / usage_limit_reached response (INT-1906).
+  private rateLimitUntil = 0;
+
   private get taskStateRef(): TaskState {
     return {
       completedTaskIds: this.completedTaskIds,
@@ -255,6 +259,23 @@ export class AutonomousRunner {
 
     this.scheduler.on('failed', async ({ task, result }) => {
       const taskCtx = this.formatTaskContext(task);
+
+      // Rate-limited: pause execution until the quota resets. Do NOT count it as a
+      // task failure, run the rejection/block path, or post a Linear comment —
+      // that is exactly the retry-spam this issue fixes. (INT-1906)
+      if (result.finalStatus === 'rate_limited') {
+        const resetsAt = result.rateLimitResetsAt ?? Date.now() + 60_000;
+        this.rateLimitUntil = resetsAt;
+        const waitSec = Math.max(0, Math.ceil((resetsAt - Date.now()) / 1000));
+        const resetsLabel = new Date(resetsAt).toISOString();
+        console.warn(`[Scheduler] Rate limit hit for ${taskCtx} — pausing until ${resetsLabel} (~${waitSec}s)`);
+        broadcastEvent({
+          type: 'log',
+          data: { taskId: task.issueId || task.id, stage: 'rate_limit', line: `⏸ Rate limited — pausing ~${waitSec}s (until ${resetsLabel})` },
+        });
+        return;
+      }
+
       console.log(`[Scheduler] Task failed: ${taskCtx} ${task.title}`);
       broadcastEvent({ type: 'task:completed', data: { taskId: task.id, success: false, duration: result.totalDuration } });
       this.recordPipelineHistory(task, result);
@@ -663,6 +684,17 @@ export class AutonomousRunner {
         return;
       }
       this.syslog('✓ Time window: allowed');
+
+      // 1.2 Rate-limit hold — skip the heartbeat while a 429 pause is still active.
+      // Cleared implicitly once the clock passes rateLimitUntil. (INT-1906)
+      if (Date.now() < this.rateLimitUntil) {
+        const remainSec = Math.max(0, Math.ceil((this.rateLimitUntil - Date.now()) / 1000));
+        const resetsLabel = new Date(this.rateLimitUntil).toISOString();
+        console.log(`[AutonomousRunner] Rate limit hold active — ${remainSec}s remaining (until ${resetsLabel})`);
+        this.syslog(`⏸ Rate limit hold: ~${remainSec}s remaining`);
+        broadcastEvent({ type: 'log', data: { taskId: 'system', stage: 'rate_limit', line: `⏸ Rate limit hold: ~${remainSec}s remaining` } });
+        return;
+      }
 
       // 1.5 Quota gate — skip heartbeat if Claude Max quota is too high
       const quotaCheck = await checkQuotaAllowance(80);

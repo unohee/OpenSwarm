@@ -10,6 +10,7 @@ import type { WorkerContext } from '../locale/types.js';
 import type { AdapterName, ProcessContext } from '../adapters/types.js';
 import { getAdapter, getDefaultAdapterName, spawnCli } from '../adapters/index.js';
 import { expandPath } from '../core/config.js';
+import { RateLimitError } from '../adapters/rateLimitError.js';
 
 // Types
 
@@ -214,6 +215,11 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       }
       return result;
     } catch (error) {
+      // A 429/usage-limit must STOP the run and propagate so the scheduler can
+      // pause — never fall back to another adapter (it shares the same quota
+      // window) and never get swallowed as a generic worker failure. (INT-1906)
+      if (error instanceof RateLimitError) throw error;
+
       const errMsg = error instanceof Error ? error.message : String(error);
       console.error(`[Worker] Execution failed (${adapterName}): ${errMsg}`);
       if (error instanceof Error && error.message.includes('code')) {

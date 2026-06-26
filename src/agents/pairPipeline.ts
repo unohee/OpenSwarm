@@ -37,6 +37,7 @@ import * as documenterAgent from './documenter.js';
 import * as auditorAgent from './auditor.js';
 import * as skillDocumenterAgent from './skillDocumenter.js';
 import { StuckDetector, createStuckDetector } from '../support/stuckDetector.js';
+import { RateLimitError } from '../adapters/rateLimitError.js';
 
 // Types
 
@@ -104,7 +105,9 @@ export interface PipelineResult {
   success: boolean;
   sessionId: string;
   stages: StageResult[];
-  finalStatus: 'approved' | 'rejected' | 'failed' | 'cancelled' | 'decomposed';
+  finalStatus: 'approved' | 'rejected' | 'failed' | 'cancelled' | 'decomposed' | 'rate_limited';
+  /** Unix timestamp (ms) when the rate-limit quota resets — set when finalStatus is 'rate_limited'. */
+  rateLimitResetsAt?: number;
   totalDuration: number;
   /** Total number of completed iterations */
   iterations: number;
@@ -354,8 +357,14 @@ export class PairPipeline extends EventEmitter {
       // Cancellation (project disable / manual stop) is not a failure — surface it
       // as 'cancelled' so the scheduler doesn't count it failed or trigger a retry.
       const cancelled = error instanceof PipelineCancelledError || !!this.abortSignal?.aborted;
+      // A 429/usage-limit propagates up here from any stage (worker/reviewer/…).
+      // Surface it as its own finalStatus so the runner pauses until quota resets
+      // instead of counting a failure and spamming Linear comments. (INT-1906)
+      const rateLimited = !cancelled && error instanceof RateLimitError;
       if (cancelled) {
         console.log(`[${context.taskPrefix}] Pipeline cancelled`);
+      } else if (rateLimited) {
+        console.warn(`[${context.taskPrefix}] Pipeline rate-limited: ${(error as RateLimitError).message}`);
       } else {
         console.error('[%s] Error:', context.taskPrefix, error);
       }
@@ -364,7 +373,10 @@ export class PairPipeline extends EventEmitter {
         success: false,
         sessionId: session.id,
         stages,
-        finalStatus: cancelled ? 'cancelled' : 'failed',
+        finalStatus: cancelled ? 'cancelled' : rateLimited ? 'rate_limited' : 'failed',
+        rateLimitResetsAt: rateLimited && (error as RateLimitError).resetsAt
+          ? (error as RateLimitError).resetsAt! * 1000
+          : undefined,
         totalDuration: Date.now() - startTime,
         iterations: context.currentIteration,
         workerResult: context.workerResult,

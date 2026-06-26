@@ -8,6 +8,7 @@ import { t, getPrompts } from '../locale/index.js';
 import type { AdapterName, ProcessContext } from '../adapters/types.js';
 import { getAdapter, spawnCli } from '../adapters/index.js';
 import { expandPath } from '../core/config.js';
+import { RateLimitError } from '../adapters/rateLimitError.js';
 
 // Types
 
@@ -172,6 +173,9 @@ export async function runPreCheck(options: ReviewerOptions): Promise<PreCheckRes
       confidence: Math.min(3, Math.max(0, confidence)),
     };
   } catch (error) {
+    // Rate limit errors must propagate so the scheduler can pause — pre-check
+    // failure otherwise just passes through to the full review.
+    if (error instanceof RateLimitError) throw error;
     // If pre-check fails, allow proceeding to full review
     console.warn('[Reviewer] Pre-check failed, proceeding to full review:', error);
     return {
@@ -209,6 +213,8 @@ export async function runReviewer(options: ReviewerOptions): Promise<ReviewResul
     // Parse result via adapter
     return adapter.parseReviewerOutput(raw);
   } catch (error) {
+    // Rate limit errors must propagate so the scheduler can pause.
+    if (error instanceof RateLimitError) throw error;
     return {
       decision: 'reject',
       feedback: `Reviewer execution failed: ${error instanceof Error ? error.message : String(error)}`,
