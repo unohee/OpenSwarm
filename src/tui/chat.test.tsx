@@ -19,6 +19,21 @@ describe('ChatLog', () => {
     expect(f).toContain('hi there');
     expect(f).toContain('typing…');
   });
+
+  it('accumulates every message (no <Static> — persists under full-screen)', () => {
+    // Regression: messages used to vanish because <Static> is wiped by the
+    // alt-screen full-frame redraw. They must all stay in the render tree.
+    const history: ChatLine[] = [
+      { role: 'user', content: 'first question' },
+      { role: 'assistant', content: 'first answer' },
+      { role: 'user', content: 'second question' },
+      { role: 'assistant', content: 'second answer' },
+    ];
+    const f = render(<ChatLog history={history} streaming={null} />).lastFrame()!;
+    for (const msg of ['first question', 'first answer', 'second question', 'second answer']) {
+      expect(f).toContain(msg);
+    }
+  });
 });
 
 describe('CommandPalette', () => {
