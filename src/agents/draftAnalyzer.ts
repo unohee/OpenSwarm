@@ -1,7 +1,7 @@
 // ============================================
 // OpenSwarm - Draft Analyzer
 // Created: 2026-04-11
-// Purpose: Haiku 기반 사전 분석 — 이슈 의도 파악 + 코드베이스 상태 수집
+// Purpose: drafter 모델 기반 사전 분석 — 이슈 의도 파악 + 코드베이스 상태 수집
 //          Planner/Worker에 enriched context를 제공하여 첫 시도 정확도 향상
 // ============================================
 
@@ -73,11 +73,11 @@ export interface DraftAnalysis {
    * more specific label than the common bugfix/feature/refactor/docs/test/config.
    */
   taskType: string;
-  /** Haiku가 요약한 핵심 의도 (1-2문장) */
+  /** drafter가 요약한 핵심 의도 (1-2문장) */
   intentSummary: string;
-  /** Haiku가 식별한 관련 파일/모듈 목록 */
+  /** drafter가 식별한 관련 파일/모듈 목록 */
   relevantFiles: string[];
-  /** Haiku가 제안한 접근 방식 (1-3문장) */
+  /** drafter가 제안한 접근 방식 (1-3문장) */
   suggestedApproach: string;
   /**
    * Execution-grounded definition of done (INT-1914). Each item must be
@@ -124,7 +124,7 @@ export interface DraftAnalyzerOptions {
   projectId?: string;
   /** Fast model for draft analysis (default: gpt-5-codex) */
   model?: string;
-  /** 타임아웃 (기본: 30초 — Haiku는 빠름) */
+  /** 타임아웃 (기본: 30초 — drafter는 빠름) */
   timeoutMs?: number;
   onLog?: (line: string) => void;
 }
@@ -211,10 +211,10 @@ function collectCodebaseState(
   return { registrySnapshot, projectStats };
 }
 
-// ============ Haiku 의도 분석 ============
+// ============ drafter 의도 분석 ============
 
 /**
- * Haiku에게 이슈 의도를 분석시키는 프롬프트 구성
+ * drafter에게 이슈 의도를 분석시키는 프롬프트 구성
  * 코드베이스 상태를 컨텍스트로 제공하여 더 정확한 분류 유도
  */
 function buildDraftPrompt(
@@ -297,7 +297,7 @@ Each criterion must be a runtime/observable fact, NOT mere existence of code:
 }
 
 /**
- * Haiku 응답 파싱
+ * drafter 응답 파싱
  */
 function parseDraftResponse(output: string): Partial<DraftAnalysis> {
   // JSON 블록 추출
@@ -388,7 +388,7 @@ function isProviderQuotaError(message?: string): boolean {
  * 흐름:
  * 1. Knowledge Graph impact analysis (로컬)
  * 2. Code Registry 상태 수집 (로컬)
- * 3. Haiku에게 의도 분석 (API, ~3초)
+ * 3. drafter에게 의도 분석 (API, ~3초)
  * 4. 결과 병합
  */
 export async function runDraftAnalysis(options: DraftAnalyzerOptions): Promise<DraftAnalysis> {
