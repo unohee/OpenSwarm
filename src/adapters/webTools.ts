@@ -63,31 +63,53 @@ async function fetchWithTimeout(url: string, init: RequestInit = {}): Promise<Re
   }
 }
 
+// Decode HTML entities in a SINGLE left-to-right pass. A chain of .replace()
+// calls (e.g. &amp; → & before &lt; → <) double-unescapes crafted input like
+// "&amp;lt;" → "<"; one pass over the original string never re-scans its own
+// output, so "&amp;lt;" correctly yields the literal "&lt;". (CodeQL js/double-escaping)
+const NAMED_ENTITIES: Record<string, string> = {
+  amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ',
+};
+function decodeEntities(s: string): string {
+  return s.replace(/&(#x[0-9a-f]+|#[0-9]+|[a-z][a-z0-9]*);/gi, (m, body: string) => {
+    if (body[0] === '#') {
+      const cp = body[1].toLowerCase() === 'x'
+        ? parseInt(body.slice(2), 16)
+        : parseInt(body.slice(1), 10);
+      return Number.isFinite(cp) && cp >= 1 && cp <= 0x10ffff ? String.fromCodePoint(cp) : m;
+    }
+    return NAMED_ENTITIES[body.toLowerCase()] ?? m;
+  });
+}
+
+// Remove every HTML tag, repeating to a fixpoint. A single pass of /<[^>]*>/ can
+// leave a tag reconstructed from the removal (e.g. "<<b>script>" → "<script>"),
+// so iterate until the string stops changing. (CodeQL js/incomplete-multi-character-sanitization)
+function stripAllTags(s: string): string {
+  let prev: string;
+  let out = s;
+  do { prev = out; out = out.replace(/<[^>]*>/g, ''); } while (out !== prev);
+  return out;
+}
+
 function stripTags(s: string): string {
-  return s
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#(?:39|x27);/g, "'")
-    .replace(/\s+/g, ' ')
-    .trim();
+  return decodeEntities(stripAllTags(s)).replace(/\s+/g, ' ').trim();
 }
 
 function htmlToText(html: string): string {
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<!--[\s\S]*?-->/g, ' ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#(?:39|x27);/g, "'")
+  // Drop script/style blocks and comments first, to a fixpoint. The closing-tag
+  // matcher uses \b + [^>]* so it can't be bypassed by whitespace/attributes
+  // before ">" ("</script >", "</script bar>"). (CodeQL js/bad-tag-filter)
+  let prev: string;
+  let out = html;
+  do {
+    prev = out;
+    out = out
+      .replace(/<script\b[^>]*>[\s\S]*?<\/script\b[^>]*>/gi, ' ')
+      .replace(/<style\b[^>]*>[\s\S]*?<\/style\b[^>]*>/gi, ' ')
+      .replace(/<!--[\s\S]*?-->/g, ' ');
+  } while (out !== prev);
+  return decodeEntities(stripAllTags(out))
     .replace(/[ \t]+/g, ' ')
     .replace(/\n\s*\n\s*\n+/g, '\n\n')
     .trim();

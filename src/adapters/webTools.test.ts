@@ -43,6 +43,44 @@ describe('webFetch', () => {
   });
 });
 
+describe('webFetch — HTML sanitization hardening (INT-1931)', () => {
+  const htmlResponse = (body: string) =>
+    vi.fn(async () => new Response(body, { status: 200, headers: { 'content-type': 'text/html' } }));
+
+  it('decodes entities in a single pass — no double-unescaping (js/double-escaping)', async () => {
+    vi.stubGlobal('fetch', htmlResponse('<p>&amp;lt;tag&amp;gt;</p>'));
+    const out = await webFetch('https://example.com');
+    // "&amp;lt;" must decode once to the literal "&lt;", NOT twice into "<".
+    expect(out).toContain('&lt;tag&gt;');
+    expect(out).not.toContain('<tag>');
+  });
+
+  it('decodes numeric and hex entities', async () => {
+    vi.stubGlobal('fetch', htmlResponse('<p>caf&#233; &#x1F600;</p>'));
+    const out = await webFetch('https://example.com');
+    expect(out).toContain('café');
+    expect(out).toContain('😀');
+  });
+
+  it('removes script blocks whose closing tag carries whitespace/attributes (js/bad-tag-filter)', async () => {
+    vi.stubGlobal('fetch', htmlResponse(
+      '<body>keep1<script>evil1()</script ><script type="x">evil2()</script bar>keep2</body>',
+    ));
+    const out = await webFetch('https://example.com');
+    expect(out).toContain('keep1');
+    expect(out).toContain('keep2');
+    expect(out).not.toContain('evil1');
+    expect(out).not.toContain('evil2');
+  });
+
+  it('strips nested tags leaving clean text with no markup', async () => {
+    vi.stubGlobal('fetch', htmlResponse('<div><p><b>bold</b> &amp; <i>italic</i></p></div>'));
+    const out = await webFetch('https://example.com');
+    expect(out).toBe('bold & italic');
+    expect(out).not.toContain('<');
+  });
+});
+
 describe('webSearch — backend selection', () => {
   it('defaults to duckduckgo with no keys', () => {
     expect(searchBackend()).toBe('duckduckgo');
