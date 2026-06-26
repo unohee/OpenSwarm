@@ -148,6 +148,29 @@ program
     await launchChatTui();
   });
 
+// openswarm mcp add|list|remove
+
+program
+  .command('mcp')
+  .description('Manage MCP servers (~/.openswarm/mcp.json) available to the worker/CLI')
+  .argument('<action>', 'add | list | remove')
+  .argument('[name]', 'server name (for add/remove)')
+  .argument('[target...]', 'command + args, or a URL (for add)')
+  .option('--preset <preset>', 'use a built-in preset (e.g. linear) instead of a command/URL')
+  .action(async (action: string, name: string | undefined, target: string[], opts: { preset?: string }) => {
+    const { runMcpCommand } = await import('./cli/mcpCommand.js');
+    try {
+      console.log(runMcpCommand(action, name, target ?? [], { preset: opts.preset }));
+      if (action === 'add' || action === 'remove') {
+        const { resetMcpTools } = await import('./mcp/mcpClient.js');
+        resetMcpTools();
+      }
+    } catch (e) {
+      console.error(e instanceof Error ? e.message : String(e));
+      process.exitCode = 1;
+    }
+  });
+
 // openswarm exec <prompt>
 
 program
