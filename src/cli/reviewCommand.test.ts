@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { buildReviewWorkerResult, formatReviewOutput, runReviewCommand } from './reviewCommand.js';
+import { buildReviewWorkerResult, formatReviewOutput, runReviewCommand, resolveIssueFromBranch } from './reviewCommand.js';
 import type { ReviewResult } from '../agents/agentPair.js';
 
 describe('buildReviewWorkerResult (INT-1955)', () => {
@@ -33,6 +33,70 @@ describe('formatReviewOutput (INT-1955)', () => {
     expect(colored).toContain('\x1b['); // has ANSI codes
     expect(colored).toContain('Decision: REJECT'); // substring still intact
     expect(formatReviewOutput(review, false)).not.toContain('\x1b['); // plain by default
+  });
+});
+
+describe('resolveIssueFromBranch (INT-1967)', () => {
+  it('extracts an uppercased issue id from common branch shapes', () => {
+    expect(resolveIssueFromBranch('unoheeofficial/int-1705-fix-foo')).toBe('INT-1705');
+    expect(resolveIssueFromBranch('swarm/INT-1821-s8-plan')).toBe('INT-1821');
+    expect(resolveIssueFromBranch('feat/int-1967-branch-infer')).toBe('INT-1967');
+  });
+  it('returns undefined when no issue id is present', () => {
+    expect(resolveIssueFromBranch('main')).toBeUndefined();
+    expect(resolveIssueFromBranch('develop')).toBeUndefined();
+  });
+});
+
+describe('runReviewCommand --issues branch inference (INT-1967)', () => {
+  const approveWithFollowups = async () =>
+    ({ decision: 'approve', feedback: 'ok', recommendedActions: [{ type: 'test', title: 't' }] }) as ReviewResult;
+
+  it('infers the parent from the branch when --issues has no value', async () => {
+    const fileFollowups = vi.fn(async () => 1);
+    const logs: string[] = [];
+    await runReviewCommand(
+      { fileIssue: true },
+      {
+        getChangedFiles: async () => ['x.ts'],
+        review: approveWithFollowups,
+        getBranch: async () => 'feat/int-1705-thing',
+        fileFollowups,
+        startProgress: () => null,
+        log: (l) => logs.push(l),
+      },
+    );
+    expect(fileFollowups).toHaveBeenCalledWith('INT-1705', expect.anything());
+    expect(logs.join('\n')).toContain('inferred from branch');
+  });
+
+  it('uses an explicit id over branch inference', async () => {
+    const fileFollowups = vi.fn(async () => 1);
+    const getBranch = vi.fn(async () => 'feat/int-9999-x');
+    await runReviewCommand(
+      { fileIssue: 'INT-1' },
+      { getChangedFiles: async () => ['x.ts'], review: approveWithFollowups, getBranch, fileFollowups, startProgress: () => null, log: () => {} },
+    );
+    expect(fileFollowups).toHaveBeenCalledWith('INT-1', expect.anything());
+    expect(getBranch).not.toHaveBeenCalled();
+  });
+
+  it('guides when --issues is set but the branch has no issue id', async () => {
+    const fileFollowups = vi.fn(async () => 1);
+    const logs: string[] = [];
+    await runReviewCommand(
+      { fileIssue: true },
+      {
+        getChangedFiles: async () => ['x.ts'],
+        review: approveWithFollowups,
+        getBranch: async () => 'main',
+        fileFollowups,
+        startProgress: () => null,
+        log: (l) => logs.push(l),
+      },
+    );
+    expect(fileFollowups).not.toHaveBeenCalled();
+    expect(logs.join('\n')).toMatch(/no issue could be inferred/);
   });
 });
 
@@ -128,7 +192,7 @@ describe('runReviewCommand (INT-1955)', () => {
     );
     const out = logs.join('\n');
     expect(out).toMatch(/1 follow-up\(s\) suggested/);
-    expect(out).toContain('--file');
+    expect(out).toContain('--issues');
   });
 
   it('does not file when there are no recommendedActions', async () => {

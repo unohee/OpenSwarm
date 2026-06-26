@@ -67,11 +67,23 @@ export function formatReviewOutput(review: ReviewResult, color = false): string 
   return lines.join('\n');
 }
 
+/**
+ * Extract a Linear-style issue id (e.g. INT-1705) from a git branch name so the
+ * user can run `--issues` without typing the id. Returns undefined if none. (INT-1967)
+ */
+export function resolveIssueFromBranch(branch: string): string | undefined {
+  const m = branch.match(/([a-z]{2,}-\d+)/i);
+  return m ? m[1].toUpperCase() : undefined;
+}
+
 export interface ReviewCommandOptions {
   /** Project path (default cwd). */
   path?: string;
-  /** Parent Linear issue id — file recommendedActions as sub-issues under it. */
-  fileIssue?: string;
+  /**
+   * File recommendedActions as Linear sub-issues. A string is the explicit parent
+   * id; `true` (bare `--issues`) infers the parent from the git branch. (INT-1967)
+   */
+  fileIssue?: string | boolean;
   /** Adapter override. */
   adapter?: string;
   /** Verbose logging. */
@@ -90,6 +102,8 @@ export async function runReviewCommand(
     log?: (line: string) => void;
     /** Override the progress indicator (default: TTY-gated spinner). Tests pass a stub. */
     startProgress?: () => { note: (line: string) => void; stop: () => void } | null;
+    /** Current git branch (default: `git rev-parse --abbrev-ref HEAD`). For --issues inference. */
+    getBranch?: (cwd: string) => Promise<string>;
   } = {},
 ): Promise<ReviewResult | null> {
   const cwd = opts.path ?? process.cwd();
@@ -136,17 +150,42 @@ export async function runReviewCommand(
 
   const followups = result.recommendedActions?.length ?? 0;
   if (opts.fileIssue && followups) {
+    // Resolve the parent issue: explicit id, else inferred from the git branch. (INT-1967)
+    let parent = typeof opts.fileIssue === 'string' ? opts.fileIssue : undefined;
+    if (!parent) {
+      const getBranch =
+        deps.getBranch ??
+        (async (c: string) => {
+          const { execFileSync } = await import('node:child_process');
+          return execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+            cwd: c,
+            stdio: ['ignore', 'pipe', 'ignore'],
+          })
+            .toString()
+            .trim();
+        });
+      const branch = await getBranch(cwd).catch(() => '');
+      parent = resolveIssueFromBranch(branch);
+      if (parent) log(`Filing follow-ups under ${parent} (inferred from branch "${branch}").`);
+    }
+    if (!parent) {
+      log(
+        `\n${followups} follow-up(s) suggested, but no issue could be inferred from the branch. ` +
+          'Re-run with `--issues <issue-id>` to choose the parent.',
+      );
+      return result;
+    }
     const fileFollowups =
       deps.fileFollowups ??
-      (async (parent: string, r: ReviewResult) => {
+      (async (p: string, r: ReviewResult) => {
         const { fileReviewerFollowups, getTaskSource } = await import('../automation/runnerExecution.js');
-        return fileReviewerFollowups(getTaskSource(), parent, r, { autoFile: true });
+        return fileReviewerFollowups(getTaskSource(), p, r, { autoFile: true });
       });
-    const filed = await fileFollowups(opts.fileIssue, result);
-    log(`Filed ${filed} follow-up sub-issue(s) under ${opts.fileIssue}.`);
+    const filed = await fileFollowups(parent, result);
+    log(`Filed ${filed} follow-up sub-issue(s) under ${parent}.`);
   } else if (followups) {
-    // Suggestions were made but nothing was filed — make the --file flag discoverable. (INT-1966)
-    log(`\n${followups} follow-up(s) suggested. Re-run with \`--file <issue-id>\` to create them as Linear sub-issues.`);
+    // Suggestions were made but nothing was filed — make the flag discoverable. (INT-1966/1967)
+    log(`\n${followups} follow-up(s) suggested. Re-run with \`--issues\` to create them as Linear sub-issues (parent inferred from the branch, or pass \`--issues <id>\`).`);
   }
 
   return result;

@@ -215,13 +215,14 @@ program
   .command('review')
   .description('Review the working-tree changes; optionally file follow-ups as Linear sub-issues')
   .option('--path <path>', 'Project path (default: cwd)')
-  .option('--file <issue>', 'Parent Linear issue id — file recommendedActions as sub-issues under it')
+  .option('--issues [parent]', 'File follow-ups as Linear sub-issues (parent inferred from the git branch, or pass an id)')
+  .option('--file [parent]', 'Alias for --issues (back-compat)')
   .option('--adapter <name>', 'Adapter override for the reviewer')
   .option('--debug', 'Verbose logging')
-  .action(async (opts: { path?: string; file?: string; adapter?: string; debug?: boolean }) => {
+  .action(async (opts: { path?: string; issues?: string | boolean; file?: string | boolean; adapter?: string; debug?: boolean }) => {
     const { runReviewCommand } = await import('./cli/reviewCommand.js');
     try {
-      const result = await runReviewCommand({ path: opts.path, fileIssue: opts.file, adapter: opts.adapter, debug: opts.debug });
+      const result = await runReviewCommand({ path: opts.path, fileIssue: opts.issues ?? opts.file, adapter: opts.adapter, debug: opts.debug });
       if (result && result.decision === 'reject') process.exitCode = 1;
     } catch (e) {
       console.error(e instanceof Error ? e.message : String(e));
