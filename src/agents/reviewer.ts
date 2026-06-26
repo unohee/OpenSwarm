@@ -29,6 +29,10 @@ export interface ReviewerOptions {
   completionCriteria?: string[];
   /** MCP tools to expose (e.g. linear__*). When unset the adapter self-sources (INT-1951). (INT-1950) */
   mcpTools?: ToolDefinition[];
+  /** Tool-activity log lines (🔧 read_file …) for live progress display. (INT-1963) */
+  onLog?: (line: string) => void;
+  /** Streamed reasoning/text deltas for live progress display. (INT-1963) */
+  onToken?: (delta: string) => void;
   /** Abort the run + in-flight adapter call (pipeline cancel / project disable). */
   signal?: AbortSignal;
 }
@@ -133,6 +137,7 @@ export async function runPreCheck(options: ReviewerOptions): Promise<PreCheckRes
       model: options.model,
       maxTurns: options.maxTurns,
       processContext: options.processContext,
+      onLog: options.onLog,
       signal: options.signal,
     });
 
@@ -211,6 +216,8 @@ export async function runReviewer(options: ReviewerOptions): Promise<ReviewResul
       systemPrompt: getPrompts().systemPrompt,
       reasoningEffort: options.reasoningEffort,
       mcpTools: options.mcpTools,
+      onLog: options.onLog,
+      onToken: options.onToken,
       signal: options.signal,
     });
 

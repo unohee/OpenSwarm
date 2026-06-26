@@ -9,6 +9,7 @@
 // command shell wires git + reviewer + Linear.
 
 import type { ReviewResult, WorkerResult } from '../agents/agentPair.js';
+import { startReviewProgress } from './reviewProgress.js';
 
 /** Synthesize a WorkerResult describing the working-tree changes for the reviewer. */
 export function buildReviewWorkerResult(changedFiles: string[], summary?: string): WorkerResult {
@@ -62,9 +63,11 @@ export async function runReviewCommand(
   opts: ReviewCommandOptions = {},
   deps: {
     getChangedFiles?: (cwd: string) => Promise<string[]>;
-    review?: (wr: WorkerResult, cwd: string) => Promise<ReviewResult>;
+    review?: (wr: WorkerResult, cwd: string, onLog?: (line: string) => void) => Promise<ReviewResult>;
     fileFollowups?: (parentIssueId: string, review: ReviewResult) => Promise<number>;
     log?: (line: string) => void;
+    /** Override the progress indicator (default: TTY-gated spinner). Tests pass a stub. */
+    startProgress?: () => { note: (line: string) => void; stop: () => void } | null;
   } = {},
 ): Promise<ReviewResult | null> {
   const cwd = opts.path ?? process.cwd();
@@ -80,7 +83,7 @@ export async function runReviewCommand(
 
   const review =
     deps.review ??
-    (async (wr: WorkerResult, c: string) => {
+    (async (wr: WorkerResult, c: string, onLog?: (line: string) => void) => {
       const { runReviewer } = await import('../agents/reviewer.js');
       return runReviewer({
         taskTitle: 'CLI working-tree review',
@@ -88,10 +91,25 @@ export async function runReviewCommand(
         workerResult: wr,
         projectPath: c,
         adapterName: opts.adapter as never,
+        onLog,
       });
     });
 
-  const result = await review(buildReviewWorkerResult(changed), cwd);
+  // Live "still working" feedback so a multi-second review doesn't look frozen.
+  // On a TTY, a spinner heartbeat; otherwise each tool line is printed. (INT-1963)
+  const startProgress = deps.startProgress ?? (() => (process.stderr.isTTY ? startReviewProgress() : null));
+  const progress = startProgress();
+  const onLog = (line: string) => {
+    if (progress) progress.note(line);
+    else log(`  · ${line}`);
+  };
+
+  let result: ReviewResult;
+  try {
+    result = await review(buildReviewWorkerResult(changed), cwd, onLog);
+  } finally {
+    progress?.stop();
+  }
   log(formatReviewOutput(result));
 
   if (opts.fileIssue && result.recommendedActions?.length) {

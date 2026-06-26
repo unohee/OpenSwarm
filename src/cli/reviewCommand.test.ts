@@ -63,6 +63,49 @@ describe('runReviewCommand (INT-1955)', () => {
     expect(fileFollowups).toHaveBeenCalledWith('INT-1', expect.objectContaining({ decision: 'approve' }));
   });
 
+  it('forwards an onLog progress callback to the reviewer (INT-1963)', async () => {
+    let received: ((line: string) => void) | undefined;
+    const logs: string[] = [];
+    await runReviewCommand(
+      {},
+      {
+        getChangedFiles: async () => ['x.ts'],
+        review: async (_wr, _cwd, onLog) => {
+          received = onLog;
+          onLog?.('🔧 read_file: x.ts');
+          return { decision: 'approve', feedback: 'ok' } as ReviewResult;
+        },
+        // no TTY spinner in this test → onLog falls back to log()
+        startProgress: () => null,
+        log: (l) => logs.push(l),
+      },
+    );
+    expect(typeof received).toBe('function');
+    expect(logs.join('\n')).toContain('🔧 read_file: x.ts');
+  });
+
+  it('routes onLog to the progress note when a spinner is active (INT-1963)', async () => {
+    const notes: string[] = [];
+    const stop = vi.fn();
+    const logs: string[] = [];
+    await runReviewCommand(
+      {},
+      {
+        getChangedFiles: async () => ['x.ts'],
+        review: async (_wr, _cwd, onLog) => {
+          onLog?.('🔧 edit_file: x.ts');
+          return { decision: 'approve', feedback: 'ok' } as ReviewResult;
+        },
+        startProgress: () => ({ note: (l) => notes.push(l), stop }),
+        log: (l) => logs.push(l),
+      },
+    );
+    expect(notes).toContain('🔧 edit_file: x.ts');
+    expect(stop).toHaveBeenCalled();
+    // activity went to the spinner, not the plain log
+    expect(logs.join('\n')).not.toContain('· 🔧 edit_file');
+  });
+
   it('does not file when there are no recommendedActions', async () => {
     const fileFollowups = vi.fn(async () => 0);
     await runReviewCommand(
