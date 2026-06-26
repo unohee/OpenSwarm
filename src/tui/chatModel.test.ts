@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { chatReducer, initialChatState, parseInput, matchSlash, normalizeConfirm, isActivityNoise } from './chatModel.js';
+import { chatReducer, initialChatState, parseInput, matchSlash, movePaletteSelection, normalizeConfirm, isActivityNoise } from './chatModel.js';
 
 describe('chatReducer (EPIC INT-1813 S4)', () => {
   it('appends user and system lines', () => {
@@ -78,5 +78,16 @@ describe('matchSlash', () => {
   it('does not match plain chat or once an argument is being typed', () => {
     expect(matchSlash('hello')).toEqual([]);
     expect(matchSlash('/model gpt')).toEqual([]);
+  });
+});
+
+describe('movePaletteSelection (INT-1959)', () => {
+  it('wraps around both ends', () => {
+    expect(movePaletteSelection(0, 1, 3)).toBe(1);
+    expect(movePaletteSelection(2, 1, 3)).toBe(0); // wrap forward
+    expect(movePaletteSelection(0, -1, 3)).toBe(2); // wrap backward
+  });
+  it('returns 0 for an empty list', () => {
+    expect(movePaletteSelection(0, 1, 0)).toBe(0);
   });
 });

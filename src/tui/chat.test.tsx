@@ -41,6 +41,11 @@ describe('CommandPalette', () => {
     expect(render(<CommandPalette matches={matchSlash('/m')} />).lastFrame()).toContain('/model');
     expect(render(<CommandPalette matches={[]} />).lastFrame()).toBe('');
   });
+
+  it('marks the selected row with a pointer (INT-1959)', () => {
+    const f = render(<CommandPalette matches={matchSlash('/')} selectedIndex={1} />).lastFrame()!;
+    expect(f).toContain('❯');
+  });
 });
 
 describe('ChatInput', () => {
@@ -58,5 +63,30 @@ describe('ChatInput', () => {
     stdin.write('\r'); // Enter
     await tick();
     expect(onSubmit).toHaveBeenCalledWith('hi');
+  });
+
+  it('routes nav/select keys to the palette when open, not submit (INT-1959)', async () => {
+    const onSubmit = vi.fn();
+    const onPaletteMove = vi.fn();
+    const onPaletteSelect = vi.fn();
+    const { stdin } = render(
+      <ChatInput
+        value="/m"
+        active
+        busy={false}
+        onChange={() => {}}
+        onSubmit={onSubmit}
+        paletteOpen
+        onPaletteMove={onPaletteMove}
+        onPaletteSelect={onPaletteSelect}
+      />,
+    );
+    stdin.write('[B'); // down arrow
+    await tick();
+    expect(onPaletteMove).toHaveBeenCalledWith(1);
+    stdin.write('\r'); // Enter selects, does not submit
+    await tick();
+    expect(onPaletteSelect).toHaveBeenCalled();
+    expect(onSubmit).not.toHaveBeenCalled();
   });
 });

@@ -13,11 +13,33 @@ export interface ChatInputProps {
   busy?: boolean;
   onChange: (value: string) => void;
   onSubmit: (value: string) => void;
+  /** Command palette is open — ↑/↓ navigate, Enter/Tab select instead of submit. (INT-1959) */
+  paletteOpen?: boolean;
+  onPaletteMove?: (delta: number) => void;
+  onPaletteSelect?: () => void;
+  onPaletteClose?: () => void;
 }
 
-export function ChatInput({ value, active, busy, onChange, onSubmit }: ChatInputProps) {
+export function ChatInput({
+  value,
+  active,
+  busy,
+  onChange,
+  onSubmit,
+  paletteOpen,
+  onPaletteMove,
+  onPaletteSelect,
+  onPaletteClose,
+}: ChatInputProps) {
   useInput(
     (input, key) => {
+      // When the palette is open it claims navigation + selection keys (INT-1959).
+      if (paletteOpen) {
+        if (key.upArrow) return onPaletteMove?.(-1);
+        if (key.downArrow) return onPaletteMove?.(1);
+        if (key.tab || key.return) return onPaletteSelect?.();
+        if (key.escape) return onPaletteClose?.();
+      }
       if (key.return) {
         onSubmit(value);
         return;

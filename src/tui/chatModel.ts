@@ -95,6 +95,12 @@ export function normalizeConfirm(input: string): 'yes' | 'no' | 'edit' {
   return 'no';
 }
 
+/** Wrap-around move of the palette selection index. Returns 0 for an empty list. (INT-1959) */
+export function movePaletteSelection(current: number, delta: number, count: number): number {
+  if (count <= 0) return 0;
+  return ((current + delta) % count + count) % count;
+}
+
 /** Slash commands whose name prefix-matches the current input (palette). */
 export function matchSlash(input: string): SlashCommand[] {
   if (!input.startsWith('/') || input.includes(' ')) return [];

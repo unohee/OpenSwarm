@@ -13,6 +13,7 @@ import {
   initialChatState,
   parseInput,
   matchSlash,
+  movePaletteSelection,
   normalizeConfirm,
   isActivityNoise,
   SLASH_COMMANDS,
@@ -37,6 +38,7 @@ export interface ChatPanelProps {
 export function ChatPanel({ active, provider: providerProp, model: modelProp, projectPath }: ChatPanelProps) {
   const [state, dispatch] = useReducer(chatReducer, initialChatState);
   const [input, setInput] = useState('');
+  const [paletteIndex, setPaletteIndex] = useState(0);
   const [busy, setBusy] = useState(false);
   const [activity, setActivity] = useState<string[]>([]);
   // When set, the next submitted line is routed here (a /plan confirm or edit)
@@ -181,11 +183,41 @@ export function ChatPanel({ active, provider: providerProp, model: modelProp, pr
   // While a /plan confirm is pending, keep the field active even though busy.
   const inputActive = active && (!busy || pending !== null);
 
+  // Interactive command palette (INT-1959): ↑/↓ select, Enter/Tab complete.
+  const matches = matchSlash(input);
+  const paletteOpen = inputActive && pending === null && matches.length > 0;
+  const handleChange = useCallback((v: string) => {
+    setInput(v);
+    setPaletteIndex(0);
+  }, []);
+  const onPaletteSelect = useCallback(() => {
+    const cmd = matches[paletteIndex];
+    if (!cmd) return;
+    if (cmd.args) {
+      // command takes args → complete to "name " so the user can type them
+      setInput(`${cmd.name} `);
+      setPaletteIndex(0);
+    } else {
+      setInput('');
+      runCommand(cmd.name, '');
+    }
+  }, [matches, paletteIndex, runCommand]);
+
   return (
     <Box flexDirection="column">
       <ChatLog history={state.history} streaming={state.streaming} activity={activity} busy={busy && pending === null} />
-      <ChatInput value={input} active={inputActive} busy={busy && pending === null} onChange={setInput} onSubmit={submit} />
-      <CommandPalette matches={matchSlash(input)} />
+      <ChatInput
+        value={input}
+        active={inputActive}
+        busy={busy && pending === null}
+        onChange={handleChange}
+        onSubmit={submit}
+        paletteOpen={paletteOpen}
+        onPaletteMove={(delta) => setPaletteIndex((i) => movePaletteSelection(i, delta, matches.length))}
+        onPaletteSelect={onPaletteSelect}
+        onPaletteClose={() => setInput('')}
+      />
+      <CommandPalette matches={matches} selectedIndex={paletteIndex} />
     </Box>
   );
 }
