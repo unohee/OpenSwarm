@@ -34,6 +34,8 @@ export interface AutonomousConfig {
   plannerTimeoutMs?: number;
   decomposition?: import('../core/types.js').DecompositionConfig;
   worktreeMode?: boolean;
+  /** Allow concurrent tasks on the same repo (requires worktreeMode). Default true. (INT-1975) */
+  allowSameProjectConcurrent?: boolean;
   guards?: Partial<import('../core/types.js').PipelineGuardsConfig>;
   /** Max objective self-repair attempts (lint/bs/test) before giving up (default: 3) */
   maxReflections?: number;

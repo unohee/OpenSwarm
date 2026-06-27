@@ -56,10 +56,23 @@ export class TaskScheduler extends EventEmitter {
 
   constructor(config: SchedulerConfig) {
     super();
-    this.config = {
+    const merged: SchedulerConfig = {
       allowSameProjectConcurrent: false,
       ...config,
     };
+    // Same-project parallelism REQUIRES per-task worktree isolation. Without it,
+    // two concurrent tasks would mutate one shared working tree and corrupt each
+    // other. Guard at the one place that holds both flags: force-disable + warn.
+    // (INT-1975)
+    if (merged.allowSameProjectConcurrent && !merged.worktreeMode) {
+      console.warn(
+        '[Scheduler] allowSameProjectConcurrent ignored: requires worktreeMode ' +
+          '(a shared working tree would be corrupted by concurrent tasks). ' +
+          'Set worktreeMode:true to enable same-project parallelism.'
+      );
+      merged.allowSameProjectConcurrent = false;
+    }
+    this.config = merged;
   }
 
   // ============================================

@@ -248,6 +248,8 @@ const AutonomousConfigSchema = z.object({
   decomposition: DecompositionConfigSchema,
   /** Git worktree mode: each task runs in isolated worktree */
   worktreeMode: z.boolean().default(false),
+  /** Allow concurrent tasks on the same repo (requires worktreeMode). (INT-1975) */
+  allowSameProjectConcurrent: z.boolean().default(true),
   /** Dynamic job profiles for model selection */
   jobProfiles: z.array(JobProfileSchema).optional(),
   /** Pipeline quality guards (bad-edit lint gate, BS detector, etc.) */
@@ -533,6 +535,7 @@ function transformConfig(raw: RawConfig): SwarmConfig {
         plannerTimeoutMs: raw.autonomous.decomposition.plannerTimeoutMs,
       } : undefined,
       worktreeMode: raw.autonomous.worktreeMode,
+      allowSameProjectConcurrent: raw.autonomous.allowSameProjectConcurrent,
       guards: raw.autonomous.guards,
       maxReflections: raw.autonomous.maxReflections,
       dailyTaskCap: raw.autonomous.dailyTaskCap,

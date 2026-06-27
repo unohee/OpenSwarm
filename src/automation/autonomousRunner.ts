@@ -168,9 +168,11 @@ export class AutonomousRunner {
     });
 
     // Initialize TaskScheduler
+    // Same-repo parallelism is opt-in via config (default true) but the scheduler
+    // force-disables it unless worktreeMode is on — see TaskScheduler guard. (INT-1975)
     this.scheduler = initScheduler({
       maxConcurrent: config.maxConcurrentTasks ?? 1,
-      allowSameProjectConcurrent: false,
+      allowSameProjectConcurrent: config.allowSameProjectConcurrent ?? true,
       worktreeMode: config.worktreeMode ?? false,
     });
 

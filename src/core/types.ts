@@ -460,6 +460,13 @@ export type AutonomousStartupConfig = {
   decomposition?: DecompositionConfig;
   /** Git worktree mode: work in independent worktree per issue and auto-create PR */
   worktreeMode?: boolean;
+  /**
+   * Allow concurrent tasks on the SAME repo. Requires worktreeMode (per-task
+   * filesystem isolation); ignored otherwise to avoid corrupting a shared tree.
+   * Non-conflicting issues are still gated by KG file-conflict detection and the
+   * blockedBy dependency graph. Default: true. (INT-1975)
+   */
+  allowSameProjectConcurrent?: boolean;
   /** Pipeline guards configuration */
   guards?: Partial<PipelineGuardsConfig>;
   /**
