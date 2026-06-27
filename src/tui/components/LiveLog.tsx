@@ -1,6 +1,7 @@
-// LiveLog — recent daemon log lines (EPIC INT-1813 S5). Presentational; parity
-// with the dashboard's renderLog.
+// LiveLog — recent daemon log lines (EPIC INT-1813 S5). Each line is syntax-
+// highlighted via LogLine (stage/issue/worktree/code/level colors). (INT-1974)
 import { Box, Text } from 'ink';
+import { LogLine } from './LogLine.js';
 
 export interface LiveLogProps {
   logs: string[];
@@ -15,9 +16,7 @@ export function LiveLog({ logs, max = 12 }: LiveLogProps) {
       {shown.length === 0 ? (
         <Text dimColor>(no log output yet)</Text>
       ) : (
-        shown.map((line, i) => (
-          <Text key={i} dimColor>{line}</Text>
-        ))
+        shown.map((line, i) => <LogLine key={i} line={line} />)
       )}
     </Box>
   );
