@@ -26,6 +26,11 @@ describe('parseLogLine (INT-1974)', () => {
     expect(find(segs, 'WAVE - Rust synth')).toMatchObject({ color: 'green' });
   });
 
+  it('handles issue-prefixed variants like "issue: kt-123"', () => {
+    const segs = parseLogLine('[worker] [de-artifact | issue: kt-123 | worktree/0cc4e232] body');
+    expect(find(segs, 'issue: kt-123')).toMatchObject({ color: 'yellow', bold: true });
+  });
+
   it('colors error/halt bodies red and success bodies green', () => {
     const err = parseLogLine('[worker] [p | INT-1 | worktree/a] {"success": false, "haltReason": "x"}');
     expect(err.some((s) => s.color === 'red')).toBe(true);
@@ -36,6 +41,12 @@ describe('parseLogLine (INT-1974)', () => {
   it('highlights inline `code` spans in cyan within the body', () => {
     const segs = parseLogLine('[worker] [p | INT-1 | worktree/a] edit `ab-player.js` now');
     expect(find(segs, '`ab-player.js`')).toMatchObject({ color: 'cyan' });
+  });
+
+  it('highlights multiple inline `code` spans', () => {
+    const segs = parseLogLine('[worker] [p | INT-1 | worktree/a] open `src/index.ts` and `src/main.ts`');
+    const codes = segs.filter((s) => s.color === 'cyan').map((s) => s.text);
+    expect(codes).toEqual(['`src/index.ts`', '`src/main.ts`']);
   });
 
   it('falls back gracefully for a plain line', () => {

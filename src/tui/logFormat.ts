@@ -25,14 +25,41 @@ const STAGE_COLORS: Record<string, string> = {
   documenter: 'green',
   auditor: 'red',
   'skill-documenter': 'green',
+  decompose: 'blue',
+  draft: 'cyan',
+  ci: 'red',
+  plan: 'blue',
+  execute: 'magenta',
+  prepare: 'blue',
+  provider: 'yellow',
+  worktree: 'blue',
+  heartbeat: 'gray',
+  quota: 'yellow',
+  rate_limit: 'red',
+  turbo: 'green',
+  pr: 'green',
 };
 
-const ISSUE_RE = /^[A-Z]{2,}-\d+$/;
+const ISSUE_RE = /^[A-Za-z]{2,}-\d+$/;
+
+function parseIssuePart(part: string): {text: string; isIssue: boolean} {
+  const trimmed = part.trim();
+  if (trimmed.toLowerCase().startsWith('issue:')) {
+    return {
+      text: trimmed,
+      isIssue: ISSUE_RE.test(trimmed.replace(/^issue:\s*/i, '').trim()),
+    };
+  }
+  return {
+    text: trimmed,
+    isIssue: ISSUE_RE.test(trimmed),
+  };
+}
 
 /** Level color for the message body. */
 function bodyColor(body: string): string | undefined {
   const l = body.toLowerCase();
-  if (/(\berror\b|\bfail|✖|✗|"success":\s*false|halt)/.test(l)) return 'red';
+  if (/(\berror\b|\bfail|failed|✖|✗|"success":\s*false|halt)/.test(l)) return 'red';
   if (/(✓|completed|succeed|success|done|approved|passed)/.test(l)) return 'green';
   return undefined;
 }
@@ -75,9 +102,14 @@ export function parseLogLine(line: string): LogSegment[] {
     const parts = ctxM[1].split('|').map((p) => p.trim());
     parts.forEach((p, i) => {
       if (i > 0) segs.push({ text: ' | ', dim: true });
-      if (ISSUE_RE.test(p)) segs.push({ text: p, color: 'yellow', bold: true });
-      else if (p.startsWith('worktree/')) segs.push({ text: p, dim: true });
-      else segs.push({ text: p, color: 'green' });
+      const {text: issueOrPart, isIssue} = parseIssuePart(p);
+      if (isIssue) {
+        segs.push({ text: issueOrPart, color: 'yellow', bold: true });
+      } else if (p.startsWith('worktree/')) {
+        segs.push({ text: p, dim: true });
+      } else {
+        segs.push({ text: p, color: 'green' });
+      }
     });
     segs.push({ text: ']', dim: true });
     segs.push({ text: ' ' });

@@ -23,4 +23,21 @@ describe('LiveLog (INT-1974)', () => {
     expect(f).toContain('line 19');
     expect(f).not.toContain('line 16');
   });
+
+  it('renders ANSI styled output for highlighted tokens', () => {
+    const prev = process.env.FORCE_COLOR;
+    process.env.FORCE_COLOR = '1';
+    try {
+      const f = render(
+        <LiveLog logs={['[worker] [de-artifact | INT-1918 | worktree/0cc4e232] task completed with `src/index.ts`']}/>
+      ).lastFrame()!;
+      expect(f).toMatch(/\x1b\[[0-9;]*m/);
+    } finally {
+      if (prev === undefined) {
+        delete process.env.FORCE_COLOR;
+      } else {
+        process.env.FORCE_COLOR = prev;
+      }
+    }
+  });
 });
