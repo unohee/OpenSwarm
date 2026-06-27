@@ -1,5 +1,21 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render } from 'ink-testing-library';
+
+const goalReleaseQueue: Array<() => void> = [];
+
+vi.mock('../support/goalCommand.js', async () => {
+  const actual = await vi.importActual<typeof import('../support/goalCommand.js')>('../support/goalCommand.js');
+  return {
+    ...actual,
+    runGoalCommand: vi.fn(async () => {
+      await new Promise<void>((resolve) => {
+        goalReleaseQueue.push(resolve);
+      });
+      return 'simple';
+    }),
+  };
+});
+
 import { App } from './App.js';
 
 // Input handling is async (ink processes stdin on the next ticks).
@@ -46,5 +62,31 @@ describe('Ink shell (EPIC INT-1813 S3/S4/S5)', () => {
   it('honors an initialTab', () => {
     const { lastFrame } = render(<App initialTab={6} />); // Logs
     expect(lastFrame()).toContain('stream logs');
+  });
+
+  it('keeps /goal execution state alive while switching away from Chat tab', async () => {
+    const { stdin, lastFrame } = render(<App version="1.0.0" />);
+    stdin.write('/goal keep the agent running');
+    stdin.write('\r');
+    await tick();
+    expect(lastFrame()).toContain('working… (Esc to leave)');
+    expect(lastFrame()).toContain('/goal keep the agent running');
+
+    // Move to Pipeline; Chat is still mounted but hidden.
+    stdin.write('\t');
+    await tick();
+    expect(lastFrame()).toContain('daemon port unknown');
+    expect(lastFrame()).not.toContain('type a message…   / for commands');
+
+    // Return to Chat and confirm goal state is preserved.
+    stdin.write('1');
+    await tick();
+    expect(lastFrame()).toContain('working… (Esc to leave)');
+    expect(lastFrame()).toContain('/goal keep the agent running');
+
+    const release = goalReleaseQueue.shift();
+    expect(typeof release).toBe('function');
+    release?.();
+    await tick();
   });
 });

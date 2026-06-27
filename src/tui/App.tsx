@@ -65,9 +65,10 @@ export function App({ version, provider, model, port, cwd, branch, initialTab = 
       <ContextBar version={version} provider={provider} model={model} cwd={cwd} branch={branch} />
       <TabBar active={active} />
       <Box flexDirection="column" paddingY={1} minHeight={Math.max(1, rows - 4)}>
-        {activeTab.id === 'chat' ? (
+        <Box display={chatActive ? 'flex' : 'none'}>
           <ChatPanel active={chatActive} provider={provider} model={model} />
-        ) : activeTab.id === 'pipeline' ? (
+        </Box>
+        {activeTab.id === 'chat' ? null : activeTab.id === 'pipeline' ? (
           <PipelinePanel port={port} />
         ) : activeTab.id === 'logs' ? (
           <LogsPanel port={port} />
