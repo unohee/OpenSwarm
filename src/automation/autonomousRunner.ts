@@ -1358,6 +1358,14 @@ export class AutonomousRunner {
 
   enableProject(projectPath: string): void {
     this.enabledProjects.add(projectPath);
+    // Enabling a repo (via `openswarm add` / the dashboard) must also ALLOW it:
+    // resolveProjectPath only reads a repo's openswarm.json for paths in
+    // allowedProjects, so an enabled-but-not-allowed repo never resolves
+    // ("No repo mapped"). Keep config + DecisionEngine in sync. (INT-1970)
+    const allowed = this.config.allowedProjects ?? [];
+    if (!allowed.includes(projectPath)) {
+      this.updateAllowedProjects([...allowed, projectPath]);
+    }
     console.log(`[AutonomousRunner] Project enabled: ${projectPath}`);
   }
 

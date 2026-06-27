@@ -4,8 +4,10 @@
 //
 // Manage the work-repo registry the daemon reads at startup
 // (~/.claude/openswarm-repos.json — the same file the web dashboard writes).
-// `setWebRunner` (src/support/web.ts) merges `enabled` into both the runner's
-// enabled set AND its allowedProjects, so a repo added here is actually worked.
+// `setWebRunner` (src/support/web.ts) calls runner.enableProject() for each
+// enabled repo, which adds it to BOTH the enabled set AND allowedProjects
+// (INT-1973) — the latter is required so resolveProjectPath reads the repo's
+// openswarm.json mapping. A repo added here is therefore actually worked.
 //
 // `add` also offers a Linear team/project picker (shared with `openswarm init`
 // via ./linearMapping) and writes the repo↔Linear mapping into the repo's
