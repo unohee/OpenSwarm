@@ -60,11 +60,17 @@ vi.mock('../support/web.js', () => ({
 vi.mock('../automation/autonomousRunner.js', () => ({
   setTaskSource: vi.fn(),
   setNotifier: vi.fn(),
-  startAutonomous: vi.fn(async () => ({})),
+  startAutonomous: vi.fn(async () => ({
+    switchProvider: vi.fn(),
+  })),
 }));
 
 vi.mock('../adapters/index.js', () => ({
   setDefaultAdapter: vi.fn(),
+}));
+
+vi.mock('./providerOverride.js', () => ({
+  readProviderOverride: vi.fn(),
 }));
 
 vi.mock('../automation/prProcessor.js', () => {
@@ -170,6 +176,41 @@ describe('service', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it('reapplies a persisted provider override on boot when it differs from config', async () => {
+    const { readProviderOverride } = await import('./providerOverride.js');
+    const { setDefaultAdapter } = await import('../adapters/index.js');
+    const { startAutonomous } = await import('../automation/autonomousRunner.js');
+
+    vi.mocked(readProviderOverride).mockReturnValue('gpt');
+
+    const config = {
+      ...mockConfig,
+      adapter: 'claude',
+      autonomous: {
+        ...mockConfig.autonomous,
+      },
+    } as SwarmConfig;
+
+    await startService(config);
+
+    expect(setDefaultAdapter).toHaveBeenCalledWith('gpt');
+    expect(vi.mocked(startAutonomous)).toHaveBeenCalled();
+    const runner = await vi.mocked(startAutonomous).mock.results[0].value;
+    expect(runner.switchProvider).toHaveBeenCalledWith('gpt');
+  });
+
+  it('does not reapply provider override when it matches the configured adapter', async () => {
+    const { readProviderOverride } = await import('./providerOverride.js');
+    const { setDefaultAdapter } = await import('../adapters/index.js');
+
+    vi.mocked(readProviderOverride).mockReturnValue('claude');
+
+    await startService(mockConfig);
+
+    expect(setDefaultAdapter).toHaveBeenCalledWith('claude');
+    expect(setDefaultAdapter).toHaveBeenCalledTimes(1);
   });
 
   // ============================================
