@@ -10,6 +10,10 @@ import {
 } from './service.js';
 import { setDefaultAdapter } from '../adapters/index.js';
 
+const mockRunnerInstance = {
+  switchProvider: vi.fn(),
+};
+
 // Mock external dependencies
 // Mock auth so service.test never reads the real ~/.openswarm/auth-profiles.json
 // (a present linear:default OAuth profile would route Linear init down the OAuth
@@ -60,11 +64,15 @@ vi.mock('../support/web.js', () => ({
 vi.mock('../automation/autonomousRunner.js', () => ({
   setTaskSource: vi.fn(),
   setNotifier: vi.fn(),
-  startAutonomous: vi.fn(async () => ({})),
+  startAutonomous: vi.fn(async () => mockRunnerInstance),
 }));
 
 vi.mock('../adapters/index.js', () => ({
   setDefaultAdapter: vi.fn(),
+}));
+
+vi.mock('./providerOverride.js', () => ({
+  readProviderOverride: vi.fn(),
 }));
 
 vi.mock('../automation/prProcessor.js', () => {
@@ -198,6 +206,26 @@ describe('service', () => {
         mockConfig.discordToken,
         mockConfig.discordChannelId
       );
+    });
+
+    it('should reapply persisted provider override when it differs from config adapter', async () => {
+      vi.mocked(readProviderOverride).mockReturnValue('codex');
+
+      await startService(mockConfig);
+
+      expect(setDefaultAdapter).toHaveBeenNthCalledWith(1, 'claude');
+      expect(setDefaultAdapter).toHaveBeenNthCalledWith(2, 'codex');
+      expect(mockRunnerInstance.switchProvider).toHaveBeenCalledWith('codex');
+    });
+
+    it('should not reapply persisted provider override when it matches config adapter', async () => {
+      vi.mocked(readProviderOverride).mockReturnValue('claude');
+
+      await startService(mockConfig);
+
+      expect(setDefaultAdapter).toHaveBeenCalledTimes(1);
+      expect(setDefaultAdapter).toHaveBeenCalledWith('claude');
+      expect(mockRunnerInstance.switchProvider).not.toHaveBeenCalled();
     });
 
     it('should stop service without errors', async () => {

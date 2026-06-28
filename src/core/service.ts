@@ -242,7 +242,8 @@ export async function startService(config: SwarmConfig): Promise<void> {
     // restart silently reverts to config.yaml's adapter. Reusing switchProvider keeps the role +
     // jobProfile remapping identical to a live dashboard toggle.
     const providerOverride = readProviderOverride();
-    if (providerOverride && providerOverride !== (config.adapter ?? 'codex')) {
+    const currentAdapter = config.adapter ?? 'codex';
+    if (providerOverride && providerOverride !== currentAdapter) {
       setDefaultAdapter(providerOverride);
       runnerInstance.switchProvider(providerOverride);
       console.log(`[Service] Restored persisted provider: ${providerOverride}`);
