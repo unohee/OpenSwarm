@@ -50,7 +50,6 @@ import { STUCK_LABEL } from '../linear/index.js';
 import { refreshGraph, toProjectSlug } from '../knowledge/index.js';
 import { checkAllMonitors, getActiveMonitors } from './longRunningMonitor.js';
 import { detectFileConflicts } from '../orchestration/conflictDetector.js';
-import { checkQuotaAllowance } from '../support/quotaTracker.js';
 import type { AutonomousConfig, RunnerState } from './runnerTypes.js';
 import type { AdapterName } from '../adapters/types.js';
 
@@ -715,16 +714,10 @@ export class AutonomousRunner {
         return;
       }
 
-      // 1.5 Quota gate — skip heartbeat if Claude Max quota is too high
-      const quotaCheck = await checkQuotaAllowance(80);
-      if (!quotaCheck.allowed) {
-        console.log(`[AutonomousRunner] Quota gate: SKIP — ${quotaCheck.reason}`);
-        broadcastEvent({ type: 'log', data: { taskId: 'system', stage: 'quota', line: `⏸ ${quotaCheck.reason}` } });
-        return;
-      }
-      if (quotaCheck.utilization !== undefined && quotaCheck.utilization > 60) {
-        console.log(`[AutonomousRunner] Quota warning: ${quotaCheck.utilization.toFixed(0)}% utilization`);
-      }
+      // 1.5 Quota gate (removed) — was a Claude Max quota check (api.anthropic.com
+      // /oauth/usage). OpenSwarm runs codex-responses now, not claude -p, so a Claude
+      // quota gate is irrelevant; it only spammed 401s and could wrongly skip codex
+      // work. codex-responses self-protects via RateLimitError (scheduler pause).
 
       // 1.6 Pace gate (removed)
       // The 5h rolling window cap (globalCap = projects × dailyTaskCap) and

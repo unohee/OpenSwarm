@@ -22,7 +22,6 @@ import type { LongRunningMonitorConfig } from '../core/types.js';
 import { getAllProcesses, killProcess, startHealthChecker } from '../adapters/processRegistry.js';
 import { setDefaultAdapter, isKnownAdapter, listAdapterNames } from '../adapters/index.js';
 import * as memory from '../memory/index.js';
-import { fetchQuota } from './quotaTracker.js';
 import { PairPipeline, type PipelineResult } from '../agents/pairPipeline.js';
 import type { TaskItem } from '../orchestration/decisionEngine.js';
 import type { PipelineStage, RoleConfig } from '../core/types.js';
@@ -1074,12 +1073,6 @@ export async function startWebServer(port: number = 3847): Promise<void> {
           res.writeHead(500, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: safeErrorMessage(e) }));
         }
-
-      // ---- Claude Code Quota ----
-      } else if (url === '/api/quota' && req.method === 'GET') {
-        const quota = await fetchQuota();
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(quota ?? { error: 'unavailable' }));
 
       // ---- Discord history (legacy) ----
       } else if (url === '/api/history') {
