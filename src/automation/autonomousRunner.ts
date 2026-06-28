@@ -44,6 +44,7 @@ import { reportToDiscord, fetchLinearTasks, getTaskSource } from './runnerExecut
 import { t } from '../locale/index.js';
 import { broadcastEvent, type SwarmStats } from '../core/eventHub.js';
 import { writeProviderOverride } from '../core/providerOverride.js';
+import { getTaskState } from '../taskState/store.js';
 import { pruneWorktrees } from '../support/worktreeManager.js';
 import { loadRepoMetadata } from '../support/repoMetadata.js';
 import { STUCK_LABEL } from '../linear/index.js';
@@ -461,6 +462,17 @@ export class AutonomousRunner {
 
       if (this.completedTaskIds.has(id)) return false;
       if ((this.failedTaskCounts.get(id) ?? 0) >= AutonomousRunner.MAX_RETRY_COUNT) return false;
+
+      // External-claim guard (INT-1979 dup): an issue set to 'In Progress' that THIS
+      // daemon never claimed is owned by a human or another agent — picking it up
+      // would re-decompose work someone is already doing (that spawned duplicate
+      // INT-1980 sub-issues + a redundant PR). markTaskInProgress writes
+      // execution.status='in_progress' when WE claim, so our own in-flight work
+      // (incl. resumption after a restart) still passes; a bare Linear 'In Progress'
+      // with no local claim record is skipped.
+      if (task.linearState === 'In Progress' && getTaskState(id)?.execution?.status !== 'in_progress') {
+        return false;
+      }
 
       // Check if task is in exponential backoff period
       if (!canRetryNow(id, this.failedTaskRetryTimes)) {
