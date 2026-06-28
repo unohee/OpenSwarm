@@ -43,13 +43,13 @@ import * as execution from './runnerExecution.js';
 import { reportToDiscord, fetchLinearTasks, getTaskSource } from './runnerExecution.js';
 import { t } from '../locale/index.js';
 import { broadcastEvent, type SwarmStats } from '../core/eventHub.js';
+import { writeProviderOverride } from '../core/providerOverride.js';
 import { pruneWorktrees } from '../support/worktreeManager.js';
 import { loadRepoMetadata } from '../support/repoMetadata.js';
 import { STUCK_LABEL } from '../linear/index.js';
 import { refreshGraph, toProjectSlug } from '../knowledge/index.js';
 import { checkAllMonitors, getActiveMonitors } from './longRunningMonitor.js';
 import { detectFileConflicts } from '../orchestration/conflictDetector.js';
-import { checkQuotaAllowance } from '../support/quotaTracker.js';
 import type { AutonomousConfig, RunnerState } from './runnerTypes.js';
 import type { AdapterName } from '../adapters/types.js';
 
@@ -714,16 +714,10 @@ export class AutonomousRunner {
         return;
       }
 
-      // 1.5 Quota gate — skip heartbeat if Claude Max quota is too high
-      const quotaCheck = await checkQuotaAllowance(80);
-      if (!quotaCheck.allowed) {
-        console.log(`[AutonomousRunner] Quota gate: SKIP — ${quotaCheck.reason}`);
-        broadcastEvent({ type: 'log', data: { taskId: 'system', stage: 'quota', line: `⏸ ${quotaCheck.reason}` } });
-        return;
-      }
-      if (quotaCheck.utilization !== undefined && quotaCheck.utilization > 60) {
-        console.log(`[AutonomousRunner] Quota warning: ${quotaCheck.utilization.toFixed(0)}% utilization`);
-      }
+      // 1.5 Quota gate (removed) — was a Claude Max quota check (api.anthropic.com
+      // /oauth/usage). OpenSwarm runs codex-responses now, not claude -p, so a Claude
+      // quota gate is irrelevant; it only spammed 401s and could wrongly skip codex
+      // work. codex-responses self-protects via RateLimitError (scheduler pause).
 
       // 1.6 Pace gate (removed)
       // The 5h rolling window cap (globalCap = projects × dailyTaskCap) and
@@ -1323,6 +1317,24 @@ export class AutonomousRunner {
       this.config.reviewerModel = mapModelForProvider(this.config.reviewerModel, 'reviewer');
     }
 
+    // jobProfiles ALSO pin per-role models (config's light/heavy → e.g. qwen), and getModelForRole
+    // gives the profile model precedence over defaultRoles. Remapping only defaultRoles left every
+    // estimate-matched task on its old provider's model → "I switched to Codex but it still uses the
+    // old provider". Remap the profiles too: an incompatible id becomes undefined so the adapter
+    // falls back to its OWN default model.
+    if (this.config.jobProfiles) {
+      for (const profile of this.config.jobProfiles) {
+        if (!profile.roles) continue;
+        for (const role of Object.keys(profile.roles) as Array<keyof typeof profile.roles>) {
+          const mapped = mapModelForProvider(profile.roles[role], role);
+          if (mapped === undefined) delete profile.roles[role];
+          else profile.roles[role] = mapped;
+        }
+      }
+    }
+
+    // Persist the choice so a daemon restart keeps it (in-memory switch was lost every restart).
+    writeProviderOverride(adapter);
     console.log(`[AutonomousRunner] Provider switched: ${adapter}`);
   }
 

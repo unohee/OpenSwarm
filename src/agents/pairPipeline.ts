@@ -580,7 +580,11 @@ export class PairPipeline extends EventEmitter {
             projectPath: context.projectPath,
             previousFeedback: combinedFeedback,
             timeoutMs: this.config.roles?.worker?.timeoutMs ?? 0,
-            model: overrides?.model ?? this.config.roles?.worker?.model,
+            // getModelForRole gives the matched jobProfile's model precedence (config's
+            // light/heavy → gpt-5.5/5.4), falling back to roles.worker.model. Reading
+            // roles.worker.model directly here silently dropped the jobProfile model, so a
+            // codex worker fell through to the CLI's config.toml default (Codex-Spark). (INT-1599)
+            model: overrides?.model ?? this.getModelForRole('worker', context.task),
             maxTurns: this.config.roles?.worker?.maxTurns,
             adapterName: this.config.roles?.worker?.adapter,
             reasoningEffort: this.getEffortForTask(context.task),
@@ -652,7 +656,8 @@ export class PairPipeline extends EventEmitter {
             workerResult: context.workerResult,
             projectPath: context.projectPath,
             timeoutMs: this.config.roles?.reviewer?.timeoutMs ?? 0,
-            model: this.config.roles?.reviewer?.model,
+            // jobProfile model precedence (see worker stage above). (INT-1599)
+            model: this.getModelForRole('reviewer', context.task),
             maxTurns: reviewerMaxTurns,
             adapterName: this.config.roles?.reviewer?.adapter,
             reasoningEffort: this.getEffortForTask(context.task),

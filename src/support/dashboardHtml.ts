@@ -648,10 +648,6 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     <div class="stat"><span class="stat-label">UPTIME</span><span class="stat-val" id="stat-uptime">-</span></div>
     <span class="stat-divider">│</span>
     <div class="stat"><span class="stat-label">COST</span><span class="stat-val cyan" id="stat-cost">$0.00</span></div>
-    <span class="stat-divider">│</span>
-    <div class="stat"><span class="stat-label">QUOTA 5h</span><span class="stat-val" id="stat-quota-5h">-</span></div>
-    <span class="stat-divider">│</span>
-    <div class="stat"><span class="stat-label">QUOTA 7d</span><span class="stat-val" id="stat-quota-7d">-</span></div>
   </div>
 
   <!-- TAB BAR (mobile only) -->
@@ -2278,28 +2274,6 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       } catch {}
     }
 
-    // ---- Quota tracker ----
-    async function fetchQuota() {
-      try {
-        var res = await fetch("/api/quota");
-        if (!res.ok) return;
-        var q = await res.json();
-        if (q.error) return;
-        var el5h = document.getElementById("stat-quota-5h");
-        var el7d = document.getElementById("stat-quota-7d");
-        if (q.five_hour && el5h) {
-          var u5 = Math.round(q.five_hour.utilization);
-          el5h.textContent = u5 + "%";
-          el5h.className = "stat-val " + (u5 >= 80 ? "red" : u5 >= 50 ? "amber" : "cyan");
-        }
-        if (q.seven_day && el7d) {
-          var u7 = Math.round(q.seven_day.utilization);
-          el7d.textContent = u7 + "%";
-          el7d.className = "stat-val " + (u7 >= 80 ? "red" : u7 >= 50 ? "amber" : "cyan");
-        }
-      } catch {}
-    }
-
     // 성능 최적화: 초기 로드 후 2단계 페칭 (렌더링 블로킹 방지)
     loadInitial().then(function() { connectSSE(true); });
 
@@ -2310,7 +2284,6 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     setInterval(fetchKnowledgeData, 60000);
     setInterval(fetchMonitors, 60000);
     setInterval(fetchProcesses, 30000);
-    setInterval(fetchQuota, 300000);
 
     // 2단계: 렌더링 안정화 후 비필수 데이터 로드 (3초 지연)
     setTimeout(function() {
@@ -2320,7 +2293,6 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       fetchKnowledgeData();
       fetchMonitors();
       fetchProcesses();
-      fetchQuota();
     }, 3000);
 
     // 렌더링 성능: 스테이지 업데이트 폴링 제거 (SSE 이벤트 활용)
