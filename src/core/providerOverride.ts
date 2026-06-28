@@ -13,14 +13,15 @@ const OVERRIDE_DIR = join(homedir(), '.config', 'openswarm');
 const OVERRIDE_PATH = join(OVERRIDE_DIR, 'provider-override.json');
 // `claude` is intentionally excluded: it is an opt-in fallback provider, not a primary the operator
 // should be able to pin via a persisted toggle (a stale claude pin with no credits hangs the loop).
-const VALID: readonly AdapterName[] = ['codex', 'codex-responses', 'gpt', 'local', 'lmstudio', 'openrouter'];
+const VALID: readonly Exclude<AdapterName, 'claude'>[] = ['codex', 'codex-responses', 'gpt', 'local', 'lmstudio', 'openrouter'];
+const VALID_SET = new Set<Exclude<AdapterName, 'claude'>>(VALID);
 
 /** The provider the user last selected via the dashboard, or undefined if never toggled. */
 export function readProviderOverride(): AdapterName | undefined {
   try {
     if (!existsSync(OVERRIDE_PATH)) return undefined;
     const { provider } = JSON.parse(readFileSync(OVERRIDE_PATH, 'utf8')) as { provider?: string };
-    return VALID.includes(provider as AdapterName) ? (provider as AdapterName) : undefined;
+    return VALID_SET.has(provider as Exclude<AdapterName, 'claude'>) ? (provider as Exclude<AdapterName, 'claude'>) : undefined;
   } catch {
     return undefined;
   }
@@ -29,6 +30,7 @@ export function readProviderOverride(): AdapterName | undefined {
 /** Record the user's provider choice so it survives a restart. Best-effort — never blocks the toggle. */
 export function writeProviderOverride(provider: AdapterName): void {
   try {
+    if (provider === 'claude') return;
     mkdirSync(OVERRIDE_DIR, { recursive: true });
     writeFileSync(OVERRIDE_PATH, `${JSON.stringify({ provider }, null, 2)}\n`, 'utf8');
   } catch {
