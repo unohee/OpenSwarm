@@ -43,6 +43,7 @@ import * as execution from './runnerExecution.js';
 import { reportToDiscord, fetchLinearTasks, getTaskSource } from './runnerExecution.js';
 import { t } from '../locale/index.js';
 import { broadcastEvent, type SwarmStats } from '../core/eventHub.js';
+import { writeProviderOverride } from '../core/providerOverride.js';
 import { pruneWorktrees } from '../support/worktreeManager.js';
 import { loadRepoMetadata } from '../support/repoMetadata.js';
 import { STUCK_LABEL } from '../linear/index.js';
@@ -1323,6 +1324,24 @@ export class AutonomousRunner {
       this.config.reviewerModel = mapModelForProvider(this.config.reviewerModel, 'reviewer');
     }
 
+    // jobProfiles ALSO pin per-role models (config's light/heavy → e.g. qwen), and getModelForRole
+    // gives the profile model precedence over defaultRoles. Remapping only defaultRoles left every
+    // estimate-matched task on its old provider's model → "I switched to Codex but it still uses the
+    // old provider". Remap the profiles too: an incompatible id becomes undefined so the adapter
+    // falls back to its OWN default model.
+    if (this.config.jobProfiles) {
+      for (const profile of this.config.jobProfiles) {
+        if (!profile.roles) continue;
+        for (const role of Object.keys(profile.roles) as Array<keyof typeof profile.roles>) {
+          const mapped = mapModelForProvider(profile.roles[role], role);
+          if (mapped === undefined) delete profile.roles[role];
+          else profile.roles[role] = mapped;
+        }
+      }
+    }
+
+    // Persist the choice so a daemon restart keeps it (in-memory switch was lost every restart).
+    writeProviderOverride(adapter);
     console.log(`[AutonomousRunner] Provider switched: ${adapter}`);
   }
 
