@@ -44,6 +44,7 @@ import {
   buildTaskStateSyncComment,
   completeParentIfChildrenDone,
   markTaskBlocked,
+  markTaskBacklog,
   markTaskDecomposed,
   markTaskDone,
   markTaskInProgress,
@@ -1062,6 +1063,27 @@ export async function syncFailureState(task: TaskItem, reason: string): Promise<
     await taskSource?.addComment(task.issueId, buildTaskStateSyncComment(state, 'Task blocked'));
   } catch (err) {
     console.warn(`[AutonomousRunner] Failed to sync blocked state for ${task.issueId}:`, err);
+  }
+}
+
+export async function syncCancellationState(task: TaskItem): Promise<void> {
+  if (!task.issueId) return;
+  const state = markTaskBacklog(task.issueId, {
+    issueIdentifier: task.issueIdentifier,
+    title: task.title,
+    linearState: 'Backlog',
+  });
+
+  try {
+    await taskSource?.updateState(task.issueId, 'Backlog');
+  } catch (err) {
+    console.warn(`[AutonomousRunner] Failed to move cancelled task ${task.issueId} to Backlog:`, err);
+  }
+
+  try {
+    await taskSource?.addComment(task.issueId, buildTaskStateSyncComment(state, 'Task cancelled'));
+  } catch (err) {
+    console.warn(`[AutonomousRunner] Failed to sync cancelled state for ${task.issueId}:`, err);
   }
 }
 

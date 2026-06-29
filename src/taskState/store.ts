@@ -224,6 +224,30 @@ export function markTaskInProgress(
   });
 }
 
+export function markTaskBacklog(
+  issueId: string,
+  patch: {
+    issueIdentifier?: string;
+    title?: string;
+    linearState?: string;
+  } = {},
+): OpenSwarmTaskState {
+  return upsertTaskState(issueId, {
+    issueIdentifier: patch.issueIdentifier,
+    title: patch.title,
+    linearState: patch.linearState ?? 'Backlog',
+    execution: {
+      status: 'backlog',
+      blockedReason: undefined,
+      retryCount: 0,
+    },
+    worktree: {
+      branchName: undefined,
+      worktreePath: undefined,
+    },
+  });
+}
+
 export function markTaskDone(
   issueId: string,
   patch: {

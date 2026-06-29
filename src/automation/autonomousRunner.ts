@@ -265,6 +265,14 @@ export class AutonomousRunner {
       this.scheduleNextHeartbeat();
     });
 
+    this.scheduler.on('cancelled', async ({ task, result }) => {
+      const taskCtx = this.formatTaskContext(task);
+      console.log(`[Scheduler] Task cancelled: ${taskCtx} ${task.title}`);
+      broadcastEvent({ type: 'task:completed', data: { taskId: task.id, success: false, duration: result.totalDuration } });
+      this.recordPipelineHistory(task, result);
+      await execution.syncCancellationState(task);
+    });
+
     this.scheduler.on('failed', async ({ task, result }) => {
       const taskCtx = this.formatTaskContext(task);
 
