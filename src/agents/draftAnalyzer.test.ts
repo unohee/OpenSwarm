@@ -58,29 +58,16 @@ describe('runDraftAnalysis fallback', () => {
     vi.restoreAllMocks();
   });
 
-  it('falls back to claude when codex quota error happens', async () => {
+  it('does NOT fall back to claude on a codex quota error (single adapter, best-effort)', async () => {
+    // INT-1979 follow-up: claude is no longer a draft fallback. A codex quota error
+    // must NOT switch providers (claude is opt-in / usually out-of-credits, which
+    // turned a transient blip into a hard `claude CLI failed code 1` + noisy alert).
+    // Draft is non-blocking, so the quota error just yields a best-effort draft.
     vi.spyOn(adapterModule, 'getDefaultAdapterName').mockReturnValue('codex');
-    vi.spyOn(adapterModule, 'getAdapter').mockImplementation((name) => {
-      if (name === 'codex') {
-        return makeAdapter('codex');
-      }
-      return makeAdapter('claude');
-    });
+    vi.spyOn(adapterModule, 'getAdapter').mockImplementation((name) => makeAdapter(name));
 
     vi.spyOn(adapterModule, 'spawnCli')
-      .mockRejectedValueOnce(new Error('quota exceeded'))
-      .mockResolvedValueOnce({
-        exitCode: 0,
-        stdout: JSON.stringify({
-          taskType: 'bugfix',
-          intentSummary: 'Handle billing edge case',
-          relevantFiles: ['src/payments.ts'],
-          suggestedApproach: 'Use retry queue and fallback',
-          completionCriteria: ['payments.ts retry path covered by a passing test'],
-        }),
-        stderr: '',
-        durationMs: 1,
-      } as CliRunResult);
+      .mockRejectedValueOnce(new Error('quota exceeded'));
 
     const result = await runDraftAnalysis({
       taskTitle: 'Fix edge',
@@ -88,13 +75,13 @@ describe('runDraftAnalysis fallback', () => {
       projectPath: '/tmp/project',
     });
 
-    expect(result.taskType).toBe('bugfix');
+    // codex is tried; claude is never invoked.
     expect(adapterModule.getAdapter).toHaveBeenCalledWith('codex');
-    expect(adapterModule.getAdapter).toHaveBeenCalledWith('claude');
-    // codex(quota) → claude(sufficient on first attempt): 2 calls, no gate retry.
-    expect(adapterModule.spawnCli).toHaveBeenCalledTimes(2);
-    expect(result.sufficient).toBe(true);
-    expect(result.completionCriteria.length).toBeGreaterThan(0);
+    expect(adapterModule.getAdapter).not.toHaveBeenCalledWith('claude');
+    // Single adapter attempt only — quota error breaks out to best-effort, no fallback.
+    expect(adapterModule.spawnCli).toHaveBeenCalledTimes(1);
+    // Pipeline continues with a best-effort (insufficient) draft.
+    expect(result.sufficient).toBe(false);
   });
 
   it('drafter hard gate: retries on the same adapter when the brief is insufficient', async () => {

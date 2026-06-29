@@ -345,14 +345,13 @@ function findJsonObject(text: string): string | null {
 }
 
 function getDraftFallbackAdapters(primary: AdapterName): AdapterName[] {
-  const fallbackMap: Partial<Record<AdapterName, AdapterName>> = {
-    codex: 'claude',
-    'codex-responses': 'claude',
-    claude: 'codex',
-  };
-
-  const fallback = fallbackMap[primary];
-  return fallback && fallback !== primary ? [primary, fallback] : [primary];
+  // No cross-provider fallback to claude. Draft is non-blocking (best-effort), and
+  // claude is an opt-in provider that's usually rate-limited / out-of-credits — so
+  // a transient codex quota blip would cascade into a hard `claude CLI failed code 1`
+  // + a noisy Discord alert for zero benefit. Single adapter only; a codex quota
+  // error just leaves the draft as best-effort (type=unknown) and the pipeline
+  // continues. (INT-1979 follow-up)
+  return [primary];
 }
 
 function isProviderQuotaError(message?: string): boolean {

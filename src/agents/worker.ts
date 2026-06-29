@@ -69,14 +69,12 @@ function buildWorkerPrompt(options: WorkerOptions): string {
 }
 
 function getWorkerFallbackAdapters(primary: AdapterName): AdapterName[] {
-  const fallbackMap: Partial<Record<AdapterName, AdapterName>> = {
-    codex: 'claude',
-    'codex-responses': 'claude',
-    claude: 'codex',
-  };
-
-  const fallback = fallbackMap[primary];
-  return fallback && fallback !== primary ? [primary, fallback] : [primary];
+  // No cross-provider fallback to claude: it's opt-in and usually rate-limited /
+  // out-of-credits, so switching to it on a codex quota error just turns a pause
+  // into a hard `claude CLI failed code 1`. A codex/codex-responses quota error
+  // now surfaces as RateLimitError → scheduler pause (INT-1906) instead of a
+  // silent provider switch. Single adapter only. (INT-1979 follow-up)
+  return [primary];
 }
 
 export function isProviderQuotaError(message?: string): boolean {
