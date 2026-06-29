@@ -145,3 +145,9 @@ prProcessor:
   schedule: "*/15 * * * *"    # Check every 15 minutes
   cooldownHours: 6            # Wait 6 hours after processing
   maxIterations: 3            # Max 3 Worker-Reviewer iterations
+
+# Anonymous usage telemetry (opt-out). Sends command name, version, and OS only —
+# never code, prompts, paths, or personal data. Disable here, or via
+# OPENSWARM_TELEMETRY=0 / DO_NOT_TRACK=1. CI environments are excluded automatically.
+telemetry:
+  enabled: true

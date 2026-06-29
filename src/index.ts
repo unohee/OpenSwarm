@@ -51,6 +51,11 @@ async function main(): Promise<void> {
   // Load configuration
   const config = loadConfig();
 
+  // Apply the telemetry opt-out from config for this daemon process (the detached
+  // daemon runs index.js directly, bypassing the CLI hook). (INT-1992)
+  const { initTelemetry } = await import('./telemetry/telemetry.js');
+  initTelemetry({ version: VERSION, enabled: config.telemetry?.enabled });
+
   // Validate configuration
   const validation = validateConfig(config);
 

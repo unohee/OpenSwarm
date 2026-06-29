@@ -340,6 +340,14 @@ const McpConfigSchema = z
   })
   .optional();
 
+// Anonymous usage telemetry (opt-out). Defaults to enabled; the daemon/CLI also
+// honor OPENSWARM_TELEMETRY=0 / DO_NOT_TRACK / CI env. (INT-1992)
+const TelemetryConfigSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+  })
+  .optional();
+
 const RawConfigSchema = z.object({
   adapter: AdapterNameSchema.default('codex'),
   language: z.enum(['en', 'ko']).default('en'),
@@ -354,6 +362,7 @@ const RawConfigSchema = z.object({
   ciWorker: CIWorkerConfigSchema,
   monitors: z.array(LongRunningMonitorConfigSchema).optional(),
   mcp: McpConfigSchema,
+  telemetry: TelemetryConfigSchema,
   agents: z.array(AgentSessionSchema).min(1, 'At least one agent is required'),
   defaultHeartbeatInterval: z.number().positive().default(DEFAULT_HEARTBEAT_INTERVAL),
 });
@@ -560,6 +569,7 @@ function transformConfig(raw: RawConfig): SwarmConfig {
     } : undefined,
     monitors: raw.monitors as LongRunningMonitorConfig[] | undefined,
     mcp: raw.mcp ? { servers: raw.mcp.servers as McpConfig['servers'] } : undefined,
+    telemetry: raw.telemetry ? { enabled: raw.telemetry.enabled } : undefined,
   };
 }
 
@@ -731,6 +741,12 @@ agents:
     projectPath: ~/dev/backend-api
     linearLabel: backend
     enabled: true
+
+# Anonymous usage telemetry (opt-out). Helps guide development with real usage
+# data: command name, version, OS — never code, prompts, paths, or personal data.
+# Disable here, or via OPENSWARM_TELEMETRY=0 / DO_NOT_TRACK=1. CI is auto-excluded.
+telemetry:
+  enabled: true
 
 # Default heartbeat interval (ms)
 defaultHeartbeatInterval: 1800000

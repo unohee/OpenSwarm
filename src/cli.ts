@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { runCli } from './runners/cliRunner.js';
 import { loadConfig, validateConfig, generateSampleConfig } from './core/config.js';
 import { loadEnvFile } from './core/envFile.js';
+import { initTelemetry, track } from './telemetry/telemetry.js';
 
 // Load .env so CLI commands (e.g. `auth login --provider linear` reading
 // LINEAR_OAUTH_CLIENT_ID) see the same env the daemon does. Idempotent; never
@@ -23,6 +24,21 @@ const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8
 const VERSION = pkg.version;
 
 const program = new Command();
+
+// Anonymous, opt-out usage telemetry (INT-1992). Honors OPENSWARM_TELEMETRY=0 /
+// DO_NOT_TRACK / CI. One event per command invocation (command name only — never
+// arguments). Fire-and-forget: not awaited, and track() never throws.
+initTelemetry({ version: VERSION });
+program.hook('preAction', (_thisCommand, actionCommand) => {
+  // Honor config telemetry.enabled when a config exists (best-effort — `run`/`init`
+  // may have none, in which case the env opt-out still applies).
+  try {
+    initTelemetry({ version: VERSION, enabled: loadConfig().telemetry?.enabled });
+  } catch {
+    /* no/invalid config — leave the opt-out default */
+  }
+  void track({ command: actionCommand.name() });
+});
 
 program
   .name('openswarm')

@@ -133,6 +133,8 @@ export type SwarmConfig = {
   linearTeamId: string;
   /** Agent session list */
   agents: AgentSession[];
+  /** Anonymous usage telemetry (opt-out). undefined = default on. (INT-1992) */
+  telemetry?: { enabled: boolean };
   /** Default heartbeat interval (ms) */
   defaultHeartbeatInterval: number;
   /** GitHub repo list (for CI monitoring) */

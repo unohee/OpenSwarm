@@ -423,10 +423,48 @@ src/
 | `~/.openswarm/registry.db` | Code entity registry (SQLite) |
 | `~/.openswarm/issues.db` | Local issue tracker (SQLite) |
 | `~/.claude/openswarm-*.json` | Pipeline history and task state |
+| `~/.config/openswarm/telemetry.json` | Anonymous install id + opt-out notice flag |
 | `config.yaml` | Main configuration |
 | `dist/` | Compiled output |
 
 ---
+
+
+## Privacy & Telemetry
+
+OpenSwarm collects **anonymous, opt-out** usage telemetry to understand how it's
+actually used (npm downloads and GitHub stars don't tell us). A single event is
+sent per command invocation.
+
+**What is sent** (and nothing else):
+
+| Field | Example | Why |
+|-------|---------|-----|
+| Random install id | `V1StGXR8_Z5j...` (nanoid) | De-duplicate installs — anonymous, local-only |
+| Command | `start`, `run`, `chat` | Which features are used |
+| Version | `0.9.3` | Version adoption |
+| OS / arch | `darwin` / `arm64` | Platform support priorities |
+| Node version | `22.3.0` | Runtime support |
+| Adapter family | `codex` | Which providers are popular |
+| Error flag | `0` / `1` | Failure rate (boolean only) |
+
+**Never sent:** source code, prompts, file paths, repo or issue names, Linear/Discord
+content, environment variables, API keys, or any personal data.
+
+**How to opt out** (any one):
+
+```bash
+export OPENSWARM_TELEMETRY=0      # or DO_NOT_TRACK=1
+```
+```yaml
+# config.yaml
+telemetry:
+  enabled: false
+```
+
+CI environments (`CI` / `GITHUB_ACTIONS`) are excluded automatically. The collector
+is a Cloudflare Worker writing to a private D1 table; telemetry never blocks or slows
+the CLI (fire-and-forget with a short timeout, and failures are silently ignored).
 
 
 ## Tech Stack

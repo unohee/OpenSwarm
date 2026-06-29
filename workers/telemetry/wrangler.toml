@@ -1,0 +1,20 @@
+# OpenSwarm telemetry collector (INT-1992)
+# Deploy:  cd workers/telemetry && wrangler deploy
+# Schema:  table openswarm_events already created in D1 intrect-telemetry.
+
+name = "intrect-openswarm-telemetry"
+main = "worker.ts"
+compatibility_date = "2026-06-01"
+workers_dev = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "intrect-telemetry"
+database_id = "f36e5371-9204-4a02-a0ea-2bf014dec031"
+
+# Public collection host (DNS + cert auto-provisioned by wrangler). The worker
+# ignores the path, so the client posts to telemetry.intrect.io/v1/openswarm —
+# matching DEFAULT_ENDPOINT in src/telemetry/telemetry.ts.
+[[routes]]
+pattern = "telemetry.intrect.io"
+custom_domain = true

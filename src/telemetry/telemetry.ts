@@ -1,0 +1,170 @@
+// ============================================
+// OpenSwarm - Anonymous usage telemetry (opt-out)
+// ============================================
+//
+// Why: npm download counts are bot/mirror noise and GitHub stars are a cumulative
+// vanity metric — neither tells us how OpenSwarm is actually used. This sends a
+// tiny anonymous event (command name, version, OS) so development can be guided by
+// real usage. (INT-1992)
+//
+// Privacy contract (enforced by the payload shape below + telemetry.test.ts):
+//   - NO code, prompts, file paths, repo names, issue content, env values, or PII.
+//   - A random install id (nanoid) is the only identifier; it is local and anonymous.
+//   - Opt out any time: OPENSWARM_TELEMETRY=0 / DO_NOT_TRACK=1 / config telemetry.enabled=false.
+//   - CI environments are excluded automatically (they are not real users).
+//   - Fire-and-forget: a telemetry failure must NEVER affect the CLI/daemon.
+
+import os from 'node:os';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { nanoid } from 'nanoid';
+
+const STATE_DIR = join(homedir(), '.config', 'openswarm');
+const TELEMETRY_FILE = join(STATE_DIR, 'telemetry.json');
+
+// Collection endpoint (Cloudflare Worker → D1 intrect-telemetry.openswarm_events).
+// Overridable via env so the worker route can move without a client release.
+const DEFAULT_ENDPOINT = 'https://telemetry.intrect.io/v1/openswarm';
+const SEND_TIMEOUT_MS = 2500;
+
+interface TelemetryState {
+  installId: string;
+  noticeShown?: boolean;
+}
+
+// Set once from the CLI/daemon entry point so the module need not resolve
+// package.json itself (its dist location is ambiguous).
+let version = 'unknown';
+// config telemetry.enabled=false hard-disables regardless of env.
+let configDisabled = false;
+
+/** Initialize from the entry point: inject version and the config opt-out flag. */
+export function initTelemetry(opts: { version: string; enabled?: boolean }): void {
+  version = opts.version;
+  // Only an explicit `false` disables; undefined leaves the opt-out default (on).
+  configDisabled = opts.enabled === false;
+}
+
+function readState(): TelemetryState | null {
+  try {
+    return JSON.parse(readFileSync(TELEMETRY_FILE, 'utf8')) as TelemetryState;
+  } catch {
+    return null;
+  }
+}
+
+function writeState(state: TelemetryState): void {
+  try {
+    mkdirSync(STATE_DIR, { recursive: true });
+    writeFileSync(TELEMETRY_FILE, JSON.stringify(state, null, 2));
+  } catch {
+    // A read-only home or race is non-fatal: telemetry just stays best-effort.
+  }
+}
+
+/** Truthy env opt-out signals (OpenSwarm-specific + the cross-tool DO_NOT_TRACK). */
+function envDisabled(): boolean {
+  const v = (process.env.OPENSWARM_TELEMETRY ?? '').trim().toLowerCase();
+  if (v === '0' || v === 'false' || v === 'off' || v === 'no') return true;
+  const dnt = (process.env.DO_NOT_TRACK ?? '').trim().toLowerCase();
+  if (dnt === '1' || dnt === 'true') return true;
+  // CI/automation are not real users — exclude so the signal stays clean.
+  if (process.env.CI || process.env.GITHUB_ACTIONS) return true;
+  return false;
+}
+
+export function isTelemetryEnabled(): boolean {
+  return !configDisabled && !envDisabled();
+}
+
+function getInstallId(): string {
+  const state = readState();
+  if (state?.installId) return state.installId;
+  const installId = nanoid();
+  writeState({ installId, noticeShown: state?.noticeShown });
+  return installId;
+}
+
+/**
+ * Print the one-time opt-out notice (to stderr, so it never pollutes piped stdout).
+ * Subsequent runs are silent. No-op when telemetry is disabled.
+ */
+export function maybeShowNotice(): void {
+  if (!isTelemetryEnabled()) return;
+  const state = readState();
+  if (state?.noticeShown) return;
+  process.stderr.write(
+    '\nOpenSwarm collects anonymous usage data (command, version, OS) to guide development.\n' +
+      'No code, prompts, paths, or personal data are sent. Opt out: OPENSWARM_TELEMETRY=0\n' +
+      'Details: https://github.com/unohee/OpenSwarm#privacy--telemetry\n\n',
+  );
+  writeState({ installId: state?.installId ?? nanoid(), noticeShown: true });
+}
+
+export interface TrackOptions {
+  /** Subcommand name (run/start/chat/...) — NOT its arguments. */
+  command?: string;
+  /** Adapter family (codex/claude/...) — NOT a model or key. */
+  adapter?: string;
+  /** Whether the run ended in an error (boolean only). */
+  isError?: boolean;
+  /** Event kind; defaults to 'invoke'. */
+  event?: string;
+}
+
+/** The exact wire payload — kept flat and asserted by tests so PII can't creep in. */
+export interface TelemetryPayload {
+  installId: string;
+  event: string;
+  version: string;
+  platform: string;
+  arch: string;
+  nodeVersion: string;
+  command?: string;
+  adapter?: string;
+  isError: 0 | 1;
+}
+
+/** Build the payload (pure — used directly by tests to assert the privacy contract). */
+export function buildPayload(opts: TrackOptions, installId: string): TelemetryPayload {
+  return {
+    installId,
+    event: opts.event ?? 'invoke',
+    version,
+    platform: os.platform(),
+    arch: os.arch(),
+    nodeVersion: process.versions.node,
+    command: opts.command,
+    adapter: opts.adapter,
+    isError: opts.isError ? 1 : 0,
+  };
+}
+
+/**
+ * Send one telemetry event. Fire-and-forget: resolves quietly on any failure and
+ * NEVER throws. Awaitable so short-lived CLI commands can flush before exit, but a
+ * timeout guarantees it won't hang the process.
+ */
+export async function track(opts: TrackOptions): Promise<void> {
+  if (!isTelemetryEnabled()) return;
+  try {
+    maybeShowNotice();
+    const payload = buildPayload(opts, getInstallId());
+    const endpoint = process.env.OPENSWARM_TELEMETRY_URL || DEFAULT_ENDPOINT;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);
+    try {
+      await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'User-Agent': `OpenSwarm/${version}` },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch {
+    // Telemetry is best-effort by contract — swallow everything.
+  }
+}
