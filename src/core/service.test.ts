@@ -9,6 +9,8 @@ import {
   getPRProcessor,
 } from './service.js';
 import { setDefaultAdapter } from '../adapters/index.js';
+import { readProviderOverride } from './providerOverride.js';
+import * as autonomousRunner from '../automation/autonomousRunner.js';
 
 // Mock external dependencies
 // Mock auth so service.test never reads the real ~/.openswarm/auth-profiles.json
@@ -65,6 +67,10 @@ vi.mock('../automation/autonomousRunner.js', () => ({
 
 vi.mock('../adapters/index.js', () => ({
   setDefaultAdapter: vi.fn(),
+}));
+
+vi.mock('./providerOverride.js', () => ({
+  readProviderOverride: vi.fn(),
 }));
 
 vi.mock('../automation/prProcessor.js', () => {
@@ -168,6 +174,21 @@ describe('service', () => {
     defaultHeartbeatInterval: 1800000,
   };
 
+  const mockAutonomousConfig: SwarmConfig = {
+    ...mockConfig,
+    autonomous: {
+      enabled: true,
+      pairMode: true,
+      schedule: '*/30 * * * *',
+      maxAttempts: 3,
+      allowedProjects: ['/tmp'],
+      models: {
+        worker: 'gpt-4.1',
+        reviewer: 'claude',
+      },
+    },
+  };
+
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -189,6 +210,7 @@ describe('service', () => {
       await startService(mockConfig);
 
       expect(setDefaultAdapter).toHaveBeenCalledWith('claude');
+      expect(readProviderOverride).toHaveBeenCalled();
       expect(initLocale).toHaveBeenCalled();
       expect(initLinear).toHaveBeenCalledWith(
         mockConfig.linearApiKey,
@@ -198,6 +220,60 @@ describe('service', () => {
         mockConfig.discordToken,
         mockConfig.discordChannelId
       );
+    });
+
+    it('should reapply a persisted provider override when it differs from config default', async () => {
+      const runner = {
+        provider: 'claude',
+        switchProvider: vi.fn((nextProvider: string) => {
+          runner.provider = nextProvider;
+        }),
+      };
+      vi.mocked(autonomousRunner.startAutonomous).mockResolvedValue(runner as any);
+      vi.mocked(readProviderOverride).mockReturnValue('codex');
+
+      await startService(mockAutonomousConfig);
+
+      expect(setDefaultAdapter).toHaveBeenCalledWith('codex');
+      expect(vi.mocked(readProviderOverride)).toHaveBeenCalled();
+      expect(autonomousRunner.startAutonomous).toHaveBeenCalled();
+      expect(runner.switchProvider).toHaveBeenCalledWith('codex');
+      expect(runner.provider).toBe('codex');
+    });
+
+    it('should no-op when persisted override matches current provider', async () => {
+      const runner = {
+        provider: 'claude',
+        switchProvider: vi.fn((nextProvider: string) => {
+          runner.provider = nextProvider;
+        }),
+      };
+      vi.mocked(autonomousRunner.startAutonomous).mockResolvedValue(runner as any);
+      vi.mocked(readProviderOverride).mockReturnValue('claude');
+
+      await startService(mockAutonomousConfig);
+
+      expect(setDefaultAdapter).toHaveBeenCalledWith('claude');
+      expect(runner.switchProvider).not.toHaveBeenCalled();
+      expect(runner.provider).toBe('claude');
+    });
+
+    it('should preserve default adapter behavior when no override exists', async () => {
+      const runner = {
+        provider: 'claude',
+        switchProvider: vi.fn((nextProvider: string) => {
+          runner.provider = nextProvider;
+        }),
+      };
+      vi.mocked(autonomousRunner.startAutonomous).mockResolvedValue(runner as any);
+      vi.mocked(readProviderOverride).mockReturnValue(undefined);
+
+      await startService(mockAutonomousConfig);
+
+      expect(setDefaultAdapter).toHaveBeenCalledWith('claude');
+      expect(autonomousRunner.startAutonomous).toHaveBeenCalled();
+      expect(runner.switchProvider).not.toHaveBeenCalled();
+      expect(runner.provider).toBe('claude');
     });
 
     it('should stop service without errors', async () => {
