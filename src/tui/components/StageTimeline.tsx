@@ -2,10 +2,11 @@
 // Presentational: takes already-reduced stage entries (parity with the
 // dashboard's renderStages).
 import { Box, Text } from 'ink';
+import { theme } from '../theme.js';
 import type { StageEntry } from '../pipelineEvents.js';
 
 const ICON: Record<StageEntry['status'], string> = { start: '▶', complete: '✓', fail: '✗' };
-const COLOR: Record<StageEntry['status'], string> = { start: 'yellow', complete: 'green', fail: 'red' };
+const COLOR: Record<StageEntry['status'], string> = { start: theme.running, complete: theme.ok, fail: theme.err };
 
 export interface StageTimelineProps {
   stages: StageEntry[];

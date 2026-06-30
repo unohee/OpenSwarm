@@ -8,6 +8,8 @@
 // readable output instead of a monochrome wall. Pure — the Ink <Text> spans are
 // produced by components/LogLine.tsx from these segments.
 
+import { theme } from './theme.js';
+
 export interface LogSegment {
   text: string;
   /** Ink color name (cyan/green/yellow/red/magenta/blue…). Omit for default. */
@@ -18,13 +20,13 @@ export interface LogSegment {
 
 /** Per-pipeline-stage tag color. */
 const STAGE_COLORS: Record<string, string> = {
-  worker: 'cyan',
-  reviewer: 'magenta',
-  tester: 'yellow',
-  planner: 'blue',
-  documenter: 'green',
-  auditor: 'red',
-  'skill-documenter': 'green',
+  worker: theme.accent,
+  reviewer: theme.accentAlt,
+  tester: theme.system,
+  planner: theme.info,
+  documenter: theme.ok,
+  auditor: theme.err,
+  'skill-documenter': theme.ok,
 };
 
 const ISSUE_RE = /^[A-Z]{2,}-\d+$/;
@@ -32,8 +34,8 @@ const ISSUE_RE = /^[A-Z]{2,}-\d+$/;
 /** Level color for the message body. */
 function bodyColor(body: string): string | undefined {
   const l = body.toLowerCase();
-  if (/(\berror\b|\bfail|✖|✗|"success":\s*false|halt)/.test(l)) return 'red';
-  if (/(✓|completed|succeed|success|done|approved|passed)/.test(l)) return 'green';
+  if (/(\berror\b|\bfail|✖|✗|"success":\s*false|halt)/.test(l)) return theme.err;
+  if (/(✓|completed|succeed|success|done|approved|passed)/.test(l)) return theme.ok;
   return undefined;
 }
 
@@ -47,7 +49,7 @@ function formatBody(body: string): LogSegment[] {
   let m: RegExpExecArray | null;
   while ((m = re.exec(body))) {
     if (m.index > last) out.push({ text: body.slice(last, m.index), color });
-    out.push({ text: `\`${m[1]}\``, color: 'cyan' });
+    out.push({ text: `\`${m[1]}\``, color: theme.accent });
     last = m.index + m[0].length;
   }
   if (last < body.length) out.push({ text: body.slice(last), color });
@@ -63,7 +65,7 @@ export function parseLogLine(line: string): LogSegment[] {
   const stageM = rest.match(/^\[([a-z][\w-]*)\]\s*/i);
   if (stageM) {
     const stage = stageM[1].toLowerCase();
-    segs.push({ text: `[${stageM[1]}]`, color: STAGE_COLORS[stage] ?? 'white', bold: true });
+    segs.push({ text: `[${stageM[1]}]`, color: STAGE_COLORS[stage] ?? theme.assistant, bold: true });
     segs.push({ text: ' ' });
     rest = rest.slice(stageM[0].length);
   }
@@ -75,9 +77,9 @@ export function parseLogLine(line: string): LogSegment[] {
     const parts = ctxM[1].split('|').map((p) => p.trim());
     parts.forEach((p, i) => {
       if (i > 0) segs.push({ text: ' | ', dim: true });
-      if (ISSUE_RE.test(p)) segs.push({ text: p, color: 'yellow', bold: true });
+      if (ISSUE_RE.test(p)) segs.push({ text: p, color: theme.system, bold: true });
       else if (p.startsWith('worktree/')) segs.push({ text: p, dim: true });
-      else segs.push({ text: p, color: 'green' });
+      else segs.push({ text: p, color: theme.ok });
     });
     segs.push({ text: ']', dim: true });
     segs.push({ text: ' ' });

@@ -1,6 +1,7 @@
 // CommandPalette — slash-command suggestions for the current input (S4).
 // Interactive: the selected row (↑/↓) is highlighted; Enter/Tab completes it. (INT-1959)
 import { Box, Text } from 'ink';
+import { theme } from '../theme.js';
 import type { SlashCommand } from '../chatModel.js';
 
 export function CommandPalette({ matches, selectedIndex = 0 }: { matches: SlashCommand[]; selectedIndex?: number }) {
@@ -11,7 +12,7 @@ export function CommandPalette({ matches, selectedIndex = 0 }: { matches: SlashC
         const selected = i === selectedIndex;
         return (
           <Text key={c.name} inverse={selected}>
-            <Text color="cyan">{`${selected ? '❯ ' : '  '}${c.name}`}</Text>
+            <Text color={theme.accent}>{`${selected ? '❯ ' : '  '}${c.name}`}</Text>
             {c.args ? <Text dimColor>{` ${c.args}`}</Text> : null}
             <Text dimColor>{`  ${c.desc}`}</Text>
           </Text>

@@ -66,7 +66,9 @@ export function ChatInput({
     <Box borderStyle="round" borderColor={active ? theme.borderActive : theme.border} paddingX={1}>
       {busy ? (
         <Text color={theme.dim}>
-          <Spinner type="dots" />
+          <Text color={theme.accent}>
+            <Spinner type="dots" />
+          </Text>
           <Text>{' working… (Esc to leave)'}</Text>
         </Text>
       ) : (

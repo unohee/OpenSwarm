@@ -2,6 +2,7 @@
 // /provider and /model switchers (INT-1960/INT-1961). Key handling lives in the
 // caller (ChatInput's palette routing); this is pure presentation.
 import { Box, Text } from 'ink';
+import { theme } from '../theme.js';
 
 export function SelectList({
   title,
@@ -15,7 +16,7 @@ export function SelectList({
   if (items.length === 0) return null;
   return (
     <Box flexDirection="column" marginTop={1}>
-      <Text color="yellow">{title}</Text>
+      <Text color={theme.system}>{title}</Text>
       {items.map((item, i) => {
         const selected = i === selectedIndex;
         return (

@@ -7,6 +7,7 @@ import { SubagentTree } from '../components/SubagentTree.js';
 import { LiveLog } from '../components/LiveLog.js';
 import { usePipelineEvents } from '../hooks/usePipelineEvents.js';
 import { buildSubagentTree } from '../subagentTree.js';
+import { theme } from '../theme.js';
 
 export interface PipelinePanelProps {
   /** Daemon HTTP port; when unset the panel renders idle (no connection). */
@@ -15,14 +16,18 @@ export interface PipelinePanelProps {
 
 export function PipelinePanel({ port }: PipelinePanelProps) {
   const { stages, logs, connected } = usePipelineEvents(port);
-  const status = !port
-    ? '○ daemon port unknown'
+  const live = !!port && connected;
+  const label = !port
+    ? ' daemon port unknown'
     : connected
-    ? `● live (:${port})`
-    : `○ connecting :${port}…`;
+    ? ` live (:${port})`
+    : ` connecting :${port}…`;
   return (
     <Box flexDirection="column">
-      <Text dimColor>{status}</Text>
+      <Text>
+        <Text color={live ? theme.ok : theme.dim}>{live ? '●' : '○'}</Text>
+        <Text dimColor>{label}</Text>
+      </Text>
       <SubagentTree tasks={buildSubagentTree(stages)} />
       <Box marginTop={1}>
         <StageTimeline stages={stages} />

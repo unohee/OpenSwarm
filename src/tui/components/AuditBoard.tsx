@@ -79,7 +79,18 @@ export function AuditBoard({ areas, concurrency, events }: AuditBoardProps) {
         </Text>
       ))}
       <Text color={theme.dim}>
-        {`  ✓ ${approved} done · ✎ ${revised} revise · ✗ ${rejected} reject${failed ? ` · ⚠ ${failed} failed` : ''}`}
+        {'  '}
+        <Text color={theme.ok}>{`✓ ${approved} done`}</Text>
+        {' · '}
+        <Text color={theme.accentAlt}>{`✎ ${revised} revise`}</Text>
+        {' · '}
+        <Text color={theme.err}>{`✗ ${rejected} reject`}</Text>
+        {failed ? (
+          <Text>
+            {' · '}
+            <Text color={theme.warn}>{`⚠ ${failed} failed`}</Text>
+          </Text>
+        ) : null}
       </Text>
     </Box>
   );

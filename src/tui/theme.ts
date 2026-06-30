@@ -14,6 +14,8 @@ export const theme = {
   ok: 'green',
   warn: 'yellow',
   err: 'red',
+  running: 'yellow',
+  info: 'blue',
   border: 'gray',
   borderActive: 'cyan',
 } as const;

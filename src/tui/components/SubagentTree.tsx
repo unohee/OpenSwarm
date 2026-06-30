@@ -1,10 +1,11 @@
 // SubagentTree — concurrent tasks as a per-worktree agent tree (S7).
 // Presentational: takes nodes built by buildSubagentTree.
 import { Box, Text } from 'ink';
+import { theme } from '../theme.js';
 import type { TaskNode, TaskStatus } from '../subagentTree.js';
 
 const ICON: Record<TaskStatus, string> = { start: '◐', complete: '●', fail: '✗' };
-const COLOR: Record<TaskStatus, string> = { start: 'yellow', complete: 'green', fail: 'red' };
+const COLOR: Record<TaskStatus, string> = { start: theme.running, complete: theme.ok, fail: theme.err };
 
 export interface SubagentTreeProps {
   tasks: TaskNode[];

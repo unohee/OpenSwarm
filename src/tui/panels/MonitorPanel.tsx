@@ -4,6 +4,7 @@
 import { Text } from 'ink';
 import { DataTable } from '../components/DataTable.js';
 import { useMonitor } from '../hooks/useMonitor.js';
+import { theme } from '../theme.js';
 import type { Table } from '../monitorRows.js';
 
 export interface MonitorPanelProps {
@@ -15,7 +16,7 @@ export interface MonitorPanelProps {
 export function MonitorPanel({ port, fetcher, empty }: MonitorPanelProps) {
   const { table, error, loading } = useMonitor(port, fetcher);
   if (!port) return <Text dimColor>○ daemon port unknown</Text>;
-  if (error) return <Text color="red">{`load failed: ${error}`}</Text>;
+  if (error) return <Text color={theme.err}>{`load failed: ${error}`}</Text>;
   if (!table) return <Text dimColor>{loading ? 'loading…' : '(no data)'}</Text>;
   return <DataTable columns={table.columns} rows={table.rows} empty={empty} />;
 }
