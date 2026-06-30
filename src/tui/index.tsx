@@ -6,6 +6,7 @@
 
 import { withFullScreen } from 'fullscreen-ink';
 import { App } from './App.js';
+import type { ChatLine } from './chatModel.js';
 
 export interface StartInkTuiOptions {
   version?: string;
@@ -15,6 +16,12 @@ export interface StartInkTuiOptions {
   port?: number;
   cwd?: string;
   branch?: string;
+  /** Chat session id to save under (resume reuses an existing id). (INT-2014) */
+  sessionId?: string;
+  /** Conversation restored from a resumed session. (INT-2014) */
+  initialHistory?: ChatLine[];
+  /** Session goal restored from a resumed session. (INT-2014) */
+  goal?: string;
 }
 
 /**
@@ -30,6 +37,9 @@ export async function startInkTui(opts: StartInkTuiOptions = {}): Promise<void> 
       port={opts.port}
       cwd={opts.cwd}
       branch={opts.branch}
+      sessionId={opts.sessionId}
+      initialHistory={opts.initialHistory}
+      goal={opts.goal}
     />,
     { exitOnCtrlC: true },
   );

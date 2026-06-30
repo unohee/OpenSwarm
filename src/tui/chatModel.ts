@@ -5,9 +5,27 @@
 // to chatSession.callChatModel.
 // ============================================
 
+import type { Message } from '../support/chatSession.js';
+
 export interface ChatLine {
   role: 'user' | 'assistant' | 'system';
   content: string;
+}
+
+/**
+ * Convert chat history to persistable messages: only user/assistant turns are
+ * saved. System lines (slash-command output, UI notices) are transient and
+ * dropped — they aren't part of the conversation to resume. (INT-2014)
+ */
+export function historyToMessages(history: ChatLine[]): Message[] {
+  return history
+    .filter((l): l is ChatLine & { role: 'user' | 'assistant' } => l.role === 'user' || l.role === 'assistant')
+    .map((l) => ({ role: l.role, content: l.content }));
+}
+
+/** Restore persisted messages back to chat history lines. (INT-2014) */
+export function messagesToHistory(messages: Message[]): ChatLine[] {
+  return messages.map((m) => ({ role: m.role, content: m.content }));
 }
 
 export interface ChatState {

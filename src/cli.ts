@@ -156,12 +156,24 @@ program
   .argument('[session]', 'Session name to load/create (optional)')
   .option('--tui', 'Deprecated — chat always uses the TUI now (kept for compatibility)')
   .action(async (session?: string) => {
-    // Pass the session argument via process.argv for the TUI to pick up.
-    if (session) {
-      process.argv = [process.argv[0], process.argv[1], session];
-    }
     // Always launch the TUI — the legacy readline path is retired.
-    await launchChatTui();
+    await launchChatTui(session);
+  });
+
+// openswarm resume — reopen the most recent chat session
+
+program
+  .command('resume')
+  .description('Resume the most recently used chat session (its conversation + goal)')
+  .action(async () => {
+    const { latestSession } = await import('./support/chatSession.js');
+    const id = await latestSession();
+    if (!id) {
+      console.log('No saved chat sessions to resume. Run `openswarm chat` to start one.');
+      return;
+    }
+    console.log(`Resuming session ${id}…`);
+    await launchChatTui(id);
   });
 
 // openswarm mcp add|list|remove
@@ -548,7 +560,7 @@ program
 
 // 서브커맨드 없이 `openswarm`만 입력 시 → TUI chat 실행 (`openswarm chat`과 동일)
 
-async function launchChatTui(): Promise<void> {
+async function launchChatTui(sessionId?: string): Promise<void> {
   // Auto-start the background daemon so the monitor tabs (Projects/Tasks/Stuck/
   // Issues) — which are read-only clients of the daemon's :3847 API — have data
   // to show. If it's already running or fails to start, just continue: the chat
@@ -572,9 +584,29 @@ async function launchChatTui(): Promise<void> {
   // no blessed terminfo noise to mute and no manual redraw/flicker. The old
   // console-mute hack is gone with blessed.
   const { startInkTui } = await import('./tui/index.js');
-  const { loadDefaultProvider } = await import('./support/chatSession.js');
+  const { loadDefaultProvider, loadSession, generateSessionId } = await import('./support/chatSession.js');
   const { getDefaultChatModel } = await import('./support/chatBackend.js');
-  const provider = loadDefaultProvider();
+
+  // Resume an existing session when an id is given, else start a fresh one. A
+  // missing id falls back to a new session rather than erroring. (INT-2014)
+  let provider = loadDefaultProvider();
+  let model = getDefaultChatModel(provider);
+  let initialHistory: import('./tui/chatModel.js').ChatLine[] | undefined;
+  let goal: string | undefined;
+  let resolvedSessionId = sessionId ?? generateSessionId();
+  if (sessionId) {
+    const sess = await loadSession(sessionId);
+    if (sess) {
+      provider = sess.provider;
+      model = sess.model;
+      goal = sess.goal;
+      const { messagesToHistory } = await import('./tui/chatModel.js');
+      initialHistory = messagesToHistory(sess.messages);
+      resolvedSessionId = sess.id;
+    } else {
+      process.stdout.write(`Session "${sessionId}" not found — starting a new session.\n`);
+    }
+  }
   const cwd = process.cwd();
   let branch: string | undefined;
   try {
@@ -585,7 +617,7 @@ async function launchChatTui(): Promise<void> {
   } catch {
     // not a git repo — omit the branch
   }
-  await startInkTui({ version: VERSION, provider, model: getDefaultChatModel(provider), port: 3847, cwd, branch });
+  await startInkTui({ version: VERSION, provider, model, port: 3847, cwd, branch, sessionId: resolvedSessionId, initialHistory, goal });
 }
 
 program.action(launchChatTui);

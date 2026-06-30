@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { chatReducer, initialChatState, parseInput, matchSlash, movePaletteSelection, dedupeDoubledGrapheme, normalizeConfirm, isActivityNoise } from './chatModel.js';
+import { chatReducer, initialChatState, parseInput, matchSlash, movePaletteSelection, dedupeDoubledGrapheme, normalizeConfirm, isActivityNoise, historyToMessages, messagesToHistory, type ChatLine } from './chatModel.js';
 
 describe('chatReducer (EPIC INT-1813 S4)', () => {
   it('appends user and system lines', () => {
@@ -67,6 +67,30 @@ describe('isActivityNoise', () => {
     expect(isActivityNoise('🔧 read_file: src/auth.ts')).toBe(false);
     expect(isActivityNoise('📝 SEARCH/REPLACE: applied 1/1 block(s)')).toBe(false);
     expect(isActivityNoise('edit_file auth.ts')).toBe(false);
+  });
+});
+
+describe('historyToMessages / messagesToHistory (INT-2014)', () => {
+  it('keeps user/assistant turns and drops system lines', () => {
+    const h: ChatLine[] = [
+      { role: 'user', content: 'hi' },
+      { role: 'system', content: '/clear done' },
+      { role: 'assistant', content: 'hello' },
+    ];
+    expect(historyToMessages(h)).toEqual([
+      { role: 'user', content: 'hi' },
+      { role: 'assistant', content: 'hello' },
+    ]);
+  });
+
+  it('restores messages to history lines', () => {
+    expect(messagesToHistory([
+      { role: 'user', content: 'a' },
+      { role: 'assistant', content: 'b' },
+    ])).toEqual([
+      { role: 'user', content: 'a' },
+      { role: 'assistant', content: 'b' },
+    ]);
   });
 });
 

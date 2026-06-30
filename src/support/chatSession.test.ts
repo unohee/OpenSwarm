@@ -18,6 +18,8 @@ import {
   inferProvider,
   saveSession,
   loadSession,
+  listSessions,
+  latestSession,
   callChatModel,
   type Session,
 } from './chatSession.js';
@@ -25,6 +27,32 @@ import {
 describe('generateSessionId', () => {
   it('produces a YYYYMMDD-HHMM id', () => {
     expect(generateSessionId()).toMatch(/^\d{8}-\d{4}$/);
+  });
+});
+
+describe('listSessions / latestSession (INT-2014)', () => {
+  const mk = (id: string): Session => ({
+    id, provider: 'codex', model: 'm', messages: [], totalCost: 0, totalTokens: 0, createdAt: '', updatedAt: '',
+  });
+
+  it('lists newest-first and returns the latest id', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'os-sess-'));
+    try {
+      await saveSession(mk('s1'), dir);
+      await new Promise((r) => setTimeout(r, 15));
+      await saveSession(mk('s2'), dir);
+      const list = await listSessions(dir);
+      expect(list.map((m) => m.id)).toEqual(['s2', 's1']);
+      expect(await latestSession(dir)).toBe('s2');
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns [] / null for a missing dir', async () => {
+    const nope = path.join(os.tmpdir(), 'os-nope-' + process.pid);
+    expect(await listSessions(nope)).toEqual([]);
+    expect(await latestSession(nope)).toBeNull();
   });
 });
 

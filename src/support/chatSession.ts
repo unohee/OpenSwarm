@@ -9,14 +9,23 @@
 
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, readdir, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { loadConfig } from '../core/config.js';
 import { getDefaultAdapterName, isKnownAdapter, type AdapterName } from '../adapters/index.js';
 import { getDefaultChatModel, runChatCompletion } from './chatBackend.js';
 
-/** Default on-disk location for persisted chat sessions. */
-export const CHAT_DIR = resolve(homedir(), '.openswarm', 'chat');
+/**
+ * On-disk location for persisted chat sessions. Read via OPENSWARM_CHAT_DIR when
+ * set (lets tests redirect writes away from the real home dir). Evaluated per
+ * call so the env override applies even after module load. (INT-2014)
+ */
+export function getChatDir(): string {
+  return process.env.OPENSWARM_CHAT_DIR ?? resolve(homedir(), '.openswarm', 'chat');
+}
+
+/** Default chat-session dir at module-load time (back-compat for direct imports). */
+export const CHAT_DIR = getChatDir();
 
 export type Message = { role: 'user' | 'assistant'; content: string; cost?: number };
 
@@ -35,17 +44,17 @@ export type Session = {
 
 // Session persistence
 
-export async function ensureChatDir(dir: string = CHAT_DIR): Promise<void> {
+export async function ensureChatDir(dir: string = getChatDir()): Promise<void> {
   await mkdir(dir, { recursive: true });
 }
 
-export async function saveSession(session: Session, dir: string = CHAT_DIR): Promise<void> {
+export async function saveSession(session: Session, dir: string = getChatDir()): Promise<void> {
   await ensureChatDir(dir);
   session.updatedAt = new Date().toISOString();
   await writeFile(resolve(dir, `${session.id}.json`), JSON.stringify(session, null, 2));
 }
 
-export async function loadSession(id: string, dir: string = CHAT_DIR): Promise<Session | null> {
+export async function loadSession(id: string, dir: string = getChatDir()): Promise<Session | null> {
   const path = resolve(dir, `${id}.json`);
   if (!existsSync(path)) return null;
   const data = JSON.parse(await readFile(path, 'utf-8'));
@@ -58,6 +67,9 @@ export async function loadSession(id: string, dir: string = CHAT_DIR): Promise<S
     ...data,
     provider,
     model,
+    // Older session files may predate the messages field — default to [] so
+    // messagesToHistory never sees undefined. (INT-2014)
+    messages: Array.isArray(data.messages) ? data.messages : [],
     totalCost: data.totalCost ?? 0,
     totalTokens: data.totalTokens ?? 0,
   };
@@ -67,6 +79,42 @@ export function generateSessionId(): string {
   const now = new Date();
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
+}
+
+export interface SessionMeta {
+  id: string;
+  mtimeMs: number;
+}
+
+/**
+ * List persisted sessions, most-recently-modified first. Sorted by file mtime
+ * rather than the id (generateSessionId is minute-granular, so ids collide and
+ * sort poorly). Returns [] if the dir doesn't exist yet. (INT-2014)
+ */
+export async function listSessions(dir: string = getChatDir()): Promise<SessionMeta[]> {
+  let files: string[];
+  try {
+    files = await readdir(dir);
+  } catch {
+    return [];
+  }
+  const metas: SessionMeta[] = [];
+  for (const f of files) {
+    if (!f.endsWith('.json')) continue;
+    try {
+      const s = await stat(resolve(dir, f));
+      metas.push({ id: f.slice(0, -'.json'.length), mtimeMs: s.mtimeMs });
+    } catch {
+      // unreadable / removed mid-scan — skip
+    }
+  }
+  return metas.sort((a, b) => b.mtimeMs - a.mtimeMs);
+}
+
+/** Id of the most recently modified session, or null if there are none. (INT-2014) */
+export async function latestSession(dir: string = getChatDir()): Promise<string | null> {
+  const list = await listSessions(dir);
+  return list.length > 0 ? list[0].id : null;
 }
 
 // Provider / model resolution

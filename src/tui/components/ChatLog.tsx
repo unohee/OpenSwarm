@@ -29,6 +29,16 @@ const ROLE_ICON: Record<ChatLine['role'], string> = {
   system: ICON.system,
 };
 
+// Cap the in-flight streaming preview so a long reply (or reasoning spill) can't
+// fill the full-screen frame and push the input box off-screen. The finalized
+// message renders in full once committed to history. (INT-2014 / INT-2013)
+const STREAM_TAIL_LINES = 14;
+
+function tailLines(text: string, n: number): string {
+  const lines = text.split('\n');
+  return lines.length <= n ? text : `…\n${lines.slice(-n).join('\n')}`;
+}
+
 function Message({ line }: { line: ChatLine }) {
   const body = line.role === 'assistant' ? renderMarkdown(line.content) : line.content;
   return (
@@ -66,7 +76,7 @@ export function ChatLog({ history, streaming, activity = [], busy, maxMessages =
             {activity.slice(-5).map((line, i) => (
               <Text key={i} color={theme.dim}>{`${ICON.tool} ${line}`}</Text>
             ))}
-            {streaming ? <Text>{streaming}</Text> : null}
+            {streaming ? <Text>{tailLines(streaming, STREAM_TAIL_LINES)}</Text> : null}
             {busy ? <WorkingIndicator /> : null}
           </Box>
         </Box>

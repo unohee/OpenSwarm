@@ -14,6 +14,7 @@ import { TabBar } from './components/TabBar.js';
 import { HelpBar } from './components/HelpBar.js';
 import { PipelinePanel } from './panels/PipelinePanel.js';
 import { ChatPanel } from './panels/ChatPanel.js';
+import type { ChatLine } from './chatModel.js';
 import { MonitorPanel } from './panels/MonitorPanel.js';
 import { LogsPanel } from './panels/LogsPanel.js';
 import { fetchProjects, fetchTasks, fetchStuck, fetchIssues } from './monitorApi.js';
@@ -38,9 +39,13 @@ export interface AppProps {
   branch?: string;
   /** Initial active tab index (deep-link / tests). Defaults to Chat. */
   initialTab?: number;
+  /** Chat session id + restored conversation/goal for resume. (INT-2014) */
+  sessionId?: string;
+  initialHistory?: ChatLine[];
+  goal?: string;
 }
 
-export function App({ version, provider, model, port, cwd, branch, initialTab = 0 }: AppProps) {
+export function App({ version, provider, model, port, cwd, branch, initialTab = 0, sessionId, initialHistory, goal }: AppProps) {
   const [active, setActive] = useState(initialTab);
   const { columns, rows } = useTerminalSize();
   const { exit } = useApp();
@@ -66,7 +71,7 @@ export function App({ version, provider, model, port, cwd, branch, initialTab = 
       <TabBar active={active} />
       <Box flexDirection="column" paddingY={1} minHeight={Math.max(1, rows - 4)}>
         {activeTab.id === 'chat' ? (
-          <ChatPanel active={chatActive} provider={provider} model={model} projectPath={cwd} />
+          <ChatPanel active={chatActive} provider={provider} model={model} projectPath={cwd} sessionId={sessionId} initialHistory={initialHistory} goal={goal} />
         ) : activeTab.id === 'pipeline' ? (
           <PipelinePanel port={port} />
         ) : activeTab.id === 'logs' ? (

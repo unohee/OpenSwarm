@@ -7,7 +7,7 @@
 // ============================================
 
 import { Box } from 'ink';
-import { useReducer, useState, useCallback } from 'react';
+import { useReducer, useState, useCallback, useEffect, useRef } from 'react';
 import {
   chatReducer,
   initialChatState,
@@ -16,14 +16,16 @@ import {
   movePaletteSelection,
   normalizeConfirm,
   isActivityNoise,
+  historyToMessages,
   SLASH_COMMANDS,
+  type ChatLine,
 } from '../chatModel.js';
 import { ChatLog } from '../components/ChatLog.js';
 import { ChatInput } from '../components/ChatInput.js';
 import { CommandPalette } from '../components/CommandPalette.js';
 import { SelectList } from '../components/SelectList.js';
 import { listAdapterNames } from '../../adapters/index.js';
-import { callChatModel, loadDefaultProvider } from '../../support/chatSession.js';
+import { callChatModel, loadDefaultProvider, saveSession, generateSessionId } from '../../support/chatSession.js';
 import { getDefaultChatModel, listChatModels } from '../../support/chatBackend.js';
 import { runPlanCommand, type PlanIO } from '../../support/planCommand.js';
 import { runGoalCommand, buildGoalPursuitPrompt, GOAL_PURSUIT_MAX_TURNS } from '../../support/goalCommand.js';
@@ -35,14 +37,32 @@ export interface ChatPanelProps {
   model?: string;
   /** Project root for /plan + /goal dispatch (defaults to cwd). */
   projectPath?: string;
+  /** Session id to persist under; resume passes the existing id. (INT-2014) */
+  sessionId?: string;
+  /** Conversation restored from a resumed session. (INT-2014) */
+  initialHistory?: ChatLine[];
+  /** Session goal restored from a resumed session — keeps it "in pursuit". (INT-2014) */
+  goal?: string;
 }
 
-export function ChatPanel({ active, provider: providerProp, model: modelProp, projectPath }: ChatPanelProps) {
-  const [state, dispatch] = useReducer(chatReducer, initialChatState);
+export function ChatPanel({ active, provider: providerProp, model: modelProp, projectPath, sessionId: sessionIdProp, initialHistory, goal: goalProp }: ChatPanelProps) {
+  const [state, dispatch] = useReducer(
+    chatReducer,
+    undefined,
+    () => (initialHistory && initialHistory.length > 0 ? { history: initialHistory, streaming: null } : initialChatState),
+  );
   const [input, setInput] = useState('');
   const [paletteIndex, setPaletteIndex] = useState(0);
   const [busy, setBusy] = useState(false);
   const [activity, setActivity] = useState<string[]>([]);
+  // A /goal pursuit is active — only /goal clear stops it (no Esc/other input). (INT-2014)
+  const [goalActive, setGoalActive] = useState<boolean>(!!goalProp);
+  // Stable across renders: session id, createdAt, the active goal, and the abort
+  // controller that /goal clear fires. (INT-2014)
+  const sessionIdRef = useRef<string>(sessionIdProp ?? generateSessionId());
+  const createdAtRef = useRef<string>(new Date().toISOString());
+  const goalRef = useRef<string | undefined>(goalProp);
+  const abortRef = useRef<AbortController | null>(null);
   // When set, the next submitted line is routed here (a /plan confirm or edit)
   // instead of being treated as chat — the Ink analogue of blessed pendingInput.
   const [pending, setPending] = useState<{ resolve: (value: string) => void } | null>(null);
@@ -54,6 +74,24 @@ export function ChatPanel({ active, provider: providerProp, model: modelProp, pr
   const [selector, setSelector] = useState<{ kind: 'provider' | 'model'; title: string; items: string[] } | null>(null);
   const [selectorIndex, setSelectorIndex] = useState(0);
   const cwd = projectPath ?? process.cwd();
+
+  // Persist the conversation on every change so it survives exit and can be
+  // reopened with `openswarm resume`. System/UI lines are dropped by
+  // historyToMessages; the goal rides along so resume keeps pursuing it. (INT-2014)
+  useEffect(() => {
+    if (state.history.length === 0) return;
+    void saveSession({
+      id: sessionIdRef.current,
+      provider,
+      model,
+      messages: historyToMessages(state.history),
+      totalCost: 0,
+      totalTokens: 0,
+      createdAt: createdAtRef.current,
+      updatedAt: '', // saveSession stamps this
+      goal: goalRef.current,
+    });
+  }, [state.history, provider, model]);
 
   const ask = useCallback(
     (prompt: string) =>
@@ -92,26 +130,36 @@ export function ChatPanel({ active, provider: providerProp, model: modelProp, pr
       dispatch({ type: 'stream', chunk: '' });
       setActivity([]);
       setBusy(true);
+      const ac = new AbortController();
+      abortRef.current = ac;
       try {
         await callChatModel(
           prompt,
           provider,
           model,
-          (t) => dispatch({ type: 'stream', chunk: t }),
+          // Reasoning/thinking deltas (isThinking=true) must NOT land in the answer
+          // buffer — that's the /goal token-spam (INT-2013). Drop them here; codex
+          // surfaces reasoning separately via onLog ('💭 …'). (INT-2014)
+          (t, isThinking) => {
+            if (!isThinking) dispatch({ type: 'stream', chunk: t });
+          },
           (line) => {
             if (isActivityNoise(line)) return;
             setActivity((a) => [...a, line].slice(-10));
           },
           maxTurns,
-          undefined, // no abort signal wired here yet
+          ac.signal, // wired so /goal clear can abort a pursuit (INT-2014)
           cwd, // run in the repo `openswarm chat` was launched from (INT-2005)
         );
       } catch (e) {
-        dispatch({ type: 'stream', chunk: `\n[error] ${e instanceof Error ? e.message : String(e)}` });
+        const msg = e instanceof Error ? e.message : String(e);
+        // An abort (from /goal clear) is intentional, not an error.
+        if (!ac.signal.aborted) dispatch({ type: 'stream', chunk: `\n[error] ${msg}` });
       } finally {
         dispatch({ type: 'commit' });
         setActivity([]);
         setBusy(false);
+        abortRef.current = null;
       }
     },
     [provider, model, cwd],
@@ -121,6 +169,8 @@ export function ChatPanel({ active, provider: providerProp, model: modelProp, pr
   // decompose & dispatch via the /plan flow. (INT-1821 / S8)
   const runGoal = useCallback(
     async (goal: string) => {
+      goalRef.current = goal; // rides along into saveSession so resume keeps it
+      setGoalActive(true);
       setBusy(true);
       try {
         await runGoalCommand(
@@ -133,6 +183,9 @@ export function ChatPanel({ active, provider: providerProp, model: modelProp, pr
         dispatch({ type: 'system', content: `✖ goal failed: ${e instanceof Error ? e.message : String(e)}` });
       } finally {
         setBusy(false);
+        // Pursuit turn finished — unblock input. The goal itself stays set
+        // (goalRef) until /goal clear, so resume keeps pursuing it.
+        setGoalActive(false);
       }
     },
     [cwd, model, provider, streamChat], // eslint-disable-line react-hooks/exhaustive-deps
@@ -166,11 +219,21 @@ export function ChatPanel({ active, provider: providerProp, model: modelProp, pr
         case '/plan':
           void runPlan(args);
           break;
-        case '/goal':
+        case '/goal': {
+          // /goal clear stops the active pursuit — the only way to interrupt it.
+          // It aborts the in-flight turn and releases the session goal. (INT-2014)
+          if (args.trim() === 'clear') {
+            abortRef.current?.abort();
+            goalRef.current = undefined;
+            setGoalActive(false);
+            dispatch({ type: 'system', content: '✖ Goal cleared.' });
+            break;
+          }
           // /goal routes by complexity (INT-1821): simple → pursue in-session,
           // complex → decompose & dispatch. Shared, UI-agnostic goalCommand.
           void runGoal(args);
           break;
+        }
         case '/provider': {
           // `/provider <name>` switches directly; bare `/provider` opens a selector. (INT-1960)
           const items = listAdapterNames();
@@ -237,6 +300,16 @@ export function ChatPanel({ active, provider: providerProp, model: modelProp, pr
       }
       const parsed = parseInput(raw);
       if (!parsed) return;
+      // While a goal is actively being pursued, only "/goal clear" is honored —
+      // the pursuit runs to completion and nothing else can interrupt it. (INT-2014)
+      if (goalActive && busy) {
+        if (parsed.kind === 'command' && parsed.name === '/goal' && parsed.args.trim() === 'clear') {
+          runCommand(parsed.name, parsed.args);
+        } else {
+          dispatch({ type: 'system', content: 'Goal in progress — type "/goal clear" to stop it.' });
+        }
+        return;
+      }
       if (parsed.kind === 'command') {
         runCommand(parsed.name, parsed.args);
         return;
@@ -244,11 +317,12 @@ export function ChatPanel({ active, provider: providerProp, model: modelProp, pr
       dispatch({ type: 'user', content: parsed.text });
       await streamChat(parsed.text);
     },
-    [pending, runCommand, streamChat],
+    [pending, runCommand, streamChat, goalActive, busy],
   );
 
-  // While a /plan confirm is pending, keep the field active even though busy.
-  const inputActive = active && (!busy || pending !== null);
+  // Keep the field active while a /plan confirm is pending, or while a goal is
+  // being pursued (so the user can type "/goal clear"). (INT-2014)
+  const inputActive = active && (!busy || pending !== null || goalActive);
 
   // Interactive command palette (INT-1959): ↑/↓ select, Enter/Tab complete.
   // A /provider|/model selector (INT-1960/1961) takes precedence when open.
@@ -279,7 +353,7 @@ export function ChatPanel({ active, provider: providerProp, model: modelProp, pr
       <ChatInput
         value={input}
         active={inputActive}
-        busy={busy && pending === null}
+        busy={busy && pending === null && !goalActive}
         onChange={handleChange}
         onSubmit={submit}
         paletteOpen={menuOpen}
