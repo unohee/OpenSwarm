@@ -1097,7 +1097,7 @@ export async function createIssue(
   title: string,
   description: string,
   labels: string[] = [],
-  options?: { bypassLimit?: boolean }
+  options?: { bypassLimit?: boolean; projectId?: string }
 ): Promise<LinearIssueInfo | { error: string }> {
   if (!isLinearInitialized()) return { error: 'Linear not configured' };
   resetDailyCounterIfNeeded();
@@ -1111,18 +1111,33 @@ export async function createIssue(
 
   const linear = getClient();
 
+  // Resolve a single team UUID. Multi-team configs hold a comma-joined list in the
+  // module `teamId` (e.g. "uuid1,uuid2"), which is NOT a valid UUID for the API.
+  // Prefer the given project's team, else the first configured team. (INT-2210)
+  let resolvedTeamId = teamIds[0] ?? teamId;
+  if (options?.projectId) {
+    try {
+      const proj = await linear.project(options.projectId);
+      const projTeam = (await proj.teams()).nodes[0]; // a project can span teams; take the first
+      if (projTeam?.id) resolvedTeamId = projTeam.id;
+    } catch {
+      /* project/team lookup failed → keep teamIds[0] fallback */
+    }
+  }
+
   // Look up label IDs
-  const team = await linear.team(teamIds[0] ?? teamId);
+  const team = await linear.team(resolvedTeamId);
   const teamLabels = await team.labels();
   const labelIds = labels
     .map((name) => teamLabels.nodes.find((l) => l.name === name)?.id)
     .filter((id): id is string => !!id);
 
   const issuePayload = await linear.createIssue({
-    teamId,
+    teamId: resolvedTeamId,
     title,
     description,
     labelIds,
+    ...(options?.projectId ? { projectId: options.projectId } : {}),
   });
 
   const issue = await issuePayload.issue;

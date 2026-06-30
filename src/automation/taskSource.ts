@@ -71,8 +71,10 @@ export class LinearTaskSource implements ITaskSource {
   constructor(private readonly fetch: () => Promise<TaskItem[]>) {}
 
   fetchTasks(): Promise<TaskItem[]> { return this.fetch(); }
-  async createTask(title: string, description: string, _projectId?: string): Promise<SubIssueResult> {
-    const r = await linear.createIssue(title, description, []);
+  async createTask(title: string, description: string, projectId?: string): Promise<SubIssueResult> {
+    // Pass projectId so createIssue links the issue AND resolves the project's team
+    // (multi-team configs would otherwise hit "teamId must be a UUID"). (INT-2210)
+    const r = await linear.createIssue(title, description, [], { projectId });
     return 'error' in r ? r : { id: r.id, identifier: r.identifier, title: r.title };
   }
   updateState(issueId: string, state: TaskState): Promise<void> { return linear.updateIssueState(issueId, state); }
