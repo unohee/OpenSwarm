@@ -26,6 +26,7 @@ import {
 } from './reviewAudit.js';
 import { AuditBoard } from '../tui/components/AuditBoard.js';
 import { resolveIssueFromBranch, ensureTaskSource, resolveProjectId } from './reviewCommand.js';
+import { synthesizeAuditIssues } from './auditPM.js';
 import type { AdapterName } from '../adapters/types.js';
 
 export interface ReviewMaxOptions {
@@ -37,8 +38,10 @@ export interface ReviewMaxOptions {
   maxFilesPerArea?: number;
   /** Adapter override for the reviewers. */
   adapter?: string;
-  /** File per-area follow-ups as Linear issues (parent id or branch-inferred). */
+  /** PM-synthesize follow-ups into ≤10 cohesive Linear sub-issues (parent id or branch-inferred). */
   fileIssue?: string | boolean;
+  /** Legacy: file one follow-up batch per audit area (the old --issues behavior). (INT-2225) */
+  issuesPerArea?: string | boolean;
   /** Skip the interactive cost gate (CI / scripted). */
   yes?: boolean;
   /** Partition only, print the plan, and exit (no subagents spawned). */
@@ -221,10 +224,14 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
     console.warn(`Could not save report: ${e instanceof Error ? e.message : String(e)}`);
   }
 
-  // (4) Linear: --issues files per-area follow-ups (opt-in); otherwise a single
-  //     master audit issue by default; --no-linear skips Linear entirely. (INT-2022)
-  if (opts.fileIssue) {
-    await filePerAreaFollowups(cwd, opts.fileIssue, run);
+  // (4) Linear: --issues runs the PM synthesis (a master parent + ≤10 cohesive
+  //     sub-issues); --issues-per-area keeps the legacy per-area fan-out;
+  //     otherwise a single master audit issue by default; --no-linear skips
+  //     Linear entirely. (INT-2022 / INT-2225)
+  if (opts.issuesPerArea) {
+    await filePerAreaFollowups(cwd, opts.issuesPerArea, run);
+  } else if (opts.fileIssue) {
+    await filePmSynthesizedIssues(cwd, opts, run.summary, report, ts);
   } else if (!opts.noLinear && run.summary.recommendedActions.length) {
     await createMasterAuditIssue(cwd, run.summary, report, ts);
   } else if (run.summary.recommendedActions.length) {
@@ -234,12 +241,21 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
   return { decision: run.summary.decision };
 }
 
-/** Create one master audit issue holding the full report (default Linear behavior). (INT-2022) */
-async function createMasterAuditIssue(cwd: string, summary: AuditSummary, report: string, ts: string): Promise<void> {
+/**
+ * Create one master audit issue holding the full report (default Linear
+ * behavior). Returns the created issue's internal id (usable as a sub-issue
+ * parent) or null on failure. (INT-2022 / INT-2225)
+ */
+async function createMasterAuditIssue(
+  cwd: string,
+  summary: AuditSummary,
+  report: string,
+  ts: string,
+): Promise<string | null> {
   const source = await ensureTaskSource();
   if (!source) {
     console.log('Linear not connected — report saved to file only. `openswarm auth login --provider linear` to enable.');
-    return;
+    return null;
   }
   const projectId = await resolveProjectId(cwd);
   const title = `chore(audit): codebase audit ${ts.slice(0, 10)} — review --max (${summary.recommendedActions.length} follow-ups)`;
@@ -247,10 +263,94 @@ async function createMasterAuditIssue(cwd: string, summary: AuditSummary, report
     const res = await source.createTask(title, report, projectId);
     if ('identifier' in res) {
       console.log(`Linear master audit issue: ${res.identifier}`);
-    } else {
-      console.warn(`Could not create Linear issue (report saved to file): ${res.error}`);
+      return res.id;
     }
+    console.warn(`Could not create Linear issue (report saved to file): ${res.error}`);
+    return null;
   } catch (e) {
     console.warn(`Could not create Linear issue (report saved to file): ${e instanceof Error ? e.message : String(e)}`);
+    return null;
   }
+}
+
+/**
+ * PM layer for `--issues`: synthesize the deduped follow-ups into ≤10 cohesive
+ * issues and file them as sub-issues. The parent is the explicit `--issues <id>`
+ * when given, otherwise a freshly created master audit issue (which also holds
+ * the full report). Falls back gracefully — if synthesis yields nothing (too few
+ * follow-ups, or the LLM output couldn't be parsed), the master issue alone still
+ * captures everything. (INT-2225)
+ */
+async function filePmSynthesizedIssues(
+  cwd: string,
+  opts: ReviewMaxOptions,
+  summary: AuditSummary,
+  report: string,
+  ts: string,
+): Promise<void> {
+  const actions = summary.recommendedActions;
+  if (!actions.length) {
+    console.log('No follow-ups to file.');
+    return;
+  }
+  const source = await ensureTaskSource();
+  if (!source) {
+    console.log(
+      'Could not file follow-ups: Linear not connected. Run `openswarm auth login --provider linear` (or set linearApiKey).',
+    );
+    return;
+  }
+  const projectId = await resolveProjectId(cwd);
+
+  // Resolve the parent: explicit --issues <id>, else create the master report issue.
+  let parentId: string | undefined =
+    typeof opts.fileIssue === 'string' && opts.fileIssue ? opts.fileIssue : undefined;
+  if (!parentId && !opts.noLinear) {
+    parentId = (await createMasterAuditIssue(cwd, summary, report, ts)) ?? undefined;
+  }
+
+  console.log(`Synthesizing ${actions.length} follow-up(s) into cohesive issues (PM pass)...`);
+  const issues = await synthesizeAuditIssues(actions, {
+    adapter: opts.adapter,
+    cwd,
+    repoName: basename(cwd) || cwd,
+    onLog: (l) => console.error(`  · ${l}`),
+  });
+
+  if (!issues.length) {
+    console.log(
+      parentId
+        ? 'PM synthesis produced no grouped issues — the master audit issue captures all follow-ups.'
+        : 'PM synthesis produced no grouped issues — follow-ups are captured in the saved report.',
+    );
+    return;
+  }
+
+  let filed = 0;
+  for (const issue of issues) {
+    try {
+      const res = parentId
+        ? await source.createSubIssue(parentId, issue.title, issue.description, {
+            priority: issue.priority,
+            projectId,
+          })
+        : await source.createTask(issue.title, issue.description, projectId);
+      if ('identifier' in res) {
+        filed++;
+        console.log(`  ✓ ${res.identifier}  ${issue.title}  (${issue.items.length} follow-up(s))`);
+      } else {
+        console.warn(`  ✗ Could not create issue "${issue.title}": ${res.error}`);
+      }
+    } catch (e) {
+      console.warn(`  ✗ Could not create issue "${issue.title}": ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  console.log(
+    filed > 0
+      ? parentId
+        ? `Filed ${filed} synthesized sub-issue(s) under the master audit issue.`
+        : `Filed ${filed} synthesized issue(s).`
+      : 'Could not file synthesized issues (0 created).',
+  );
 }

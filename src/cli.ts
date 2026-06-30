@@ -244,6 +244,7 @@ program
   .description('Review the working-tree changes; --max audits the whole codebase with reviewer subagents')
   .option('--path <path>', 'Project path (default: cwd)')
   .option('--issues [parent]', 'File follow-ups as Linear sub-issues (parent inferred from the git branch, or pass an id)')
+  .option('--issues-per-area [parent]', 'For --max: legacy per-area follow-up fan-out (skips the PM synthesis)')
   .option('--file [parent]', 'Alias for --issues (back-compat)')
   .option('--adapter <name>', 'Adapter override for the reviewer')
   .option('--debug', 'Verbose logging')
@@ -258,7 +259,7 @@ program
   .option('--fallback <adapter>', 'For --max: retry usage-limited areas on this adapter (default: claude for codex)')
   .option('--no-fallback', 'For --max: disable the automatic usage-limit fallback')
   .action(async (opts: {
-    path?: string; issues?: string | boolean; file?: string | boolean; adapter?: string; debug?: boolean;
+    path?: string; issues?: string | boolean; issuesPerArea?: string | boolean; file?: string | boolean; adapter?: string; debug?: boolean;
     max?: boolean; concurrency?: number; maxFilesPerArea?: number; yes?: boolean; dryRun?: boolean;
     out?: string; linear?: boolean; fallback?: string | boolean;
   }) => {
@@ -271,6 +272,7 @@ program
           maxFilesPerArea: opts.maxFilesPerArea,
           adapter: opts.adapter,
           fileIssue: opts.issues ?? opts.file,
+          issuesPerArea: opts.issuesPerArea,
           yes: opts.yes,
           dryRun: opts.dryRun,
           out: opts.out,
