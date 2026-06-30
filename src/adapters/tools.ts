@@ -279,6 +279,56 @@ export function validatePath(filePath: string, cwd: string): string {
   return resolved;
 }
 
+// Normalize a single line for fuzzy edit matching: strip trailing whitespace and
+// fold common typographic variants (smart quotes, en/em dashes) plus NFKC. Lets a
+// near-miss old_string (a model re-typed a quote or trailing space) still locate
+// its line, instead of failing edit_file outright. (INT-2011)
+function normalizeEditLine(line: string): string {
+  return line
+    .replace(/[ \t]+$/, '')
+    .replace(/[‘’]/g, "'")
+    .replace(/[“”]/g, '"')
+    .replace(/[–—]/g, '-')
+    .normalize('NFKC');
+}
+
+/**
+ * Fuzzy fallback for edit_file: when `oldString` is not an exact substring, match
+ * it line-by-line under {@link normalizeEditLine}. Returns the EXACT original span
+ * only when the match is unique — 0 or >1 matches return null so the caller refuses
+ * rather than editing the wrong place. The span is line-bounded, so the offsets are
+ * exact (no ratio approximation). (INT-2011)
+ */
+function findFuzzyEditSpan(original: string, oldString: string): { start: number; end: number } | null {
+  const fileLines = original.split('\n');
+  const oldLines = oldString.split('\n');
+  if (oldLines.length === 0 || oldLines.length > fileLines.length) return null;
+  const normFile = fileLines.map(normalizeEditLine);
+  const normOld = oldLines.map(normalizeEditLine);
+
+  let matchIndex = -1;
+  let count = 0;
+  for (let i = 0; i <= normFile.length - normOld.length; i++) {
+    let ok = true;
+    for (let j = 0; j < normOld.length; j++) {
+      if (normFile[i + j] !== normOld[j]) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) {
+      count++;
+      matchIndex = i;
+      if (count > 1) return null; // ambiguous → refuse
+    }
+  }
+  if (count !== 1) return null; // not found → refuse
+
+  const start = fileLines.slice(0, matchIndex).join('\n').length + (matchIndex > 0 ? 1 : 0);
+  const matched = fileLines.slice(matchIndex, matchIndex + oldLines.length).join('\n');
+  return { start, end: start + matched.length };
+}
+
 /**
  * 단일 도구 호출 실행
  */
@@ -358,27 +408,41 @@ export async function executeTool(
         }
         const original = await fs.readFile(filePath, 'utf-8');
         const occurrences = original.split(args.old_string).length - 1;
-        if (occurrences === 0) {
-          return { tool_call_id: callId, content: `old_string not found in ${filePath}`, is_error: true };
-        }
         if (occurrences > 1) {
           return { tool_call_id: callId, content: `old_string found ${occurrences} times — must be unique. Provide more context.`, is_error: true };
         }
-        const updated = original.replace(args.old_string, args.new_string);
+        // Resolve the exact span to replace. Exact match first; on a miss, fall back
+        // to line-normalized fuzzy matching (trailing whitespace / smart quotes /
+        // dashes) — but only when it's unique, so we never edit the wrong place. (INT-2011)
+        let editStart: number;
+        let editEnd: number;
+        let fuzzy = false;
+        if (occurrences === 1) {
+          editStart = original.indexOf(args.old_string);
+          editEnd = editStart + args.old_string.length;
+        } else {
+          const span = findFuzzyEditSpan(original, args.old_string);
+          if (!span) {
+            return { tool_call_id: callId, content: `old_string not found in ${filePath}`, is_error: true };
+          }
+          editStart = span.start;
+          editEnd = span.end;
+          fuzzy = true;
+        }
+        const updated = original.slice(0, editStart) + args.new_string + original.slice(editEnd);
         await fs.writeFile(filePath, updated, 'utf-8');
         invalidateCache(cache, filePath);
         // Return the changed region so the model can verify without a re-read.
-        // Locate the edit via old_string's position in the ORIGINAL (guaranteed
-        // unique above) — indexOf(new_string) on the updated text could match an
-        // earlier pre-existing occurrence and show the wrong region.
+        // editStart is the exact offset in the ORIGINAL (exact or fuzzy), so the
+        // line math is correct either way.
         const newLines = updated.split('\n');
-        const editLine = original.slice(0, original.indexOf(args.old_string)).split('\n').length - 1;
+        const editLine = original.slice(0, editStart).split('\n').length - 1;
         const from = Math.max(0, editLine - 3);
         const to = Math.min(newLines.length, editLine + args.new_string.split('\n').length + 3);
         const snippet = newLines.slice(from, to).map((l, i) => `${from + i + 1}\t${l}`).join('\n');
         return {
           tool_call_id: callId,
-          content: `Edited: ${filePath}\nResulting region:\n${snippet}`,
+          content: `Edited: ${filePath}${fuzzy ? ' (matched with whitespace/quote normalization)' : ''}\nResulting region:\n${snippet}`,
           is_error: false,
         };
       }

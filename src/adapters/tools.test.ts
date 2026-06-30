@@ -182,6 +182,42 @@ describe('executeTool', () => {
       expect(result.content).toContain('2 times');
       expect(result.content).toContain('unique');
     });
+
+    // ── fuzzy fallback (INT-2011) ──
+    it('fuzzy: matches despite a trailing-whitespace difference', async () => {
+      const filePath = path.join(TMP_DIR, 'edit-fuzzy-ws.txt');
+      await fs.writeFile(filePath, 'line one   \nline two\nline three', 'utf-8'); // line one has trailing spaces
+      const result = await executeTool(
+        makeCall('edit_file', { path: filePath, old_string: 'line one\nline two', new_string: 'X\nY' }),
+        TMP_DIR,
+      );
+      expect(result.is_error).toBe(false);
+      expect(result.content).toContain('normalization');
+      expect(await fs.readFile(filePath, 'utf-8')).toBe('X\nY\nline three');
+    });
+
+    it('fuzzy: matches despite smart-quote difference', async () => {
+      const filePath = path.join(TMP_DIR, 'edit-fuzzy-quote.txt');
+      await fs.writeFile(filePath, "const s = 'hello';", 'utf-8'); // straight quotes in file
+      const result = await executeTool(
+        makeCall('edit_file', { path: filePath, old_string: "const s = ‘hello’;", new_string: "const s = 'bye';" }),
+        TMP_DIR,
+      );
+      expect(result.is_error).toBe(false);
+      expect(await fs.readFile(filePath, 'utf-8')).toBe("const s = 'bye';");
+    });
+
+    it('fuzzy: refuses when the normalized match is ambiguous', async () => {
+      const filePath = path.join(TMP_DIR, 'edit-fuzzy-ambig.txt');
+      await fs.writeFile(filePath, "a = 'x'\nb\na = 'x'", 'utf-8'); // two straight-quote lines
+      const result = await executeTool(
+        makeCall('edit_file', { path: filePath, old_string: "a = ‘x’", new_string: 'CHANGED' }), // smart quotes → exact miss, fuzzy hits 2
+        TMP_DIR,
+      );
+      expect(result.is_error).toBe(true);
+      expect(result.content).toContain('not found');
+      expect(await fs.readFile(filePath, 'utf-8')).toBe("a = 'x'\nb\na = 'x'"); // unchanged
+    });
   });
 
   // ── search_files ──

@@ -136,7 +136,7 @@ Optional: \`cxt\` (code registry, only if this repo already has one — do NOT r
 
 ## Making the change (this is the point — do not stop at reading)
 Reading/searching is only to LOCATE the change. As soon as you know what to change, EDIT — do not keep reading.
-- **edit_file** — surgical change to an existing file. \`old_string\` must match the file EXACTLY (whitespace included) and be UNIQUE; keep it as small as possible while still unique. For several changes, call edit_file several times.
+- **edit_file** — surgical change to an existing file. \`old_string\` must locate a UNIQUE span; copy it from the file and keep it as small as possible while still unique. Minor differences (trailing whitespace, smart vs straight quotes, en/em dashes) are auto-corrected, but indentation and the rest of the code must still match. For several changes, call edit_file several times.
 - **write_file** — a NEW file, or a full rewrite of a small file.
 - If an edit_file fails with "not found", you copied old_string imperfectly — re-read just that span and copy the exact text; do NOT restart the whole investigation.
 - Most tasks need 1–3 edits, not 20+ reads. If you've read the relevant code, make the edit now.

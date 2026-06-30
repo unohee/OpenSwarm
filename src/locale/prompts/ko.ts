@@ -137,7 +137,7 @@ ${feedbackSection}${contextSection}${completionSection}
 
 ## 변경하기 (이게 목적이다 — 읽기에서 멈추지 말 것)
 읽기/검색은 변경 지점을 찾기 위한 것뿐. 무엇을 바꿀지 알았으면 즉시 편집하라 — 계속 읽지 말 것.
-- **edit_file** — 기존 파일의 surgical 변경. \`old_string\`은 파일과 EXACT하게(공백 포함) 일치하고 UNIQUE해야 함; 유일성을 유지하는 선에서 최대한 작게. 여러 변경은 edit_file을 여러 번 호출.
+- **edit_file** — 기존 파일의 surgical 변경. \`old_string\`은 UNIQUE한 구간을 지정해야 하며 파일에서 복사해 유일성을 유지하는 선에서 최대한 작게. 사소한 차이(trailing whitespace, smart/straight 따옴표, en/em 대시)는 자동 보정되지만 들여쓰기와 나머지 코드는 일치해야 함. 여러 변경은 edit_file을 여러 번 호출.
 - **write_file** — 새 파일, 또는 작은 파일의 전체 재작성.
 - edit_file이 "not found"로 실패하면 old_string을 부정확하게 복사한 것 — 그 구간만 다시 읽어 정확히 복사하라; 조사를 처음부터 다시 하지 말 것.
 - 대부분 작업은 read 20+회가 아니라 edit 1~3회면 된다. 관련 코드를 읽었으면 지금 편집하라.
