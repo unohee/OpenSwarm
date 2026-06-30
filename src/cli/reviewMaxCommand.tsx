@@ -11,13 +11,17 @@ import { render } from 'ink';
 import { EventEmitter } from 'node:events';
 import { createInterface } from 'node:readline';
 import { execFileSync } from 'node:child_process';
+import { writeFile, mkdir } from 'node:fs/promises';
+import { join, dirname, basename } from 'node:path';
 import {
   listSourceFiles,
   partitionIntoAreas,
   runMaxReview,
   formatAuditSummary,
+  formatAuditReport,
   type AuditArea,
   type AuditRun,
+  type AuditSummary,
 } from './reviewAudit.js';
 import { AuditBoard } from '../tui/components/AuditBoard.js';
 import { resolveIssueFromBranch, ensureTaskSource, resolveProjectId } from './reviewCommand.js';
@@ -38,6 +42,10 @@ export interface ReviewMaxOptions {
   yes?: boolean;
   /** Partition only, print the plan, and exit (no subagents spawned). */
   dryRun?: boolean;
+  /** Report file path (default: <cwd>/.openswarm/audit/audit-<ts>.md). (INT-2022) */
+  out?: string;
+  /** Skip creating the default Linear master audit issue. (INT-2022) */
+  noLinear?: boolean;
 }
 
 /** Interactive cost gate. Non-TTY always proceeds (scripted runs). */
@@ -154,13 +162,48 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
 
   console.log(formatAuditSummary(run.summary));
 
+  // (3) Persist a markdown report so the result isn't lost to the scrollback. (INT-2022)
+  const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const report = formatAuditReport(run.summary, basename(cwd) || cwd, ts);
+  const outPath = opts.out ?? join(cwd, '.openswarm', 'audit', `audit-${ts}.md`);
+  try {
+    await mkdir(dirname(outPath), { recursive: true });
+    await writeFile(outPath, report, 'utf8');
+    console.log(`\nReport saved: ${outPath}`);
+  } catch (e) {
+    console.warn(`Could not save report: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  // (4) Linear: --issues files per-area follow-ups (opt-in); otherwise a single
+  //     master audit issue by default; --no-linear skips Linear entirely. (INT-2022)
   if (opts.fileIssue) {
     await filePerAreaFollowups(cwd, opts.fileIssue, run);
+  } else if (!opts.noLinear && run.summary.recommendedActions.length) {
+    await createMasterAuditIssue(cwd, run.summary, report, ts);
   } else if (run.summary.recommendedActions.length) {
-    console.log(
-      `\n${run.summary.recommendedActions.length} follow-up(s) suggested. Re-run with \`--issues\` to file them as Linear issues.`,
-    );
+    console.log(`\n${run.summary.recommendedActions.length} follow-up(s) — captured in the report above.`);
   }
 
   return { decision: run.summary.decision };
+}
+
+/** Create one master audit issue holding the full report (default Linear behavior). (INT-2022) */
+async function createMasterAuditIssue(cwd: string, summary: AuditSummary, report: string, ts: string): Promise<void> {
+  const source = await ensureTaskSource();
+  if (!source) {
+    console.log('Linear not connected — report saved to file only. `openswarm auth login --provider linear` to enable.');
+    return;
+  }
+  const projectId = await resolveProjectId(cwd);
+  const title = `chore(audit): codebase audit ${ts.slice(0, 10)} — review --max (${summary.recommendedActions.length} follow-ups)`;
+  try {
+    const res = await source.createTask(title, report, projectId);
+    if ('identifier' in res) {
+      console.log(`Linear master audit issue: ${res.identifier}`);
+    } else {
+      console.warn(`Could not create Linear issue (report saved to file): ${res.error}`);
+    }
+  } catch (e) {
+    console.warn(`Could not create Linear issue (report saved to file): ${e instanceof Error ? e.message : String(e)}`);
+  }
 }

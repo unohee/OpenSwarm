@@ -174,6 +174,11 @@ These are EXISTING files in the codebase — NOT a change and NOT a diff. There 
 no worker, no diff, and nothing to "verify against changes". \`git diff\` being
 empty is expected and correct. Read each file and evaluate it on its own merits.
 
+**Report findings ONLY for the files listed above.** You may read other files
+(imports, callers) to understand them, but anything OUTSIDE this set is audited by
+its own area — flagging it here just creates duplicate findings. Every
+recommendedAction's \`location\` MUST point at one of the files under audit.
+
 ## Audit Criteria
 1. Correctness bugs, logic errors, unhandled edge cases
 2. Security issues (injection, unsafe input, leaked secrets, auth gaps)

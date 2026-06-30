@@ -136,8 +136,20 @@ export function aggregateAuditResults(results: AuditAreaResult[]): AuditSummary 
   let worst: ReviewResult['decision'] = 'approve';
   let completed = 0;
   let failed = 0;
+  // Cross-area dedup: a fan-out reviewer often flags a shared file it imported,
+  // so the same finding shows up under several areas. Keep the first. (INT-2022)
+  const seen = new Set<string>();
 
   const rank = (d: ReviewResult['decision']): number => (d === 'reject' ? 2 : d === 'revise' ? 1 : 0);
+
+  // True when a follow-up's location points at a file this area actually owns.
+  // Reviewers may read imports to understand them, but a finding outside the area
+  // is audited by its own area — dropping it here removes the fan-out duplicate. (INT-2022)
+  const inArea = (location: string | undefined, area: AuditArea): boolean => {
+    if (!location) return true; // area-level note, keep
+    const path = location.split(':')[0].trim();
+    return area.files.includes(path) || path === area.dir || path.startsWith(area.dir + '/');
+  };
 
   for (const { area, review, error } of results) {
     if (error || !review) {
@@ -151,24 +163,89 @@ export function aggregateAuditResults(results: AuditAreaResult[]): AuditSummary 
     const reviewIssues = review.issues ?? [];
     reviewIssues.forEach((i) => issues.push(`[${area.label}] ${i}`));
 
-    const actions = review.recommendedActions ?? [];
-    actions.forEach((a) =>
+    let kept = 0;
+    for (const a of review.recommendedActions ?? []) {
+      // (B) area isolation — drop findings outside this area (audited elsewhere).
+      if (!inArea(a.location, area)) continue;
+      // (A) dedup by type + file:line across all areas.
+      const key = `${a.type}|${a.location ?? a.title}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
       recommendedActions.push({
         ...a,
         // Fold the area into the location so the merged list stays traceable.
         location: a.location ? `${area.label}: ${a.location}` : area.label,
-      }),
-    );
+      });
+      kept++;
+    }
 
     areas.push({
       label: area.label,
       decision: review.decision,
       issueCount: reviewIssues.length,
-      actionCount: actions.length,
+      actionCount: kept,
     });
   }
 
   return { decision: worst, totalAreas: results.length, completed, failed, areas, issues, recommendedActions };
+}
+
+/**
+ * Render the audit as a persistable markdown report. Pure — timestamp is injected
+ * (no Date.now() inside) so it's deterministic and testable. (INT-2022)
+ */
+export function formatAuditReport(summary: AuditSummary, repoName: string, timestamp: string): string {
+  const mark = (d: AuditAreaSummary['decision']) =>
+    d === 'approve' ? '✓' : d === 'revise' ? '✎' : d === 'reject' ? '✗' : '⚠';
+  const approved = summary.areas.filter((a) => a.decision === 'approve').length;
+  const revised = summary.areas.filter((a) => a.decision === 'revise').length;
+  const rejected = summary.areas.filter((a) => a.decision === 'reject').length;
+
+  const lines: string[] = [];
+  lines.push(`# Codebase audit — ${repoName}`);
+  lines.push('');
+  lines.push(`\`openswarm review --max\` · ${timestamp}`);
+  lines.push('');
+  lines.push(
+    `**${summary.totalAreas} area(s)** — ${summary.completed} reviewed, ${summary.failed} failed · ` +
+      `${approved} ✓ / ${revised} ✎ / ${rejected} ✗ · **Verdict: ${summary.decision.toUpperCase()}**`,
+  );
+  lines.push('');
+
+  const failedAreas = summary.areas.filter((a) => a.decision === 'error');
+  if (failedAreas.length) {
+    lines.push(`## ⚠ Reviewer failures (${failedAreas.length})`);
+    lines.push('These areas were NOT audited (subagent error). Re-run to cover them.');
+    failedAreas.forEach((a) => lines.push(`- ${a.label}`));
+    lines.push('');
+  }
+
+  lines.push('## Areas');
+  lines.push('| area | verdict | issues | follow-ups |');
+  lines.push('|---|---|---|---|');
+  summary.areas.forEach((a) => lines.push(`| ${a.label} | ${mark(a.decision)} | ${a.issueCount} | ${a.actionCount} |`));
+  lines.push('');
+
+  if (summary.recommendedActions.length) {
+    lines.push(`## Recommended follow-ups (${summary.recommendedActions.length}, deduped)`);
+    const byType = new Map<string, RecommendedAction[]>();
+    for (const a of summary.recommendedActions) {
+      (byType.get(a.type) ?? byType.set(a.type, []).get(a.type)!).push(a);
+    }
+    for (const [type, actions] of [...byType.entries()].sort((x, y) => y[1].length - x[1].length)) {
+      lines.push('');
+      lines.push(`### ${type} (${actions.length})`);
+      actions.forEach((a) => lines.push(`- ${a.title}${a.location ? ` — \`${a.location}\`` : ''}`));
+    }
+    lines.push('');
+  }
+
+  if (summary.issues.length) {
+    lines.push(`## Issues (${summary.issues.length})`);
+    summary.issues.forEach((i) => lines.push(`- ${i}`));
+  }
+
+  return lines.join('\n');
 }
 
 /** Render the aggregate audit verdict for the terminal. Pure. */

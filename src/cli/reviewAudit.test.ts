@@ -4,10 +4,12 @@ import {
   preferSrcRoot,
   partitionIntoAreas,
   aggregateAuditResults,
+  formatAuditReport,
   runMaxReview,
   type AuditArea,
   type AuditAreaResult,
   type AuditProgress,
+  type AuditSummary,
 } from './reviewAudit.js';
 import type { ReviewResult } from '../agents/agentPair.js';
 
@@ -115,7 +117,7 @@ describe('aggregateAuditResults (INT-2006)', () => {
           decision: 'revise',
           issues: ['missing null check'],
           recommendedActions: [
-            { type: 'bug', title: 'Fix token refresh', location: 'token.ts:42' },
+            { type: 'bug', title: 'Fix token refresh', location: 'src/auth/token.ts:42' },
             { type: 'test', title: 'Add coverage' },
           ],
         }),
@@ -123,8 +125,78 @@ describe('aggregateAuditResults (INT-2006)', () => {
     ];
     const sum = aggregateAuditResults(results);
     expect(sum.issues).toEqual(['[src/auth] missing null check']);
-    expect(sum.recommendedActions[0].location).toBe('src/auth: token.ts:42');
+    expect(sum.recommendedActions[0].location).toBe('src/auth: src/auth/token.ts:42');
     expect(sum.recommendedActions[1].location).toBe('src/auth'); // no original location
+  });
+
+  // INT-2022: fan-out areas duplicate shared files; isolate to the area + dedup.
+  it('drops follow-ups pointing outside the area (fan-out isolation)', () => {
+    const results: AuditAreaResult[] = [
+      {
+        area: area('src/a'),
+        review: review({
+          decision: 'revise',
+          recommendedActions: [
+            { type: 'bug', title: 'own', location: 'src/a/f.ts:10' },          // in area → keep
+            { type: 'bug', title: 'foreign', location: 'src/broker/x.ts:5' },   // outside → drop
+          ],
+        }),
+      },
+    ];
+    const sum = aggregateAuditResults(results);
+    expect(sum.recommendedActions.map((a) => a.title)).toEqual(['own']);
+    expect(sum.areas[0].actionCount).toBe(1); // count reflects kept, not raw
+  });
+
+  it('dedups the same type+file:line across areas', () => {
+    const results: AuditAreaResult[] = [
+      {
+        area: area('src/a'),
+        review: review({
+          decision: 'revise',
+          recommendedActions: [
+            { type: 'bug', title: 't1', location: 'src/a/f.ts:5' },
+            { type: 'bug', title: 't1-dup', location: 'src/a/f.ts:5' }, // same type+loc → dedup
+            { type: 'test', title: 'same-loc-diff-type', location: 'src/a/f.ts:5' }, // diff type → keep
+          ],
+        }),
+      },
+      {
+        area: area('src/b'),
+        review: review({ decision: 'revise', recommendedActions: [{ type: 'bug', title: 'b', location: 'src/b/f.ts:1' }] }),
+      },
+    ];
+    const sum = aggregateAuditResults(results);
+    // t1 (bug), same-loc-diff-type (test), b (bug) = 3; t1-dup deduped
+    expect(sum.recommendedActions.map((a) => a.title)).toEqual(['t1', 'same-loc-diff-type', 'b']);
+  });
+});
+
+describe('formatAuditReport (INT-2022)', () => {
+  it('renders markdown with verdict, failures, typed follow-ups, and issues', () => {
+    const summary: AuditSummary = {
+      decision: 'revise',
+      totalAreas: 3,
+      completed: 2,
+      failed: 1,
+      areas: [
+        { label: 'src/a', decision: 'revise', issueCount: 2, actionCount: 1 },
+        { label: 'src/b', decision: 'error', issueCount: 0, actionCount: 0 },
+      ],
+      issues: ['[src/a] missing null check'],
+      recommendedActions: [
+        { type: 'bug', title: 'Fix X', location: 'src/a: src/a/f.ts:1' },
+        { type: 'test', title: 'Add test' },
+      ],
+    };
+    const md = formatAuditReport(summary, 'myrepo', '2026-06-30T20-00-00');
+    expect(md).toContain('# Codebase audit — myrepo');
+    expect(md).toContain('Verdict: REVISE');
+    expect(md).toContain('## ⚠ Reviewer failures (1)');
+    expect(md).toContain('- src/b');
+    expect(md).toContain('### bug (1)');
+    expect(md).toContain('Fix X — `src/a: src/a/f.ts:1`');
+    expect(md).toContain('## Issues (1)');
   });
 });
 

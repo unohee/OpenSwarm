@@ -241,9 +241,12 @@ program
   .option('--max-files-per-area <n>', 'Files per area before chunking, for --max (default 12)', (v) => parseInt(v, 10))
   .option('--yes', 'Skip the --max cost-confirmation prompt')
   .option('--dry-run', 'For --max: print the area partition plan and exit (no subagents)')
+  .option('--out <file>', 'For --max: write the markdown report here (default .openswarm/audit/audit-<ts>.md)')
+  .option('--no-linear', 'For --max: skip creating the default Linear master audit issue')
   .action(async (opts: {
     path?: string; issues?: string | boolean; file?: string | boolean; adapter?: string; debug?: boolean;
     max?: boolean; concurrency?: number; maxFilesPerArea?: number; yes?: boolean; dryRun?: boolean;
+    out?: string; linear?: boolean;
   }) => {
     try {
       if (opts.max) {
@@ -256,6 +259,9 @@ program
           fileIssue: opts.issues ?? opts.file,
           yes: opts.yes,
           dryRun: opts.dryRun,
+          out: opts.out,
+          // commander sets opts.linear=false for --no-linear
+          noLinear: opts.linear === false,
         });
         if (result && result.decision === 'reject') process.exitCode = 1;
         return;
