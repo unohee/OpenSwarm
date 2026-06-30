@@ -271,6 +271,10 @@ export class AutonomousRunner {
       broadcastEvent({ type: 'task:completed', data: { taskId: task.id, success: false, duration: result.totalDuration } });
       this.recordPipelineHistory(task, result);
       await execution.syncCancellationState(task);
+      // Keep parity with the completed/failed handlers: kick the next heartbeat
+      // so discovery resumes immediately instead of waiting for the next cron
+      // tick (matters in serial mode, where slotFreed/runAvailableTasks is a no-op).
+      this.scheduleNextHeartbeat();
     });
 
     this.scheduler.on('failed', async ({ task, result }) => {
