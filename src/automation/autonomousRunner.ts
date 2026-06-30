@@ -75,8 +75,15 @@ export class AutonomousRunner {
   // Heartbeat concurrency guard
   private _heartbeatRunning = false;
 
-  // Explicitly enabled project paths (allow-list; empty = nothing runs)
+  // Explicitly enabled project paths (allow-list; empty = nothing runs ONLY once
+  // the selection has been touched — see projectSelectionTouched).
   private enabledProjects = new Set<string>();
+
+  // Whether the user has explicitly enabled/disabled any project (dashboard/CLI).
+  // Before this, an empty enabledProjects means "no selection yet → all allowed
+  // projects run" (legacy fallback). After, an empty set means "nothing runs" —
+  // so disabling every project actually stops the daemon. (INT-2207)
+  private projectSelectionTouched = false;
 
   /**
    * macOS (APFS default) and Windows have case-insensitive filesystems by
@@ -103,6 +110,15 @@ export class AutonomousRunner {
       if (needle.startsWith(hay + '/')) return true;
     }
     return false;
+  }
+
+  /**
+   * Whether to apply the enabledProjects allow-list. True once the user has made
+   * an explicit selection (touched), OR while any project is enabled. Empty +
+   * untouched stays the legacy "run all allowed projects" fallback. (INT-2207)
+   */
+  private shouldFilterByEnabled(): boolean {
+    return this.projectSelectionTouched || this.enabledProjects.size > 0;
   }
 
   // Last fetched Linear tasks (for dashboard display)
@@ -852,7 +868,7 @@ export class AutonomousRunner {
     const executableTasks = tasks.filter(t => t.linearState !== 'Backlog');
 
     let tasksForEngine = executableTasks;
-    if (this.enabledProjects.size > 0) {
+    if (this.shouldFilterByEnabled()) {
       // Explicit repo↔Linear mapping — match fetched issues to repos by the Linear
       // projectId the user picked in `openswarm add` (written to <repo>/openswarm.json),
       // NOT by guessing from the repo directory name. Built fresh each cycle so a
@@ -939,7 +955,7 @@ export class AutonomousRunner {
         continue;
       }
 
-      if (this.enabledProjects.size > 0 && !this.isProjectEnabled(projectPath)) {
+      if (this.shouldFilterByEnabled() && !this.isProjectEnabled(projectPath)) {
         this.syslog(`  Project not enabled: ${projectPath}`);
         continue;
       }
@@ -1043,7 +1059,7 @@ export class AutonomousRunner {
     }
 
     // Skip if project is not in enabled list (allow-list; empty = nothing runs)
-    if (this.enabledProjects.size > 0 && !this.isProjectEnabled(projectPath)) {
+    if (this.shouldFilterByEnabled() && !this.isProjectEnabled(projectPath)) {
       console.log(`[AutonomousRunner] Project not enabled, skipping: ${projectPath}`);
       return;
     }
@@ -1405,6 +1421,7 @@ export class AutonomousRunner {
   }
 
   disableProject(projectPath: string): void {
+    this.projectSelectionTouched = true; // empty set now means "nothing runs" (INT-2207)
     this.enabledProjects.delete(projectPath);
     console.log(`[AutonomousRunner] Project disabled: ${projectPath}`);
     // Disabling gates new selection AND cancels any in-flight pipeline for this
@@ -1416,6 +1433,7 @@ export class AutonomousRunner {
   }
 
   enableProject(projectPath: string): void {
+    this.projectSelectionTouched = true; // explicit selection from here on (INT-2207)
     this.enabledProjects.add(projectPath);
     // Enabling a repo (via `openswarm add` / the dashboard) must also ALLOW it:
     // resolveProjectPath only reads a repo's openswarm.json for paths in

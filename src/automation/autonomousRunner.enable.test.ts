@@ -30,3 +30,32 @@ describe('AutonomousRunner.enableProject (INT-1973)', () => {
     expect(r.getEnabledProjects()).toContain('/x/a');
   });
 });
+
+describe('AutonomousRunner project-selection gating (INT-2207)', () => {
+  // shouldFilterByEnabled is private; the gating behavior is what matters.
+  type Internal = { shouldFilterByEnabled(): boolean };
+  const filtersOn = (r: AutonomousRunner) => (r as unknown as Internal).shouldFilterByEnabled();
+
+  it('untouched + empty → filter OFF (legacy run-all fallback)', () => {
+    const r = new AutonomousRunner(cfg());
+    expect(r.getEnabledProjects()).toHaveLength(0);
+    expect(filtersOn(r)).toBe(false); // no explicit selection yet → run all allowed
+  });
+
+  it('disabling every project → filter ON even though empty → nothing runs', () => {
+    const r = new AutonomousRunner(cfg({ allowedProjects: ['/x/a'] }));
+    r.enableProject('/x/a');
+    expect(filtersOn(r)).toBe(true);
+    r.disableProject('/x/a');
+    expect(r.getEnabledProjects()).toHaveLength(0);
+    // The bug: empty used to mean "run all". Now touched → filter stays ON, so an
+    // empty enabled-set means nothing runs.
+    expect(filtersOn(r)).toBe(true);
+  });
+
+  it('disabling alone (no prior enable) still touches the selection', () => {
+    const r = new AutonomousRunner(cfg());
+    r.disableProject('/x/a');
+    expect(filtersOn(r)).toBe(true);
+  });
+});
