@@ -224,18 +224,16 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
     console.warn(`Could not save report: ${e instanceof Error ? e.message : String(e)}`);
   }
 
-  // (4) Linear: --issues runs the PM synthesis (a master parent + ≤10 cohesive
-  //     sub-issues); --issues-per-area keeps the legacy per-area fan-out;
-  //     otherwise a single master audit issue by default; --no-linear skips
-  //     Linear entirely. (INT-2022 / INT-2225)
+  // (4) Linear: PM synthesis is the DEFAULT — a master parent + ≤10 cohesive
+  //     sub-issues. `--issues <id>` overrides the parent with an existing issue;
+  //     `--issues-per-area` keeps the legacy per-area fan-out; `--no-linear`
+  //     skips Linear entirely (report only). (INT-2022 / INT-2225)
   if (opts.issuesPerArea) {
     await filePerAreaFollowups(cwd, opts.issuesPerArea, run);
-  } else if (opts.fileIssue) {
-    await filePmSynthesizedIssues(cwd, opts, run.summary, report, ts);
   } else if (!opts.noLinear && run.summary.recommendedActions.length) {
-    await createMasterAuditIssue(cwd, run.summary, report, ts);
+    await filePmSynthesizedIssues(cwd, opts, run.summary, report, ts);
   } else if (run.summary.recommendedActions.length) {
-    console.log(`\n${run.summary.recommendedActions.length} follow-up(s) — captured in the report above.`);
+    console.log(`\n${run.summary.recommendedActions.length} follow-up(s) — captured in the report (--no-linear).`);
   }
 
   return { decision: run.summary.decision };

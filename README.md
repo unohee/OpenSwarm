@@ -64,12 +64,21 @@ Status bar shows: provider · model · message count · cumulative cost
 ```bash
 openswarm                        # TUI chat (default)
 openswarm chat [session]         # Simple readline chat
+openswarm resume                 # Reopen the most recent chat session (conversation + goal)
 openswarm start                  # Start full daemon (requires config.yaml)
 openswarm run "Fix the bug" -p ~/my-project   # Run a single task
 openswarm exec "Run tests" --local --pipeline # Execute via daemon
 openswarm init                   # Interactive setup wizard (provider auth, Linear OAuth, config)
 openswarm doctor                 # Diagnose environment (runtime, native deps, providers, ports)
 openswarm validate               # Validate config.yaml
+
+# Code review
+openswarm review                 # Review the working-tree changes
+openswarm review --max           # Full-codebase audit: fan reviewer subagents over areas
+                                 #   → report at .openswarm/audit/ + PM-synthesized Linear
+                                 #   issues by default (≤10 cohesive, master + sub-issues)
+                                 #   --no-linear (report only), --issues-per-area (legacy spray),
+                                 #   --issues <id> (set parent), --fallback <adapter>, --out <file>
 
 # Code Registry & BS Detector
 openswarm check --scan           # Scan repo → register all entities

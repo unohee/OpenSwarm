@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.10.0 — 2026-06-30
+
+Full-codebase review pipeline (multi-agent audit → report → PM triage → Linear), chat session persistence, and a batch of daemon / TUI / adapter fixes.
+
+### Added
+
+- **`openswarm review --max`** — full-codebase audit that fans reviewer subagents out over directory-shaped areas, with **area isolation + dedup** so a shared file isn't flagged by every area. Persists a markdown report to `.openswarm/audit/audit-<ts>.md` and files a Linear master issue by default (`--out`, `--no-linear`). (INT-2006, INT-2022)
+- **PM agent issue synthesis (default)** — `review --max` files Linear issues by default as **at most 10 cohesive issues** (a master parent + synthesized sub-issues), grouped by an LLM PM by theme/root-cause instead of one-per-follow-up. `--no-linear` skips Linear (report only); `--issues-per-area` keeps the legacy per-area filing; `--issues <id>` sets an existing parent. (INT-2225)
+- **Codex usage-limit handling + claude fallback** — typed `RateLimitError` from the rich `x-codex-*` 429 headers (used %, reset time), early-abort instead of hammering a dead quota, and **automatic fallback to the `claude` adapter** (Claude subscription) for the remaining areas (`--fallback`, `--no-fallback`). (INT-2192)
+- **Chat session persistence + `openswarm resume`** — conversations persist to `~/.openswarm/chat`; `resume` reopens the latest with its goal. `/goal clear` is the only way to stop an in-flight goal. (INT-2014)
+- **Execution cwd context** — chat / `/plan` / `/goal` operate in the repo `openswarm` was launched from. (INT-2005)
+- **Project selection persistence** — the daemon's enabled-project selection survives restarts. (INT-2208)
+- **Planner rich-markdown sub-tasks** — each sub-task description is a full markdown doc (Background / Investigation / Approach / Completion) so the worker starts with context. (INT-1581)
+- **`edit_file` fuzzy fallback** — line-normalized matching (whitespace / quotes / unicode) when exact match fails, plus edit prompt guidelines. (INT-2011)
+
+### Fixed
+
+- **Daemon kept running after every project was disabled** — an empty enabled-set was treated as "run all"; now an explicit "disable all" actually stops the daemon (and persists across restarts). (INT-2207, INT-2208)
+- **Multi-team config `createIssue`** — passed the comma-joined teamId string to Linear ("teamId must be a UUID"); now resolves a single team (the project's, else the first). (INT-2210)
+- **Ink TUI color consistency** — hardcoded color literals + uncolored status text routed through the theme scheme; new `running` / `info` tokens. (INT-2209)
+- **Hangul input doubling** — multi-grapheme / N-repeat cases collapsed. (INT-2012)
+- **Adapter CLI infra errors no longer counted as STUCK** — codex CLI / usage-limit errors are infra, not task failures. (INT-2010)
+- **Linear project overview summary doubling** — strip the prior compact summary before re-appending. (INT-1907)
+- **Cancel syncs task-state to Backlog.** (#162)
+
+> Note: 0.8.x–0.9.x were tagged without changelog entries; see git history for those.
+
 ## 0.7.0 — 2026-06-19
 
 Runs with **no external SaaS** from a clean install, plus a native ChatGPT-OAuth Codex path.
