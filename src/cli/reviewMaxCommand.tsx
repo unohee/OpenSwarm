@@ -19,6 +19,7 @@ import {
   runMaxReview,
   formatAuditSummary,
   formatAuditReport,
+  mergeFallback,
   type AuditArea,
   type AuditRun,
   type AuditSummary,
@@ -46,6 +47,21 @@ export interface ReviewMaxOptions {
   out?: string;
   /** Skip creating the default Linear master audit issue. (INT-2022) */
   noLinear?: boolean;
+  /** Adapter to retry usage-limited areas on (default claude for codex primary). (INT-2192) */
+  fallbackAdapter?: string;
+  /** Disable the automatic usage-limit fallback. (INT-2192) */
+  noFallback?: boolean;
+}
+
+/**
+ * Pick the adapter to retry usage-limited areas on. Explicit --fallback wins;
+ * otherwise a codex primary auto-falls back to claude (Claude subscription). (INT-2192)
+ */
+function resolveFallbackAdapter(opts: ReviewMaxOptions): AdapterName | undefined {
+  if (opts.noFallback) return undefined;
+  if (opts.fallbackAdapter) return opts.fallbackAdapter as AdapterName;
+  const primary = opts.adapter ?? 'codex-responses';
+  return primary === 'codex' || primary === 'codex-responses' ? 'claude' : undefined;
 }
 
 /** Interactive cost gate. Non-TTY always proceeds (scripted runs). */
@@ -160,16 +176,37 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
     board.unmount();
   }
 
+  // Auto-fallback: a codex usage-limit aborted the run early → retry the failed/
+  // skipped areas on the fallback adapter (default claude → Claude subscription). (INT-2192)
+  if (run.rateLimit) {
+    const fallback = resolveFallbackAdapter(opts);
+    if (fallback) {
+      const pending = areas.filter((_, i) => run.results[i]?.error);
+      console.warn(`\n⚠ Codex usage limit hit — falling back to "${fallback}" for ${pending.length} remaining area(s)...`);
+      const fbRun = await runMaxReview(
+        pending,
+        cwd,
+        { concurrency, adapter: fallback },
+        {
+          onProgress: (e) => {
+            if (e.type === 'done') console.error(`  [${fallback}] ${e.label}: ${e.decision}`);
+            else if (e.type === 'error') console.error(`  [${fallback}] ${e.label}: failed`);
+          },
+        },
+      );
+      run = mergeFallback(run, fbRun);
+    }
+  }
+
   console.log(formatAuditSummary(run.summary));
 
-  // Codex usage-limit aborted the run early — tell the user when it resets and how
-  // to fall back to their Claude subscription. (INT-2192)
+  // If a usage-limit is still unresolved (fallback also exhausted, or no fallback),
+  // surface the reset time. (INT-2192)
   if (run.rateLimit) {
     const skipped = run.summary.areas.filter((a) => a.decision === 'error').length;
     const when = run.rateLimit.resetsAt ? new Date(run.rateLimit.resetsAt * 1000).toLocaleString() : 'an unknown time';
-    console.warn(`\n⚠ Codex usage limit hit — stopped early, ${skipped} area(s) skipped.`);
-    console.warn(`  ${run.rateLimit.message}`);
-    console.warn(`  Retry after ${when}, or re-run with \`--adapter claude\` to use your Claude subscription instead.`);
+    console.warn(`\n⚠ Usage limit unresolved — ${skipped} area(s) still incomplete. ${run.rateLimit.message}`);
+    console.warn(`  Retry after ${when}${resolveFallbackAdapter(opts) ? ' (fallback adapter also exhausted)' : ', or set `--fallback <adapter>`'}.`);
   }
 
   // (3) Persist a markdown report so the result isn't lost to the scrollback. (INT-2022)

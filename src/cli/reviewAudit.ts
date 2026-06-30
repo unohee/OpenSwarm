@@ -389,3 +389,14 @@ export async function runMaxReview(
   );
   return { summary: aggregateAuditResults(results), results, rateLimit: rateLimit ?? undefined };
 }
+
+/**
+ * Merge a fallback run (a retry of the primary run's failed/skipped areas on a
+ * different adapter) back over the primary results, then re-aggregate. The
+ * fallback's own rateLimit (e.g. claude also exhausted) carries forward. (INT-2192)
+ */
+export function mergeFallback(primary: AuditRun, fallback: AuditRun): AuditRun {
+  const fb = new Map(fallback.results.map((r) => [r.area.label, r]));
+  const results = primary.results.map((r) => (r.error && fb.has(r.area.label) ? fb.get(r.area.label)! : r));
+  return { summary: aggregateAuditResults(results), results, rateLimit: fallback.rateLimit };
+}

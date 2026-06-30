@@ -6,9 +6,11 @@ import {
   aggregateAuditResults,
   formatAuditReport,
   runMaxReview,
+  mergeFallback,
   type AuditArea,
   type AuditAreaResult,
   type AuditProgress,
+  type AuditRun,
   type AuditSummary,
 } from './reviewAudit.js';
 import type { ReviewResult } from '../agents/agentPair.js';
@@ -257,5 +259,30 @@ describe('runMaxReview orchestration (INT-2006)', () => {
     expect(run.rateLimit).toBeInstanceOf(RateLimitError);
     expect(run.rateLimit?.usedPercent).toBe(100);
     expect(calls).toBeLessThan(5); // m2..m4 skipped, not attempted against the dead quota
+  });
+});
+
+describe('mergeFallback (INT-2192)', () => {
+  const area = (label: string): AuditArea => ({ label, dir: label, files: [`${label}/f.ts`] });
+
+  it('fills the primary run failed areas with fallback results and clears rateLimit', () => {
+    const primary: AuditRun = {
+      results: [
+        { area: area('src/a'), review: { decision: 'approve', feedback: '' } },
+        { area: area('src/b'), error: 'codex limit' },
+      ],
+      summary: aggregateAuditResults([]),
+      rateLimit: new RateLimitError(1, 'codex'),
+    };
+    const fallback: AuditRun = {
+      results: [{ area: area('src/b'), review: { decision: 'revise', feedback: '' } }],
+      summary: aggregateAuditResults([]),
+    };
+    const merged = mergeFallback(primary, fallback);
+    expect(merged.results[0].review?.decision).toBe('approve'); // a untouched
+    expect(merged.results[1].review?.decision).toBe('revise'); // b filled by claude fallback
+    expect(merged.summary.completed).toBe(2);
+    expect(merged.summary.failed).toBe(0);
+    expect(merged.rateLimit).toBeUndefined(); // fallback succeeded → resolved
   });
 });
