@@ -103,6 +103,8 @@ export function ChatPanel({ active, provider: providerProp, model: modelProp, pr
             setActivity((a) => [...a, line].slice(-10));
           },
           maxTurns,
+          undefined, // no abort signal wired here yet
+          cwd, // run in the repo `openswarm chat` was launched from (INT-2005)
         );
       } catch (e) {
         dispatch({ type: 'stream', chunk: `\n[error] ${e instanceof Error ? e.message : String(e)}` });
@@ -112,7 +114,7 @@ export function ChatPanel({ active, provider: providerProp, model: modelProp, pr
         setBusy(false);
       }
     },
-    [provider, model],
+    [provider, model, cwd],
   );
 
   // /goal routes by complexity: simple → pursue in-session (streamed), complex →

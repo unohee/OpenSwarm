@@ -116,6 +116,7 @@ async function defaultPursue(goal: string, io: PlanIO, opts: GoalCommandOptions)
     (line) => io.print(line),
     opts.maxTurns ?? GOAL_PURSUIT_MAX_TURNS,
     opts.signal,
+    opts.projectPath, // pursue the goal in the target repo, not process.cwd() (INT-2005)
   );
   if (out.trim()) io.print(out.trim());
 }
