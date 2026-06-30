@@ -10,6 +10,7 @@ import {
   completeParentIfChildrenDone,
   buildTaskStateSyncComment,
   hydrateTaskStateFromComments,
+  markTaskBacklog,
 } from './store.js';
 
 describe('task state store', () => {
@@ -159,6 +160,28 @@ describe('task state store', () => {
     markTaskInProgress('KT-402', { linearState: 'In Progress' });
     const running = updateTaskLinearState('KT-402', 'In Progress');
     expect(running.execution.status).toBe('in_progress');
+  });
+
+  it('parks a claimed task back in backlog and clears stale worktree data', () => {
+    markTaskInProgress('KT-450', {
+      issueIdentifier: 'KT-450',
+      title: 'Cancel running task',
+      linearState: 'In Progress',
+      sessionId: 'pipeline-1',
+      branchName: 'fix/kt-450',
+      worktreePath: '/tmp/openswarm/kt-450',
+    });
+
+    const parked = markTaskBacklog('KT-450', {
+      issueIdentifier: 'KT-450',
+      title: 'Cancel running task',
+    });
+
+    expect(parked.execution.status).toBe('backlog');
+    expect(parked.execution.lastSessionId).toBe('pipeline-1');
+    expect(parked.linearState).toBe('Backlog');
+    expect(parked.worktree.branchName).toBeUndefined();
+    expect(parked.worktree.worktreePath).toBeUndefined();
   });
 
   it('completes decomposed parent only after all child issues are done', () => {
