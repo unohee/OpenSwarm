@@ -12,6 +12,7 @@ import type { ToolDefinition } from '../adapters/tools.js';
 import { getAdapter, getDefaultAdapterName, spawnCli } from '../adapters/index.js';
 import { expandPath } from '../core/config.js';
 import { RateLimitError } from '../adapters/rateLimitError.js';
+import { isInfraError } from '../adapters/errorClassification.js';
 import { resolveEditFormat, SEARCH_REPLACE_PROMPT, WHOLE_FILE_PROMPT, type EditFormat } from '../support/editParser.js';
 
 // Types
@@ -250,6 +251,12 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       if (!isFallbackAttempt && isProviderQuotaError(errMsg) && adaptersToTry.length > 1) {
         continue;
       }
+
+      // CLI/infra failure (non-zero exit, auth, spawn, timeout): the worker never
+      // got to actually run, so this is NOT a task failure. Propagate so the
+      // pipeline marks it 'infra_error' → backoff retry instead of a STUCK-counting
+      // failure. (INT-2010)
+      if (isInfraError(error)) throw error;
 
       return {
         success: false,

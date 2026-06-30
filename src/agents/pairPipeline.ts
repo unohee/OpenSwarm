@@ -38,6 +38,7 @@ import * as auditorAgent from './auditor.js';
 import * as skillDocumenterAgent from './skillDocumenter.js';
 import { StuckDetector, createStuckDetector } from '../support/stuckDetector.js';
 import { RateLimitError } from '../adapters/rateLimitError.js';
+import { isInfraError } from '../adapters/errorClassification.js';
 
 // Types
 
@@ -105,7 +106,7 @@ export interface PipelineResult {
   success: boolean;
   sessionId: string;
   stages: StageResult[];
-  finalStatus: 'approved' | 'rejected' | 'failed' | 'cancelled' | 'decomposed' | 'rate_limited';
+  finalStatus: 'approved' | 'rejected' | 'failed' | 'cancelled' | 'decomposed' | 'rate_limited' | 'infra_error';
   /** Unix timestamp (ms) when the rate-limit quota resets — set when finalStatus is 'rate_limited'. */
   rateLimitResetsAt?: number;
   totalDuration: number;
@@ -361,10 +362,16 @@ export class PairPipeline extends EventEmitter {
       // Surface it as its own finalStatus so the runner pauses until quota resets
       // instead of counting a failure and spamming Linear comments. (INT-1906)
       const rateLimited = !cancelled && error instanceof RateLimitError;
+      // An infra/CLI failure (worker/reviewer never ran: non-zero exit, auth,
+      // spawn, timeout) is not a task failure — surface it distinctly so the
+      // runner does a backoff retry instead of counting it toward STUCK. (INT-2010)
+      const infra = !cancelled && !rateLimited && isInfraError(error);
       if (cancelled) {
         console.log(`[${context.taskPrefix}] Pipeline cancelled`);
       } else if (rateLimited) {
         console.warn(`[${context.taskPrefix}] Pipeline rate-limited: ${(error as RateLimitError).message}`);
+      } else if (infra) {
+        console.warn(`[${context.taskPrefix}] Pipeline infra error (not counted toward STUCK): ${error instanceof Error ? error.message : String(error)}`);
       } else {
         console.error('[%s] Error:', context.taskPrefix, error);
       }
@@ -373,7 +380,7 @@ export class PairPipeline extends EventEmitter {
         success: false,
         sessionId: session.id,
         stages,
-        finalStatus: cancelled ? 'cancelled' : rateLimited ? 'rate_limited' : 'failed',
+        finalStatus: cancelled ? 'cancelled' : rateLimited ? 'rate_limited' : infra ? 'infra_error' : 'failed',
         rateLimitResetsAt: rateLimited && (error as RateLimitError).resetsAt
           ? (error as RateLimitError).resetsAt! * 1000
           : undefined,

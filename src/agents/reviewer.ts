@@ -10,6 +10,7 @@ import type { ToolDefinition } from '../adapters/tools.js';
 import { getAdapter, spawnCli } from '../adapters/index.js';
 import { expandPath } from '../core/config.js';
 import { RateLimitError } from '../adapters/rateLimitError.js';
+import { isInfraError } from '../adapters/errorClassification.js';
 
 // Types
 
@@ -226,6 +227,11 @@ export async function runReviewer(options: ReviewerOptions): Promise<ReviewResul
   } catch (error) {
     // Rate limit errors must propagate so the scheduler can pause.
     if (error instanceof RateLimitError) throw error;
+    // An infra failure (CLI exit, auth, spawn, timeout) means the REVIEWER never
+    // ran — it is NOT a quality verdict. Propagate so the pipeline classifies it
+    // as 'infra_error' instead of letting it masquerade as a 'reject' that
+    // increments the rejection-limit STUCK counter. (INT-2010)
+    if (isInfraError(error)) throw error;
     return {
       decision: 'reject',
       feedback: `Reviewer execution failed: ${error instanceof Error ? error.message : String(error)}`,

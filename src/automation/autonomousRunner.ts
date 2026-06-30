@@ -296,6 +296,27 @@ export class AutonomousRunner {
         return;
       }
 
+      // Infra/CLI failure: the worker/reviewer never actually ran (non-zero exit,
+      // auth expiry, spawn, timeout). This is NOT a task failure — do NOT increment
+      // the rejection/failure counters that mark an issue durably STUCK. Backoff-
+      // retry instead; the operator fixes the root cause (e.g. re-auth) and the task
+      // resumes on its own. This is what kept completable tasks (worker had already
+      // edited files) STUCK in production. (INT-2010)
+      if (result.finalStatus === 'infra_error') {
+        const detail = result.workerResult?.error || result.reviewResult?.feedback || 'infra/CLI execution error';
+        if (task.issueId) {
+          // Fixed mid-range backoff — we intentionally don't bump failure counts,
+          // so there's no attempt number to scale by.
+          const nextRetryTime = setRetryTime(task.issueId, 3, this.failedTaskRetryTimes);
+          this.saveTaskState();
+          console.warn(`[Scheduler] Infra error for ${taskCtx} (NOT counted toward STUCK) — backoff retry ${formatRetryTime(nextRetryTime)}: ${detail}`);
+        } else {
+          console.warn(`[Scheduler] Infra error for ${taskCtx} (NOT counted toward STUCK): ${detail}`);
+        }
+        this.scheduleNextHeartbeat();
+        return;
+      }
+
       console.log(`[Scheduler] Task failed: ${taskCtx} ${task.title}`);
       broadcastEvent({ type: 'task:completed', data: { taskId: task.id, success: false, duration: result.totalDuration } });
       this.recordPipelineHistory(task, result);
