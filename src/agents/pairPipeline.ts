@@ -32,6 +32,7 @@ import { recallRepoKnowledge } from '../memory/repoKnowledge.js';
 import type { WorkerContext } from '../locale/types.js';
 import * as workerAgent from './worker.js';
 import * as reviewerAgent from './reviewer.js';
+import { runMultiLensReview, shouldFanoutReview } from './multiLensReview.js';
 import * as testerAgent from './tester.js';
 import * as documenterAgent from './documenter.js';
 import * as auditorAgent from './auditor.js';
@@ -88,6 +89,19 @@ export interface PipelineConfig {
     sufficient?: boolean;
     impactAnalysis?: import('../knowledge/types.js').ImpactAnalysis;
     registrySnapshot?: Array<{ filePath: string; summary: string; highlights: string[] }>;
+  };
+  /**
+   * Review behavior. `multiLens` opts a task into the multi-lens reviewer fan-out
+   * (INT-2230): one worker result verified by several focused review lenses in
+   * parallel. Default OFF — opt-in so the daemon doesn't multiply usage on every
+   * task. Only when enabled is `shouldFanoutReview(task)` consulted as a gate.
+   */
+  review?: {
+    multiLens?: {
+      enabled?: boolean;
+      /** Min changed files to trigger fan-out (default 3). */
+      fileThreshold?: number;
+    };
   };
 }
 
@@ -656,8 +670,7 @@ export class PairPipeline extends EventEmitter {
           // scaffolded task was getting LESS review — exactly the wrong incentive. The
           // completion-criteria hard gate is the real check now.
           const reviewerMaxTurns = this.config.roles?.reviewer?.maxTurns;
-          console.log(`[${prefix}] Running full review...`);
-          result = await reviewerAgent.runReviewer({
+          const reviewerOptions = {
             taskTitle: context.task.title,
             taskDescription: context.task.description || '',
             workerResult: context.workerResult,
@@ -671,7 +684,30 @@ export class PairPipeline extends EventEmitter {
             completionCriteria: this.config.draftAnalysis?.completionCriteria,
             processContext: { taskId: context.task.id, stage: 'reviewer' },
             signal: this.abortSignal,
-          });
+          };
+
+          // Multi-lens fan-out (INT-2230): opt-in, and only for tasks the gate
+          // deems worth the extra cost (wide change surface / high priority /
+          // deep-review label). Otherwise a single reviewer pass as before.
+          const multiLens = this.config.review?.multiLens;
+          const fanout =
+            multiLens?.enabled === true &&
+            shouldFanoutReview(
+              {
+                filesChanged: context.workerResult.filesChanged,
+                priority: context.task.priority,
+                labels: context.task.labels,
+              },
+              { fileThreshold: multiLens.fileThreshold },
+            );
+
+          if (fanout) {
+            console.log(`[${prefix}] Running multi-lens review (${context.workerResult.filesChanged.length} files)...`);
+            result = await runMultiLensReview(reviewerOptions);
+          } else {
+            console.log(`[${prefix}] Running full review...`);
+            result = await reviewerAgent.runReviewer(reviewerOptions);
+          }
 
           agentPair.saveReviewerResult(context.session.id, result as ReviewResult);
           context.reviewResult = result as ReviewResult;
