@@ -346,6 +346,7 @@ Analyze this task and decompose it into units completable within ${targetMinutes
 - Don't split too small (minimum 10 minutes)
 - Use clear and specific titles
 - Number in order if there are dependencies
+- **Write each sub-task's description as a rich Markdown document the assigned worker can act on without re-investigating — NOT a one-line instruction.** Fill it with what you ACTUALLY found via read_file/search_files, including these sections: "## Background" (why this task is needed, how it relates to the parent), "## Investigation" (concrete code evidence cited as file:line — e.g. the function at foo.ts:212 does X; no guessing, only what you read and confirmed), "## Approach" (how to implement, which functions/modules to touch, pitfalls), and "## Completion criteria" (verifiable; the reviewer judges by exactly this). Plain instructions like "add Y to X" are forbidden — write at the level of an issue a human would author.
 
 ## File Scope (REQUIRED for parallel execution)
 For each sub-task, declare \`fileScope\`: the concrete files/modules it will create or modify
@@ -367,7 +368,7 @@ Output the analysis results in the following JSON format:
   "subTasks": [
     {
       "title": "[Type] Specific task title",
-      "description": "Detailed description (what, how, completion criteria)",
+      "description": "Markdown doc (## Background / ## Investigation: code evidence file:line / ## Approach / ## Completion criteria) — rich enough that the worker starts without re-investigating",
       "estimatedMinutes": 20,
       "priority": 2,
       "dependencies": [],
