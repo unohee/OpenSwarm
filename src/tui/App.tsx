@@ -66,7 +66,7 @@ export function App({ version, provider, model, port, cwd, branch, initialTab = 
       <TabBar active={active} />
       <Box flexDirection="column" paddingY={1} minHeight={Math.max(1, rows - 4)}>
         {activeTab.id === 'chat' ? (
-          <ChatPanel active={chatActive} provider={provider} model={model} />
+          <ChatPanel active={chatActive} provider={provider} model={model} projectPath={cwd} />
         ) : activeTab.id === 'pipeline' ? (
           <PipelinePanel port={port} />
         ) : activeTab.id === 'logs' ? (

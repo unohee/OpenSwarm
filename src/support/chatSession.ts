@@ -95,11 +95,17 @@ export async function callChatModel(
   onToolLog?: (line: string) => void,
   maxTurns?: number,
   signal?: AbortSignal,
+  // Working directory the agent's tools (file/bash/MCP) operate in, and the root
+  // used to build the repo context block. Defaults to process.cwd() downstream
+  // when omitted — but the chat TUI threads the launch cwd through so the agent
+  // works in the repo `openswarm chat` was started from. (INT-2005)
+  cwd?: string,
 ): Promise<{ response: string; sessionId: string; cost: number; tokens: number }> {
   const result = await runChatCompletion({
     prompt,
     provider,
     model,
+    cwd,
     timeoutMs: 300000,
     onText: onStream,
     onLog: onToolLog,

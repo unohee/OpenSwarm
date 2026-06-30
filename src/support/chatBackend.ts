@@ -1,5 +1,7 @@
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { writeFile, unlink } from 'node:fs/promises';
+import { existsSync, readFileSync } from 'node:fs';
+import { basename, join } from 'node:path';
 import type { AdapterName } from '../adapters/index.js';
 import { getAdapter, getDefaultAdapterName } from '../adapters/index.js';
 
@@ -147,6 +149,66 @@ export function shortenChatModel(model: string): string {
  * not a shell — their buildCommand is a stub, so spawning it returns nothing
  * ("No response"). Route chat through run() as a plain, tool-free single turn.
  */
+
+// Project-rules files read into the repo context block, in preference order
+// (first found wins — AGENTS.md is the OpenSwarm convention, CLAUDE.md the fallback).
+const REPO_RULES_FILES = ['AGENTS.md', 'CLAUDE.md'] as const;
+// Cap injected rules so a long file doesn't dominate the prompt budget.
+const REPO_RULES_MAX_CHARS = 2000;
+
+export const BASE_CHAT_SYSTEM_PROMPT =
+  'You are a capable coding assistant operating in the user\'s current working directory, with tools to ' +
+  'read/search/edit/create files, run shell commands, and call configured MCP server tools (named `server__tool`). ' +
+  'Work like a thoughtful pair programmer who thinks out loud. Before each tool call, write one short sentence ' +
+  'saying what you are about to do and why (e.g. "To find where X is defined, I\'ll search the source."). After a ' +
+  'tool returns, briefly note what you found and your next step, then continue. Actually use the tools to perform ' +
+  'the task — never just describe it. Keep narration to a sentence or two between actions, not essays. ' +
+  'For a trivial question with no task, just answer directly without tools.';
+
+/**
+ * Build a repo-context block injected into the chat agent's system prompt so it
+ * knows which repository it is in, the active branch, and the project's own
+ * rules (AGENTS.md / CLAUDE.md). This is what lets `openswarm chat`/`/plan`/
+ * `/goal` operate in the cwd the CLI was launched from rather than guessing.
+ * Returns '' when `cwd` doesn't exist (caller then uses the base prompt alone).
+ * Best-effort: a missing git/rules file is silently skipped. (INT-2005)
+ */
+export function buildRepoContext(cwd: string): string {
+  if (!cwd || !existsSync(cwd)) return '';
+  const repo = basename(cwd.replace(/[/\\]+$/, '')) || cwd;
+  const lines = ['## Repository context', `repo: ${repo}  (${cwd})`];
+
+  try {
+    const branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+      cwd,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+      .toString()
+      .trim();
+    if (branch) lines.push(`branch: ${branch}`);
+  } catch {
+    // not a git repo — omit the branch
+  }
+
+  for (const name of REPO_RULES_FILES) {
+    const path = join(cwd, name);
+    if (!existsSync(path)) continue;
+    try {
+      let body = readFileSync(path, 'utf8').trim();
+      if (!body) continue;
+      if (body.length > REPO_RULES_MAX_CHARS) {
+        body = `${body.slice(0, REPO_RULES_MAX_CHARS)}\n… (truncated — read ${name} for the rest)`;
+      }
+      lines.push('', `## Project rules (${name})`, body);
+      break; // first match wins
+    } catch {
+      // unreadable — skip
+    }
+  }
+
+  return lines.join('\n');
+}
+
 async function runChatViaAdapter(
   adapter: ReturnType<typeof getAdapter>,
   provider: AdapterName,
@@ -165,19 +227,18 @@ async function runChatViaAdapter(
   const { getMcpTools } = await import('../mcp/mcpClient.js');
   const mcpTools = await getMcpTools().catch(() => []);
 
+  // Tell the agent which repo/branch it's in and surface the project's own rules
+  // so chat/plan/goal work in the launch cwd, not a guessed one. (INT-2005)
+  const repoContext = buildRepoContext(cwd);
+
   let streamed = false;
   const raw = await adapter.run!({
     prompt: options.prompt,
     cwd,
     model,
-    systemPrompt:
-      'You are a capable coding assistant operating in the user\'s current working directory, with tools to ' +
-      'read/search/edit/create files, run shell commands, and call configured MCP server tools (named `server__tool`). ' +
-      'Work like a thoughtful pair programmer who thinks out loud. Before each tool call, write one short sentence ' +
-      'saying what you are about to do and why (e.g. "To find where X is defined, I\'ll search the source."). After a ' +
-      'tool returns, briefly note what you found and your next step, then continue. Actually use the tools to perform ' +
-      'the task — never just describe it. Keep narration to a sentence or two between actions, not essays. ' +
-      'For a trivial question with no task, just answer directly without tools.',
+    systemPrompt: repoContext
+      ? `${BASE_CHAT_SYSTEM_PROMPT}\n\n${repoContext}`
+      : BASE_CHAT_SYSTEM_PROMPT,
     enableTools: true,
     webTools: true,
     mcpTools,
