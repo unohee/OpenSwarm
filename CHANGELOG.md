@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.2 — 2026-07-01
+
+### Fixed
+
+- **`review --max` is now language-agnostic** — Rust/Go/JVM/C/… repos hit `No production source files to audit` because `SOURCE_EXTENSIONS` only knew JS/TS/Python. Now covers Rust, Go, JVM (Java/Kotlin/Scala/Groovy), C/C++/C#, Ruby, PHP, Swift, Obj-C, Elixir, Clojure, OCaml, Haskell, Dart, Lua, Julia, Zig, Nim — with language-specific test-file exclusions (`_test.go`, `*Test.java`, `*_spec.rb`, …) and build dirs (`target/`, `__pycache__`, `bin`, `obj`). The reviewer is an LLM, so the audit is genuinely language-neutral now. (INT-2240)
+
 ## 0.10.1 — 2026-07-01
 
 ### Fixed

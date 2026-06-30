@@ -18,11 +18,31 @@ import { RateLimitError } from '../adapters/rateLimitError.js';
 // Source extensions and test patterns mirror src/knowledge/scanner.ts. Kept
 // local (not imported) because those are unexported module consts; the audit
 // only needs the stable subset and drift here is low-risk.
-const SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.py', '.pyw']);
-const TEST_PATTERNS = [/\.test\.[tj]sx?$/, /\.spec\.[tj]sx?$/, /_test\.py$/, /test_.*\.py$/, /\.test\.py$/];
+// Language-agnostic: the reviewer is an LLM, so collect source across languages.
+// Data/config/docs (.json/.toml/.yaml/.md/…) are intentionally NOT source.
+const SOURCE_EXTENSIONS = new Set([
+  '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', // JS/TS
+  '.py', '.pyw', // Python
+  '.rs', '.go', // Rust / Go
+  '.java', '.kt', '.kts', '.scala', '.groovy', // JVM
+  '.c', '.cc', '.cpp', '.cxx', '.h', '.hpp', '.hxx', '.cs', // C / C++ / C#
+  '.rb', '.php', '.swift', '.m', '.mm', // Ruby / PHP / Swift / Obj-C
+  '.ex', '.exs', '.clj', '.cljs', '.ml', '.mli', '.hs', '.dart', '.lua', '.jl', '.zig', '.nim', // others
+]);
+const TEST_PATTERNS = [
+  /\.test\.[tj]sx?$/, /\.spec\.[tj]sx?$/, // JS/TS
+  /_test\.py$/, /test_.*\.py$/, /\.test\.py$/, // Python
+  /_test\.go$/, // Go
+  /Tests?\.java$/, /Tests?\.kt$/, // JVM
+  /_spec\.rb$/, /_test\.rb$/, // Ruby
+  // Rust uses inline #[cfg(test)] — no file-level test split; reviewer sees it inline.
+];
 // Belt-and-suspenders: git ls-files already honors .gitignore, but tracked
 // junk dirs (snapshots, coverage) shouldn't be audited as if they were source.
-const SKIP_DIR_SEGMENTS = new Set(['node_modules', 'dist', 'build', 'trash', '.openswarm', 'htmlcov', 'coverage', 'vendor']);
+const SKIP_DIR_SEGMENTS = new Set([
+  'node_modules', 'dist', 'build', 'trash', '.openswarm', 'htmlcov', 'coverage', 'vendor',
+  'target', '__pycache__', 'bin', 'obj', // Rust/JVM build, Python cache, .NET output
+]);
 
 /** One reviewer-subagent unit of work: a directory (or a chunk of a big one). */
 export interface AuditArea {

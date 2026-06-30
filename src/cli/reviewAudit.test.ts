@@ -31,6 +31,16 @@ describe('filterSourceFiles (INT-2006)', () => {
     const out = filterSourceFiles(['src/a.ts', 'dist/a.js', 'trash/old.ts', '.openswarm/x.ts']);
     expect(out).toEqual(['src/a.ts']);
   });
+
+  it('keeps non-JS/Python languages (Rust/Go/JVM/C/Ruby) (INT-2240)', () => {
+    const files = ['src/lib.rs', 'cmd/main.go', 'App.java', 'core/util.cpp', 'a.kt', 'b.rb', 'c.swift'];
+    expect(filterSourceFiles(files)).toEqual(files);
+  });
+
+  it('excludes language test files and build dirs (INT-2240)', () => {
+    expect(filterSourceFiles(['pkg/foo_test.go', 'FooTest.java', 'spec/bar_spec.rb'])).toEqual([]);
+    expect(filterSourceFiles(['target/debug/x.rs', 'src/lib.rs'])).toEqual(['src/lib.rs']);
+  });
 });
 
 describe('preferSrcRoot (INT-2006)', () => {
