@@ -18,6 +18,8 @@ import {
   recordProjectCompletion,
   canProjectAcceptTask,
   getProjectWindowCount,
+  loadProjectSelection,
+  saveProjectSelection,
   type TaskState,
   type ProjectInfo,
 } from './runnerState.js';
@@ -121,6 +123,13 @@ export class AutonomousRunner {
     return this.projectSelectionTouched || this.enabledProjects.size > 0;
   }
 
+  /** Persist the project selection so it survives a restart. No-op under dryRun
+   * (tests) to avoid touching the real ~/.openswarm. (INT-2208) */
+  private persistSelection(): void {
+    if (this.config.dryRun) return;
+    saveProjectSelection({ enabled: [...this.enabledProjects], touched: this.projectSelectionTouched });
+  }
+
   // Last fetched Linear tasks (for dashboard display)
   private lastFetchedTasks: TaskItem[] = [];
 
@@ -174,6 +183,13 @@ export class AutonomousRunner {
   constructor(config: AutonomousConfig) {
     this.config = config;
     this.loadTaskState();  // Restore completed/failed task IDs from disk
+    // Restore the persisted project selection so "disable all" survives a daemon
+    // restart. Skipped under dryRun (tests) so the real ~/.openswarm isn't touched. (INT-2208)
+    if (!config.dryRun) {
+      const sel = loadProjectSelection();
+      this.enabledProjects = new Set(sel.enabled);
+      this.projectSelectionTouched = sel.touched;
+    }
     this.engine = getDecisionEngine({
       allowedProjects: config.allowedProjects,
       linearTeamId: config.linearTeamId,
@@ -1430,6 +1446,7 @@ export class AutonomousRunner {
     if (cancelled > 0) {
       this.syslog(`⏹ Cancelled ${cancelled} in-flight task(s) for disabled project ${projectPath.split('/').pop()}`);
     }
+    this.persistSelection();
   }
 
   enableProject(projectPath: string): void {
@@ -1444,6 +1461,7 @@ export class AutonomousRunner {
       this.updateAllowedProjects([...allowed, projectPath]);
     }
     console.log(`[AutonomousRunner] Project enabled: ${projectPath}`);
+    this.persistSelection();
   }
 
   /** Get all currently enabled project paths */

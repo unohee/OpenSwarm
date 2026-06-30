@@ -5,7 +5,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import type { TaskItem } from '../orchestration/decisionEngine.js';
 
 /** Check if a resolved path matches or is under any enabled project path */
@@ -22,6 +22,7 @@ export const PIPELINE_HISTORY_FILE = join(homedir(), '.claude', 'openswarm-pipel
 export const REJECTION_STATE_FILE = join(homedir(), '.claude', 'openswarm-rejection-state.json');
 export const DECOMPOSITION_STATE_FILE = join(homedir(), '.claude', 'openswarm-decomposition-state.json');
 export const DAILY_PACE_FILE = join(homedir(), '.openswarm', 'daily-pace.json');
+export const PROJECT_SELECTION_FILE = join(homedir(), '.openswarm', 'project-selection.json');
 const MAX_PIPELINE_HISTORY = 100;
 const MAX_REJECTION_ATTEMPTS = 3;
 
@@ -78,6 +79,35 @@ function savePace(): void {
     writeFileSync(DAILY_PACE_FILE, JSON.stringify(paceState, null, 2), 'utf8');
   } catch (err) {
     console.warn('[Pace] Failed to save:', err);
+  }
+}
+
+// Persisted dashboard/CLI project selection so "disable all" survives a daemon
+// restart (otherwise enabledProjects resets and the run-all fallback kicks back
+// in). (INT-2208) `touched` mirrors AutonomousRunner.projectSelectionTouched.
+export interface ProjectSelection {
+  enabled: string[];
+  touched: boolean;
+}
+
+export function loadProjectSelection(file: string = PROJECT_SELECTION_FILE): ProjectSelection {
+  try {
+    if (existsSync(file)) {
+      const data = JSON.parse(readFileSync(file, 'utf8'));
+      return { enabled: Array.isArray(data.enabled) ? data.enabled : [], touched: !!data.touched };
+    }
+  } catch {
+    /* corrupt/unreadable → safe default below */
+  }
+  return { enabled: [], touched: false };
+}
+
+export function saveProjectSelection(sel: ProjectSelection, file: string = PROJECT_SELECTION_FILE): void {
+  try {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify(sel, null, 2), 'utf8');
+  } catch (err) {
+    console.warn('[ProjectSelection] Failed to save:', err);
   }
 }
 
