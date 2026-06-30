@@ -27,6 +27,11 @@ export interface ReviewerOptions {
   reasoningEffort?: 'low' | 'medium' | 'high';
   /** Execution-grounded definition of done to hard-gate on (INT-1914). */
   completionCriteria?: string[];
+  /**
+   * 'change' (default): review a worker's diff. 'audit': evaluate existing files
+   * with no diff/worker (the `review --max` codebase audit). (INT-2006)
+   */
+  mode?: 'change' | 'audit';
   /** MCP tools to expose (e.g. linear__*). When unset the adapter self-sources (INT-1951). (INT-1950) */
   mcpTools?: ToolDefinition[];
   /** Tool-activity log lines (🔧 read_file …) for live progress display. (INT-1963) */
@@ -94,6 +99,16 @@ function buildReviewerPrompt(options: ReviewerOptions): string {
   const filesSummary = files.length <= 20
     ? (files.join(', ') || '(none)')
     : `${files.slice(0, 20).join(', ')} (+${files.length - 20} more)`;
+
+  // Audit mode: no diff/commands to report — just hand the auditor the file list. (INT-2006)
+  if (options.mode === 'audit') {
+    return getPrompts().buildReviewerPrompt({
+      taskTitle: options.taskTitle,
+      taskDescription: options.taskDescription,
+      workerReport: `- **Files under audit (${files.length}):** ${filesSummary}`,
+      mode: 'audit',
+    });
+  }
 
   const cmds = options.workerResult.commands;
   const cmdsSummary = cmds.length <= 10

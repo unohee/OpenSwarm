@@ -229,15 +229,38 @@ program
 
 program
   .command('review')
-  .description('Review the working-tree changes; optionally file follow-ups as Linear sub-issues')
+  .description('Review the working-tree changes; --max audits the whole codebase with reviewer subagents')
   .option('--path <path>', 'Project path (default: cwd)')
   .option('--issues [parent]', 'File follow-ups as Linear sub-issues (parent inferred from the git branch, or pass an id)')
   .option('--file [parent]', 'Alias for --issues (back-compat)')
   .option('--adapter <name>', 'Adapter override for the reviewer')
   .option('--debug', 'Verbose logging')
-  .action(async (opts: { path?: string; issues?: string | boolean; file?: string | boolean; adapter?: string; debug?: boolean }) => {
-    const { runReviewCommand } = await import('./cli/reviewCommand.js');
+  // --max: full-codebase multi-agent audit (INT-2006)
+  .option('--max', 'Audit the whole codebase: fan reviewer subagents out over directory-shaped areas')
+  .option('--concurrency <n>', 'Max reviewer subagents in flight for --max (default 4)', (v) => parseInt(v, 10))
+  .option('--max-files-per-area <n>', 'Files per area before chunking, for --max (default 12)', (v) => parseInt(v, 10))
+  .option('--yes', 'Skip the --max cost-confirmation prompt')
+  .option('--dry-run', 'For --max: print the area partition plan and exit (no subagents)')
+  .action(async (opts: {
+    path?: string; issues?: string | boolean; file?: string | boolean; adapter?: string; debug?: boolean;
+    max?: boolean; concurrency?: number; maxFilesPerArea?: number; yes?: boolean; dryRun?: boolean;
+  }) => {
     try {
+      if (opts.max) {
+        const { runReviewMaxCommand } = await import('./cli/reviewMaxCommand.js');
+        const result = await runReviewMaxCommand({
+          path: opts.path,
+          concurrency: opts.concurrency,
+          maxFilesPerArea: opts.maxFilesPerArea,
+          adapter: opts.adapter,
+          fileIssue: opts.issues ?? opts.file,
+          yes: opts.yes,
+          dryRun: opts.dryRun,
+        });
+        if (result && result.decision === 'reject') process.exitCode = 1;
+        return;
+      }
+      const { runReviewCommand } = await import('./cli/reviewCommand.js');
       const result = await runReviewCommand({ path: opts.path, fileIssue: opts.issues ?? opts.file, adapter: opts.adapter, debug: opts.debug });
       if (result && result.decision === 'reject') process.exitCode = 1;
     } catch (e) {

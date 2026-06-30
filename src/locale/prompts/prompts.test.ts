@@ -212,6 +212,34 @@ describe('buildReviewerPrompt', () => {
     expect(result).toContain('"issues"');
     expect(result).toContain('"suggestions"');
   });
+
+  // Audit mode reframes the reviewer for diff-less, existing-file review. (INT-2006)
+  describe('audit mode', () => {
+    const auditOpts = {
+      taskTitle: 'Codebase audit: src/auth',
+      taskDescription: 'Audit these files',
+      workerReport: '- **Files under audit (2):** src/auth/a.ts, src/auth/b.ts',
+      mode: 'audit' as const,
+    };
+
+    it('frames as an audit and tells the model not to expect a diff (en + ko)', () => {
+      for (const p of [enPrompts, koPrompts]) {
+        const result = p.buildReviewerPrompt(auditOpts);
+        expect(result).toMatch(/Audit Mode|감사 모드/);
+        expect(result).toContain('git diff'); // explicitly says an empty diff is normal
+        expect(result).toMatch(/Files Under Audit|감사 대상 파일/);
+        // keeps the same machine-readable contract
+        expect(result).toContain('"decision"');
+        expect(result).toContain('recommendedActions');
+      }
+    });
+
+    it('does not use the change-review "verify against the diff" framing', () => {
+      const result = enPrompts.buildReviewerPrompt(auditOpts);
+      expect(result).not.toContain("Worker's Report");
+      expect(result).not.toContain('Definition of Done');
+    });
+  });
 });
 
 // ── 4. buildRevisionPromptFromReview ───────────────────────────

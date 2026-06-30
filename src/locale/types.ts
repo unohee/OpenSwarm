@@ -445,6 +445,12 @@ export interface PromptTemplates {
     workerReport: string;
     /** Execution-grounded definition of done the reviewer hard-gates on (INT-1914). */
     completionCriteria?: string[];
+    /**
+     * 'change' (default): review a worker's diff against requirements — the pair
+     * pipeline. 'audit': evaluate existing files with no diff/worker — the
+     * `review --max` codebase audit. (INT-2006)
+     */
+    mode?: 'change' | 'audit';
   }) => string;
   buildRevisionPromptFromReview: (opts: {
     decision: string;

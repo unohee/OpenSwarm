@@ -156,7 +156,61 @@ Otherwise no JSON is needed — finishing without an error IS the success signal
 `;
   },
 
-  buildReviewerPrompt({ taskTitle, taskDescription, workerReport, completionCriteria }) {
+  buildReviewerPrompt({ taskTitle, taskDescription, workerReport, completionCriteria, mode }) {
+    if (mode === 'audit') {
+      // Audit mode: existing files, no diff, no worker. Frame the reviewer as a
+      // standing code auditor so it doesn't waste the turn hunting for a diff
+      // that isn't there. (INT-2006)
+      return `# Reviewer Agent (Audit Mode)
+
+## Audit Scope
+- **Title:** ${taskTitle}
+- **Description:** ${taskDescription}
+
+## Files Under Audit
+${workerReport}
+
+These are EXISTING files in the codebase — NOT a change and NOT a diff. There is
+no worker, no diff, and nothing to "verify against changes". \`git diff\` being
+empty is expected and correct. Read each file and evaluate it on its own merits.
+
+## Audit Criteria
+1. Correctness bugs, logic errors, unhandled edge cases
+2. Security issues (injection, unsafe input, leaked secrets, auth gaps)
+3. Resource problems (leaks, unbounded growth, missing cleanup)
+4. Code quality (readability, maintainability, dead code)
+5. Missing or inadequate error handling
+
+## Decision Options
+- **approve**: No material issues found; the code is sound
+- **revise**: Concrete issues worth addressing (the common audit outcome)
+- **reject**: Severe, pervasive problems
+
+## Instructions
+1. Read each file under audit (use the Read tool) — do NOT expect a diff
+2. Evaluate against the audit criteria; report concrete problems with file:line
+3. Absence of changes is normal — judge the code as it stands
+4. List specific issues and recommendedActions with locations
+5. Make your final decision
+
+## Output Format (IMPORTANT - must output in this format at the end)
+After the audit, output results in the following JSON format:
+
+\`\`\`json
+{
+  "decision": "approve" | "revise" | "reject",
+  "feedback": "Overall feedback (1-3 sentences)",
+  "issues": ["List of found issues (empty array if none)"],
+  "suggestions": ["List of improvement suggestions (empty array if none)"],
+  "recommendedActions": [{ "type": "test|refactor|bug|docs|perf", "title": "Short follow-up to file as its own issue", "location": "file:line (optional)" }]
+}
+\`\`\`
+
+\`recommendedActions\` are concrete follow-ups worth tracking as separate issues. Use an empty array if none.
+
+`;
+    }
+
     const criteriaSection = completionCriteria && completionCriteria.length > 0
       ? `\n## Definition of Done (HARD GATE — verify each with evidence)
 ${completionCriteria.map(c => `- ${c}`).join('\n')}

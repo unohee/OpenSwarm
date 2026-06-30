@@ -78,7 +78,7 @@ export function resolveIssueFromBranch(branch: string): string | undefined {
 }
 
 /** Best-effort Linear project id from <repo>/openswarm.json, so standalone follow-ups land in the right project. (INT-1968) */
-async function resolveProjectId(cwd: string): Promise<string | undefined> {
+export async function resolveProjectId(cwd: string): Promise<string | undefined> {
   try {
     const { loadRepoMetadata } = await import('../support/repoMetadata.js');
     const meta = await loadRepoMetadata(cwd);
@@ -94,7 +94,7 @@ async function resolveProjectId(cwd: string): Promise<string | undefined> {
  * Linear from config (OAuth profile or apiKey) and build a LinearTaskSource.
  * Returns null when Linear isn't configured. (INT-1969)
  */
-async function ensureTaskSource(): Promise<ITaskSource | null> {
+export async function ensureTaskSource(): Promise<ITaskSource | null> {
   const { getTaskSource } = await import('../automation/runnerExecution.js');
   const existing = getTaskSource();
   if (existing) return existing;
