@@ -95,6 +95,24 @@ describe('dedupeDoubledGrapheme (INT-1964)', () => {
     expect(dedupeDoubledGrapheme(' ')).toBe(' ');
   });
 
+  // INT-2012: shapes INT-1964 missed — N-repeat and multi-grapheme doubling.
+  it('collapses a single grapheme repeated N times (shape A)', () => {
+    expect(dedupeDoubledGrapheme('이이이')).toBe('이');
+    expect(dedupeDoubledGrapheme('렇렇렇렇')).toBe('렇');
+  });
+
+  it('collapses a multi-grapheme event where each grapheme is doubled (shape B)', () => {
+    expect(dedupeDoubledGrapheme('이이렇렇게게')).toBe('이렇게'); // '이렇게' doubled in place
+    expect(dedupeDoubledGrapheme('가가나나')).toBe('가나');
+  });
+
+  it('leaves a normal multi-grapheme word untouched (no doubling)', () => {
+    expect(dedupeDoubledGrapheme('이렇게')).toBe('이렇게'); // odd length, not paired
+    expect(dedupeDoubledGrapheme('안녕하세요')).toBe('안녕하세요');
+    expect(dedupeDoubledGrapheme('가나')).toBe('가나'); // even length but pairs differ
+    expect(dedupeDoubledGrapheme('hello')).toBe('hello');
+  });
+
   it('leaves longer input (real pastes) untouched', () => {
     expect(dedupeDoubledGrapheme('이이렇')).toBe('이이렇');
     expect(dedupeDoubledGrapheme('가나다')).toBe('가나다');

@@ -96,20 +96,41 @@ export function normalizeConfirm(input: string): 'yes' | 'no' | 'edit' {
 }
 
 /**
- * Mobile-SSH multibyte input mitigation (INT-1964). Some terminals deliver a
- * single multibyte keystroke as the character doubled in one input event
- * ('이' → '이이'), so each Hangul syllable appears twice while ASCII is fine.
- * Collapse an input event that is exactly one NON-ASCII grapheme repeated twice
- * back to a single grapheme. ASCII, single graphemes, differing graphemes, and
- * longer inputs (real pastes) pass through untouched — so normal typing is
- * unaffected. The only false positive is pasting exactly two identical multibyte
- * characters, which is vanishingly rare.
+ * Mobile-SSH multibyte input mitigation (INT-1964, extended INT-2012). Some
+ * terminals deliver a multibyte keystroke as the character(s) doubled in one
+ * input event, so Hangul appears doubled while ASCII is fine. Two observed shapes:
+ *
+ *   (A) one grapheme repeated N times      — '이' → '이이' or '이이이'
+ *   (B) each grapheme doubled in place      — '이렇게' → '이이렇렇게게'
+ *
+ * Collapse both back to the intended text. Only NON-ASCII graphemes are touched;
+ * ASCII, single graphemes, odd-length mixed events, and differing graphemes pass
+ * through untouched, so normal typing is unaffected. The only false positive is
+ * pasting an exact run/pairing of identical multibyte characters (e.g. '각각'),
+ * which is vanishingly rare. (INT-1964 only handled shape A at exactly length 2.)
  */
 export function dedupeDoubledGrapheme(input: string): string {
-  const graphemes = Array.from(input);
-  if (graphemes.length === 2 && graphemes[0] === graphemes[1] && (graphemes[0].codePointAt(0) ?? 0) > 0x7f) {
-    return graphemes[0];
+  const g = Array.from(input);
+  if (g.length < 2) return input;
+
+  // (A) a single non-ASCII grapheme repeated N times → one.
+  if ((g[0].codePointAt(0) ?? 0) > 0x7f && g.every((c) => c === g[0])) {
+    return g[0];
   }
+
+  // (B) even-length event where every adjacent pair is the same non-ASCII
+  //     grapheme → keep one of each pair.
+  if (g.length % 2 === 0) {
+    let paired = true;
+    for (let i = 0; i < g.length; i += 2) {
+      if (g[i] !== g[i + 1] || (g[i].codePointAt(0) ?? 0) <= 0x7f) {
+        paired = false;
+        break;
+      }
+    }
+    if (paired) return g.filter((_, i) => i % 2 === 0).join('');
+  }
+
   return input;
 }
 
