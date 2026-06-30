@@ -85,6 +85,16 @@ describe('parseSynthesisOutput (INT-2225)', () => {
     expect(parseSynthesisOutput('```json\n{"foo":1}\n```')).toEqual([]);
   });
 
+  it('parses an ESCAPED JSON block (codex-responses emits literal \\n / \\") (INT-2239)', () => {
+    // The block content is an escaped JSON string, not raw JSON — raw JSON.parse
+    // fails on the leading backslash; parseJsonLoose decodes once then parses.
+    const inner = '\\n{\\n  \\"issues\\": [{ \\"title\\": \\"fix(x): y\\", \\"priority\\": 2, \\"items\\": [], \\"description\\": \\"d\\" }]\\n}';
+    const out = parseSynthesisOutput('```json\n' + inner + '\n```');
+    expect(out).toHaveLength(1);
+    expect(out[0].title).toBe('fix(x): y');
+    expect(out[0].priority).toBe(2);
+  });
+
   it('applies defaults for missing/out-of-range fields and drops titleless issues', () => {
     const stdout =
       '```json\n' +

@@ -299,6 +299,14 @@ async function filePmSynthesizedIssues(
     return;
   }
   const projectId = await resolveProjectId(cwd);
+  if (!projectId) {
+    // No <repo>/openswarm.json mapping → issues get filed without a project (and
+    // on a multi-team config, only the first team). Tell the user how to map it. (INT-2239)
+    console.warn(
+      '⚠ No Linear project mapped for this repo (openswarm.json `linear.projectId` missing) — ' +
+        'issues will not be linked to a project. Run `openswarm add` here to map it.',
+    );
+  }
 
   // Resolve the parent: explicit --issues <id>, else create the master report issue.
   let parentId: string | undefined =

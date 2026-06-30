@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.10.1 — 2026-07-01
+
+### Fixed
+
+- **PM synthesis JSON parsing** — `review --max`'s PM agent failed to parse codex-responses' **escaped JSON** output (literal `\n` / `\"`), so synthesis produced no grouped issues and only the master issue remained. `parseSynthesisOutput` now decodes an escaped JSON block before parsing. (INT-2239)
+- **Orphan audit issue** — when a repo has no `openswarm.json` `linear.projectId` mapping, `review --max` now warns instead of silently filing the master issue without a project (and, on a multi-team config, on the wrong team). Run `openswarm add` in the repo to map it. (INT-2239)
+
 ## 0.10.0 — 2026-06-30
 
 Full-codebase review pipeline (multi-agent audit → report → PM triage → Linear), chat session persistence, and a batch of daemon / TUI / adapter fixes.

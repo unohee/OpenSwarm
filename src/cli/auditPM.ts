@@ -77,6 +77,27 @@ export function buildSynthesisPrompt(actions: RecommendedAction[], repoName: str
 }
 
 /**
+ * Parse a JSON block. codex-responses sometimes emits the block as an *escaped*
+ * JSON string (literal \n, \"), so a raw JSON.parse fails on the leading `\`. Try
+ * raw first, then decode-once-then-parse. Returns undefined on total failure. (INT-2239)
+ */
+function parseJsonLoose(s: string): unknown {
+  const t = s.trim();
+  try {
+    return JSON.parse(t);
+  } catch {
+    /* maybe an escaped JSON string — fall through */
+  }
+  try {
+    const decoded = JSON.parse(`"${t}"`);
+    if (typeof decoded === 'string') return JSON.parse(decoded);
+  } catch {
+    /* fall through */
+  }
+  return undefined;
+}
+
+/**
  * Parse the PM output: extract the ```json block, validate `.issues`, normalize
  * each field with type guards, and clamp to the first 10. Returns [] (with an
  * optional warning) when nothing usable is found.
@@ -88,11 +109,9 @@ export function parseSynthesisOutput(stdout: string, onLog?: (l: string) => void
     return [];
   }
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(block[1]);
-  } catch (e) {
-    onLog?.(`[auditPM] Failed to parse synthesis JSON: ${e instanceof Error ? e.message : String(e)}`);
+  const parsed = parseJsonLoose(block[1]);
+  if (parsed === undefined) {
+    onLog?.('[auditPM] Failed to parse synthesis JSON (raw + escaped) — skipping synthesis.');
     return [];
   }
 
