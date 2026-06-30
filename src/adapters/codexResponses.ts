@@ -17,7 +17,7 @@ import { AuthProfileStore, ensureValidToken } from '../auth/index.js';
 import { runAgenticLoop, loopResultToCliResult, type ChatMessage, type AgenticLoopOptions } from './agenticLoop.js';
 import { parseWorkerResult, parseReviewerResult } from './resultParsing.js';
 import type { ToolDefinition } from './tools.js';
-import { RateLimitError } from './rateLimitError.js';
+import { RateLimitError, rateLimitFromCodexHeaders } from './rateLimitError.js';
 
 import { getCodexModelIds } from './codexModels.js';
 
@@ -451,6 +451,11 @@ export class CodexResponsesAdapter implements CliAdapter {
 
         if (!res.ok) {
           const errText = await res.text().catch(() => '');
+          // 429 → typed RateLimitError carrying reset/usage from the rich x-codex-*
+          // response headers (used %, reset-at, window), not just the body. (INT-2192)
+          if (res.status === 429) {
+            throw rateLimitFromCodexHeaders(res.headers, errText);
+          }
           // 401 → refresh once and retry.
           if (res.status === 401 && !retried) {
             retried = true;

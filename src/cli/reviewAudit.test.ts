@@ -12,6 +12,7 @@ import {
   type AuditSummary,
 } from './reviewAudit.js';
 import type { ReviewResult } from '../agents/agentPair.js';
+import { RateLimitError } from '../adapters/rateLimitError.js';
 
 describe('filterSourceFiles (INT-2006)', () => {
   it('keeps source extensions and drops the rest', () => {
@@ -242,5 +243,19 @@ describe('runMaxReview orchestration (INT-2006)', () => {
     expect(sum.completed).toBe(2);
     expect(sum.failed).toBe(1);
     expect(sum.areas.find((a) => a.label === 'src/m1')?.decision).toBe('error');
+  });
+
+  it('aborts early on a RateLimitError, skipping remaining areas (INT-2192)', async () => {
+    const areas = mkAreas(5);
+    let calls = 0;
+    const review = async (area: AuditArea): Promise<ReviewResult> => {
+      calls++;
+      if (area.label === 'src/m1') throw new RateLimitError(1782824950, 'codex limit', 100, 300);
+      return { decision: 'approve', feedback: '' };
+    };
+    const run = await runMaxReview(areas, '/repo', { concurrency: 1 }, { review });
+    expect(run.rateLimit).toBeInstanceOf(RateLimitError);
+    expect(run.rateLimit?.usedPercent).toBe(100);
+    expect(calls).toBeLessThan(5); // m2..m4 skipped, not attempted against the dead quota
   });
 });

@@ -162,6 +162,16 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
 
   console.log(formatAuditSummary(run.summary));
 
+  // Codex usage-limit aborted the run early — tell the user when it resets and how
+  // to fall back to their Claude subscription. (INT-2192)
+  if (run.rateLimit) {
+    const skipped = run.summary.areas.filter((a) => a.decision === 'error').length;
+    const when = run.rateLimit.resetsAt ? new Date(run.rateLimit.resetsAt * 1000).toLocaleString() : 'an unknown time';
+    console.warn(`\n⚠ Codex usage limit hit — stopped early, ${skipped} area(s) skipped.`);
+    console.warn(`  ${run.rateLimit.message}`);
+    console.warn(`  Retry after ${when}, or re-run with \`--adapter claude\` to use your Claude subscription instead.`);
+  }
+
   // (3) Persist a markdown report so the result isn't lost to the scrollback. (INT-2022)
   const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   const report = formatAuditReport(run.summary, basename(cwd) || cwd, ts);

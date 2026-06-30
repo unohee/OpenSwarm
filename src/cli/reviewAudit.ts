@@ -13,6 +13,7 @@ import { dirname } from 'node:path';
 import type { ReviewResult, RecommendedAction } from '../agents/agentPair.js';
 import type { AdapterName } from '../adapters/types.js';
 import { runPool } from '../support/concurrencyPool.js';
+import { RateLimitError } from '../adapters/rateLimitError.js';
 
 // Source extensions and test patterns mirror src/knowledge/scanner.ts. Kept
 // local (not imported) because those are unexported module consts; the audit
@@ -312,6 +313,8 @@ export interface RunMaxReviewDeps {
 export interface AuditRun {
   summary: AuditSummary;
   results: AuditAreaResult[];
+  /** Set when a codex usage-limit aborted the run early (remaining areas skipped). (INT-2192) */
+  rateLimit?: RateLimitError;
 }
 
 /** Default area reviewer: spawn an independent reviewer subagent over the area's files. */
@@ -352,13 +355,23 @@ export async function runMaxReview(
   const review = deps.review ?? ((area, onLog) => defaultReviewArea(area, cwd, opts, onLog));
   const total = areas.length;
   let done = 0;
+  // Once a codex usage-limit hits, stop launching new area reviews — they'd all
+  // fail against the same exhausted quota (the STONKS "5/16 → end" wipeout). Keep
+  // the typed error so the caller can report the reset time. (INT-2192)
+  let rateLimit: RateLimitError | null = null;
 
   const settled = await runPool(
     areas,
     opts.concurrency,
     async (area) => {
+      if (rateLimit) throw new Error('skipped: codex usage limit already hit this run');
       deps.onProgress?.({ type: 'start', label: area.label, done, total });
-      return review(area, (line) => deps.onProgress?.({ type: 'log', label: area.label, line }));
+      try {
+        return await review(area, (line) => deps.onProgress?.({ type: 'log', label: area.label, line }));
+      } catch (e) {
+        if (e instanceof RateLimitError) rateLimit = e;
+        throw e;
+      }
     },
     (s) => {
       done++;
@@ -374,5 +387,5 @@ export async function runMaxReview(
   const results: AuditAreaResult[] = settled.map((s, i) =>
     s.error || !s.value ? { area: areas[i], error: s.error ? String(s.error) : 'no result' } : { area: areas[i], review: s.value },
   );
-  return { summary: aggregateAuditResults(results), results };
+  return { summary: aggregateAuditResults(results), results, rateLimit: rateLimit ?? undefined };
 }

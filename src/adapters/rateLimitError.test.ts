@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { detectRateLimit, RateLimitError } from './rateLimitError.js';
+import { detectRateLimit, rateLimitFromCodexHeaders, RateLimitError } from './rateLimitError.js';
 import { runAgenticLoop } from './agenticLoop.js';
 
 describe('detectRateLimit (INT-1906)', () => {
@@ -58,5 +58,27 @@ describe('runAgenticLoop rate-limit propagation (INT-1906 blocker)', () => {
     const callApi = async () => { throw new Error('500 Internal Server Error'); };
     const res = await runAgenticLoop({ prompt: 'x', cwd: process.cwd(), model: 't', callApi, webTools: false, maxTurns: 2 });
     expect(res.text).toContain('API error');
+  });
+});
+
+describe('rateLimitFromCodexHeaders (INT-2192)', () => {
+  it('extracts reset/used/window from x-codex-* headers', () => {
+    const headers = new Headers({
+      'x-codex-primary-reset-at': '1782824950',
+      'x-codex-primary-used-percent': '100',
+      'x-codex-primary-window-minutes': '300',
+    });
+    const err = rateLimitFromCodexHeaders(headers, '');
+    expect(err).toBeInstanceOf(RateLimitError);
+    expect(err.resetsAt).toBe(1782824950);
+    expect(err.usedPercent).toBe(100);
+    expect(err.windowMinutes).toBe(300);
+    expect(err.message).toContain('100% used');
+  });
+
+  it('falls back to the body resets_at when headers are absent', () => {
+    const err = rateLimitFromCodexHeaders(new Headers(), '{"error":{"type":"usage_limit_reached","resets_at":1782824949}}');
+    expect(err.resetsAt).toBe(1782824949);
+    expect(err.usedPercent).toBeUndefined();
   });
 });
