@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.12.0 — 2026-07-01
+
+### Added
+
+- **`openswarm fix`** — bring `review --max`'s fan-out to the objective checks. Runs the project's checks (lint / typecheck / build / test, resolved from `package.json` scripts; `--checks` to select a subset), groups the failures by file into areas, fans a **fix-worker out over each area**, then **re-runs the checks and repeats until green** (or the `--rounds` budget; default 3). Edits land in the working tree — you review the diff. Unlike `review --max --fix` (an LLM opinion, no re-verify), the checks are deterministic so the loop verifies its own work and converges; it stops on no-progress (same failures + no edits) and exits non-zero while red. `--concurrency <n>`, `--adapter <name>`. (INT-2267)
+
 ## 0.11.0 — 2026-07-01
 
 Wider, faster codebase audits — plus the audit can now fix what it finds.

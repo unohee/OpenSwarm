@@ -512,9 +512,8 @@ the CLI (fire-and-forget with a short timeout, and failures are silently ignored
 Full version history lives in **[CHANGELOG.md](CHANGELOG.md)** and the
 [GitHub Releases](https://github.com/unohee/OpenSwarm/releases) page.
 
-Latest — **v0.11.0**: `review --max --fix` (a worker per flagged area applies the
-audit fixes in the working tree) and concurrency-saturating area distribution
-(areas auto-split to fill `--concurrency`). See CHANGELOG.md for the rest.
+Latest — **v0.12.0**: `openswarm fix` — run the CI/test checks, fan a fix-worker
+out over the failures, and re-run until green. See CHANGELOG.md for the rest.
 
 ---
 
