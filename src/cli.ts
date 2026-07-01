@@ -296,6 +296,33 @@ program
     }
   });
 
+// openswarm fix — CI/test gate fan-out auto-fix (INT-2267)
+
+program
+  .command('fix')
+  .description('Run the CI/test checks and fan a fix-worker out over the failures, re-running until green')
+  .option('--path <path>', 'Project path (default: cwd)')
+  .option('--checks <list>', 'Comma list of checks (lint,type,build,test); default: all detected in package.json', (v) => v.split(',').map((s) => s.trim()).filter(Boolean))
+  .option('--concurrency <n>', 'Max fix workers in flight (default 4)', (v) => parseInt(v, 10))
+  .option('--rounds <n>', 'Max check → fix → re-check rounds (default 3)', (v) => parseInt(v, 10))
+  .option('--adapter <name>', 'Adapter override for the fix workers')
+  .action(async (opts: { path?: string; checks?: string[]; concurrency?: number; rounds?: number; adapter?: string }) => {
+    try {
+      const { runFixCommand } = await import('./cli/fixCommand.js');
+      const report = await runFixCommand({
+        path: opts.path,
+        checks: opts.checks,
+        concurrency: opts.concurrency,
+        rounds: opts.rounds,
+        adapter: opts.adapter as import('./adapters/types.js').AdapterName | undefined,
+      });
+      if (!report.green) process.exitCode = 1;
+    } catch (e) {
+      console.error(e instanceof Error ? e.message : String(e));
+      process.exitCode = 1;
+    }
+  });
+
 // openswarm exec <prompt>
 
 program
