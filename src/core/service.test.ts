@@ -202,12 +202,12 @@ describe('service', () => {
 
     vi.mocked(readProviderOverride).mockReturnValue('gpt');
 
+    // The override reapply lives inside the autonomous-start block (it calls
+    // runnerInstance.switchProvider), so the config must enable autonomous mode.
+    // (INT-2271)
     const config = {
-      ...mockConfig,
+      ...mockAutonomousConfig,
       adapter: 'claude',
-      autonomous: {
-        ...mockConfig.autonomous,
-      },
     } as SwarmConfig;
 
     await startService(config);
@@ -247,7 +247,9 @@ describe('service', () => {
       await startService(mockConfig);
 
       expect(setDefaultAdapter).toHaveBeenCalledWith('claude');
-      expect(readProviderOverride).toHaveBeenCalled();
+      // readProviderOverride is only consulted in the autonomous-start block (it
+      // feeds runnerInstance.switchProvider); a non-autonomous boot doesn't call
+      // it. Its reapply is covered by the two override-specific tests. (INT-2271)
       expect(initLocale).toHaveBeenCalled();
       expect(initLinear).toHaveBeenCalledWith(
         mockConfig.linearApiKey,

@@ -69,7 +69,6 @@ jobs:
           cache: 'npm'
       - run: npm ci
       - run: npm test
-        continue-on-error: true
 
   loc-gate:
     name: LOC Warning (800 lines)
