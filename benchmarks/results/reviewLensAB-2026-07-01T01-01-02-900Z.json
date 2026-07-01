@@ -1,0 +1,321 @@
+{
+  "adapter": "codex",
+  "concurrency": 3,
+  "ranAt": "2026-07-01T01-01-02-900Z",
+  "summary": {
+    "defects": 6,
+    "cleans": 2,
+    "singleCaught": 6,
+    "multiCaught": 6,
+    "uplift": [],
+    "singleFalseReject": 1,
+    "multiFalseReject": 1,
+    "avgNaming": 3
+  },
+  "outcomes": [
+    {
+      "key": "correctness-offbyone",
+      "category": "correctness",
+      "expectDefect": true,
+      "single": {
+        "decision": "revise",
+        "correct": true,
+        "named": true,
+        "ms": 53553
+      },
+      "multi": {
+        "decision": "revise",
+        "correct": true,
+        "named": true,
+        "ms": 57998
+      },
+      "lenses": [
+        {
+          "key": "correctness",
+          "decision": "revise",
+          "named": true,
+          "ms": 57998
+        },
+        {
+          "key": "security",
+          "decision": "revise",
+          "named": true,
+          "ms": 48251
+        },
+        {
+          "key": "regression-risk",
+          "decision": "revise",
+          "named": true,
+          "ms": 47992
+        }
+      ],
+      "lensesNaming": 3
+    },
+    {
+      "key": "correctness-missing-await",
+      "category": "correctness",
+      "expectDefect": true,
+      "single": {
+        "decision": "revise",
+        "correct": true,
+        "named": true,
+        "ms": 48924
+      },
+      "multi": {
+        "decision": "revise",
+        "correct": true,
+        "named": true,
+        "ms": 55893
+      },
+      "lenses": [
+        {
+          "key": "correctness",
+          "decision": "revise",
+          "named": true,
+          "ms": 42957
+        },
+        {
+          "key": "security",
+          "decision": "revise",
+          "named": true,
+          "ms": 55893
+        },
+        {
+          "key": "regression-risk",
+          "decision": "revise",
+          "named": true,
+          "ms": 50486
+        }
+      ],
+      "lensesNaming": 3
+    },
+    {
+      "key": "security-command-injection",
+      "category": "security",
+      "expectDefect": true,
+      "single": {
+        "decision": "revise",
+        "correct": true,
+        "named": true,
+        "ms": 55269
+      },
+      "multi": {
+        "decision": "revise",
+        "correct": true,
+        "named": true,
+        "ms": 70418
+      },
+      "lenses": [
+        {
+          "key": "correctness",
+          "decision": "revise",
+          "named": true,
+          "ms": 69367
+        },
+        {
+          "key": "security",
+          "decision": "revise",
+          "named": true,
+          "ms": 70418
+        },
+        {
+          "key": "regression-risk",
+          "decision": "revise",
+          "named": true,
+          "ms": 55932
+        }
+      ],
+      "lensesNaming": 3
+    },
+    {
+      "key": "security-secret-leak",
+      "category": "security",
+      "expectDefect": true,
+      "single": {
+        "decision": "revise",
+        "correct": true,
+        "named": true,
+        "ms": 53304
+      },
+      "multi": {
+        "decision": "revise",
+        "correct": true,
+        "named": true,
+        "ms": 48470
+      },
+      "lenses": [
+        {
+          "key": "correctness",
+          "decision": "revise",
+          "named": true,
+          "ms": 48470
+        },
+        {
+          "key": "security",
+          "decision": "revise",
+          "named": true,
+          "ms": 35363
+        },
+        {
+          "key": "regression-risk",
+          "decision": "revise",
+          "named": true,
+          "ms": 46872
+        }
+      ],
+      "lensesNaming": 3
+    },
+    {
+      "key": "regression-signature-break",
+      "category": "regression",
+      "expectDefect": true,
+      "single": {
+        "decision": "revise",
+        "correct": true,
+        "named": true,
+        "ms": 61932
+      },
+      "multi": {
+        "decision": "revise",
+        "correct": true,
+        "named": true,
+        "ms": 68311
+      },
+      "lenses": [
+        {
+          "key": "correctness",
+          "decision": "revise",
+          "named": true,
+          "ms": 67080
+        },
+        {
+          "key": "security",
+          "decision": "revise",
+          "named": true,
+          "ms": 68311
+        },
+        {
+          "key": "regression-risk",
+          "decision": "revise",
+          "named": true,
+          "ms": 65753
+        }
+      ],
+      "lensesNaming": 3
+    },
+    {
+      "key": "regression-removed-guard",
+      "category": "regression",
+      "expectDefect": true,
+      "single": {
+        "decision": "revise",
+        "correct": true,
+        "named": true,
+        "ms": 54259
+      },
+      "multi": {
+        "decision": "revise",
+        "correct": true,
+        "named": true,
+        "ms": 66807
+      },
+      "lenses": [
+        {
+          "key": "correctness",
+          "decision": "revise",
+          "named": true,
+          "ms": 63927
+        },
+        {
+          "key": "security",
+          "decision": "revise",
+          "named": true,
+          "ms": 66807
+        },
+        {
+          "key": "regression-risk",
+          "decision": "revise",
+          "named": true,
+          "ms": 65210
+        }
+      ],
+      "lensesNaming": 3
+    },
+    {
+      "key": "clean-extract-helper",
+      "category": "clean",
+      "expectDefect": false,
+      "single": {
+        "decision": "approve",
+        "correct": true,
+        "named": false,
+        "ms": 66914
+      },
+      "multi": {
+        "decision": "approve",
+        "correct": true,
+        "named": false,
+        "ms": 91018
+      },
+      "lenses": [
+        {
+          "key": "correctness",
+          "decision": "approve",
+          "named": false,
+          "ms": 85263
+        },
+        {
+          "key": "security",
+          "decision": "approve",
+          "named": false,
+          "ms": 71371
+        },
+        {
+          "key": "regression-risk",
+          "decision": "approve",
+          "named": false,
+          "ms": 91018
+        }
+      ],
+      "lensesNaming": 0
+    },
+    {
+      "key": "clean-validated-feature",
+      "category": "clean",
+      "expectDefect": false,
+      "single": {
+        "decision": "revise",
+        "correct": false,
+        "named": false,
+        "ms": 71537
+      },
+      "multi": {
+        "decision": "revise",
+        "correct": false,
+        "named": false,
+        "ms": 144529
+      },
+      "lenses": [
+        {
+          "key": "correctness",
+          "decision": "approve",
+          "named": false,
+          "ms": 80538
+        },
+        {
+          "key": "security",
+          "decision": "revise",
+          "named": false,
+          "ms": 144529
+        },
+        {
+          "key": "regression-risk",
+          "decision": "revise",
+          "named": false,
+          "ms": 82571
+        }
+      ],
+      "lensesNaming": 0
+    }
+  ]
+}
