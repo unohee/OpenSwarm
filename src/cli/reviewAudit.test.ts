@@ -3,9 +3,13 @@ import {
   filterSourceFiles,
   preferSrcRoot,
   partitionIntoAreas,
+  balanceAreasToConcurrency,
   aggregateAuditResults,
   formatAuditReport,
   runMaxReview,
+  runAreaFixes,
+  fixTargets,
+  buildFixTaskDescription,
   mergeFallback,
   type AuditArea,
   type AuditAreaResult,
@@ -294,5 +298,86 @@ describe('mergeFallback (INT-2192)', () => {
     expect(merged.summary.completed).toBe(2);
     expect(merged.summary.failed).toBe(0);
     expect(merged.rateLimit).toBeUndefined(); // fallback succeeded → resolved
+  });
+});
+
+describe('balanceAreasToConcurrency (INT-2249)', () => {
+  // Two dirs, 5 files each — the plain partition gives 2 areas.
+  const files = [
+    ...Array.from({ length: 5 }, (_, i) => `src/a/f${i}.ts`),
+    ...Array.from({ length: 5 }, (_, i) => `src/b/f${i}.ts`),
+  ];
+
+  it('splits below-pool partitions so the fan-out saturates concurrency', () => {
+    expect(partitionIntoAreas(files, 12)).toHaveLength(2); // baseline: 2 dirs
+    const balanced = balanceAreasToConcurrency(files, 8, 12);
+    expect(balanced.length).toBeGreaterThanOrEqual(8);
+    // Every original file is still covered exactly once.
+    expect(balanced.flatMap((a) => a.files).sort()).toEqual([...files].sort());
+  });
+
+  it('is a no-op when the directory partition already fills the pool', () => {
+    const balanced = balanceAreasToConcurrency(files, 2, 12);
+    expect(balanced).toHaveLength(2);
+  });
+
+  it('does not over-split past what the files allow (cap floors at 1/file)', () => {
+    // 10 files, concurrency 50 → at most 10 areas (one file each).
+    const balanced = balanceAreasToConcurrency(files, 50, 12);
+    expect(balanced).toHaveLength(files.length);
+  });
+
+  it('concurrency <= 1 returns the plain partition', () => {
+    expect(balanceAreasToConcurrency(files, 1, 12)).toHaveLength(2);
+  });
+});
+
+describe('fixTargets + runAreaFixes (INT-2249)', () => {
+  const area = (label: string): AuditArea => ({ label, dir: label, files: [`${label}/f.ts`] });
+  const run = (): AuditRun => ({
+    results: [
+      { area: area('src/a'), review: { decision: 'approve', feedback: '' } },
+      { area: area('src/b'), review: { decision: 'revise', feedback: '', issues: ['bug in f'] } },
+      { area: area('src/c'), review: { decision: 'reject', feedback: '' } },
+      { area: area('src/d'), error: 'reviewer crashed' },
+    ],
+    summary: aggregateAuditResults([]),
+  });
+
+  it('targets only non-approve areas with a review', () => {
+    const targets = fixTargets(run());
+    expect(targets.map((t) => t.area.label)).toEqual(['src/b', 'src/c']);
+  });
+
+  it('buildFixTaskDescription scopes to the area files and lists issues', () => {
+    const desc = buildFixTaskDescription(area('src/b'), { decision: 'revise', feedback: '', issues: ['bug in f'] });
+    expect(desc).toContain('src/b/f.ts');
+    expect(desc).toContain('bug in f');
+    expect(desc).toContain('do not touch files outside src/b');
+  });
+
+  it('fans a fix worker out over each target and reports edited files', async () => {
+    const seen: string[] = [];
+    const fixes = await runAreaFixes(run(), '/repo', { concurrency: 2 }, {
+      fix: async (a) => {
+        seen.push(a.label);
+        return { success: true, filesChanged: a.files };
+      },
+    });
+    expect(seen.sort()).toEqual(['src/b', 'src/c']); // approve + error areas skipped
+    expect(fixes.every((f) => f.applied)).toBe(true);
+    expect(fixes.flatMap((f) => f.filesChanged).sort()).toEqual(['src/b/f.ts', 'src/c/f.ts']);
+  });
+
+  it('a failed fix lands as an error, not a throw', async () => {
+    const fixes = await runAreaFixes(run(), '/repo', { concurrency: 1 }, {
+      fix: async (a) => {
+        if (a.label === 'src/c') throw new Error('worker died');
+        return { success: true, filesChanged: a.files };
+      },
+    });
+    const c = fixes.find((f) => f.label === 'src/c');
+    expect(c?.applied).toBe(false);
+    expect(c?.error).toContain('worker died');
   });
 });

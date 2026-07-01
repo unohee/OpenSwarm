@@ -146,6 +146,29 @@ export function partitionIntoAreas(files: string[], maxFilesPerArea = 12): Audit
 }
 
 /**
+ * Partition, then shrink the per-area cap until the fan-out can saturate the
+ * reviewer pool. The plain directory partition can yield far fewer areas than
+ * `concurrency` (e.g. two dirs, concurrency 8 → 2 subagents, 6 idle), so when
+ * we're under the pool size we re-partition with a smaller cap — more, smaller
+ * areas finish sooner in parallel. Monotonic (smaller cap ⇒ ≥ areas), so it
+ * converges; it stops as soon as areas ≥ concurrency or the cap bottoms out at
+ * one file per area. No-op when the directory partition already fills the pool.
+ * (INT-2249)
+ */
+export function balanceAreasToConcurrency(
+  files: string[],
+  concurrency: number,
+  maxFilesPerArea = 12,
+): AuditArea[] {
+  let areas = partitionIntoAreas(files, maxFilesPerArea);
+  if (concurrency <= 1) return areas;
+  for (let cap = maxFilesPerArea - 1; areas.length < concurrency && cap >= 1; cap--) {
+    areas = partitionIntoAreas(files, cap);
+  }
+  return areas;
+}
+
+/**
  * Roll N per-area results into one verdict + merged issues/actions. The worst
  * decision wins (reject > revise > approve); errored areas are counted but don't
  * affect the decision (a crashed subagent shouldn't silently "approve"). Pure.
@@ -419,4 +442,125 @@ export function mergeFallback(primary: AuditRun, fallback: AuditRun): AuditRun {
   const fb = new Map(fallback.results.map((r) => [r.area.label, r]));
   const results = primary.results.map((r) => (r.error && fb.has(r.area.label) ? fb.get(r.area.label)! : r));
   return { summary: aggregateAuditResults(results), results, rateLimit: fallback.rateLimit };
+}
+
+// ── Fix pass (--fix) ─────────────────────────────────────────────────────────
+
+/** Outcome of applying a reviewer's findings to one area. */
+export interface FixAreaResult {
+  label: string;
+  /** true when the worker ran and reported success. */
+  applied: boolean;
+  filesChanged: string[];
+  error?: string;
+}
+
+/** Live fix-pass progress — mirrors AuditProgress for the same board/logging. */
+export type FixProgress =
+  | { type: 'start'; label: string; done: number; total: number }
+  | { type: 'log'; label: string; line: string }
+  | { type: 'done'; label: string; filesChanged: number; done: number; total: number }
+  | { type: 'error'; label: string; error: string; done: number; total: number };
+
+export interface RunAreaFixesOptions {
+  concurrency: number;
+  adapter?: AdapterName;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
+
+export interface RunAreaFixesDeps {
+  /** Apply one area's fixes → worker result. Default spawns a real worker. Injectable for tests. */
+  fix?: (area: AuditArea, review: ReviewResult, onLog: (line: string) => void) => Promise<{ success: boolean; filesChanged: string[] }>;
+  onProgress?: (e: FixProgress) => void;
+}
+
+/** Only areas the reviewer did not approve are worth a fix pass. */
+export function fixTargets(run: AuditRun): AuditAreaResult[] {
+  return run.results.filter(
+    (r): r is AuditAreaResult & { review: ReviewResult } =>
+      !!r.review && r.review.decision !== 'approve',
+  );
+}
+
+/** Turn one area's reviewer verdict into a worker task that applies the fixes. */
+export function buildFixTaskDescription(area: AuditArea, review: ReviewResult): string {
+  const issues = (review.issues ?? []).map((i) => `- ${i}`);
+  const actions = (review.recommendedActions ?? []).map(
+    (a) => `- [${a.type}] ${a.title}${a.location ? ` (${a.location})` : ''}`,
+  );
+  return [
+    `A code review of ${area.label} found issues. Apply the MINIMAL edits needed to resolve them.`,
+    '',
+    `Files in scope (edit only these — do not touch files outside ${area.dir}):`,
+    ...area.files.map((f) => `- ${f}`),
+    '',
+    issues.length ? `Issues to fix:\n${issues.join('\n')}` : '',
+    actions.length ? `\nRecommended actions:\n${actions.join('\n')}` : '',
+    '',
+    'Do not refactor beyond the fixes. Do not add features. Keep changes tight and verifiable.',
+  ]
+    .filter((l) => l !== '')
+    .join('\n');
+}
+
+/** Default fix applier: spawn a worker subagent that edits the area in place. */
+async function defaultFixArea(
+  area: AuditArea,
+  review: ReviewResult,
+  cwd: string,
+  opts: RunAreaFixesOptions,
+  onLog: (line: string) => void,
+): Promise<{ success: boolean; filesChanged: string[] }> {
+  const { runWorker } = await import('../agents/worker.js');
+  const result = await runWorker({
+    taskTitle: `Apply review fixes: ${area.label}`,
+    taskDescription: buildFixTaskDescription(area, review),
+    projectPath: cwd,
+    adapterName: opts.adapter,
+    timeoutMs: opts.timeoutMs,
+    nudgeMaxOnNoEdit: 1,
+    signal: opts.signal,
+    onLog,
+  });
+  return { success: result.success, filesChanged: result.filesChanged };
+}
+
+/**
+ * Apply reviewer-recommended fixes for every non-approve area, fanned out with
+ * the same concurrency cap as the review. Edits land in the working tree — no
+ * commit, no re-review — so the user reviews the diff before committing. Never
+ * throws on a single area: a failed fix lands as an error in its result. (INT-2249)
+ */
+export async function runAreaFixes(
+  run: AuditRun,
+  cwd: string,
+  opts: RunAreaFixesOptions,
+  deps: RunAreaFixesDeps = {},
+): Promise<FixAreaResult[]> {
+  const fix = deps.fix ?? ((area, review, onLog) => defaultFixArea(area, review, cwd, opts, onLog));
+  const targets = fixTargets(run);
+  const total = targets.length;
+  let done = 0;
+
+  const settled = await runPool(
+    targets,
+    opts.concurrency,
+    async (t) => {
+      deps.onProgress?.({ type: 'start', label: t.area.label, done, total });
+      return fix(t.area, t.review!, (line) => deps.onProgress?.({ type: 'log', label: t.area.label, line }));
+    },
+    (s) => {
+      done++;
+      const label = targets[s.index].area.label;
+      if (s.error) deps.onProgress?.({ type: 'error', label, error: String(s.error), done, total });
+      else if (s.value) deps.onProgress?.({ type: 'done', label, filesChanged: s.value.filesChanged.length, done, total });
+    },
+  );
+
+  return settled.map((s, i) => {
+    const label = targets[i].area.label;
+    if (s.error || !s.value) return { label, applied: false, filesChanged: [], error: s.error ? String(s.error) : 'no result' };
+    return { label, applied: s.value.success, filesChanged: s.value.filesChanged };
+  });
 }

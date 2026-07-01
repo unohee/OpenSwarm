@@ -258,10 +258,11 @@ program
   .option('--no-linear', 'For --max: skip creating the default Linear master audit issue')
   .option('--fallback <adapter>', 'For --max: retry usage-limited areas on this adapter (default: claude for codex)')
   .option('--no-fallback', 'For --max: disable the automatic usage-limit fallback')
+  .option('--fix', 'For --max: apply the reviewer fixes to each flagged area (working tree only, no commit)')
   .action(async (opts: {
     path?: string; issues?: string | boolean; issuesPerArea?: string | boolean; file?: string | boolean; adapter?: string; debug?: boolean;
     max?: boolean; concurrency?: number; maxFilesPerArea?: number; yes?: boolean; dryRun?: boolean;
-    out?: string; linear?: boolean; fallback?: string | boolean;
+    out?: string; linear?: boolean; fallback?: string | boolean; fix?: boolean;
   }) => {
     try {
       if (opts.max) {
@@ -281,6 +282,7 @@ program
           // --fallback <adapter> → string; --no-fallback → false; default → undefined (auto)
           fallbackAdapter: typeof opts.fallback === 'string' ? opts.fallback : undefined,
           noFallback: opts.fallback === false,
+          fix: opts.fix,
         });
         if (result && result.decision === 'reject') process.exitCode = 1;
         return;

@@ -15,8 +15,10 @@ import { writeFile, mkdir } from 'node:fs/promises';
 import { join, dirname, basename } from 'node:path';
 import {
   listSourceFiles,
-  partitionIntoAreas,
+  balanceAreasToConcurrency,
   runMaxReview,
+  runAreaFixes,
+  fixTargets,
   formatAuditSummary,
   formatAuditReport,
   mergeFallback,
@@ -54,6 +56,8 @@ export interface ReviewMaxOptions {
   fallbackAdapter?: string;
   /** Disable the automatic usage-limit fallback. (INT-2192) */
   noFallback?: boolean;
+  /** Apply the reviewer's fixes to each non-approve area (working tree only). (INT-2249) */
+  fix?: boolean;
 }
 
 /**
@@ -147,7 +151,9 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
     console.log('No production source files to audit.');
     return null;
   }
-  const areas: AuditArea[] = partitionIntoAreas(files, opts.maxFilesPerArea ?? 12);
+  // Split down to fill the reviewer pool: fewer areas than `concurrency` would
+  // leave subagents idle, so the fastest audit maximizes parallel spread. (INT-2249)
+  const areas: AuditArea[] = balanceAreasToConcurrency(files, concurrency, opts.maxFilesPerArea ?? 12);
 
   if (opts.dryRun) {
     console.log(`Audit plan — ${files.length} file(s) across ${areas.length} area(s):`);
@@ -222,6 +228,37 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
     console.log(`\nReport saved: ${outPath}`);
   } catch (e) {
     console.warn(`Could not save report: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  // (3.5) --fix: apply the reviewer's findings for every non-approve area,
+  //       fanned out with the same concurrency. Edits land in the working tree —
+  //       no commit, no re-review — so the user reviews the diff first. (INT-2249)
+  if (opts.fix) {
+    const targets = fixTargets(run);
+    if (!targets.length) {
+      console.log('\n--fix: nothing to apply (every area approved).');
+    } else {
+      console.log(`\nApplying fixes across ${targets.length} area(s) with ${concurrency} concurrent worker(s)...`);
+      const fixes = await runAreaFixes(
+        run,
+        cwd,
+        { concurrency, adapter: opts.adapter as AdapterName | undefined },
+        {
+          onProgress: (e) => {
+            if (e.type === 'done') console.log(`  ✓ ${e.label} — ${e.filesChanged} file(s) changed`);
+            else if (e.type === 'error') console.log(`  ✗ ${e.label} — ${e.error}`);
+          },
+        },
+      );
+      const edited = fixes.filter((f) => f.applied && f.filesChanged.length);
+      const failed = fixes.filter((f) => !f.applied);
+      const touched = [...new Set(edited.flatMap((f) => f.filesChanged))];
+      console.log(
+        `\n--fix: ${edited.length}/${targets.length} area(s) edited, ${touched.length} file(s) touched` +
+          `${failed.length ? `, ${failed.length} failed` : ''}.`,
+      );
+      console.log('Changes are in the working tree — review the diff before committing.');
+    }
   }
 
   // (4) Linear: PM synthesis is the DEFAULT — a master parent + ≤10 cohesive
