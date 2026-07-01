@@ -47,6 +47,17 @@ describe('TaskScheduler cancellation', () => {
     expect(c.wasAborted()).toBe(false);
   });
 
+  it('cancelProjectTasks does not abort sibling paths with the same prefix', () => {
+    const a = deferredExecutor();
+    const b = deferredExecutor();
+    sched.startTask(task('a'), '/dev/WAVE', a.exec);
+    sched.startTask(task('b'), '/dev/WAVE-next', b.exec);
+    const n = sched.cancelProjectTasks('/dev/WAVE');
+    expect(n).toBe(1);
+    expect(a.wasAborted()).toBe(true);
+    expect(b.wasAborted()).toBe(false);
+  });
+
   it("a cancelled result is not counted as failed", async () => {
     const d = deferredExecutor();
     const events: string[] = [];
