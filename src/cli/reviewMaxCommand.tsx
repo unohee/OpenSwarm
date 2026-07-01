@@ -29,6 +29,7 @@ import {
 import { AuditBoard } from '../tui/components/AuditBoard.js';
 import { resolveIssueFromBranch, ensureTaskSource, resolveProjectId } from './reviewCommand.js';
 import { synthesizeAuditIssues } from './auditPM.js';
+import { status } from '../support/colors.js';
 import type { AdapterName } from '../adapters/types.js';
 
 export interface ReviewMaxOptions {
@@ -191,7 +192,7 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
     const fallback = resolveFallbackAdapter(opts);
     if (fallback) {
       const pending = areas.filter((_, i) => run.results[i]?.error);
-      console.warn(`\n⚠ Codex usage limit hit — falling back to "${fallback}" for ${pending.length} remaining area(s)...`);
+      console.warn(`\n${status.warn(`Codex usage limit hit — falling back to "${fallback}" for ${pending.length} remaining area(s)...`)}`);
       const fbRun = await runMaxReview(
         pending,
         cwd,
@@ -214,7 +215,7 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
   if (run.rateLimit) {
     const skipped = run.summary.areas.filter((a) => a.decision === 'error').length;
     const when = run.rateLimit.resetsAt ? new Date(run.rateLimit.resetsAt * 1000).toLocaleString() : 'an unknown time';
-    console.warn(`\n⚠ Usage limit unresolved — ${skipped} area(s) still incomplete. ${run.rateLimit.message}`);
+    console.warn(`\n${status.warn(`Usage limit unresolved — ${skipped} area(s) still incomplete. ${run.rateLimit.message}`)}`);
     console.warn(`  Retry after ${when}${resolveFallbackAdapter(opts) ? ' (fallback adapter also exhausted)' : ', or set `--fallback <adapter>`'}.`);
   }
 
@@ -245,8 +246,8 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
         { concurrency, adapter: opts.adapter as AdapterName | undefined },
         {
           onProgress: (e) => {
-            if (e.type === 'done') console.log(`  ✓ ${e.label} — ${e.filesChanged} file(s) changed`);
-            else if (e.type === 'error') console.log(`  ✗ ${e.label} — ${e.error}`);
+            if (e.type === 'done') console.log(`  ${status.ok(`${e.label} — ${e.filesChanged} file(s) changed`)}`);
+            else if (e.type === 'error') console.log(`  ${status.err(`${e.label} — ${e.error}`)}`);
           },
         },
       );
@@ -340,8 +341,10 @@ async function filePmSynthesizedIssues(
     // No <repo>/openswarm.json mapping → issues get filed without a project (and
     // on a multi-team config, only the first team). Tell the user how to map it. (INT-2239)
     console.warn(
-      '⚠ No Linear project mapped for this repo (openswarm.json `linear.projectId` missing) — ' +
-        'issues will not be linked to a project. Run `openswarm add` here to map it.',
+      status.warn(
+        'No Linear project mapped for this repo (openswarm.json `linear.projectId` missing) — ' +
+          'issues will not be linked to a project. Run `openswarm add` here to map it.',
+      ),
     );
   }
 
@@ -380,12 +383,12 @@ async function filePmSynthesizedIssues(
         : await source.createTask(issue.title, issue.description, projectId);
       if ('identifier' in res) {
         filed++;
-        console.log(`  ✓ ${res.identifier}  ${issue.title}  (${issue.items.length} follow-up(s))`);
+        console.log(`  ${status.ok(`${res.identifier}  ${issue.title}  (${issue.items.length} follow-up(s))`)}`);
       } else {
-        console.warn(`  ✗ Could not create issue "${issue.title}": ${res.error}`);
+        console.warn(`  ${status.err(`Could not create issue "${issue.title}": ${res.error}`)}`);
       }
     } catch (e) {
-      console.warn(`  ✗ Could not create issue "${issue.title}": ${e instanceof Error ? e.message : String(e)}`);
+      console.warn(`  ${status.err(`Could not create issue "${issue.title}": ${e instanceof Error ? e.message : String(e)}`)}`);
     }
   }
 

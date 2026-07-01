@@ -14,6 +14,7 @@ import type { ReviewResult, RecommendedAction } from '../agents/agentPair.js';
 import type { AdapterName } from '../adapters/types.js';
 import { runPool } from '../support/concurrencyPool.js';
 import { RateLimitError } from '../adapters/rateLimitError.js';
+import { c, status } from '../support/colors.js';
 
 // Source extensions and test patterns mirror src/knowledge/scanner.ts. Kept
 // local (not imported) because those are unexported module consts; the audit
@@ -292,20 +293,26 @@ export function formatAuditReport(summary: AuditSummary, repoName: string, times
   return lines.join('\n');
 }
 
-/** Render the aggregate audit verdict for the terminal. Pure. */
+/**
+ * Render the aggregate audit verdict for the terminal. Glyphs + colors come from
+ * the shared status vocabulary (support/colors `status`), matching the AuditBoard
+ * — color is a no-op under NO_COLOR / non-TTY so the text stays clean. (INT-2260)
+ */
 export function formatAuditSummary(summary: AuditSummary): string {
+  // decision → shared status glyph (colored): approve ✓, revise ✎, reject ✗, error ⚠.
   const mark = (d: AuditAreaSummary['decision']) =>
-    d === 'approve' ? '✓' : d === 'revise' ? '✎' : d === 'reject' ? '✗' : '⚠';
+    d === 'approve' ? status.glyph('ok') : d === 'revise' ? status.glyph('revise') : d === 'reject' ? status.glyph('err') : status.glyph('warn');
   const lines: string[] = [];
 
   const approved = summary.areas.filter((a) => a.decision === 'approve').length;
   const revised = summary.areas.filter((a) => a.decision === 'revise').length;
   const rejected = summary.areas.filter((a) => a.decision === 'reject').length;
   lines.push(
-    `Codebase audit — ${summary.totalAreas} area(s): ${approved} ✓, ${revised} ✎ revise, ${rejected} ✗ reject` +
+    `Codebase audit — ${summary.totalAreas} area(s): ${approved} ${status.glyph('ok')}, ${revised} ${status.glyph('revise')} revise, ${rejected} ${status.glyph('err')} reject` +
       (summary.failed ? `  [${summary.failed} failed]` : ''),
   );
-  lines.push(`Verdict: ${summary.decision.toUpperCase()}`);
+  const verdictPaint = summary.decision === 'reject' ? c.red : summary.decision === 'revise' ? c.yellow : c.green;
+  lines.push(verdictPaint(`Verdict: ${summary.decision.toUpperCase()}`));
   lines.push('');
 
   for (const a of summary.areas) {

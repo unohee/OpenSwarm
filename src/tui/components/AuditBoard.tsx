@@ -7,8 +7,8 @@
 import { Box, Text } from 'ink';
 import { useState, useEffect } from 'react';
 import type { EventEmitter } from 'node:events';
-import { spinnerFrame } from '../loadingMessages.js';
-import { theme } from '../theme.js';
+import { theme, ICON } from '../theme.js';
+import { Spinner } from './Status.js';
 import type { AuditArea, AuditProgress } from '../../cli/reviewAudit.js';
 import type { ReviewResult } from '../../agents/agentPair.js';
 
@@ -28,7 +28,6 @@ export interface AuditBoardProps {
 const truncate = (s: string, n: number) => (s.length <= n ? s : `${s.slice(0, n - 1)}…`);
 
 export function AuditBoard({ areas, concurrency, events }: AuditBoardProps) {
-  const [tick, setTick] = useState(0);
   const [statuses, setStatuses] = useState<Record<string, AreaStatus>>(() =>
     Object.fromEntries(areas.map((a) => [a.label, { status: 'pending' as const }])),
   );
@@ -51,11 +50,6 @@ export function AuditBoard({ areas, concurrency, events }: AuditBoardProps) {
     };
   }, [events]);
 
-  useEffect(() => {
-    const t = setInterval(() => setTick((x) => x + 1), 120);
-    return () => clearInterval(t);
-  }, []);
-
   const entries = Object.values(statuses);
   const done = entries.filter((s) => s.status === 'done' || s.status === 'error').length;
   const running = Object.entries(statuses).filter(([, s]) => s.status === 'running');
@@ -67,28 +61,28 @@ export function AuditBoard({ areas, concurrency, events }: AuditBoardProps) {
   return (
     <Box flexDirection="column">
       <Text>
-        <Text color={theme.accent}>{spinnerFrame(tick)}</Text>
+        <Spinner />
         <Text bold>{` Codebase audit · ${done}/${areas.length} areas · concurrency ${concurrency}`}</Text>
       </Text>
       {running.map(([label, s]) => (
         <Text key={label} color={theme.dim}>
           {'  '}
-          <Text color={theme.accent}>{spinnerFrame(tick)}</Text>
+          <Spinner />
           {` ${label}`}
           {s.lastLog ? `  ${truncate(s.lastLog, 48)}` : ''}
         </Text>
       ))}
       <Text color={theme.dim}>
         {'  '}
-        <Text color={theme.ok}>{`✓ ${approved} done`}</Text>
+        <Text color={theme.ok}>{`${ICON.ok} ${approved} done`}</Text>
         {' · '}
-        <Text color={theme.accentAlt}>{`✎ ${revised} revise`}</Text>
+        <Text color={theme.accentAlt}>{`${ICON.revise} ${revised} revise`}</Text>
         {' · '}
-        <Text color={theme.err}>{`✗ ${rejected} reject`}</Text>
+        <Text color={theme.err}>{`${ICON.fail} ${rejected} reject`}</Text>
         {failed ? (
           <Text>
             {' · '}
-            <Text color={theme.warn}>{`⚠ ${failed} failed`}</Text>
+            <Text color={theme.warn}>{`${ICON.warn} ${failed} failed`}</Text>
           </Text>
         ) : null}
       </Text>

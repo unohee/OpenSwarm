@@ -12,6 +12,8 @@ import type { TaskItem } from '../orchestration/decisionEngine.js';
 import type { PipelineStage, RoleConfig } from '../core/types.js';
 import { initLocale } from '../locale/index.js';
 import { expandPath } from '../core/config.js';
+import { startProgressHeartbeat, type ReviewProgress } from '../cli/reviewProgress.js';
+import { status } from '../support/colors.js';
 
 // Types
 
@@ -122,22 +124,34 @@ export async function runCli(options: CliRunOptions): Promise<void> {
 
   // 8. Attach event listeners for progress
   const stageStartTimes = new Map<string, number>();
+  // Every stage (worker included) gets the same animated braille heartbeat the
+  // reviewer has, so a running stage never looks frozen. On a non-TTY or in
+  // verbose mode (where each tool line is printed) we fall back to plain lines.
+  // (INT-2260)
+  const liveSpinner = !!process.stdout.isTTY && !options.verbose;
+  let heartbeat: ReviewProgress | null = null;
+  const stopHeartbeat = () => {
+    heartbeat?.stop();
+    heartbeat = null;
+  };
 
   pipeline.on('stage:start', ({ stage }: { stage: string }) => {
     stageStartTimes.set(stage, Date.now());
-    process.stdout.write(`  ~ ${stage}...`);
+    if (liveSpinner) heartbeat = startProgressHeartbeat(`${stage}…`, { write: (s) => process.stdout.write(s) });
+    else process.stdout.write(`  ~ ${stage}...\n`);
   });
 
   pipeline.on('stage:complete', ({ stage, result }: { stage: string; result: { success: boolean; duration: number } }) => {
-    const symbol = result.success ? 'v' : 'x';
+    stopHeartbeat();
     const duration = (result.duration / 1000).toFixed(1);
-    // Clear the "running" line and replace with result
-    process.stdout.write(`\r  ${symbol} ${stage} (${duration}s)\n`);
+    const line = `${stage} (${duration}s)`;
+    process.stdout.write(`  ${result.success ? status.ok(line) : status.err(line)}\n`);
   });
 
   pipeline.on('stage:fail', ({ stage, result }: { stage: string; result: { duration: number } }) => {
+    stopHeartbeat();
     const duration = (result.duration / 1000).toFixed(1);
-    process.stdout.write(`\r  x ${stage} (${duration}s) FAILED\n`);
+    process.stdout.write(`  ${status.err(`${stage} (${duration}s) FAILED`)}\n`);
   });
 
   pipeline.on('iteration:start', ({ iteration, maxIterations }: { iteration: number; maxIterations: number }) => {

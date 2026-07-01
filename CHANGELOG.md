@@ -11,6 +11,7 @@ Wider, faster codebase audits — plus the audit can now fix what it finds.
 
 ### Changed
 
+- **Unified CLI/TUI status design** — glyphs (`◐ ✓ ✗ ⚠ ✎`) and the braille spinner are now single-sourced (`src/support/glyphs.ts`), consumed by both the Ink TUI (`<StatusIcon>` / `<Spinner>` + `theme.STATUS`) and plain console output (`status` in `src/support/colors.ts`). Consequences: the **worker now shows the same animated spinner heartbeat as the reviewer** (it was a static line), the `review --max` verdict and `--fix` output are colored consistently (and stay ANSI-free when piped / under `NO_COLOR`), and drifting glyphs (`▶`→`◐`, `●`→`✓`) and duplicate spinner frame sets are collapsed. (INT-2260)
 - **Multi-lens reviewer removed** — the opt-in multi-lens reviewer fan-out (PoC, shipped dormant in 0.10.0) is gone. A synthetic planted-defect A/B showed **zero detection uplift** over the single reviewer and **complete lens overlap** (every lens named every defect), so the 3× cost bought nothing. The reproducible A/B harness lives in `benchmarks/reviewLensAB.ts`. (INT-2230)
 
 ### Fixed

@@ -2,16 +2,14 @@
 // OpenSwarm - review progress indicator (INT-1963)
 // ============================================
 //
-// A live "still working" heartbeat for `openswarm review`, so a multi-second
-// reviewer run doesn't look frozen. The formatter is pure (unit-tested); the
-// runtime owns a timer + stderr writes (injectable for tests).
+// A live "still working" heartbeat for any multi-second CLI agent run (reviewer
+// AND worker), so it doesn't look frozen. The formatter is pure (unit-tested);
+// the runtime owns a timer + stderr writes (injectable for tests). The spinner
+// is single-sourced from support/glyphs so the CLI heartbeat matches the TUI
+// boards. (INT-2260)
 
-const FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-
-/** Braille spinner frame for a tick. Pure. */
-export function spinnerFrame(tick: number): string {
-  return FRAMES[((tick % FRAMES.length) + FRAMES.length) % FRAMES.length];
-}
+export { spinnerFrame } from '../support/glyphs.js';
+import { spinnerFrame } from '../support/glyphs.js';
 
 /** Collapse newlines/whitespace runs to single spaces so a note stays one line. Pure. */
 export function oneLine(s: string): string {
@@ -68,9 +66,9 @@ export function truncateLine(s: string, width: number): string {
   return `${out}…`;
 }
 
-/** One progress line: `⠙ reviewing… 3s · 🔧 read_file`. Pure. */
-export function formatProgress(tick: number, elapsedSec: number, last?: string, width?: number): string {
-  const base = `${spinnerFrame(tick)} reviewing… ${elapsedSec}s`;
+/** One progress line: `⣾ reviewing… 3s · 🔧 read_file`. Pure. (label defaults to `reviewing…`) */
+export function formatProgress(tick: number, elapsedSec: number, last?: string, width?: number, label = 'reviewing…'): string {
+  const base = `${spinnerFrame(tick)} ${label} ${elapsedSec}s`;
   const line = last ? `${base} · ${last}` : base;
   return width ? truncateLine(line, width) : line;
 }
@@ -96,9 +94,11 @@ const CLEAR_LINE = '\r\x1b[2K';
 
 /**
  * Start a spinner heartbeat that re-renders every intervalMs until stop().
- * Returns handles to update the activity note and to stop. (INT-1963)
+ * `label` is the verb shown next to the spinner (`reviewing…`, `worker…`), so
+ * the same heartbeat serves every CLI agent stage. Returns handles to update the
+ * activity note and to stop. (INT-1963, INT-2260)
  */
-export function startReviewProgress(deps: ReviewProgressDeps = {}): ReviewProgress {
+export function startProgressHeartbeat(label: string, deps: ReviewProgressDeps = {}): ReviewProgress {
   const write = deps.write ?? ((s: string) => process.stderr.write(s));
   const now = deps.now ?? (() => Date.now());
   const setIntervalFn = deps.setIntervalFn ?? setInterval;
@@ -116,7 +116,7 @@ export function startReviewProgress(deps: ReviewProgressDeps = {}): ReviewProgre
   const render = () => {
     const elapsedSec = Math.max(0, Math.floor((now() - start) / 1000));
     // Single line, truncated to display width — a wide-char note must never wrap/stack. (INT-1966)
-    write(`${CLEAR_LINE}${formatProgress(tick, elapsedSec, last, maxCols)}`);
+    write(`${CLEAR_LINE}${formatProgress(tick, elapsedSec, last, maxCols, label)}`);
     tick += 1;
   };
 
@@ -132,4 +132,9 @@ export function startReviewProgress(deps: ReviewProgressDeps = {}): ReviewProgre
       write(CLEAR_LINE);
     },
   };
+}
+
+/** The reviewer's heartbeat — `startProgressHeartbeat` with the `reviewing…` label. */
+export function startReviewProgress(deps: ReviewProgressDeps = {}): ReviewProgress {
+  return startProgressHeartbeat('reviewing…', deps);
 }

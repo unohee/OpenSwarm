@@ -2,11 +2,12 @@
 // Presentational: takes already-reduced stage entries (parity with the
 // dashboard's renderStages).
 import { Box, Text } from 'ink';
-import { theme } from '../theme.js';
+import { STATUS } from '../theme.js';
+import type { StatusKind } from '../../support/glyphs.js';
 import type { StageEntry } from '../pipelineEvents.js';
 
-const ICON: Record<StageEntry['status'], string> = { start: '▶', complete: '✓', fail: '✗' };
-const COLOR: Record<StageEntry['status'], string> = { start: theme.running, complete: theme.ok, fail: theme.err };
+// Single-sourced glyphs + colors (INT-2260): running → ◐, complete → ✓, fail → ✗.
+const KIND: Record<StageEntry['status'], StatusKind> = { start: 'running', complete: 'ok', fail: 'err' };
 
 export interface StageTimelineProps {
   stages: StageEntry[];
@@ -25,9 +26,10 @@ export function StageTimeline({ stages, max = 12 }: StageTimelineProps) {
           const dur = s.durationMs ? ` ${Math.round(s.durationMs / 1000)}s` : '';
           const model = s.model ? ` (${s.model})` : '';
           const decision = s.decision ? ` → ${s.decision}` : '';
+          const st = STATUS[KIND[s.status]];
           return (
-            <Text key={i} color={COLOR[s.status]}>
-              {`${ICON[s.status]} ${s.stage}${model}${dur}${decision}`}
+            <Text key={i} color={st.color}>
+              {`${st.icon} ${s.stage}${model}${dur}${decision}`}
             </Text>
           );
         })

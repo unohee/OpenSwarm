@@ -23,14 +23,11 @@ export const LOADING_MESSAGES = [
   'Activating response circuits',
 ] as const;
 
-export const SPINNER_FRAMES = ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷'] as const;
+// Spinner is single-sourced from support/glyphs (INT-2260); re-exported here for
+// the existing TUI importers (AuditBoard, WorkingIndicator).
+export { SPINNER_FRAMES, spinnerFrame } from '../support/glyphs.js';
 
 const mod = (n: number, m: number) => ((n % m) + m) % m;
-
-/** Braille spinner glyph for the given tick. */
-export function spinnerFrame(tick: number): string {
-  return SPINNER_FRAMES[mod(tick, SPINNER_FRAMES.length)];
-}
 
 /**
  * Loading line for a given tick. The message advances once per `periodMs`

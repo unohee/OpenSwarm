@@ -3,14 +3,15 @@ import { spinnerFrame, formatProgress, startReviewProgress, oneLine, truncateLin
 
 describe('spinnerFrame / formatProgress (INT-1963)', () => {
   it('cycles spinner frames and is safe for any tick', () => {
-    expect(spinnerFrame(0)).toBe('⠋');
-    expect(spinnerFrame(10)).toBe(spinnerFrame(0)); // wraps
+    // Single-sourced braille spinner from support/glyphs (8 frames). (INT-2260)
+    expect(spinnerFrame(0)).toBe('⣾');
+    expect(spinnerFrame(8)).toBe(spinnerFrame(0)); // wraps at frame count (8)
     expect(typeof spinnerFrame(-1)).toBe('string');
   });
 
   it('formats elapsed seconds and an optional activity note', () => {
-    expect(formatProgress(0, 3)).toBe('⠋ reviewing… 3s');
-    expect(formatProgress(0, 5, '🔧 read_file')).toBe('⠋ reviewing… 5s · 🔧 read_file');
+    expect(formatProgress(0, 3)).toBe('⣾ reviewing… 3s');
+    expect(formatProgress(0, 5, '🔧 read_file')).toBe('⣾ reviewing… 5s · 🔧 read_file');
   });
 });
 

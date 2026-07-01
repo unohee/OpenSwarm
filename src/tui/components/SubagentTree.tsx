@@ -1,11 +1,12 @@
 // SubagentTree — concurrent tasks as a per-worktree agent tree (S7).
 // Presentational: takes nodes built by buildSubagentTree.
 import { Box, Text } from 'ink';
-import { theme } from '../theme.js';
+import { STATUS } from '../theme.js';
+import type { StatusKind } from '../../support/glyphs.js';
 import type { TaskNode, TaskStatus } from '../subagentTree.js';
 
-const ICON: Record<TaskStatus, string> = { start: '◐', complete: '●', fail: '✗' };
-const COLOR: Record<TaskStatus, string> = { start: theme.running, complete: theme.ok, fail: theme.err };
+// Single-sourced glyphs + colors (INT-2260): running → ◐, complete → ✓, fail → ✗.
+const KIND: Record<TaskStatus, StatusKind> = { start: 'running', complete: 'ok', fail: 'err' };
 
 export interface SubagentTreeProps {
   tasks: TaskNode[];
@@ -25,7 +26,7 @@ export function SubagentTree({ tasks, max = 6, maxStages = 5 }: SubagentTreeProp
       ) : (
         shown.map((task) => (
           <Box key={task.taskId} flexDirection="column">
-            <Text color={COLOR[task.status]}>{`${ICON[task.status]} ${task.taskId.slice(0, 16)}`}</Text>
+            <Text color={STATUS[KIND[task.status]].color}>{`${STATUS[KIND[task.status]].icon} ${task.taskId.slice(0, 16)}`}</Text>
             {task.stages.slice(-maxStages).map((s, i) => (
               <Text key={i} dimColor>
                 {`   └ ${s.stage}${s.model ? ` (${s.model})` : ''} — ${s.status}`}
