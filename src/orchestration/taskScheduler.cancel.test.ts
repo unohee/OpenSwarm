@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+import { homedir } from 'node:os';
+import { resolve } from 'node:path';
 import { TaskScheduler } from './taskScheduler.js';
 import type { TaskItem } from './decisionEngine.js';
 import type { PipelineResult } from '../agents/pairPipeline.js';
@@ -56,6 +58,22 @@ describe('TaskScheduler cancellation', () => {
     expect(n).toBe(1);
     expect(a.wasAborted()).toBe(true);
     expect(b.wasAborted()).toBe(false);
+  });
+
+  it('cancelProjectTasks matches home-expanded project paths', () => {
+    const d = deferredExecutor();
+    sched.startTask(task('home'), resolve(homedir(), 'dev/WAVE'), d.exec);
+    const n = sched.cancelProjectTasks('~/dev/WAVE');
+    expect(n).toBe(1);
+    expect(d.wasAborted()).toBe(true);
+  });
+
+  it('cancelProjectTasks matches relative project paths', () => {
+    const d = deferredExecutor();
+    sched.startTask(task('relative'), resolve(process.cwd(), 'relative-WAVE'), d.exec);
+    const n = sched.cancelProjectTasks('./relative-WAVE');
+    expect(n).toBe(1);
+    expect(d.wasAborted()).toBe(true);
   });
 
   it("a cancelled result is not counted as failed", async () => {

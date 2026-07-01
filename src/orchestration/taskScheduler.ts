@@ -4,11 +4,17 @@
 // ============================================
 
 import { EventEmitter } from 'node:events';
+import { homedir } from 'node:os';
+import { resolve } from 'node:path';
 import type { TaskItem } from './decisionEngine.js';
 import type { PipelineResult } from '../agents/pairPipeline.js';
 
 function normalizeProjectPath(path: string): string {
-  const normalized = path.replace(/\\/g, '/').replace(/\/+$/g, '');
+  const slashed = path.replace(/\\/g, '/');
+  const expanded = slashed === '~' || slashed.startsWith('~/')
+    ? `${homedir()}${slashed.slice(1)}`
+    : slashed;
+  const normalized = resolve(expanded).replace(/\\/g, '/').replace(/\/+$/g, '');
   return normalized || '/';
 }
 
