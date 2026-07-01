@@ -82,7 +82,7 @@ describe('buildFixCheckTask (INT-2267)', () => {
 
 describe('runFixCommand loop (INT-2267)', () => {
   const checks: Check[] = [{ key: 'test', program: 'npm', args: ['run', 'test'] }];
-  const silent = { log: () => {}, exists: () => true, checks };
+  const silent = { log: () => {}, exists: () => true, checks, recordOutcome: async () => {} };
 
   it('returns green without fixing when everything passes', async () => {
     const runFixWorker = vi.fn();
@@ -139,5 +139,48 @@ describe('runFixCommand loop (INT-2267)', () => {
   it('reports no-checks when nothing resolves', async () => {
     const report = await runFixCommand({}, { log: () => {}, checks: [] });
     expect(report.reason).toBe('no-checks');
+  });
+
+  it('records the outcome into repo knowledge on green after edits (INT-2268)', async () => {
+    let pass = false;
+    const recordOutcome = vi.fn(async () => {});
+    await runFixCommand(
+      { rounds: 3 },
+      {
+        ...silent,
+        recordOutcome,
+        runCheck: async () => ({ passed: pass, output: 'src/a/x.ts:1 fail' }),
+        runFixWorker: async () => {
+          pass = true;
+          return { success: true, filesChanged: ['src/a/x.ts'] };
+        },
+      },
+    );
+    expect(recordOutcome).toHaveBeenCalledTimes(1);
+    expect(recordOutcome.mock.calls[0][0].filesChanged).toEqual(['src/a/x.ts']);
+  });
+
+  it('does not record when already green (nothing was edited)', async () => {
+    const recordOutcome = vi.fn(async () => {});
+    await runFixCommand({ rounds: 3 }, { ...silent, recordOutcome, runCheck: async () => ({ passed: true, output: '' }) });
+    expect(recordOutcome).not.toHaveBeenCalled();
+  });
+
+  it('does not record when --no-learn (learn: false)', async () => {
+    let pass = false;
+    const recordOutcome = vi.fn(async () => {});
+    await runFixCommand(
+      { rounds: 3, learn: false },
+      {
+        ...silent,
+        recordOutcome,
+        runCheck: async () => ({ passed: pass, output: 'src/a/x.ts:1 fail' }),
+        runFixWorker: async () => {
+          pass = true;
+          return { success: true, filesChanged: ['src/a/x.ts'] };
+        },
+      },
+    );
+    expect(recordOutcome).not.toHaveBeenCalled();
   });
 });

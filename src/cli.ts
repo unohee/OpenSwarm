@@ -57,6 +57,7 @@ program
   .option('--worker-only', 'Worker only, no review')
   .option('--max-iterations <n>', 'Max retry iterations', parseInt)
   .option('-v, --verbose', 'Enable detailed execution logging')
+  .option('--no-learn', 'Do not record this run into the repo knowledge memory')
   .action(async (task: string, opts: {
     path?: string;
     model?: string;
@@ -64,6 +65,7 @@ program
     workerOnly?: boolean;
     maxIterations?: number;
     verbose?: boolean;
+    learn?: boolean;
   }) => {
     await runCli({
       task,
@@ -73,6 +75,7 @@ program
       workerOnly: opts.workerOnly,
       maxIterations: opts.maxIterations,
       verbose: opts.verbose,
+      learn: opts.learn,
     });
   });
 
@@ -259,10 +262,11 @@ program
   .option('--fallback <adapter>', 'For --max: retry usage-limited areas on this adapter (default: claude for codex)')
   .option('--no-fallback', 'For --max: disable the automatic usage-limit fallback')
   .option('--fix', 'For --max: apply the reviewer fixes to each flagged area (working tree only, no commit)')
+  .option('--no-learn', 'For --max: do not record the audit findings into the repo knowledge memory')
   .action(async (opts: {
     path?: string; issues?: string | boolean; issuesPerArea?: string | boolean; file?: string | boolean; adapter?: string; debug?: boolean;
     max?: boolean; concurrency?: number; maxFilesPerArea?: number; yes?: boolean; dryRun?: boolean;
-    out?: string; linear?: boolean; fallback?: string | boolean; fix?: boolean;
+    out?: string; linear?: boolean; fallback?: string | boolean; fix?: boolean; learn?: boolean;
   }) => {
     try {
       if (opts.max) {
@@ -283,6 +287,7 @@ program
           fallbackAdapter: typeof opts.fallback === 'string' ? opts.fallback : undefined,
           noFallback: opts.fallback === false,
           fix: opts.fix,
+          learn: opts.learn,
         });
         if (result && result.decision === 'reject') process.exitCode = 1;
         return;
@@ -306,7 +311,8 @@ program
   .option('--concurrency <n>', 'Max fix workers in flight (default 4)', (v) => parseInt(v, 10))
   .option('--rounds <n>', 'Max check → fix → re-check rounds (default 3)', (v) => parseInt(v, 10))
   .option('--adapter <name>', 'Adapter override for the fix workers')
-  .action(async (opts: { path?: string; checks?: string[]; concurrency?: number; rounds?: number; adapter?: string }) => {
+  .option('--no-learn', 'Do not record a successful fix into the repo knowledge memory')
+  .action(async (opts: { path?: string; checks?: string[]; concurrency?: number; rounds?: number; adapter?: string; learn?: boolean }) => {
     try {
       const { runFixCommand } = await import('./cli/fixCommand.js');
       const report = await runFixCommand({
@@ -315,6 +321,7 @@ program
         concurrency: opts.concurrency,
         rounds: opts.rounds,
         adapter: opts.adapter as import('./adapters/types.js').AdapterName | undefined,
+        learn: opts.learn,
       });
       if (!report.green) process.exitCode = 1;
     } catch (e) {

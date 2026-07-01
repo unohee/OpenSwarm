@@ -59,6 +59,8 @@ export interface ReviewMaxOptions {
   noFallback?: boolean;
   /** Apply the reviewer's fixes to each non-approve area (working tree only). (INT-2249) */
   fix?: boolean;
+  /** Record the audit findings into repo knowledge (default true; --no-learn opts out). (INT-2268) */
+  learn?: boolean;
 }
 
 /**
@@ -272,6 +274,18 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
     await filePmSynthesizedIssues(cwd, opts, run.summary, report, ts);
   } else if (run.summary.recommendedActions.length) {
     console.log(`\n${run.summary.recommendedActions.length} follow-up(s) — captured in the report (--no-linear).`);
+  }
+
+  // (5) Learn: record the audit's top findings as one repo constraint so the
+  // next worker/reviewer knows this repo's known pitfalls. One memory (capped),
+  // not one-per-finding. (INT-2268)
+  if (opts.learn !== false && run.summary.recommendedActions.length) {
+    try {
+      const { recordAuditFindings } = await import('../memory/repoKnowledge.js');
+      await recordAuditFindings(cwd, { decision: run.summary.decision, recommendedActions: run.summary.recommendedActions });
+    } catch {
+      // recordAuditFindings is already non-throwing.
+    }
   }
 
   return { decision: run.summary.decision };

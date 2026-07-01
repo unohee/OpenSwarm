@@ -25,6 +25,8 @@ export interface CliRunOptions {
   workerOnly?: boolean;
   maxIterations?: number;
   verbose?: boolean;
+  /** Record the outcome into repo knowledge (default true; --no-learn opts out). (INT-2268) */
+  learn?: boolean;
 }
 
 // Helpers
@@ -194,6 +196,26 @@ export async function runCli(options: CliRunOptions): Promise<void> {
 
   // 10. Format & print result
   printResult(result);
+
+  // 10.5. Learn: record the outcome into repo knowledge so a standalone `run`
+  // grows the codebase memory like the daemon does (default on; --no-learn opts
+  // out for throwaway/exploratory runs). Non-critical. (INT-2268)
+  if (options.learn !== false) {
+    try {
+      const { recordTaskOutcome } = await import('../memory/repoKnowledge.js');
+      await recordTaskOutcome(projectPath, {
+        taskTitle: options.task,
+        workerResult: result.workerResult
+          ? { filesChanged: result.workerResult.filesChanged, commands: result.workerResult.commands, summary: result.workerResult.summary }
+          : null,
+        rejectionFeedback: result.finalStatus === 'rejected' ? result.reviewResult?.feedback : undefined,
+        iterations: result.iterations,
+        derivedFrom: 'cli:run',
+      });
+    } catch {
+      // recordTaskOutcome is already non-throwing; belt-and-suspenders.
+    }
+  }
 
   // 11. Exit code
   process.exit(result.success ? 0 : 1);

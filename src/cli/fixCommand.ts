@@ -164,6 +164,8 @@ export interface FixOptions {
   maxFilesPerArea?: number;
   timeoutMs?: number;
   signal?: AbortSignal;
+  /** Record a successful fix into repo knowledge (default true; --no-learn opts out). (INT-2268) */
+  learn?: boolean;
 }
 
 export interface FixDeps {
@@ -175,6 +177,8 @@ export interface FixDeps {
   checks?: Check[];
   /** File-existence predicate (tests). Default fs.existsSync under cwd. */
   exists?: (relPath: string, cwd: string) => boolean;
+  /** Record a green fix into repo knowledge. Default writes via recordTaskOutcome; tests pass a noop. */
+  recordOutcome?: (info: { taskTitle: string; filesChanged: string[]; summary: string }) => Promise<void>;
   log?: (line: string) => void;
 }
 
@@ -253,6 +257,16 @@ export async function runFixCommand(opts: FixOptions = {}, deps: FixDeps = {}): 
   const runCheck = deps.runCheck ?? defaultRunCheck;
   const runFixWorker = deps.runFixWorker ?? ((area, checks, onLog) => defaultRunFixWorker(area, checks, cwd, opts, onLog));
   const checks = deps.checks ?? resolveChecks(readScripts(cwd), opts.checks);
+  const recordOutcome =
+    deps.recordOutcome ??
+    (async (info) => {
+      const { recordTaskOutcome } = await import('../memory/repoKnowledge.js');
+      await recordTaskOutcome(cwd, {
+        taskTitle: info.taskTitle,
+        workerResult: { filesChanged: info.filesChanged, commands: [], summary: info.summary },
+        derivedFrom: 'cli:fix',
+      });
+    });
 
   if (!checks.length) {
     log(status.warn('No checks resolved — add lint/typecheck/build/test scripts to package.json, or pass --checks.'));
@@ -272,6 +286,16 @@ export async function runFixCommand(opts: FixOptions = {}, deps: FixDeps = {}): 
     if (!failing.length) {
       rounds.push({ round, outcomes, filesChanged: [] });
       log(`\n${status.ok(`All ${checks.length} check(s) passing.`)}`);
+      // Learn: record what made the checks pass (skipped when nothing was edited —
+      // an already-green repo has nothing to learn). (INT-2268)
+      const changed = [...new Set(rounds.flatMap((r) => r.filesChanged))];
+      if (opts.learn !== false && changed.length) {
+        await recordOutcome({
+          taskTitle: `Fixed checks: ${checks.map((ch) => ch.key).join(', ')}`,
+          filesChanged: changed,
+          summary: `Made ${checks.map((ch) => ch.key).join(', ')} pass after ${round} round(s).`,
+        }).catch(() => {});
+      }
       return { green: true, rounds, reason: 'green' };
     }
 

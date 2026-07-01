@@ -12,7 +12,7 @@
 import { realpathSync } from 'node:fs';
 import path from 'node:path';
 import { saveMemory, searchMemorySafe } from './memoryCore.js';
-import type { WorkerResult } from '../agents/agentPair.js';
+import type { WorkerResult, RecommendedAction } from '../agents/agentPair.js';
 
 /**
  * Normalize a project path into a stable repo key. The LanceDB repo filter is
@@ -164,5 +164,40 @@ export async function recordTaskOutcome(
   } catch (err) {
     // Memory write failures must never stop the pipeline
     console.warn('[RepoKnowledge] recordTaskOutcome failed (non-critical):', err);
+  }
+}
+
+/**
+ * Record the outcome of a `review --max` audit as ONE repo constraint — the
+ * verdict plus the top follow-ups, so the next worker/reviewer knows this repo's
+ * known pitfalls. Capped at 10 actions on purpose: an audit can surface hundreds
+ * of findings and storing each would flood the repo memory. Non-critical.
+ * (INT-2268)
+ */
+export async function recordAuditFindings(
+  projectPath: string,
+  summary: { decision: string; recommendedActions: RecommendedAction[] },
+  stamp?: string,
+): Promise<void> {
+  try {
+    if (!summary.recommendedActions.length) return;
+    const repo = repoKey(projectPath);
+    const top = summary.recommendedActions.slice(0, 10);
+    const when = stamp ?? new Date().toISOString().slice(0, 10);
+    const body = [
+      `Codebase audit verdict: ${summary.decision.toUpperCase()} (${when}).`,
+      `Known issues / follow-ups to be aware of in this repo:`,
+      ...top.map((a) => `- [${a.type}] ${a.title}${a.location ? ` (${a.location})` : ''}`),
+      summary.recommendedActions.length > top.length ? `(+${summary.recommendedActions.length - top.length} more — see the audit report)` : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+    await saveMemory('constraint', repo, `Audit findings (${when})`, body, {
+      derivedFrom: 'cli:review-max',
+      isVerified: true,
+      skipDistillation: true,
+    });
+  } catch (err) {
+    console.warn('[RepoKnowledge] recordAuditFindings failed (non-critical):', err);
   }
 }
