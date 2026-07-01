@@ -56,7 +56,7 @@ const BS_PATTERNS: BsPattern[] = [
     category: 'exception_hiding',
     message: '빈 catch 블록 — 예외를 완전히 무시',
     pattern: /catch\s*(?:\([^)]*\))?\s*\{\s*\}/,
-    excludeIf: (_line, fp) => isTestPath(fp) || /Html\.ts$/.test(fp),
+    excludeIf: (_line, fp) => isTestPath(fp) || fp.endsWith('Html.ts'),
   },
   {
     severity: 'critical',
@@ -121,7 +121,7 @@ const BS_PATTERNS: BsPattern[] = [
       /scripts\//.test(fp) ||
       /cli\/|cli\.ts|runners\//.test(fp) ||          // CLI 도구 — console.log는 사용자 출력
       /support\/chat|support\/chatTui/.test(fp) ||    // TUI — console.log는 UI 출력
-      /index\.ts$/.test(fp) ||                         // 서비스 진입점
+      fp.endsWith('index.ts') ||                       // 서비스 진입점
       /core\/service/.test(fp) ||                      // 서비스 로깅
       /discord\//.test(fp) ||                          // Discord 핸들러 로깅
       /memory\//.test(fp) ||                           // 메모리 시스템 로깅

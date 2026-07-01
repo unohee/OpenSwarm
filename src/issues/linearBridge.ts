@@ -162,7 +162,6 @@ export async function syncStatusToLinear(
 // ============ 매핑 유틸 ============
 
 function findByLinearId(store: SqliteIssueStore, linearId: string): Issue | null {
-  const { issues } = store.listIssues({ limit: 1, offset: 0 });
   // linear ID로 검색하려면 직접 쿼리가 필요
   // 간단히 전체 목록에서 찾기 (비효율적이지만 동기화는 드물게 실행)
   const { issues: all } = store.listIssues({ limit: 1000, offset: 0 });

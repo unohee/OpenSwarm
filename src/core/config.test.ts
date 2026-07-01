@@ -1,13 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import {
   loadConfig,
   validateConfig,
   createAgentSession,
   generateSampleConfig,
-  type RawConfig,
 } from './config.js';
 import * as fs from 'node:fs';
 
@@ -22,8 +20,6 @@ vi.mock('node:fs', async () => {
 });
 
 describe('config', () => {
-  const testDir = '/tmp/test-config';
-
   beforeEach(() => {
     vi.clearAllMocks();
     process.env.DISCORD_TOKEN = 'test-discord-token';
@@ -69,7 +65,7 @@ agents:
         expect(config).toBeDefined();
         expect(config.agents).toHaveLength(1);
         expect(config.agents[0].name).toBe('main');
-      } catch (err) {
+      } catch {
         // YAML parsing might fail in test environment, but we're testing the function exists
       }
     });
@@ -102,7 +98,7 @@ agents:
         const config = loadConfig('/tmp/config.json');
         expect(config).toBeDefined();
         expect(config.agents).toHaveLength(1);
-      } catch (err) {
+      } catch {
         // JSON parsing might fail in test environment
       }
     });
@@ -257,7 +253,7 @@ agents:
         const config = loadConfig('/tmp/config.yaml');
         // Path should be expanded
         expect(config.agents[0].projectPath).toContain(homedir());
-      } catch (err) {
+      } catch {
         // Might fail due to YAML parsing or validation
       }
     });
@@ -293,7 +289,7 @@ agents:
         const config = loadConfig('/tmp/config.yaml');
         // After substitution, token should be replaced
         expect(config.discordToken).toBeDefined();
-      } catch (err) {
+      } catch {
         // Validation might fail but substitution happened
       }
 
@@ -323,7 +319,7 @@ agents:
         const config = loadConfig('/tmp/config.yaml');
         // Should use default value
         expect(config.discordToken).toBeDefined();
-      } catch (err) {
+      } catch {
         // Validation might fail
       }
     });
@@ -678,7 +674,7 @@ agents:
         // Defaults should be applied
         expect(config.agents[0].enabled).toBe(true);
         expect(config.agents[0].paused).toBe(false);
-      } catch (err) {
+      } catch {
         // Validation might fail
       }
     });
@@ -713,7 +709,7 @@ agents:
       try {
         const config = loadConfig('/tmp/config.yaml');
         expect(config.githubRepos).toEqual(['owner/repo1', 'owner/repo2']);
-      } catch (err) {
+      } catch {
         // Parsing might fail
       }
     });
@@ -739,7 +735,7 @@ agents:
         const config = loadConfig('/tmp/config.yaml');
         // Should have default heartbeat interval
         expect(config.defaultHeartbeatInterval).toBeGreaterThan(0);
-      } catch (err) {
+      } catch {
         // Parsing might fail
       }
     });
@@ -770,7 +766,7 @@ agents:
       try {
         const config = loadConfig('/tmp/config.yaml');
         expect(config).toBeDefined();
-      } catch (err) {
+      } catch {
         // Parsing might fail
       }
     });
@@ -796,7 +792,7 @@ agents:
       try {
         const config = loadConfig('/tmp/config.yaml');
         expect(config.discordToken.length).toBeGreaterThan(500);
-      } catch (err) {
+      } catch {
         // Parsing might fail
       }
     });
@@ -824,7 +820,7 @@ agents:
       try {
         const config = loadConfig('/tmp/config.yaml');
         expect(config.agents[0].heartbeatInterval).toBe(1800000);
-      } catch (err) {
+      } catch {
         // Parsing might fail
       }
     });
@@ -853,7 +849,7 @@ agents:
       try {
         const config = loadConfig('/tmp/config.yaml');
         expect(config.agents.length).toBe(3);
-      } catch (err) {
+      } catch {
         // Parsing might fail
       }
     });

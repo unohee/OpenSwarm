@@ -45,6 +45,7 @@ function safeCompileRegex(pattern: string | undefined): RegExp | null {
 // Argv validation: reject null bytes, newlines, and other control chars.
 // Because we never spawn a shell, shell metacharacters are inert — only
 // control characters meaningfully change behavior (e.g. null byte truncation).
+// eslint-disable-next-line no-control-regex
 const ARGV_SAFE = /^[^\x00-\x1F\x7F]+$/;
 
 // Program allowlist for monitor checks. Anything outside this list — or any

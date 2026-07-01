@@ -298,7 +298,7 @@ describe('TraceCollector', () => {
 
     it('should handle span metadata with complex structures', () => {
       const traceId = collector.startTrace('session');
-      const spanId = collector.startSpan(traceId, 'worker', undefined, {
+      collector.startSpan(traceId, 'worker', undefined, {
         nested: {
           object: {
             with: {
@@ -324,7 +324,7 @@ describe('TraceCollector', () => {
     it('should handle very large metadata values', () => {
       const traceId = collector.startTrace('session');
       const largeString = 'A'.repeat(100000);
-      const spanId = collector.startSpan(traceId, 'worker', undefined, {
+      collector.startSpan(traceId, 'worker', undefined, {
         largeData: largeString,
       });
 
@@ -336,7 +336,7 @@ describe('TraceCollector', () => {
     it('should handle special characters in span names and traces', () => {
       const specialName = 'session-with-special_chars';
       const traceId = collector.startTrace(specialName);
-      const spanId = collector.startSpan(traceId, 'tool:git:special_chars');
+      collector.startSpan(traceId, 'tool:git:special_chars');
 
       const trace = collector.getTrace(traceId);
       expect(trace!.name).toBe(specialName);
@@ -417,7 +417,7 @@ describe('TraceCollector', () => {
 
     it('should handle getChildSpans with non-existent parent', () => {
       const traceId = collector.startTrace('session');
-      const spanId = collector.startSpan(traceId, 'worker')!;
+      collector.startSpan(traceId, 'worker')!;
 
       const children = collector.getChildSpans(traceId, 'non-existent-parent');
       expect(children).toEqual([]);
@@ -445,7 +445,7 @@ describe('TraceCollector', () => {
       const completed1 = collector.startTrace('completed1');
       const completed2 = collector.startTrace('completed2');
       const failed1 = collector.startTrace('failed1');
-      const running1 = collector.startTrace('running1');
+      collector.startTrace('running1');
       const failed2 = collector.startTrace('failed2');
 
       collector.endTrace(completed1, 'completed');
@@ -503,7 +503,7 @@ describe('TraceCollector', () => {
 
     it('should handle empty span name', () => {
       const traceId = collector.startTrace('session');
-      const spanId = collector.startSpan(traceId, '');
+      collector.startSpan(traceId, '');
 
       const trace = collector.getTrace(traceId);
       expect(trace!.spans[0].name).toBe('');

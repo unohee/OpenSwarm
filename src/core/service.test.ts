@@ -81,7 +81,7 @@ vi.mock('../automation/prProcessor.js', () => {
     stop = vi.fn();
   }
   return {
-    PRProcessor: vi.fn((...args) => new MockPRProcessor()),
+    PRProcessor: vi.fn((..._args) => new MockPRProcessor()),
   };
 });
 
@@ -137,7 +137,7 @@ vi.mock('../memory/compaction.js', () => ({
 }));
 
 vi.mock('croner', () => ({
-  Cron: vi.fn((pattern, fn) => ({
+  Cron: vi.fn((_pattern, _fn) => ({
     stop: vi.fn(),
   })),
 }));

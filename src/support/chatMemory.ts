@@ -51,17 +51,6 @@ export async function saveChatMessage(
     userId?: string;
   }
 ): Promise<string | null> {
-  const timestamp = Date.now();
-
-  const metadata: ChatMessageMetadata = {
-    source,
-    channelId,
-    role,
-    username: options?.username,
-    userId: options?.userId,
-    timestamp,
-  };
-
   // Format content with context
   const formattedContent = `[${source}/${channelId}] ${role === 'user' ? (options?.username || 'User') : 'OpenSwarm'}: ${content}`;
 

@@ -13,7 +13,6 @@ import {
   EmbedBuilder,
   ThreadChannel,
 } from 'discord.js';
-import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import type { SwarmEvent, AgentStatus } from '../core/types.js';
 import { getAdapter, spawnCli } from '../adapters/index.js';

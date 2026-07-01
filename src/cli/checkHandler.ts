@@ -9,8 +9,9 @@ import { join } from 'node:path';
 import { getRegistryStore, closeRegistryStore } from '../registry/sqliteStore.js';
 import { scanRepository } from '../registry/entityScanner.js';
 import type {
-  CodeEntity, EntityWarning, EntityStatus, RiskLevel, WarningSeverity, WarningCategory,
+  CodeEntity, EntityStatus, RiskLevel, WarningSeverity, WarningCategory,
 } from '../registry/schema.js';
+import { c, status } from '../support/colors.js';
 
 /** package.json name → Cargo.toml → go.mod → 폴더명 순으로 프로젝트 ID 추론 */
 function resolveProjectId(projectPath: string): string {
@@ -58,46 +59,32 @@ function resolveProjectId(projectPath: string): string {
   return projectPath.split('/').pop() ?? 'unknown';
 }
 
-// 색상 헬퍼 (ANSI)
-const c = {
-  reset: '\x1b[0m',
-  bold: '\x1b[1m',
-  dim: '\x1b[2m',
-  red: '\x1b[31m',
-  green: '\x1b[32m',
-  yellow: '\x1b[33m',
-  blue: '\x1b[34m',
-  magenta: '\x1b[35m',
-  cyan: '\x1b[36m',
-  gray: '\x1b[90m',
-};
-
-function statusBadge(status: string): string {
-  switch (status) {
-    case 'active': return `${c.green}●${c.reset} active`;
-    case 'deprecated': return `${c.red}✗${c.reset} deprecated`;
-    case 'experimental': return `${c.yellow}◎${c.reset} experimental`;
-    case 'planned': return `${c.blue}○${c.reset} planned`;
-    case 'broken': return `${c.red}⚠${c.reset} broken`;
-    default: return status;
+function statusBadge(statusValue: string): string {
+  switch (statusValue) {
+    case 'active': return `${c.green('●')} active`;
+    case 'deprecated': return status.err('deprecated');
+    case 'experimental': return `${c.yellow('◎')} experimental`;
+    case 'planned': return `${c.blue('○')} planned`;
+    case 'broken': return status.warn('broken');
+    default: return statusValue;
   }
 }
 
 function riskBadge(risk: string): string {
   switch (risk) {
-    case 'high': return `${c.red}HIGH${c.reset}`;
-    case 'medium': return `${c.yellow}MED${c.reset}`;
-    case 'low': return `${c.green}LOW${c.reset}`;
+    case 'high': return c.red('HIGH');
+    case 'medium': return c.yellow('MED');
+    case 'low': return c.green('LOW');
     default: return risk;
   }
 }
 
 function severityBadge(sev: string): string {
   switch (sev) {
-    case 'critical': return `${c.red}${c.bold}CRITICAL${c.reset}`;
-    case 'error': return `${c.red}ERROR${c.reset}`;
-    case 'warning': return `${c.yellow}WARNING${c.reset}`;
-    case 'info': return `${c.blue}INFO${c.reset}`;
+    case 'critical': return c.red(c.bold('CRITICAL'));
+    case 'error': return c.red('ERROR');
+    case 'warning': return c.yellow('WARNING');
+    case 'info': return c.blue('INFO');
     default: return sev;
   }
 }
@@ -105,20 +92,20 @@ function severityBadge(sev: string): string {
 function formatEntity(e: CodeEntity, verbose = true): string {
   const lines: string[] = [];
   const loc = e.lineStart ? `:${e.lineStart}${e.lineEnd ? `-${e.lineEnd}` : ''}` : '';
-  const testIcon = e.hasTests ? `${c.green}✓${c.reset}` : `${c.red}✗${c.reset}`;
+  const testIcon = e.hasTests ? status.glyph('ok') : status.glyph('err');
 
   lines.push(
-    `  ${c.bold}${e.kind}${c.reset} ${c.cyan}${e.name}${c.reset}${c.dim}${loc}${c.reset}` +
+    `  ${c.bold(e.kind)} ${c.cyan(e.name)}${c.dim(loc)}` +
     `  ${statusBadge(e.status)}  test:${testIcon}  risk:${riskBadge(e.riskLevel)}`
   );
 
   if (verbose) {
-    if (e.signature) lines.push(`    ${c.dim}sig: ${e.signature}${c.reset}`);
-    if (e.author) lines.push(`    ${c.dim}author: ${e.author}${c.reset}`);
-    if (e.description) lines.push(`    ${c.dim}${e.description}${c.reset}`);
-    if (e.deprecatedReason) lines.push(`    ${c.red}reason: ${e.deprecatedReason}${c.reset}`);
+    if (e.signature) lines.push(`    ${c.dim(`sig: ${e.signature}`)}`);
+    if (e.author) lines.push(`    ${c.dim(`author: ${e.author}`)}`);
+    if (e.description) lines.push(`    ${c.dim(e.description)}`);
+    if (e.deprecatedReason) lines.push(`    ${c.red(`reason: ${e.deprecatedReason}`)}`);
     if (e.tags.length > 0) {
-      lines.push(`    ${c.magenta}tags: ${e.tags.map(t => t.value ? `${t.tag}=${t.value}` : t.tag).join(', ')}${c.reset}`);
+      lines.push(`    ${c.magenta(`tags: ${e.tags.map(t => t.value ? `${t.tag}=${t.value}` : t.tag).join(', ')}`)}`);
     }
     for (const w of e.warnings.filter(w => !w.resolved)) {
       lines.push(`    ${severityBadge(w.severity)} [${w.category}] ${w.message}`);
@@ -159,44 +146,44 @@ export async function handleCheck(
       const projectPath = process.cwd();
       const projectId = opts.project ?? resolveProjectId(projectPath);
 
-      console.log(`\n${c.bold}Scanning repository...${c.reset}`);
-      console.log(`  ${c.dim}path: ${projectPath}${c.reset}`);
-      console.log(`  ${c.dim}project: ${projectId}${c.reset}\n`);
+      console.log(`\n${c.bold('Scanning repository...')}`);
+      console.log(`  ${c.dim(`path: ${projectPath}`)}`);
+      console.log(`  ${c.dim(`project: ${projectId}`)}\n`);
 
       const result = await scanRepository(projectPath, projectId, {
         verbose: opts.verbose,
       });
 
-      console.log(`${c.bold}Scan Complete${c.reset}`);
+      console.log(c.bold('Scan Complete'));
       console.log(`${'─'.repeat(40)}`);
-      console.log(`  Files scanned:  ${c.bold}${result.scanned}${c.reset}`);
-      console.log(`  Entities found: ${c.bold}${result.extracted}${c.reset}`);
-      console.log(`  New registered: ${c.green}+${result.registered}${c.reset}`);
-      console.log(`  Updated:        ${c.yellow}~${result.updated}${c.reset}`);
-      console.log(`  Marked broken:  ${result.removed > 0 ? c.red : c.dim}${result.removed}${c.reset}`);
-      console.log(`  Tests mapped:   ${c.cyan}${result.testsMapped}${c.reset}`);
-      console.log(`  Duration:       ${c.dim}${result.durationMs}ms${c.reset}`);
+      console.log(`  Files scanned:  ${c.bold(String(result.scanned))}`);
+      console.log(`  Entities found: ${c.bold(String(result.extracted))}`);
+      console.log(`  New registered: ${c.green(`+${result.registered}`)}`);
+      console.log(`  Updated:        ${c.yellow(`~${result.updated}`)}`);
+      console.log(`  Marked broken:  ${(result.removed > 0 ? c.red : c.dim)(String(result.removed))}`);
+      console.log(`  Tests mapped:   ${c.cyan(String(result.testsMapped))}`);
+      console.log(`  Duration:       ${c.dim(`${result.durationMs}ms`)}`);
 
       if (Object.keys(result.languageBreakdown).length > 0) {
-        console.log(`\n  ${c.dim}By language:${c.reset}`);
+        console.log(`\n  ${c.dim('By language:')}`);
         for (const [lang, count] of Object.entries(result.languageBreakdown).sort((a, b) => b[1] - a[1])) {
           console.log(`    ${lang.padEnd(12)} ${count} files`);
         }
       }
 
       if (result.errors.length > 0) {
-        console.log(`\n  ${c.red}Errors (${result.errors.length}):${c.reset}`);
+        console.log(`\n  ${c.red(`Errors (${result.errors.length}):`)}`);
         for (const err of result.errors.slice(0, 10)) {
-          console.log(`    ${c.dim}${err}${c.reset}`);
+          console.log(`    ${c.dim(err)}`);
         }
         if (result.errors.length > 10) {
-          console.log(`    ${c.dim}...and ${result.errors.length - 10} more${c.reset}`);
+          console.log(`    ${c.dim(`...and ${result.errors.length - 10} more`)}`);
         }
       }
 
       // 스캔 후 통계 표시
       const stats = store.getStats(projectId);
-      console.log(`\n${c.bold}Registry Status${c.reset}`);
+      console.log(`\n${c.bold('Registry Status')}`);
       console.log(`  Total: ${stats.total}  deprecated: ${stats.deprecated}  untested: ${stats.untested}  high-risk: ${stats.highRisk}  warnings: ${stats.withWarnings}\n`);
 
       return;
@@ -207,8 +194,8 @@ export async function handleCheck(
       const { scanRepository: scanBs } = await import('../registry/bsDetector.js');
       const projectPath = process.cwd();
 
-      console.log(`\n${c.bold}BS Detector${c.reset} — scanning for bad code patterns...`);
-      console.log(`  ${c.dim}path: ${projectPath}${c.reset}\n`);
+      console.log(`\n${c.bold('BS Detector')} — scanning for bad code patterns...`);
+      console.log(`  ${c.dim(`path: ${projectPath}`)}\n`);
 
       const result = await scanBs(projectPath, { verbose: opts.verbose });
 
@@ -216,45 +203,45 @@ export async function handleCheck(
       const statusColor = result.critical > 0 ? c.red : result.warning > 0 ? c.yellow : c.green;
       const statusText = result.critical > 0 ? 'FAIL' : result.warning > 0 ? 'WARN' : 'CLEAN';
 
-      console.log(`${c.bold}BS Scan Result${c.reset}`);
+      console.log(c.bold('BS Scan Result'));
       console.log(`${'─'.repeat(50)}`);
-      console.log(`  Files scanned: ${c.bold}${result.filesScanned}${c.reset}`);
-      console.log(`  BS Score:      ${statusColor}${c.bold}${result.bsScore.toFixed(1)}${c.reset} / 5.0`);
-      console.log(`  Status:        ${statusColor}${c.bold}${statusText}${c.reset}`);
-      console.log(`  CRITICAL:      ${result.critical > 0 ? c.red : c.green}${result.critical}${c.reset}`);
-      console.log(`  WARNING:       ${result.warning > 0 ? c.yellow : c.green}${result.warning}${c.reset}`);
-      console.log(`  MINOR:         ${result.minor > 0 ? c.dim : c.green}${result.minor}${c.reset}`);
+      console.log(`  Files scanned: ${c.bold(String(result.filesScanned))}`);
+      console.log(`  BS Score:      ${statusColor(c.bold(result.bsScore.toFixed(1)))} / 5.0`);
+      console.log(`  Status:        ${statusColor(c.bold(statusText))}`);
+      console.log(`  CRITICAL:      ${(result.critical > 0 ? c.red : c.green)(String(result.critical))}`);
+      console.log(`  WARNING:       ${(result.warning > 0 ? c.yellow : c.green)(String(result.warning))}`);
+      console.log(`  MINOR:         ${(result.minor > 0 ? c.dim : c.green)(String(result.minor))}`);
 
       if (result.issues.length > 0) {
         // CRITICAL 먼저
         const criticals = result.issues.filter(i => i.severity === 'critical');
         if (criticals.length > 0) {
-          console.log(`\n  ${c.red}${c.bold}CRITICAL (즉시 수정 필요)${c.reset}`);
+          console.log(`\n  ${c.red(c.bold('CRITICAL (즉시 수정 필요)'))}`);
           for (const issue of criticals) {
-            console.log(`    ${c.red}${issue.filePath}:${issue.line}${c.reset} — ${issue.message}`);
-            console.log(`      ${c.dim}${issue.matchedText}${c.reset}`);
+            console.log(`    ${c.red(`${issue.filePath}:${issue.line}`)} — ${issue.message}`);
+            console.log(`      ${c.dim(issue.matchedText)}`);
           }
         }
 
         const warnings = result.issues.filter(i => i.severity === 'warning');
         if (warnings.length > 0) {
-          console.log(`\n  ${c.yellow}WARNING (권장 수정)${c.reset}`);
+          console.log(`\n  ${c.yellow('WARNING (권장 수정)')}`);
           for (const issue of warnings.slice(0, 30)) {
-            console.log(`    ${c.yellow}${issue.filePath}:${issue.line}${c.reset} — ${issue.message}`);
+            console.log(`    ${c.yellow(`${issue.filePath}:${issue.line}`)} — ${issue.message}`);
           }
           if (warnings.length > 30) {
-            console.log(`    ${c.dim}...and ${warnings.length - 30} more${c.reset}`);
+            console.log(`    ${c.dim(`...and ${warnings.length - 30} more`)}`);
           }
         }
 
         const minors = result.issues.filter(i => i.severity === 'minor');
         if (minors.length > 0) {
-          console.log(`\n  ${c.dim}MINOR (${minors.length}건)${c.reset}`);
+          console.log(`\n  ${c.dim(`MINOR (${minors.length}건)`)}`);
           for (const issue of minors.slice(0, 10)) {
-            console.log(`    ${c.dim}${issue.filePath}:${issue.line} — ${issue.message}${c.reset}`);
+            console.log(`    ${c.dim(`${issue.filePath}:${issue.line} — ${issue.message}`)}`);
           }
           if (minors.length > 10) {
-            console.log(`    ${c.dim}...and ${minors.length - 10} more${c.reset}`);
+            console.log(`    ${c.dim(`...and ${minors.length - 10} more`)}`);
           }
         }
       }
@@ -297,7 +284,7 @@ export async function handleCheck(
       const totalFiles = [...tree.values()].reduce((s, d) => s + d.size, 0);
       const totalEntities = entities.filter(e => !scopePath || e.filePath.startsWith(scopePath)).length;
 
-      console.log(`\n${c.bold}Code Tree${c.reset}${scopePath ? ` (${scopePath})` : ''} — ${totalFiles} files, ${totalEntities} entities\n`);
+      console.log(`\n${c.bold('Code Tree')}${scopePath ? ` (${scopePath})` : ''} — ${totalFiles} files, ${totalEntities} entities\n`);
 
       for (const dirPath of sortedDirs) {
         const files = tree.get(dirPath)!;
@@ -306,21 +293,21 @@ export async function handleCheck(
         const dirHighRisk = [...files.values()].reduce((s, f) => s + f.highRisk, 0);
 
         // Directory header
-        const riskFlag = dirHighRisk > 0 ? ` ${c.red}${dirHighRisk} high-risk${c.reset}` : '';
-        console.log(`${c.bold}${dirPath}/${c.reset} ${c.dim}(${dirTotal} entities, ${dirUntested} untested${riskFlag})${c.reset}`);
+        const riskFlag = dirHighRisk > 0 ? ` ${c.red(`${dirHighRisk} high-risk`)}` : '';
+        console.log(`${c.bold(`${dirPath}/`)} ${c.dim(`(${dirTotal} entities, ${dirUntested} untested`)}${riskFlag}${c.dim(')')}`);
 
         // Files in directory
         const sortedFiles = [...files.entries()].sort((a, b) => b[1].total - a[1].total);
         for (const [fileName, info] of sortedFiles) {
           const kindStr = [...info.kinds.entries()].map(([k, n]) => `${n} ${k}`).join(', ');
           const flags: string[] = [];
-          if (info.highRisk > 0) flags.push(`${c.red}${info.highRisk} high-risk${c.reset}`);
-          if (info.deprecated > 0) flags.push(`${c.red}${info.deprecated} deprecated${c.reset}`);
+          if (info.highRisk > 0) flags.push(c.red(`${info.highRisk} high-risk`));
+          if (info.deprecated > 0) flags.push(c.red(`${info.deprecated} deprecated`));
           const flagStr = flags.length ? ' ' + flags.join(' ') : '';
           const testPct = info.total > 0 ? Math.round(((info.total - info.untested) / info.total) * 100) : 0;
           const testColor = testPct === 100 ? c.green : testPct > 50 ? c.yellow : c.red;
 
-          console.log(`  ${c.cyan}${fileName}${c.reset} ${c.dim}${kindStr}${c.reset} ${testColor}${testPct}% tested${c.reset}${flagStr}`);
+          console.log(`  ${c.cyan(fileName)} ${c.dim(kindStr)} ${testColor(`${testPct}% tested`)}${flagStr}`);
         }
       }
       console.log();
@@ -371,23 +358,23 @@ export async function handleCheck(
     // --stats: full statistics
     if (opts.stats) {
       const stats = store.getStats(opts.project);
-      console.log(`\n${c.bold}Registry Stats${c.reset}`);
+      console.log(`\n${c.bold('Registry Stats')}`);
       console.log(`${'─'.repeat(40)}`);
-      console.log(`  Total entities:  ${c.bold}${stats.total}${c.reset}`);
-      console.log(`  Deprecated:      ${stats.deprecated > 0 ? c.red : c.green}${stats.deprecated}${c.reset}`);
-      console.log(`  Untested:        ${stats.untested > 0 ? c.yellow : c.green}${stats.untested}${c.reset}`);
-      console.log(`  High risk:       ${stats.highRisk > 0 ? c.red : c.green}${stats.highRisk}${c.reset}`);
-      console.log(`  With warnings:   ${stats.withWarnings > 0 ? c.yellow : c.green}${stats.withWarnings}${c.reset}`);
+      console.log(`  Total entities:  ${c.bold(String(stats.total))}`);
+      console.log(`  Deprecated:      ${(stats.deprecated > 0 ? c.red : c.green)(String(stats.deprecated))}`);
+      console.log(`  Untested:        ${(stats.untested > 0 ? c.yellow : c.green)(String(stats.untested))}`);
+      console.log(`  High risk:       ${(stats.highRisk > 0 ? c.red : c.green)(String(stats.highRisk))}`);
+      console.log(`  With warnings:   ${(stats.withWarnings > 0 ? c.yellow : c.green)(String(stats.withWarnings))}`);
       if (stats.byKind.length > 0) {
-        console.log(`\n  ${c.dim}By kind:${c.reset}`);
+        console.log(`\n  ${c.dim('By kind:')}`);
         for (const { kind, count } of stats.byKind) {
           console.log(`    ${kind.padEnd(12)} ${count}`);
         }
       }
       if (stats.byStatus.length > 0) {
-        console.log(`\n  ${c.dim}By status:${c.reset}`);
-        for (const { status, count } of stats.byStatus) {
-          console.log(`    ${status.padEnd(14)} ${count}`);
+        console.log(`\n  ${c.dim('By status:')}`);
+        for (const { status: statusName, count } of stats.byStatus) {
+          console.log(`    ${statusName.padEnd(14)} ${count}`);
         }
       }
       console.log();
@@ -397,9 +384,9 @@ export async function handleCheck(
     // --deprecated
     if (opts.deprecated) {
       const entities = store.deprecatedEntities(opts.project);
-      console.log(`\n${c.bold}Deprecated Entities${c.reset} (${entities.length})\n`);
+      console.log(`\n${c.bold('Deprecated Entities')} (${entities.length})\n`);
       if (entities.length === 0) {
-        console.log(`  ${c.green}None${c.reset}\n`);
+        console.log(`  ${c.green('None')}\n`);
       } else {
         for (const e of entities) console.log(formatEntity(e));
         console.log();
@@ -410,9 +397,9 @@ export async function handleCheck(
     // --untested
     if (opts.untested) {
       const entities = store.untestedEntities(opts.project);
-      console.log(`\n${c.bold}Untested Active Entities${c.reset} (${entities.length})\n`);
+      console.log(`\n${c.bold('Untested Active Entities')} (${entities.length})\n`);
       if (entities.length === 0) {
-        console.log(`  ${c.green}All tested${c.reset}\n`);
+        console.log(`  ${c.green('All tested')}\n`);
       } else {
         for (const e of entities) console.log(formatEntityCompact(e));
         console.log();
@@ -423,9 +410,9 @@ export async function handleCheck(
     // --high-risk
     if (opts.highRisk) {
       const entities = store.highRiskEntities(opts.project);
-      console.log(`\n${c.bold}High Risk Entities${c.reset} (${entities.length})\n`);
+      console.log(`\n${c.bold('High Risk Entities')} (${entities.length})\n`);
       if (entities.length === 0) {
-        console.log(`  ${c.green}None${c.reset}\n`);
+        console.log(`  ${c.green('None')}\n`);
       } else {
         for (const e of entities) console.log(formatEntity(e));
         console.log();
@@ -436,9 +423,9 @@ export async function handleCheck(
     // --tag
     if (opts.tag) {
       const entities = store.entitiesByTag(opts.tag);
-      console.log(`\n${c.bold}Entities tagged "${opts.tag}"${c.reset} (${entities.length})\n`);
+      console.log(`\n${c.bold(`Entities tagged "${opts.tag}"`)} (${entities.length})\n`);
       if (entities.length === 0) {
-        console.log(`  ${c.dim}No entities with tag "${opts.tag}"${c.reset}\n`);
+        console.log(`  ${c.dim(`No entities with tag "${opts.tag}"`)}\n`);
       } else {
         for (const e of entities) console.log(formatEntityCompact(e));
         console.log();
@@ -449,9 +436,9 @@ export async function handleCheck(
     // --search
     if (opts.search) {
       const entities = store.searchEntities(opts.search);
-      console.log(`\n${c.bold}Search: "${opts.search}"${c.reset} (${entities.length} results)\n`);
+      console.log(`\n${c.bold(`Search: "${opts.search}"`)} (${entities.length} results)\n`);
       if (entities.length === 0) {
-        console.log(`  ${c.dim}No matches${c.reset}\n`);
+        console.log(`  ${c.dim('No matches')}\n`);
       } else {
         for (const e of entities) console.log(formatEntity(e));
         console.log();
@@ -462,13 +449,13 @@ export async function handleCheck(
     // 파일 경로 지정: fileBrief
     if (filePath) {
       const brief = store.fileBrief(filePath);
-      console.log(`\n${c.bold}File Brief: ${filePath}${c.reset}`);
+      console.log(`\n${c.bold(`File Brief: ${filePath}`)}`);
       console.log(`${'─'.repeat(40)}`);
-      console.log(`  ${c.dim}${brief.summary}${c.reset}\n`);
+      console.log(`  ${c.dim(brief.summary)}\n`);
 
       if (brief.entities.length === 0) {
-        console.log(`  ${c.dim}No registered entities for this file.${c.reset}`);
-        console.log(`  ${c.dim}Use \`registerEntity\` mutation to add entries.${c.reset}\n`);
+        console.log(`  ${c.dim('No registered entities for this file.')}`);
+        console.log(`  ${c.dim('Use `registerEntity` mutation to add entries.')}\n`);
       } else {
         for (const e of brief.entities) console.log(formatEntity(e));
         console.log();
@@ -479,18 +466,18 @@ export async function handleCheck(
     // 인자 없이 호출 시: 간단 통계 + 도움말
     const stats = store.getStats();
     if (stats.total === 0) {
-      console.log(`\n${c.bold}Code Registry${c.reset}: empty`);
-      console.log(`  ${c.dim}Register entities via GraphQL at :3847/graphql${c.reset}`);
-      console.log(`  ${c.dim}or use: openswarm check --help${c.reset}\n`);
+      console.log(`\n${c.bold('Code Registry')}: empty`);
+      console.log(`  ${c.dim('Register entities via GraphQL at :3847/graphql')}`);
+      console.log(`  ${c.dim('or use: openswarm check --help')}\n`);
     } else {
-      console.log(`\n${c.bold}Code Registry${c.reset}: ${stats.total} entities`);
+      console.log(`\n${c.bold('Code Registry')}: ${stats.total} entities`);
       console.log(`  ${stats.deprecated} deprecated, ${stats.untested} untested, ${stats.highRisk} high-risk, ${stats.withWarnings} with warnings`);
-      console.log(`\n  ${c.dim}Usage:${c.reset}`);
-      console.log(`  ${c.dim}  openswarm check <file>       ${c.reset}File brief`);
-      console.log(`  ${c.dim}  openswarm check --stats       ${c.reset}Full statistics`);
-      console.log(`  ${c.dim}  openswarm check --deprecated  ${c.reset}Deprecated list`);
-      console.log(`  ${c.dim}  openswarm check --untested    ${c.reset}Untested list`);
-      console.log(`  ${c.dim}  openswarm check --search <q>  ${c.reset}Full-text search\n`);
+      console.log(`\n  ${c.dim('Usage:')}`);
+      console.log(`  ${c.dim('  openswarm check <file>       ')}File brief`);
+      console.log(`  ${c.dim('  openswarm check --stats       ')}Full statistics`);
+      console.log(`  ${c.dim('  openswarm check --deprecated  ')}Deprecated list`);
+      console.log(`  ${c.dim('  openswarm check --untested    ')}Untested list`);
+      console.log(`  ${c.dim('  openswarm check --search <q>  ')}Full-text search\n`);
     }
   } finally {
     closeRegistryStore();
@@ -521,30 +508,30 @@ export async function handleAnnotate(
       // 부분 매칭 시도: name만으로 검색
       const results = store.searchEntities(qualifiedName, 5);
       if (results.length === 0) {
-        console.error(`${c.red}Entity not found: "${qualifiedName}"${c.reset}`);
-        console.error(`${c.dim}Use qualified name (file::name) or search with: openswarm check --search <query>${c.reset}`);
+        console.error(c.red(`Entity not found: "${qualifiedName}"`));
+        console.error(c.dim('Use qualified name (file::name) or search with: openswarm check --search <query>'));
         process.exit(1);
       }
       if (results.length === 1) {
         entity = results[0];
       } else {
-        console.log(`${c.yellow}Multiple matches for "${qualifiedName}":${c.reset}\n`);
+        console.log(`${c.yellow(`Multiple matches for "${qualifiedName}":`)}\n`);
         for (const e of results) {
-          console.log(`  ${c.cyan}${e.qualifiedName}${c.reset}  ${e.kind}  ${statusBadge(e.status)}`);
+          console.log(`  ${c.cyan(e.qualifiedName)}  ${e.kind}  ${statusBadge(e.status)}`);
         }
-        console.log(`\n${c.dim}Use the full qualified name to annotate a specific entity.${c.reset}`);
+        console.log(`\n${c.dim('Use the full qualified name to annotate a specific entity.')}`);
         return;
       }
     }
 
-    console.log(`\n${c.bold}Annotating:${c.reset} ${c.cyan}${entity.qualifiedName}${c.reset}\n`);
+    console.log(`\n${c.bold('Annotating:')} ${c.cyan(entity.qualifiedName)}\n`);
     let changed = false;
 
     // --deprecate
     if (opts.deprecate !== undefined) {
       const reason = typeof opts.deprecate === 'string' ? opts.deprecate : undefined;
       store.deprecateEntity(entity.id, reason);
-      console.log(`  ${c.red}✗${c.reset} Deprecated${reason ? `: ${reason}` : ''}`);
+      console.log(`  ${status.err(`Deprecated${reason ? `: ${reason}` : ''}`)}`);
       changed = true;
     }
 
@@ -552,7 +539,7 @@ export async function handleAnnotate(
     if (opts.status) {
       const validStatuses = ['active', 'deprecated', 'experimental', 'planned', 'broken'];
       if (!validStatuses.includes(opts.status)) {
-        console.error(`  ${c.red}Invalid status: ${opts.status}. Valid: ${validStatuses.join(', ')}${c.reset}`);
+        console.error(`  ${c.red(`Invalid status: ${opts.status}. Valid: ${validStatuses.join(', ')}`)}`);
       } else {
         store.changeEntityStatus(entity.id, opts.status as EntityStatus);
         console.log(`  ${statusBadge(opts.status)} Status changed`);
@@ -564,21 +551,21 @@ export async function handleAnnotate(
     if (opts.tag) {
       const [tagKey, tagValue] = opts.tag.split('=', 2);
       store.addTag(entity.id, tagKey, tagValue);
-      console.log(`  ${c.magenta}+${c.reset} Tag: ${tagKey}${tagValue ? `=${tagValue}` : ''}`);
+      console.log(`  ${c.magenta('+')} Tag: ${tagKey}${tagValue ? `=${tagValue}` : ''}`);
       changed = true;
     }
 
     // --untag
     if (opts.untag) {
       store.removeTag(entity.id, opts.untag);
-      console.log(`  ${c.dim}-${c.reset} Removed tag: ${opts.untag}`);
+      console.log(`  ${c.dim('-')} Removed tag: ${opts.untag}`);
       changed = true;
     }
 
     // --note
     if (opts.note) {
       store.addEvent(entity.id, 'note_added', { content: opts.note, actor: 'cli' });
-      console.log(`  ${c.blue}📝${c.reset} Note added`);
+      console.log(`  ${c.blue('📝')} Note added`);
       changed = true;
     }
 
@@ -586,7 +573,7 @@ export async function handleAnnotate(
     if (opts.risk) {
       const validRisks = ['low', 'medium', 'high'];
       if (!validRisks.includes(opts.risk)) {
-        console.error(`  ${c.red}Invalid risk: ${opts.risk}. Valid: ${validRisks.join(', ')}${c.reset}`);
+        console.error(`  ${c.red(`Invalid risk: ${opts.risk}. Valid: ${validRisks.join(', ')}`)}`);
       } else {
         store.updateEntity(entity.id, { riskLevel: opts.risk as RiskLevel }, 'cli');
         console.log(`  Risk: ${riskBadge(opts.risk)}`);
@@ -598,8 +585,8 @@ export async function handleAnnotate(
     if (opts.warn) {
       const warnMatch = opts.warn.match(/^(info|warning|error|critical)\/(security|performance|correctness|style):\s*(.+)/);
       if (!warnMatch) {
-        console.error(`  ${c.red}Invalid warning format. Use: severity/category: message${c.reset}`);
-        console.error(`  ${c.dim}Example: --warn "error/security: SQL injection risk"${c.reset}`);
+        console.error(`  ${c.red('Invalid warning format. Use: severity/category: message')}`);
+        console.error(`  ${c.dim('Example: --warn "error/security: SQL injection risk"')}`);
       } else {
         store.addWarning(entity.id, warnMatch[1] as WarningSeverity, warnMatch[2] as WarningCategory, warnMatch[3]);
         console.log(`  ${severityBadge(warnMatch[1])} [${warnMatch[2]}] ${warnMatch[3]}`);
@@ -608,14 +595,14 @@ export async function handleAnnotate(
     }
 
     if (!changed) {
-      console.log(`  ${c.dim}No changes. Use --deprecate, --status, --tag, --note, --risk, or --warn${c.reset}`);
+      console.log(`  ${c.dim('No changes. Use --deprecate, --status, --tag, --note, --risk, or --warn')}`);
     }
 
     // 변경 후 엔티티 상태 표시
     if (changed) {
       const updated = store.getEntity(entity.id);
       if (updated) {
-        console.log(`\n${c.dim}Updated state:${c.reset}`);
+        console.log(`\n${c.dim('Updated state:')}`);
         console.log(formatEntity(updated));
       }
     }

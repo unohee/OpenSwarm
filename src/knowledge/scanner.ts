@@ -82,7 +82,7 @@ export async function scanProject(
   });
 
   // Phase 1: Directory walking — collect nodes
-  await walkDirectory(graph, projectPath, projectPath, '.', 0, maxDepth, startTime, timeoutMs);
+  await walkDirectory(graph, projectPath, '.', 0, maxDepth, startTime, timeoutMs);
 
   // Phase 2: Import parsing — create edges
   const modules = [...graph.getNodesByType('module'), ...graph.getNodesByType('test_file')];
@@ -174,7 +174,6 @@ export async function incrementalUpdate(
 
 async function walkDirectory(
   graph: KnowledgeGraph,
-  _rootPath: string,
   currentPath: string,
   relPath: string,
   depth: number,
@@ -210,7 +209,7 @@ async function walkDirectory(
       });
       graph.addEdge({ source: relPath === '.' ? '.' : relPath, target: entryRelPath, type: 'contains' });
 
-      await walkDirectory(graph, _rootPath, entryPath, entryRelPath, depth + 1, maxDepth, startTime, timeoutMs);
+      await walkDirectory(graph, entryPath, entryRelPath, depth + 1, maxDepth, startTime, timeoutMs);
     } else if (entry.isFile()) {
       const ext = extname(entry.name);
       if (!SOURCE_EXTENSIONS.has(ext)) continue;

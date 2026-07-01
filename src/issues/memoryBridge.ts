@@ -7,7 +7,7 @@
 
 import { saveMemory, searchMemorySafe, saveCognitiveMemory } from '../memory/memoryCore.js';
 import type { SqliteIssueStore } from './sqliteStore.js';
-import type { Issue, IssueEvent } from './schema.js';
+import type { Issue } from './schema.js';
 
 /**
  * 이슈 생성 시 관련 기억 자동 연결
@@ -139,8 +139,6 @@ export async function enrichIssueContext(
   linkedMemories: Array<{ id: string; content: string; score: number }>;
   similarIssues: Issue[];
 }> {
-  // 1. 기존 연결된 기억 조회
-  const memoryIds = store.getLinkedMemories(issue.id);
   const linkedMemories: Array<{ id: string; content: string; score: number }> = [];
 
   // 2. 의미적으로 유사한 기억 검색

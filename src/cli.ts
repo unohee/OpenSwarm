@@ -512,7 +512,7 @@ program
 
 // openswarm check annotate <qualifiedName>
 
-const checkAnnotate = program
+program
   .command('annotate')
   .description('Annotate a code entity in the registry')
   .argument('<qualifiedName>', 'Entity qualified name (file::name) or search term')
