@@ -1,0 +1,85 @@
+name: Release
+
+# Auto-release on a version bump: when a merge to main changes package.json and
+# the version has no tag yet, gate → publish to npm → tag → GitHub release.
+# So the release flow is just "merge a version-bump PR". (INT-2270)
+#
+# Requires a repo secret NPM_TOKEN (npm automation token). GITHUB_TOKEN is
+# provided automatically for the tag + release.
+
+on:
+  push:
+    branches: [main]
+    paths: ['package.json']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  NODE_VERSION: '22'
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version and whether it is already released
+        id: ver
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if git rev-parse "v$VERSION" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "v$VERSION already tagged — nothing to release."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Releasing v$VERSION."
+          fi
+
+      - uses: actions/setup-node@v4
+        if: steps.ver.outputs.exists == 'false'
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          registry-url: 'https://registry.npmjs.org'
+
+      - if: steps.ver.outputs.exists == 'false'
+        run: npm ci
+
+      # Hard gates — a red one blocks the release.
+      - if: steps.ver.outputs.exists == 'false'
+        run: npm run lint
+      - if: steps.ver.outputs.exists == 'false'
+        run: npm run typecheck
+      - if: steps.ver.outputs.exists == 'false'
+        run: npm run build
+
+      # Advisory (matches ci.yml until the 2 known service.test failures are
+      # resolved — INT-2271). Promote to a hard gate once green.
+      - if: steps.ver.outputs.exists == 'false'
+        run: npm test
+        continue-on-error: true
+
+      - name: Publish to npm
+        if: steps.ver.outputs.exists == 'false'
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Tag and GitHub release
+        if: steps.ver.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          git tag "v$VERSION"
+          git push origin "v$VERSION"
+          # Extract this version's CHANGELOG section for the release notes.
+          NOTES=$(awk -v v="## $VERSION" '$0 ~ "^"v" " {f=1; next} /^## / {f=0} f' CHANGELOG.md)
+          if [ -z "$NOTES" ]; then NOTES="Release v$VERSION"; fi
+          gh release create "v$VERSION" --title "v$VERSION" --notes "$NOTES"

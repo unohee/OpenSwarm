@@ -11,6 +11,7 @@ import { runCli } from './runners/cliRunner.js';
 import { loadConfig, validateConfig, generateSampleConfig } from './core/config.js';
 import { loadEnvFile } from './core/envFile.js';
 import { initTelemetry, track } from './telemetry/telemetry.js';
+import { maybeNotifyUpdate } from './support/updateNotifier.js';
 
 // Load .env so CLI commands (e.g. `auth login --provider linear` reading
 // LINEAR_OAUTH_CLIENT_ID) see the same env the daemon does. Idempotent; never
@@ -673,4 +674,7 @@ program.action(launchChatTui);
 
 // Parse & Execute
 
+// Surface an "update available" notice (cached, TTY-only, never blocking on the
+// network for more than a moment) before dispatching the command. (INT-2270)
+await maybeNotifyUpdate(VERSION);
 program.parse();
