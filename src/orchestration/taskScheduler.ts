@@ -7,17 +7,6 @@ import { EventEmitter } from 'node:events';
 import type { TaskItem } from './decisionEngine.js';
 import type { PipelineResult } from '../agents/pairPipeline.js';
 
-function normalizeProjectPath(path: string): string {
-  const normalized = path.replace(/\\/g, '/').replace(/\/+$/g, '');
-  return normalized || '/';
-}
-
-function isSameProjectOrDescendant(candidatePath: string, projectPath: string): boolean {
-  const candidate = normalizeProjectPath(candidatePath);
-  const project = normalizeProjectPath(projectPath);
-  return candidate === project || candidate.startsWith(`${project}/`);
-}
-
 // Types
 
 export interface QueuedTask {
@@ -364,7 +353,7 @@ export class TaskScheduler extends EventEmitter {
     let n = 0;
     for (const running of this.runningTasks.values()) {
       const p = running.projectPath;
-      if (isSameProjectOrDescendant(p, projectPath)) {
+      if (p === projectPath || p.startsWith(projectPath) || projectPath.startsWith(p)) {
         running.abortController.abort();
         n++;
       }
