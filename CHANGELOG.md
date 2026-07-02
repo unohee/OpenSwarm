@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.15.0 — 2026-07-02
+
+### Added
+
+- **`openswarm fix` is now multi-language** — check resolution auto-detects the project's ecosystem instead of requiring `package.json` scripts. First non-empty source wins: an explicit `"checks"` map in `openswarm.json` (key → shell command — the escape hatch for **any** language and for mixed repos), `package.json` scripts, `Cargo.toml` (**Rust**: `cargo check --all-targets` + `cargo test` by default; `clippy`/`build` via `--checks lint,build`), or **Python** markers (`ruff check .` / `mypy .` / `pytest`, each included only when the repo is configured for the tool; `--checks` bypasses the gating). Previously Rust/Python projects always exited with `No checks resolved`. (INT-2303)
+
 ## 0.14.0 — 2026-07-01
 
 ### Added
