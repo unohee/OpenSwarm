@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.16.0 — 2026-07-02
+
+### Security
+
+- **taskState store hardened** — prototype-pollution-safe task map (null-prototype via schema preprocess), fail-closed on a corrupt persisted state file (no silent overwrite), Linear sync-comment **trust filter** (marker/prefix + author allowlist, `OPENSWARM_TASK_STATE_TRUSTED_COMMENT_USERS` for extras) with an issueId mismatch guard against cross-issue poisoning. (INT-2316)
+- **Telemetry privacy tightened** — `command`/`adapter`/`event` labels are sanitized to a strict token shape so dynamic strings can never leak paths or prompt text; `installId` is shape-validated; the send timeout is unref'd so fire-and-forget telemetry cannot keep the process alive. (INT-2316)
+- **Web dashboard auth: linear-time bearer parse** — replaced a polynomially-backtracking `Bearer` header regex (CodeQL `js/polynomial-redos`) with a regex-free parse. (INT-2316)
+- **BS detector catches env-fallback secrets** — `process.env.X || "hardcoded-secret"` is now flagged (any line mentioning `process.env` used to be excluded wholesale). (INT-2316)
+
+### Changed
+
+- **Audit hardening batch landed** — two full-codebase `openswarm review --max --fix` passes (~130 files) applied per-area fixes: R5 Linear reconcile extended to done→reopened transitions, fix-loop worker errors surfaced (all-failed round stops early), `readOnly` adapter option plumbed through the tool layer, locale key coverage, GraphQL resolver and memory-ops cleanups — plus **13 new test files** (suite 1326 → 1389). (INT-2316)
+
 ## 0.15.0 — 2026-07-02
 
 ### Added

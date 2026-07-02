@@ -514,9 +514,9 @@ the CLI (fire-and-forget with a short timeout, and failures are silently ignored
 Full version history lives in **[CHANGELOG.md](CHANGELOG.md)** and the
 [GitHub Releases](https://github.com/unohee/OpenSwarm/releases) page.
 
-Latest — **v0.15.0**: `openswarm fix` goes multi-language — auto-detects npm,
-Cargo (Rust), and Python (ruff/mypy/pytest) checks; any other toolchain via an
-`openswarm.json` `"checks"` map. See CHANGELOG.md for the rest.
+Latest — **v0.16.0**: security hardening batch from dogfooded `review --max --fix`
+audits — task-state store pollution/poisoning guards, telemetry label sanitization,
+ReDoS-free web auth — plus 13 new test files. See CHANGELOG.md for the rest.
 
 ---
 
