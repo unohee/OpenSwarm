@@ -6,7 +6,7 @@
 import { EmbedBuilder } from 'discord.js';
 import type { TaskItem, DecisionResult } from '../orchestration/decisionEngine.js';
 import type { ExecutorResult } from '../orchestration/workflow.js';
-import type { PipelineResult } from '../agents/pairPipeline.js';
+import type { PipelineResult, PipelineRunMetadata } from '../agents/pairPipeline.js';
 import type { DefaultRolesConfig, PipelineStage, JobProfile } from '../core/types.js';
 import { createPipelineFromConfig, buildTaskPrefix } from '../agents/pairPipeline.js';
 import type { WorkerResult, ReviewResult } from '../agents/agentPair.js';
@@ -55,6 +55,34 @@ import {
 // Notifier (outbound notifications — Discord/Slack/Telegram/webhook, INT-1576)
 
 let notifier: Notifier | null = null;
+
+interface PipelineMetadataTask {
+  id: string;
+  title: string;
+  issueId?: string;
+  issueIdentifier?: string;
+  linearProject?: { id?: string; name?: string };
+}
+
+function pipelineMetadata(task: PipelineMetadataTask, projectPath: string, worktreeInfo?: WorktreeInfo | null): PipelineRunMetadata {
+  const activePath = worktreeInfo?.worktreePath ?? projectPath;
+  return {
+    repository: task.linearProject?.name ?? repoNameFromPath(projectPath),
+    projectPath: activePath,
+    worktree: worktreeInfo?.issueId ?? worktreeNameFromPath(activePath),
+    branch: worktreeInfo?.branchName,
+    issueIdentifier: task.issueIdentifier ?? task.issueId,
+    title: task.title,
+  };
+}
+
+function repoNameFromPath(projectPath: string): string {
+  return projectPath.replace(/\/+$/, '').replace(/\/worktree\/[^/]+$/, '').split('/').pop() || projectPath;
+}
+
+function worktreeNameFromPath(projectPath: string): string | undefined {
+  return projectPath.match(/\/worktree\/([^/]+)\/?$/)?.[1];
+}
 
 export function setNotifier(n: Notifier): void {
   notifier = n;
@@ -302,7 +330,11 @@ export async function createSubIssuesWithDependencies(
   ctx: { reportToDiscord: (msg: string) => Promise<void> | void; scheduleNextHeartbeat?: () => void },
   taskId: string,
   dailyLimit: number,
+  projectPath?: string,
 ): Promise<boolean> {
+  const metadata = projectPath
+    ? pipelineMetadata({ ...task, id: taskId }, projectPath)
+    : {};
   const createdSubIssues: Array<{
     id: string;
     identifier: string;
@@ -352,7 +384,7 @@ export async function createSubIssuesWithDependencies(
 
   if (createdSubIssues.length === 0) {
     console.error('[AutonomousRunner] No sub-issues created');
-    broadcastEvent({ type: 'pipeline:stage', data: { taskId, stage: 'decompose', status: 'fail' } });
+    broadcastEvent({ type: 'pipeline:stage', data: { taskId, stage: 'decompose', status: 'fail', ...metadata } });
     return false;
   }
 
@@ -396,7 +428,7 @@ export async function createSubIssuesWithDependencies(
     totalMinutes: String(totalEstimatedMinutes),
   }));
 
-  broadcastEvent({ type: 'pipeline:stage', data: { taskId, stage: 'decompose', status: 'complete' } });
+  broadcastEvent({ type: 'pipeline:stage', data: { taskId, stage: 'decompose', status: 'complete', ...metadata } });
   // Log each sub-issue as a log line for the dashboard
   for (const s of createdSubIssues) {
     broadcastEvent({ type: 'log', data: { taskId, stage: 'decompose', line: `↳ ${s.identifier}: ${s.title}` } });
@@ -465,6 +497,7 @@ export async function decomposeTask(
   console.log(`[AutonomousRunner] Decomposing task: ${task.title}`);
 
   const taskId = task.issueId || task.id;
+  const metadata = pipelineMetadata(task, projectPath);
   const maxDepth = ctx.decompositionMaxDepth ?? 2;
   const maxChildren = ctx.decompositionMaxChildren ?? 5;
   const dailyLimit = ctx.decompositionDailyLimit ?? 20;
@@ -528,7 +561,7 @@ export async function decomposeTask(
     return false;
   }
 
-  broadcastEvent({ type: 'pipeline:stage', data: { taskId, stage: 'decompose', status: 'start' } });
+  broadcastEvent({ type: 'pipeline:stage', data: { taskId, stage: 'decompose', status: 'start', ...metadata } });
 
   await ctx.reportToDiscord(t('runner.decomposition.starting', {
     title: task.title,
@@ -577,7 +610,7 @@ export async function decomposeTask(
 
   if (!result.success) {
     console.error(`[AutonomousRunner] Planner failed: ${result.error}`);
-    broadcastEvent({ type: 'pipeline:stage', data: { taskId, stage: 'decompose', status: 'fail' } });
+    broadcastEvent({ type: 'pipeline:stage', data: { taskId, stage: 'decompose', status: 'fail', ...metadata } });
     return false;
   }
 
@@ -599,6 +632,7 @@ export async function decomposeTask(
     ctx,
     taskId,
     dailyLimit,
+    projectPath,
   );
 }
 
@@ -620,7 +654,8 @@ export async function executePipeline(
   if (ctx.enableDraftAnalysis !== false) {
     try {
       const taskId = task.issueIdentifier || task.issueId || task.id;
-      broadcastEvent({ type: 'pipeline:stage', data: { taskId, stage: 'draft', status: 'start' } });
+      const metadata = pipelineMetadata(task, projectPath);
+      broadcastEvent({ type: 'pipeline:stage', data: { taskId, stage: 'draft', status: 'start', ...metadata } });
 
       draftResult = await runDraftAnalysis({
         taskTitle: task.title,
@@ -631,7 +666,7 @@ export async function executePipeline(
         onLog: (line) => broadcastEvent({ type: 'log', data: { taskId, stage: 'draft', line } }),
       });
 
-      broadcastEvent({ type: 'pipeline:stage', data: { taskId, stage: 'draft', status: 'complete' } });
+      broadcastEvent({ type: 'pipeline:stage', data: { taskId, stage: 'draft', status: 'complete', durationMs: draftResult.durationMs, ...metadata } });
       console.log(`[AutonomousRunner] Draft: type=${draftResult.taskType}, files=${draftResult.relevantFiles.length}, ${draftResult.durationMs}ms`);
     } catch (err) {
       console.warn('[AutonomousRunner] Draft analysis failed (non-blocking):', err);
@@ -712,6 +747,7 @@ export async function executePipeline(
         registrySnapshot: draftResult.registrySnapshot,
       } : undefined,
       ctx.maxReflections,
+      pipelineMetadata(task, actualPath, worktreeInfo),
     );
 
     const taskPrefix = buildTaskPrefix(task, actualPath);

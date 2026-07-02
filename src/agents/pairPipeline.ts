@@ -71,6 +71,8 @@ export interface PipelineConfig {
   guards?: Partial<PipelineGuardsConfig>;
   /** Optional job profiles for model selection */
   jobProfiles?: JobProfile[];
+  /** Runtime metadata used by observers such as the TUI pipeline tree. */
+  runMetadata?: PipelineRunMetadata;
   /** Skip tester if no code files (.ts/.js/.py etc.) changed (default: true) */
   skipTesterIfNoCodeChange?: boolean;
   /** Skip auditor if fewer than N files changed (default: 3) */
@@ -89,6 +91,15 @@ export interface PipelineConfig {
     impactAnalysis?: import('../knowledge/types.js').ImpactAnalysis;
     registrySnapshot?: Array<{ filePath: string; summary: string; highlights: string[] }>;
   };
+}
+
+export interface PipelineRunMetadata {
+  repository?: string;
+  projectPath?: string;
+  worktree?: string;
+  branch?: string;
+  issueIdentifier?: string;
+  title?: string;
 }
 
 export interface StageResult {
@@ -529,9 +540,10 @@ export class PairPipeline extends EventEmitter {
     const startTime = Date.now();
     const stageModel = overrides?.model ?? this.getModelForRole(stage, context.task);
     const prefix = context.taskPrefix;
+    const metadata = this.stageMetadata(context);
     console.log(`[${prefix}] Stage starting: ${stage}`);
     this.emit('stage:start', { stage, context, model: stageModel });
-    broadcastEvent({ type: 'pipeline:stage', data: { taskId: context.task.id, stage, status: 'start', model: stageModel } });
+    broadcastEvent({ type: 'pipeline:stage', data: { taskId: context.task.id, stage, status: 'start', model: stageModel, ...metadata } });
 
     if (this.config.verbose) {
       this.emit('log', { line: `[verbose] Stage: ${stage} | model: ${stageModel ?? 'default'} | iteration: ${context.currentIteration}` });
@@ -793,6 +805,7 @@ export class PairPipeline extends EventEmitter {
       }
       broadcastEvent({ type: 'pipeline:stage', data: {
         taskId: context.task.id, stage, status: 'complete',
+        ...metadata,
         model: costInfo?.model,
         inputTokens: costInfo?.inputTokens,
         outputTokens: costInfo?.outputTokens,
@@ -820,11 +833,25 @@ export class PairPipeline extends EventEmitter {
       this.emit('stage:fail', { stage, result: stageResult, context, error });
       broadcastEvent({ type: 'pipeline:stage', data: {
         taskId: context.task.id, stage, status: 'fail',
+        ...metadata,
         durationMs: stageResult.duration,
         error: error instanceof Error ? error.message : String(error),
       } });
       return stageResult;
     }
+  }
+
+  private stageMetadata(context: PipelineContext): PipelineRunMetadata {
+    const configured = this.config.runMetadata ?? {};
+    const projectPath = configured.projectPath ?? context.projectPath;
+    return {
+      repository: configured.repository ?? context.task.linearProject?.name ?? repoNameFromPath(projectPath),
+      projectPath,
+      worktree: configured.worktree ?? worktreeNameFromPath(projectPath),
+      branch: configured.branch,
+      issueIdentifier: configured.issueIdentifier ?? context.task.issueIdentifier ?? context.task.issueId,
+      title: configured.title ?? context.task.title,
+    };
   }
 
   /**
@@ -1314,6 +1341,7 @@ export function createPipelineFromConfig(
   jobProfiles?: JobProfile[],
   draftAnalysis?: PipelineConfig['draftAnalysis'],
   maxReflections?: number,
+  runMetadata?: PipelineRunMetadata,
 ): PairPipeline {
   const stages: PipelineStage[] = [];
 
@@ -1344,7 +1372,18 @@ export function createPipelineFromConfig(
     guards,
     jobProfiles,
     draftAnalysis,
+    runMetadata,
   });
+}
+
+function repoNameFromPath(projectPath?: string): string | undefined {
+  if (!projectPath) return undefined;
+  const normalized = projectPath.replace(/\/+$/, '').replace(/\/worktree\/[^/]+$/, '');
+  return normalized.split('/').pop();
+}
+
+function worktreeNameFromPath(projectPath?: string): string | undefined {
+  return projectPath?.match(/\/worktree\/([^/]+)\/?$/)?.[1];
 }
 
 // Helpers

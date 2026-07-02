@@ -3,12 +3,13 @@
 import { Box, Text } from 'ink';
 import { STATUS } from '../theme.js';
 import type { StatusKind } from '../../support/glyphs.js';
-import type { TaskNode, TaskStatus } from '../subagentTree.js';
+import type { RepositoryNode, TaskStatus } from '../subagentTree.js';
 
 // Single-sourced glyphs + colors (INT-2260): running → ◐, complete → ✓, fail → ✗.
 const KIND: Record<TaskStatus, StatusKind> = { start: 'running', complete: 'ok', fail: 'err' };
 const STAGE_LABEL_MAX_CHARS = 80;
 const MODEL_LABEL_MAX_CHARS = 80;
+const NODE_LABEL_MAX_CHARS = 96;
 
 // eslint-disable-next-line no-control-regex
 const TERMINAL_ESCAPE_RE = /\x1b(?:\][^\x07]*(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~]|[@-Z\\-_])/g;
@@ -26,30 +27,50 @@ function clampLimit(value: number): number {
 }
 
 export interface SubagentTreeProps {
-  tasks: TaskNode[];
-  /** Max tasks shown (most recent). */
+  repositories: RepositoryNode[];
+  /** Max worktrees shown across each repository (most recent). */
   max?: number;
-  /** Max stage children shown per task. */
-  maxStages?: number;
+  /** Max role children shown per worktree. */
+  maxRoles?: number;
 }
 
-export function SubagentTree({ tasks, max = 6, maxStages = 5 }: SubagentTreeProps) {
-  const taskLimit = clampLimit(max);
-  const stageLimit = clampLimit(maxStages);
-  const shown = taskLimit === 0 ? [] : tasks.slice(-taskLimit);
+function formatDuration(ms: number | undefined): string | undefined {
+  if (ms == null) return undefined;
+  if (ms < 1000) return `${ms}ms`;
+  return `${Math.round(ms / 1000)}s`;
+}
+
+function worktreeLabel(task: RepositoryNode['worktrees'][number]): string {
+  const id = task.issueIdentifier ?? task.taskId;
+  const branch = task.branch ? ` ${task.branch}` : task.worktree ? ` worktree/${task.worktree}` : '';
+  const stage = task.currentStage ? ` ${task.currentStage}` : '';
+  const duration = formatDuration(task.durationMs);
+  const decision = task.decision ? ` ${task.decision}` : '';
+  const title = task.title ? ` ${task.title}` : '';
+  return sanitizeTerminalLabel(`${id}${branch}${stage}${duration ? ` ${duration}` : ''}${decision}${title}`, NODE_LABEL_MAX_CHARS);
+}
+
+export function SubagentTree({ repositories, max = 6, maxRoles = 5 }: SubagentTreeProps) {
+  const worktreeLimit = clampLimit(max);
+  const roleLimit = clampLimit(maxRoles);
   return (
     <Box flexDirection="column">
-      <Text bold>Agents (by task)</Text>
-      {shown.length === 0 ? (
+      <Text bold>Agents by repository</Text>
+      {repositories.length === 0 || worktreeLimit === 0 ? (
         <Text dimColor>(no active agents)</Text>
       ) : (
-        shown.map((task) => (
-          <Box key={task.taskId} flexDirection="column">
-            <Text color={STATUS[KIND[task.status]].color}>{`${STATUS[KIND[task.status]].icon} ${sanitizeTerminalLabel(task.taskId).slice(0, 16)}`}</Text>
-            {(stageLimit === 0 ? [] : task.stages.slice(-stageLimit)).map((s, i) => (
-              <Text key={i} dimColor>
-                {`   └ ${sanitizeTerminalLabel(s.stage, STAGE_LABEL_MAX_CHARS)}${s.model ? ` (${sanitizeTerminalLabel(s.model, MODEL_LABEL_MAX_CHARS)})` : ''} — ${s.status}`}
-              </Text>
+        repositories.map((repo) => (
+          <Box key={repo.repository} flexDirection="column">
+            <Text color={STATUS[KIND[repo.status]].color}>{`${STATUS[KIND[repo.status]].icon} ${sanitizeTerminalLabel(repo.repository, NODE_LABEL_MAX_CHARS)}`}</Text>
+            {repo.worktrees.slice(-worktreeLimit).map((task) => (
+              <Box key={`${repo.repository}:${task.taskId}`} flexDirection="column">
+                <Text dimColor>{`  └ ${worktreeLabel(task)} — ${task.status}`}</Text>
+                {(roleLimit === 0 ? [] : task.roles.slice(-roleLimit)).map((role, i) => (
+                  <Text key={i} dimColor>
+                    {`     └ ${sanitizeTerminalLabel(role.role, STAGE_LABEL_MAX_CHARS)}${role.model ? ` (${sanitizeTerminalLabel(role.model, MODEL_LABEL_MAX_CHARS)})` : ''} — ${role.status}${role.decision ? `/${role.decision}` : ''}`}
+                  </Text>
+                ))}
+              </Box>
             ))}
           </Box>
         ))

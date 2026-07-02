@@ -27,6 +27,12 @@ export type HubEvent =
       taskId: string;
       stage: string;
       status: 'start' | 'complete' | 'fail';
+      repository?: string;
+      projectPath?: string;
+      worktree?: string;
+      branch?: string;
+      issueIdentifier?: string;
+      title?: string;
       model?: string;
       inputTokens?: number;
       outputTokens?: number;

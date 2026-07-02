@@ -28,7 +28,7 @@ export function PipelinePanel({ port }: PipelinePanelProps) {
         <Text color={live ? theme.ok : theme.dim}>{live ? '●' : '○'}</Text>
         <Text dimColor>{label}</Text>
       </Text>
-      <SubagentTree tasks={buildSubagentTree(stages)} />
+      <SubagentTree repositories={buildSubagentTree(stages)} />
       <Box marginTop={1}>
         <StageTimeline stages={stages} />
       </Box>

@@ -12,9 +12,29 @@ describe('reducePipelineEvent (EPIC INT-1813 S5)', () => {
   it('appends pipeline:stage entries with their fields', () => {
     let s = initialPipelineState;
     s = reducePipelineEvent(s, stage({ status: 'start' }));
-    s = reducePipelineEvent(s, stage({ status: 'complete', model: 'gpt', durationMs: 3000, decision: 'approve' }));
+    s = reducePipelineEvent(s, stage({
+      status: 'complete',
+      model: 'gpt',
+      durationMs: 3000,
+      decision: 'approve',
+      repository: 'OpenSwarm',
+      projectPath: '/repo/worktree/INT-2367',
+      worktree: 'INT-2367',
+      branch: 'swarm/INT-2367-pipeline-tree',
+      issueIdentifier: 'INT-2367',
+      title: 'Pipeline tree',
+    }));
     expect(s.stages).toHaveLength(2);
-    expect(s.stages[1]).toMatchObject({ status: 'complete', model: 'gpt', decision: 'approve' });
+    expect(s.stages[1]).toMatchObject({
+      status: 'complete',
+      model: 'gpt',
+      decision: 'approve',
+      repository: 'OpenSwarm',
+      worktree: 'INT-2367',
+      branch: 'swarm/INT-2367-pipeline-tree',
+      issueIdentifier: 'INT-2367',
+      title: 'Pipeline tree',
+    });
   });
 
   it('appends log lines with a stage prefix', () => {

@@ -10,6 +10,12 @@ export interface StageEntry {
   taskId: string;
   stage: string;
   status: 'start' | 'complete' | 'fail';
+  repository?: string;
+  projectPath?: string;
+  worktree?: string;
+  branch?: string;
+  issueIdentifier?: string;
+  title?: string;
   model?: string;
   durationMs?: number;
   costUsd?: number;
@@ -35,6 +41,12 @@ export function reducePipelineEvent(state: PipelineState, ev: HubEvent): Pipelin
       taskId: d.taskId,
       stage: d.stage,
       status: d.status,
+      repository: d.repository,
+      projectPath: d.projectPath,
+      worktree: d.worktree,
+      branch: d.branch,
+      issueIdentifier: d.issueIdentifier,
+      title: d.title,
       model: d.model,
       durationMs: d.durationMs,
       costUsd: d.costUsd,
