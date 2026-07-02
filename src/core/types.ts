@@ -430,6 +430,8 @@ export interface PipelineGuardsConfig {
   dependencyAntiPatternCheck?: boolean;
   /** Block self-referential contract tests without producer/consumer evidence (INT-2388 #2). */
   contractEvidenceCheck?: boolean;
+  /** Block verified-evidence deletion and metric changes without before/after evidence (INT-2388 #4). */
+  verifiedMetricEvidenceCheck?: boolean;
   /** Flag newly-added source modules that nothing imports/calls (INT-2388 #5). */
   deadModuleCheck?: boolean;
   /** Flag reformat-only files and oversized diffs — scope creep (INT-2388 #6). */

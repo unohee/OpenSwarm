@@ -103,6 +103,7 @@ autonomous:
     bsDetector: true        # blocks on critical code-smell patterns
     dependencyAntiPatternCheck: true  # block package recreation/version spoofing after import failures (INT-2388 #1)
     contractEvidenceCheck: true       # block self-referential contract tests without producer/consumer evidence (INT-2388 #2)
+    verifiedMetricEvidenceCheck: true # block verified evidence deletion / metric changes without distributions (INT-2388 #4)
     deadModuleCheck: true   # warn on new modules nothing imports/calls (INT-2388 #5)
     reformatCheck: true     # warn on reformat-only files / oversized diffs (INT-2388 #6)
 

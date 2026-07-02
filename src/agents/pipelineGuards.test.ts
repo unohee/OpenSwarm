@@ -309,6 +309,213 @@ describe('pipelineGuards — INT-2388 deterministic guards', () => {
     });
   });
 
+  describe('verifiedMetricEvidenceCheck', () => {
+    it('blocks removing verified documentation without counter-evidence', async () => {
+      writeFileSync(join(repo, 'ARCHITECTURE.md'), 'KIS and pykrx parity is verified by 2026-06-28 sample.\n');
+      execFileSync('git', ['add', 'ARCHITECTURE.md'], { cwd: repo });
+      execFileSync('git', ['commit', '-m', 'add verified doc'], { cwd: repo });
+
+      writeFileSync(join(repo, 'ARCHITECTURE.md'), 'KIS and pykrx parity needs more study.\n');
+      const res = await runGuards(
+        mockWorker(['ARCHITECTURE.md']),
+        repo,
+        { verifiedMetricEvidenceCheck: true },
+      );
+      const issues = guardIssues(res, 'verifiedMetricEvidence');
+      expect(issues.some(i => i.includes('ARCHITECTURE.md'))).toBe(true);
+      expect(res.allPassed).toBe(false);
+    });
+
+    it('allows removing verified documentation when counter-evidence is cited', async () => {
+      writeFileSync(join(repo, 'ARCHITECTURE.md'), 'The old parity claim is confirmed by sample A.\n');
+      execFileSync('git', ['add', 'ARCHITECTURE.md'], { cwd: repo });
+      execFileSync('git', ['commit', '-m', 'add confirmed doc'], { cwd: repo });
+
+      writeFileSync(join(repo, 'ARCHITECTURE.md'), 'The old parity claim is superseded.\n');
+      const res = await runGuards(
+        {
+          ...mockWorker(['ARCHITECTURE.md']),
+          output: 'ARCHITECTURE.md counter-evidence: remeasured 8 rows and disproves the old parity claim.',
+        },
+        repo,
+        { verifiedMetricEvidenceCheck: true },
+      );
+      const issues = guardIssues(res, 'verifiedMetricEvidence');
+      expect(issues.length).toBe(0);
+      expect(res.allPassed).toBe(true);
+    });
+
+    it('does not accept a negative counter-evidence statement', async () => {
+      writeFileSync(join(repo, 'ARCHITECTURE.md'), 'The old parity claim is measured by sample A.\n');
+      execFileSync('git', ['add', 'ARCHITECTURE.md'], { cwd: repo });
+      execFileSync('git', ['commit', '-m', 'add measured doc'], { cwd: repo });
+
+      writeFileSync(join(repo, 'ARCHITECTURE.md'), 'The old parity claim is removed.\n');
+      const res = await runGuards(
+        {
+          ...mockWorker(['ARCHITECTURE.md']),
+          output: 'Counter-evidence was not found.',
+        },
+        repo,
+        { verifiedMetricEvidenceCheck: true },
+      );
+      const issues = guardIssues(res, 'verifiedMetricEvidence');
+      expect(issues.some(i => i.includes('ARCHITECTURE.md'))).toBe(true);
+      expect(res.allPassed).toBe(false);
+    });
+
+    it('blocks score logic changes without before/after distribution evidence', async () => {
+      writeFileSync(join(repo, 'scoreGate.ts'), 'export const score = (x: number) => x > 10 ? 1 : 0;\n');
+      execFileSync('git', ['add', 'scoreGate.ts'], { cwd: repo });
+      execFileSync('git', ['commit', '-m', 'add score gate'], { cwd: repo });
+
+      writeFileSync(join(repo, 'scoreGate.ts'), 'export const score = (x: number) => x > 20 ? 1 : 0;\n');
+      const res = await runGuards(
+        mockWorker(['scoreGate.ts']),
+        repo,
+        { verifiedMetricEvidenceCheck: true },
+      );
+      const issues = guardIssues(res, 'verifiedMetricEvidence');
+      expect(issues.some(i => i.includes('scoreGate.ts'))).toBe(true);
+      expect(res.allPassed).toBe(false);
+    });
+
+    it('does not block config/test terminology that mentions metric or gate', async () => {
+      writeFileSync(join(repo, 'config.example.yaml'), 'verifiedMetricEvidenceCheck: true\n');
+      writeFileSync(join(repo, 'guardTerminology.test.ts'), 'it("mentions score gate", () => {});\n');
+      const res = await runGuards(
+        mockWorker(['config.example.yaml', 'guardTerminology.test.ts']),
+        repo,
+        { verifiedMetricEvidenceCheck: true },
+      );
+      const issues = guardIssues(res, 'verifiedMetricEvidence');
+      expect(issues.length).toBe(0);
+      expect(res.allPassed).toBe(true);
+    });
+
+    it('blocks threshold logic changes in non-metric-named source files', async () => {
+      writeFileSync(join(repo, 'strategy.ts'), 'export const decide = (score: number) => score > 10;\n');
+      execFileSync('git', ['add', 'strategy.ts'], { cwd: repo });
+      execFileSync('git', ['commit', '-m', 'add strategy'], { cwd: repo });
+
+      writeFileSync(join(repo, 'strategy.ts'), 'export const decide = (score: number) => score > 20;\n');
+      const res = await runGuards(
+        mockWorker(['strategy.ts']),
+        repo,
+        { verifiedMetricEvidenceCheck: true },
+      );
+      const issues = guardIssues(res, 'verifiedMetricEvidence');
+      expect(issues.some(i => i.includes('strategy.ts'))).toBe(true);
+      expect(res.allPassed).toBe(false);
+    });
+
+    it('allows score logic changes with before/after distribution evidence', async () => {
+      writeFileSync(join(repo, 'metricRanker.ts'), 'export const rank = (score: number) => score * 1;\n');
+      execFileSync('git', ['add', 'metricRanker.ts'], { cwd: repo });
+      execFileSync('git', ['commit', '-m', 'add metric ranker'], { cwd: repo });
+
+      writeFileSync(join(repo, 'metricRanker.ts'), 'export const rank = (score: number) => score * 2;\n');
+      const res = await runGuards(
+        {
+          ...mockWorker(['metricRanker.ts']),
+          output: 'metricRanker.ts before/after distribution: changed 12 items, median delta +2.1, histogram attached.',
+        },
+        repo,
+        { verifiedMetricEvidenceCheck: true },
+      );
+      const issues = guardIssues(res, 'verifiedMetricEvidence');
+      expect(issues.length).toBe(0);
+      expect(res.allPassed).toBe(true);
+    });
+
+    it('does not accept a negative before/after distribution statement', async () => {
+      writeFileSync(join(repo, 'metricRanker.ts'), 'export const rank = (score: number) => score * 1;\n');
+      execFileSync('git', ['add', 'metricRanker.ts'], { cwd: repo });
+      execFileSync('git', ['commit', '-m', 'add metric ranker'], { cwd: repo });
+
+      writeFileSync(join(repo, 'metricRanker.ts'), 'export const rank = (score: number) => score * 3;\n');
+      const res = await runGuards(
+        {
+          ...mockWorker(['metricRanker.ts']),
+          output: 'No before/after distribution was produced; delta unavailable.',
+        },
+        repo,
+        { verifiedMetricEvidenceCheck: true },
+      );
+      const issues = guardIssues(res, 'verifiedMetricEvidence');
+      expect(issues.some(i => i.includes('metricRanker.ts'))).toBe(true);
+      expect(res.allPassed).toBe(false);
+    });
+
+    it('requires before/after evidence per changed metric file', async () => {
+      writeFileSync(join(repo, 'scoreGate.ts'), 'export const score = (x: number) => x > 10 ? 1 : 0;\n');
+      writeFileSync(join(repo, 'metricRanker.ts'), 'export const rank = (score: number) => score * 1;\n');
+      execFileSync('git', ['add', 'scoreGate.ts', 'metricRanker.ts'], { cwd: repo });
+      execFileSync('git', ['commit', '-m', 'add metric files'], { cwd: repo });
+
+      writeFileSync(join(repo, 'scoreGate.ts'), 'export const score = (x: number) => x > 20 ? 1 : 0;\n');
+      writeFileSync(join(repo, 'metricRanker.ts'), 'export const rank = (score: number) => score * 2;\n');
+      const res = await runGuards(
+        {
+          ...mockWorker(['scoreGate.ts', 'metricRanker.ts']),
+          output: 'metricRanker.ts before/after distribution: changed 12 items, median delta +2.1.',
+        },
+        repo,
+        { verifiedMetricEvidenceCheck: true },
+      );
+      const issues = guardIssues(res, 'verifiedMetricEvidence');
+      expect(issues.some(i => i.includes('scoreGate.ts'))).toBe(true);
+      expect(issues.some(i => i.includes('metricRanker.ts'))).toBe(false);
+      expect(res.allPassed).toBe(false);
+    });
+
+    it('requires counter-evidence per verified doc removal', async () => {
+      writeFileSync(join(repo, 'A.md'), 'Claim A is verified.\n');
+      writeFileSync(join(repo, 'B.md'), 'Claim B is measured.\n');
+      execFileSync('git', ['add', 'A.md', 'B.md'], { cwd: repo });
+      execFileSync('git', ['commit', '-m', 'add evidence docs'], { cwd: repo });
+
+      writeFileSync(join(repo, 'A.md'), 'Claim A removed.\n');
+      writeFileSync(join(repo, 'B.md'), 'Claim B removed.\n');
+      const res = await runGuards(
+        {
+          ...mockWorker(['A.md', 'B.md']),
+          output: 'A.md counter-evidence: remeasured and disproves Claim A.',
+        },
+        repo,
+        { verifiedMetricEvidenceCheck: true },
+      );
+      const issues = guardIssues(res, 'verifiedMetricEvidence');
+      expect(issues.some(i => i.includes('A.md'))).toBe(false);
+      expect(issues.some(i => i.includes('B.md'))).toBe(true);
+      expect(res.allPassed).toBe(false);
+    });
+
+    it('does not let basename-matched doc evidence clear another file', async () => {
+      mkdirSync(join(repo, 'docs', 'old'), { recursive: true });
+      mkdirSync(join(repo, 'docs', 'new'), { recursive: true });
+      writeFileSync(join(repo, 'docs', 'old', 'README.md'), 'Old claim is verified.\n');
+      writeFileSync(join(repo, 'docs', 'new', 'README.md'), 'New claim is measured.\n');
+      execFileSync('git', ['add', 'docs/old/README.md', 'docs/new/README.md'], { cwd: repo });
+      execFileSync('git', ['commit', '-m', 'add nested docs'], { cwd: repo });
+
+      writeFileSync(join(repo, 'docs', 'old', 'README.md'), 'Old claim removed.\n');
+      writeFileSync(join(repo, 'docs', 'new', 'README.md'), 'New claim removed.\n');
+      const res = await runGuards(
+        {
+          ...mockWorker(['docs/old/README.md', 'docs/new/README.md']),
+          output: 'docs/new/README.md counter-evidence: remeasured and disproves New claim.',
+        },
+        repo,
+        { verifiedMetricEvidenceCheck: true },
+      );
+      const issues = guardIssues(res, 'verifiedMetricEvidence');
+      expect(issues.some(i => i.includes('docs/old/README.md'))).toBe(true);
+      expect(issues.some(i => i.includes('docs/new/README.md'))).toBe(false);
+      expect(res.allPassed).toBe(false);
+    });
+  });
+
   describe('deadModuleCheck', () => {
     it('flags a new source module that nothing imports', async () => {
       writeFileSync(join(repo, 'orphanwidget.ts'), 'export function orphanwidget() { return 1; }\n');

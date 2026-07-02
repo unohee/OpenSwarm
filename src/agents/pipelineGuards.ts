@@ -318,6 +318,39 @@ const EVIDENCE_FILE_REF_RE =
   /((?:\/|\.\/)?[\w./-]+\.(?:ts|tsx|js|jsx|py|go|rs|java|yaml|yml|json)):(\d+)\b/g;
 const CONTRACT_EVIDENCE_FILE_RE =
   /\.(ts|tsx|js|jsx|py|go|rs|java|yaml|yml|json)$/;
+const DOC_FILE_RE = /\.(md|mdx|txt|rst)$/;
+const VERIFIED_STATEMENT_RE = /\b(verified|confirmed|measured)\b/i;
+const COUNTER_EVIDENCE_RE = /\b(counter-?evidence|disproves?|invalidates?|supersedes?|retested|re-measured|remeasured)\b/i;
+const METRIC_FILE_RE = /(score|scorer|metric|gate|ranking|rank|report)/i;
+const METRIC_LOGIC_RE = /\b(score|metric|gate|threshold|weight|rank|ranking|percentile|quantile)\b/i;
+const METRIC_CODE_CHANGE_RE =
+  /\b(score|metric|gate|threshold|weight|rank|ranking|percentile|quantile)\b.*(=>|=|>|<|\+|-|\*|\/)|(=>|=|>|<|\+|-|\*|\/).*\b(score|metric|gate|threshold|weight|rank|ranking|percentile|quantile)\b/i;
+const GUARD_INFRA_FILE_RE = /(^|\/)(pipelineGuards|config|types)\.(ts|tsx|ya?ml)$/;
+const BEFORE_AFTER_RE = /\b(before\/after|before and after|distribution|histogram|moved|delta|changed\s+\d+|diff\s+distribution)\b/i;
+const NEGATIVE_EVIDENCE_RE =
+  /\b(no|not|without|missing|failed to|was not|not found|not produced|unavailable)\b.{0,60}\b(counter-?evidence|before\/after|before and after|distribution|delta|histogram)\b|\b(counter-?evidence|before\/after|before and after|distribution|delta|histogram)\b.{0,60}\b(not found|not produced|missing|unavailable)\b/i;
+const DISTRIBUTION_NUMERIC_RE =
+  /\b(changed\s+\d+|\d+\s+items?|median\s+delta|mean\s+delta|delta\s+[+-]?\d|histogram|p\d+|quantile)\b/i;
+
+function reportLinesForFile(reportText: string, filePath: string): string[] {
+  return reportText
+    .split('\n')
+    .filter(line => line.includes(filePath));
+}
+
+function hasFileScopedCounterEvidence(reportText: string, filePath: string): boolean {
+  return reportLinesForFile(reportText, filePath)
+    .some(line => COUNTER_EVIDENCE_RE.test(line) && !NEGATIVE_EVIDENCE_RE.test(line));
+}
+
+function hasFileScopedBeforeAfterEvidence(reportText: string, filePath: string): boolean {
+  return reportLinesForFile(reportText, filePath)
+    .some(line =>
+      BEFORE_AFTER_RE.test(line) &&
+      DISTRIBUTION_NUMERIC_RE.test(line) &&
+      !NEGATIVE_EVIDENCE_RE.test(line),
+    );
+}
 
 async function getAddedLinesForFile(projectPath: string, filePath: string, isNew: boolean): Promise<string> {
   try {
@@ -339,6 +372,23 @@ async function getAddedLinesForFile(projectPath: string, filePath: string, isNew
   if (!isNew) return '';
   try {
     return await readFile(join(projectPath, filePath), 'utf8');
+  } catch {
+    return '';
+  }
+}
+
+async function getRemovedLinesForFile(projectPath: string, filePath: string): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync(
+      'git',
+      ['diff', '--unified=0', 'HEAD', '--', filePath],
+      { cwd: projectPath, timeout: 10_000 },
+    );
+    return stdout
+      .split('\n')
+      .filter(line => line.startsWith('-') && !line.startsWith('---'))
+      .map(line => line.slice(1))
+      .join('\n');
   } catch {
     return '';
   }
@@ -579,6 +629,58 @@ async function runContractEvidenceGuard(
 }
 
 /**
+ * Evidence preservation guard (INT-2388 defect #4): don't silently delete
+ * verified/confirmed/measured claims, and don't change score/metric/gating logic
+ * without before/after distribution evidence. Blocking, but narrow: it only
+ * fires on removed evidence wording or metric-like logic diffs.
+ */
+async function runVerifiedMetricEvidenceGuard(
+  workerResult: WorkerResult,
+  projectPath: string,
+): Promise<GuardResult> {
+  const guard = 'verifiedMetricEvidence';
+  const issues: string[] = [];
+  const reportText = `${workerResult.summary}\n${workerResult.output.slice(0, 8000)}\n${workerResult.error ?? ''}`;
+
+  try {
+    const details = await getWorkingDiffDetail(projectPath);
+
+    for (const d of details) {
+      const removedLines = await getRemovedLinesForFile(projectPath, d.file);
+      const addedLines = await getAddedLinesForFile(projectPath, d.file, d.isNew);
+
+      if (DOC_FILE_RE.test(d.file) && VERIFIED_STATEMENT_RE.test(removedLines) && !hasFileScopedCounterEvidence(reportText, d.file)) {
+        issues.push(
+          `[${d.file}] removes verified/confirmed/measured evidence wording without counter-evidence in the worker report.`,
+        );
+      }
+
+      const fileName = d.file.split('/').pop() ?? d.file;
+      const metricLikeFile = METRIC_FILE_RE.test(fileName);
+      const metricLikeDiff = METRIC_LOGIC_RE.test(`${addedLines}\n${removedLines}`);
+      const metricCodeChange = METRIC_CODE_CHANGE_RE.test(`${addedLines}\n${removedLines}`);
+      const codeFile = SOURCE_FILE_RE.test(d.file) && !TEST_FILE_RE.test(d.file) && !d.file.endsWith('.d.ts');
+      if (
+        codeFile &&
+        !GUARD_INFRA_FILE_RE.test(d.file) &&
+        (metricLikeFile || metricCodeChange) &&
+        metricLikeDiff &&
+        (addedLines || removedLines) &&
+        !hasFileScopedBeforeAfterEvidence(reportText, d.file)
+      ) {
+        issues.push(
+          `[${d.file}] changes score/metric/gate/ranking logic without before/after distribution evidence.`,
+        );
+      }
+    }
+  } catch (err) {
+    console.warn('[Guard:verifiedMetricEvidence] Error:', err);
+  }
+
+  return { passed: issues.length === 0, guard, issues, blocking: true };
+}
+
+/**
  * Reformat/scope guard (INT-2388 defect #6): flag reformat-only files (whose
  * diff vanishes under `git diff -w`) and unusually large diffs. Both inflate
  * cross-PR conflict surface and hide the real change. Non-blocking — advisory.
@@ -656,6 +758,10 @@ export async function runGuards(
 
   if (config.contractEvidenceCheck) {
     results.push(await runContractEvidenceGuard(workerResult, projectPath));
+  }
+
+  if (config.verifiedMetricEvidenceCheck) {
+    results.push(await runVerifiedMetricEvidenceGuard(workerResult, projectPath));
   }
 
   if (config.deadModuleCheck) {

@@ -224,6 +224,7 @@ const PipelineGuardsConfigSchema = z.object({
   bsDetector: z.boolean().optional(),
   dependencyAntiPatternCheck: z.boolean().optional(),
   contractEvidenceCheck: z.boolean().optional(),
+  verifiedMetricEvidenceCheck: z.boolean().optional(),
   deadModuleCheck: z.boolean().optional(),
   reformatCheck: z.boolean().optional(),
 }).optional();
