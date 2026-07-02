@@ -514,9 +514,10 @@ the CLI (fire-and-forget with a short timeout, and failures are silently ignored
 Full version history lives in **[CHANGELOG.md](CHANGELOG.md)** and the
 [GitHub Releases](https://github.com/unohee/OpenSwarm/releases) page.
 
-Latest — **v0.16.0**: security hardening batch from dogfooded `review --max --fix`
-audits — task-state store pollution/poisoning guards, telemetry label sanitization,
-ReDoS-free web auth — plus 13 new test files. See CHANGELOG.md for the rest.
+Latest — **v0.17.0**: same-project parallel agents — round-robin task selection
+fills all worker slots (worktree-isolated, KG conflict detection defers real file
+overlaps), the per-project 5h task cap is gone, and vendored trees no longer
+poison conflict detection. See CHANGELOG.md for the rest.
 
 ---
 

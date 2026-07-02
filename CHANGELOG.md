@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.17.0 — 2026-07-02
+
+### Added
+
+- **Same-project parallel agents** — the daemon can now run multiple agents on one project concurrently. The DecisionEngine's hard "one task per project per cycle" rule (whose justifying comment was stale) is replaced by **round-robin selection**: every pass adds at most one task per project, so no project monopolizes the slots, and later passes fill the remaining slots from the same projects. Active only when the scheduler can actually isolate the runs (`allowSameProjectConcurrent` + `worktreeMode`); file-overlapping tasks within a project are still deferred by the knowledge-graph conflict detection — which this change finally exercises (it was dead code). Verified live: 4 tasks from one project running in parallel worktrees. (INT-2318)
+
+### Changed
+
+- **Per-project 5h task cap removed** — the rolling-window cap (`dailyTaskCap`, default 6) silently stalled a project after a productive burst (throttled with an idle scheduler and no error). Like the previously-removed global pace gate, throughput is now governed only by the cron schedule and the Linear rate limiter. Completion records (`daily-pace.json`) are kept as cost/throughput telemetry. The `dailyTaskCap` config field is gone; stale keys in existing configs are ignored. (INT-2317)
+
+### Fixed
+
+- **Vendored dirs no longer poison conflict detection** — with same-project parallelism live, the KG conflict detector deferred 4/5 tasks as "conflicting" via vendored `google-cloud-sdk/` files (`a.py`, `run.py`, `api.py` substring-matched every issue text). The scanner now skips vendored trees (`google-cloud-sdk`, `third_party`, `vendor(s)`), and issue-impact filename matching requires a whole-word boundary and ≥3 chars. A poisoned cached graph shrank 14MB → 52KB on rescan. (INT-2320)
+- **Project cancellation path normalization** — `~` expansion and relative-path resolution before the exact-or-descendant match, plus a fix for a latent traversal bypass (`/dev/WAVE/../WAVE-next` was cancelled by disabling `/dev/WAVE`). Thanks to [@ag-linden](https://github.com/ag-linden). (#192) An empty/blank cancellation path now cancels nothing instead of resolving to the daemon's cwd. (#197)
+
 ## 0.16.0 — 2026-07-02
 
 ### Security
