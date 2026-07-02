@@ -50,7 +50,7 @@ const TS_REQUIRE = /require\(\s*['"]([^'"]+)['"]\s*\)/g;
 const TS_DYNAMIC_IMPORT = /import\(\s*['"]([^'"]+)['"]\s*\)/g;
 
 // Python
-const PY_FROM_IMPORT = /^from\s+([\w.]+)\s+import/gm;
+const PY_FROM_IMPORT = /^from\s+([\w.]+)\s+import\s+([^\n#]+)/gm;
 const PY_IMPORT = /^import\s+([\w.]+)/gm;
 
 // Scanner
@@ -118,8 +118,8 @@ export async function incrementalUpdate(
 
     // If node exists, re-parse edges only
     if (graph.hasNode(relPath)) {
-      // Remove existing import/depends_on edges (with adjacency sync)
-      graph.removeOutgoingEdges(relPath, ['imports', 'depends_on']);
+      // Remove existing parsed edges (with adjacency sync)
+      graph.removeOutgoingEdges(relPath, ['imports', 'depends_on', 'tests']);
       const node = graph.getNode(relPath)!;
 
       // Recalculate metrics
@@ -281,7 +281,17 @@ async function parseImports(
     let match;
     while ((match = PY_FROM_IMPORT.exec(content)) !== null) {
       const raw = match[1];
-      importPaths.push({ raw, isRelative: raw.startsWith('.') });
+      if (raw.startsWith('.') && /^\.+$/.test(raw)) {
+        const importedNames = match[2]
+          .split(',')
+          .map(name => name.trim().split(/\s+as\s+/)[0]?.trim())
+          .filter(name => name && name !== '*');
+        for (const importedName of importedNames) {
+          importPaths.push({ raw: `${raw}${importedName}`, isRelative: true });
+        }
+      } else {
+        importPaths.push({ raw, isRelative: raw.startsWith('.') });
+      }
     }
     while ((match = PY_IMPORT.exec(content)) !== null) {
       const raw = match[1];
@@ -336,8 +346,17 @@ function resolveRelativeImport(
   }
 
   if (language === 'python') {
-    const pyPath = importPath.replace(/\./g, '/');
-    return join(dir, pyPath).replace(/\\/g, '/');
+    const leadingDots = importPath.match(/^\.+/)?.[0].length ?? 0;
+    if (leadingDots === 0) {
+      return importPath.replace(/\./g, '/');
+    }
+
+    const modulePath = importPath.slice(leadingDots).replace(/\./g, '/');
+    const dirParts = dir.split('/').filter(Boolean);
+    const upLevels = Math.max(leadingDots - 1, 0);
+    const baseParts = dirParts.slice(0, Math.max(0, dirParts.length - upLevels));
+    const moduleParts = modulePath ? modulePath.split('/').filter(Boolean) : [];
+    return [...baseParts, ...moduleParts].join('/');
   }
 
   return null;
@@ -349,6 +368,8 @@ function mapTestsToModules(graph: KnowledgeGraph): void {
   const testFiles = graph.getNodesByType('test_file');
 
   for (const testNode of testFiles) {
+    graph.removeOutgoingEdges(testNode.id, ['tests']);
+
     // Add tests edges to modules already connected via import edges
     const imports = graph.getImports(testNode.id);
     for (const imported of imports) {
@@ -358,37 +379,56 @@ function mapTestsToModules(graph: KnowledgeGraph): void {
     }
 
     // Naming convention based mapping: foo.test.ts → foo.ts
-    const possibleSource = guessSourceFromTestName(testNode.name, testNode.path);
-    if (possibleSource && graph.hasNode(possibleSource)) {
-      graph.addEdge({ source: testNode.id, target: possibleSource, type: 'tests' });
+    const possibleSources = guessSourceFromTestName(testNode.name, testNode.path);
+    const source = possibleSources.find(candidate => graph.hasNode(candidate));
+    if (source) {
+      graph.addEdge({ source: testNode.id, target: source, type: 'tests' });
     }
   }
 }
 
-function guessSourceFromTestName(testName: string, testPath: string): string | null {
+function guessSourceFromTestName(testName: string, testPath: string): string[] {
   const dir = dirname(testPath);
+  const ext = extname(testName);
+  const baseName = basename(testName, ext);
 
-  // foo.test.ts → foo.ts
-  const stripped = testName
-    .replace(/\.test\.[tj]sx?$/, '')
-    .replace(/\.spec\.[tj]sx?$/, '')
+  const stripped = baseName
+    .replace(/\.(test|spec)$/, '')
     .replace(/_test$/, '')
     .replace(/^test_/, '');
 
-  if (!stripped || stripped === testName) return null;
+  if (!stripped || stripped === baseName) return [];
 
-  // Look in same directory
-  const _ext = extname(testName).replace(/^\.test|\.spec/, '');
-  const candidates = [
-    `${dir}/${stripped}.ts`,
-    `${dir}/${stripped}.tsx`,
-    `${dir}/${stripped}.js`,
-    `${dir}/${stripped}.py`,
-    // Look in src/ directory (tests/ folder → src/ mapping)
-    `${dir.replace(/\/?tests?\/?/, '/').replace(/\/?__tests__\/?/, '/')}${stripped}.ts`,
-  ];
+  const sourceDirs = new Set<string>([dir]);
+  if (dir === 'tests' || dir === 'test') {
+    sourceDirs.add('src');
+  } else if (dir.startsWith('tests/') || dir.startsWith('test/')) {
+    sourceDirs.add(`src/${dir.replace(/^tests?\//, '')}`);
+  }
+  if (dir === '__tests__') {
+    sourceDirs.add('.');
+  } else if (dir.includes('/__tests__')) {
+    sourceDirs.add(dir.replace(/\/__tests__(?=\/|$)/, ''));
+  }
+  if (dir.includes('/tests')) {
+    sourceDirs.add(dir.replace(/\/tests(?=\/|$)/, ''));
+  }
 
-  return candidates[0]?.replace(/\\/g, '/') ?? null;
+  const extensions = ext === '.py'
+    ? ['.py']
+    : ['.ts', '.tsx', '.js', '.jsx'];
+
+  const candidates: string[] = [];
+  for (const sourceDir of sourceDirs) {
+    for (const sourceExt of extensions) {
+      const candidate = sourceDir === '.'
+        ? `${stripped}${sourceExt}`
+        : `${sourceDir}/${stripped}${sourceExt}`;
+      candidates.push(candidate.replace(/\\/g, '/').replace(/^\.\//, ''));
+    }
+  }
+
+  return candidates;
 }
 
 // Internal: Helpers
@@ -425,4 +465,3 @@ function computeMetrics(content: string, language: Language): ModuleMetrics {
 
   return { loc, exportCount, importCount, language };
 }
-

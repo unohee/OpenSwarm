@@ -1,9 +1,30 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadRegistry, isMcpTool, registryFromConfigServers, loadEffectiveRegistry, resolveMcpTools } from './mcpClient.js';
+import {
+  loadRegistry,
+  isMcpTool,
+  registryFromConfigServers,
+  loadEffectiveRegistry,
+  resolveMcpTools,
+  initMcpTools,
+  callMcpTool,
+} from './mcpClient.js';
 import type { ToolDefinition } from '../adapters/tools.js';
+
+const clientMock = vi.hoisted(() => ({
+  connect: vi.fn(async () => {}),
+  close: vi.fn(async () => {}),
+  listTools: vi.fn(),
+  callTool: vi.fn(),
+}));
+
+vi.mock('@modelcontextprotocol/sdk/client/index.js', () => ({
+  Client: vi.fn(function MockClient() {
+    return clientMock;
+  }),
+}));
 
 let dir: string | null = null;
 function writeMcpJson(content: unknown): string {
@@ -15,6 +36,10 @@ function writeMcpJson(content: unknown): string {
 afterEach(() => {
   if (dir) rmSync(dir, { recursive: true, force: true });
   dir = null;
+  clientMock.connect.mockClear();
+  clientMock.close.mockClear();
+  clientMock.listTools.mockReset();
+  clientMock.callTool.mockReset();
 });
 
 describe('isMcpTool', () => {
@@ -23,6 +48,9 @@ describe('isMcpTool', () => {
     expect(isMcpTool('fs__read_file')).toBe(true);
     expect(isMcpTool('read_file')).toBe(false);
     expect(isMcpTool('bash')).toBe(false);
+    expect(isMcpTool('__missing_server')).toBe(false);
+    expect(isMcpTool('server__')).toBe(false);
+    expect(isMcpTool('server__bad.name')).toBe(false);
   });
 });
 
@@ -46,7 +74,7 @@ describe('loadRegistry', () => {
   });
 
   it('drops malformed entries and returns {} for a missing file', () => {
-    const p = writeMcpJson({ mcpServers: { bad: { nonsense: true } } });
+    const p = writeMcpJson({ mcpServers: { bad: { nonsense: true }, nullish: null, scalar: 'oops' } });
     expect(loadRegistry(p)).toEqual({});
     expect(loadRegistry(join(tmpdir(), 'does-not-exist-xyz.json'))).toEqual({});
   });
@@ -124,5 +152,39 @@ describe('resolveMcpTools (INT-1951)', () => {
         throw new Error('unreachable');
       }),
     ).toEqual([]);
+  });
+});
+
+describe('initMcpTools / callMcpTool regressions', () => {
+  const registry = { svc: { transport: 'stdio' as const, command: 'mock-mcp' } };
+
+  it('skips invalid MCP tool names before exposing ToolDefinitions', async () => {
+    clientMock.listTools.mockResolvedValue({
+      tools: [
+        { name: 'ok_tool', inputSchema: { type: 'object', properties: {} } },
+        { name: 'bad.tool', inputSchema: { type: 'object', properties: {} } },
+        { name: '', inputSchema: { type: 'object', properties: {} } },
+      ],
+    });
+
+    const defs = await initMcpTools(registry);
+
+    expect(defs.map((d) => d.function.name)).toEqual(['svc__ok_tool']);
+    expect(await callMcpTool('svc__bad.tool', {})).toBe('MCP tool not registered: svc__bad.tool');
+  });
+
+  it('propagates MCP callTool isError responses as tool failures', async () => {
+    clientMock.listTools.mockResolvedValue({
+      tools: [{ name: 'fail_tool', inputSchema: { type: 'object', properties: {} } }],
+    });
+    await initMcpTools(registry);
+    clientMock.callTool.mockResolvedValue({
+      content: [{ type: 'text', text: 'permission denied' }],
+      isError: true,
+    });
+
+    await expect(callMcpTool('svc__fail_tool', {})).resolves.toBe(
+      'MCP error calling svc__fail_tool: permission denied',
+    );
   });
 });

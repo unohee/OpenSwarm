@@ -69,6 +69,8 @@ export interface CliRunOptions {
   bashTimeoutMs?: number;
   /** Expose web_fetch + web_search tools (default true). Set false for SWE-bench integrity. */
   webTools?: boolean;
+  /** Enforce read-only tool exposure/execution where the adapter supports OpenSwarm's tool layer. */
+  readOnly?: boolean;
   /**
    * Expose the file/bash tool set to the agentic loop. Defaults to each adapter's
    * normal behavior (usually on). Set false for plain conversational completion

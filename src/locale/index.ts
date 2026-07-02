@@ -23,6 +23,18 @@ const promptCatalogs: Record<SupportedLocale, PromptTemplates> = {
   ko: koPrompts,
 };
 
+type LocaleLeafKey<T, Prefix extends string = ''> = {
+  [K in Extract<keyof T, string>]:
+    T[K] extends string
+      ? `${Prefix}${K}`
+      : T[K] extends Record<string, unknown>
+        ? LocaleLeafKey<T[K], `${Prefix}${K}.`>
+        : never;
+}[Extract<keyof T, string>];
+
+type LocaleKey = LocaleLeafKey<LocaleMessages>;
+type LocaleLookupKey<K extends string> = K extends LocaleKey ? K : string extends K ? string : never;
+
 // ── Public API ────────────────────────────
 
 /**
@@ -54,7 +66,7 @@ export function getLocale(): SupportedLocale {
  *   t('common.timeAgo.minutesAgo', { n: 5 }) → "5 min ago"
  *   t('discord.errors.sessionNotFound', { name: 'main' })
  */
-export function t(key: string, params?: Record<string, string | number>): string {
+export function t<const K extends string>(key: LocaleLookupKey<K>, params?: Record<string, string | number>): string {
   const value = resolvePath(currentMessages, key);
   if (value === undefined) {
     console.warn(`[Locale] Missing key: "${key}" for locale "${currentLocale}"`);

@@ -461,8 +461,15 @@ async function handleHelp(msg: Message): Promise<void> {
 export async function reportEvent(event: SwarmEvent): Promise<void> {
   if (!client) return;
 
-  const channel = await client.channels.fetch(reportChannelId);
-  if (!channel || !(channel instanceof TextChannel)) return;
+  let channel: TextChannel | null = null;
+  try {
+    const fetched = await client.channels.fetch(reportChannelId);
+    if (!fetched || !(fetched instanceof TextChannel)) return;
+    channel = fetched;
+  } catch (err) {
+    console.error('[Discord] Report event channel fetch failed:', err);
+    return;
+  }
 
   const emoji = {
     issue_started: '🚀',
@@ -497,7 +504,11 @@ export async function reportEvent(event: SwarmEvent): Promise<void> {
     embed.setURL(event.url);
   }
 
-  await channel.send({ embeds: [embed] });
+  try {
+    await channel.send({ embeds: [embed] });
+  } catch (err) {
+    console.error('[Discord] Report event send failed:', err);
+  }
 }
 
 /**
@@ -579,7 +590,10 @@ export async function sendToThread(threadId: string, content: string | EmbedBuil
     if (!thread || !thread.isThread()) return;
 
     if (typeof content === 'string') {
-      await thread.send(content);
+      const chunks = content.length > 1900 ? splitForDiscord(content, 1900) : [content];
+      for (const chunk of chunks) {
+        await thread.send(chunk);
+      }
     } else {
       await thread.send({ embeds: [content] });
     }
@@ -787,4 +801,3 @@ export async function getChatHistory(): Promise<ChatEntry[]> {
     return [];
   }
 }
-

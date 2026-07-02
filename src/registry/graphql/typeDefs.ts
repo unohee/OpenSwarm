@@ -8,27 +8,28 @@ export const registryTypeDefs = /* GraphQL */ `
   extend type Query {
     # 엔티티 조회
     codeEntity(id: ID!): CodeEntity
-    codeEntityByName(qualifiedName: String!): CodeEntity
+    codeEntityByName(qualifiedName: String!, projectId: String): CodeEntity
     codeEntities(filter: CodeEntityFilterInput): CodeEntityConnection!
 
     # 원샷 브리핑 (에이전트 핵심 사용 사례)
-    fileBrief(filePath: String!): FileBrief!
+    fileBrief(filePath: String!, projectId: String): FileBrief!
     registryStats(projectId: String): RegistryStats!
 
     # 특화 쿼리
-    deprecatedEntities(projectId: String): [CodeEntity!]!
-    untestedEntities(projectId: String): [CodeEntity!]!
-    highRiskEntities(projectId: String): [CodeEntity!]!
-    entitiesByTag(tag: String!, value: String): [CodeEntity!]!
-    entityWarnings(severity: WarningSeverity): [EntityWarning!]!
+    deprecatedEntities(projectId: String, limit: Int, offset: Int): [CodeEntity!]!
+    untestedEntities(projectId: String, limit: Int, offset: Int): [CodeEntity!]!
+    highRiskEntities(projectId: String, limit: Int, offset: Int): [CodeEntity!]!
+    entitiesByTag(tag: String!, value: String, projectId: String, limit: Int, offset: Int): [CodeEntity!]!
+    entityWarnings(severity: WarningSeverity, projectId: String, limit: Int, offset: Int): [EntityWarning!]!
 
     # 전문검색
-    searchEntities(query: String!, limit: Int): [CodeEntity!]!
+    searchEntities(query: String!, projectId: String, limit: Int): [CodeEntity!]!
   }
 
   extend type Mutation {
     # 엔티티 CRUD
     registerEntity(input: RegisterEntityInput!): CodeEntity!
+    # 최대 100개
     bulkRegisterEntities(input: [RegisterEntityInput!]!): [CodeEntity!]!
     updateEntity(id: ID!, input: UpdateEntityInput!): CodeEntity
     removeEntity(id: ID!): Boolean!

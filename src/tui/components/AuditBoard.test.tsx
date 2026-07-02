@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { render } from 'ink-testing-library';
 import { EventEmitter } from 'node:events';
+import { act } from 'react';
 import { AuditBoard } from './AuditBoard.js';
 import type { AuditArea, AuditProgress } from '../../cli/reviewAudit.js';
 
@@ -24,16 +25,20 @@ describe('AuditBoard (INT-2006)', () => {
   it('shows a running area row and rolls up the tally on done', async () => {
     const events = new EventEmitter();
     const r = render(<AuditBoard areas={areas} concurrency={2} events={events} />);
-    await tick(); // effect subscribes
+    await act(tick); // effect subscribes
     const emit = (e: AuditProgress) => events.emit('progress', e);
 
-    emit({ type: 'start', label: 'src/a', done: 0, total: 2 });
-    await tick();
+    await act(async () => {
+      emit({ type: 'start', label: 'src/a', done: 0, total: 2 });
+      await tick();
+    });
     expect(r.lastFrame()).toContain('src/a');
 
-    emit({ type: 'done', label: 'src/a', decision: 'approve', done: 1, total: 2 });
-    emit({ type: 'done', label: 'src/b', decision: 'reject', done: 2, total: 2 });
-    await tick();
+    await act(async () => {
+      emit({ type: 'done', label: 'src/a', decision: 'approve', done: 1, total: 2 });
+      emit({ type: 'done', label: 'src/b', decision: 'reject', done: 2, total: 2 });
+      await tick();
+    });
     const f = r.lastFrame()!;
     expect(f).toContain('2/2 areas');
     expect(f).toContain('1 done'); // approve tally
@@ -43,9 +48,11 @@ describe('AuditBoard (INT-2006)', () => {
   it('counts an errored area in the failed tally', async () => {
     const events = new EventEmitter();
     const r = render(<AuditBoard areas={areas} concurrency={2} events={events} />);
-    await tick(); // effect subscribes
-    events.emit('progress', { type: 'error', label: 'src/a', error: 'timeout', done: 1, total: 2 });
-    await tick();
+    await act(tick); // effect subscribes
+    await act(async () => {
+      events.emit('progress', { type: 'error', label: 'src/a', error: 'timeout', done: 1, total: 2 });
+      await tick();
+    });
     expect(r.lastFrame()).toContain('1 failed');
   });
 });

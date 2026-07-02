@@ -261,8 +261,12 @@ function detectLanguage(ext: string): Language | null {
   return EXT_TO_LANGUAGE[ext] ?? null;
 }
 
-function isTestFile(name: string, language: Language): boolean {
-  return LANGUAGE_CONFIGS[language].testPatterns.some(p => p.test(name));
+function isTestFile(filePath: string, language: Language): boolean {
+  const normalized = filePath.replace(/\\/g, '/');
+  if (/(^|\/)(?:__tests__|tests?|spec)\//.test(normalized)) return true;
+
+  const name = normalized.split('/').pop() ?? normalized;
+  return LANGUAGE_CONFIGS[language].testPatterns.some(p => p.test(name) || p.test(normalized));
 }
 
 // ============ 추출된 엔티티 정보 ============
@@ -586,9 +590,9 @@ function isNearbyTest(sourceFile: string, testFile: string): boolean {
     .replace(/Test\.[^.]+$/, '')
     .replace(/Tests\.[^.]+$/, '');
 
-  // 파일명 매칭 (확장자 제외)
+  // 파일명 매칭 (확장자 제외) — Python 등의 test_ 접두사 관례도 처리
   const srcName = sourceBase.split('/').pop();
-  const tstName = testBase.split('/').pop();
+  const tstName = testBase.split('/').pop()?.replace(/\.[^.]+$/, '').replace(/^test_/, '');
   if (srcName && tstName && srcName === tstName) return true;
 
   if (sourceDir === testDir) return true;
@@ -633,6 +637,7 @@ export async function scanRepository(
   const testFiles: TestFileInfo[] = [];
   const errors: string[] = [];
   const languageBreakdown: Record<string, number> = {};
+  const scannedSourceFiles = new Set<string>();
   let scannedFiles = 0;
 
   async function walk(dirPath: string, relPath: string, depth: number): Promise<void> {
@@ -674,9 +679,10 @@ export async function scanRepository(
         try {
           const content = await readFile(fullPath, 'utf-8');
 
-          if (isTestFile(entry.name, language)) {
+          if (isTestFile(entryRelPath, language)) {
             testFiles.push(parseTestFile(content, entryRelPath, language));
           } else {
+            scannedSourceFiles.add(entryRelPath);
             const entities = extractEntities(content, entryRelPath, language);
             allExtracted.push(...entities);
             scannedFiles++;
@@ -775,7 +781,21 @@ export async function scanRepository(
   // 사라진 엔티티 → broken
   let removed = 0;
   for (const [qName, entity] of existingByQName) {
-    if (!extractedQNames.has(qName) && entity.author === 'scanner' && entity.status === 'active') {
+    if (extractedQNames.has(qName) || entity.author !== 'scanner' || entity.status !== 'active') {
+      continue;
+    }
+
+    const sourceFileScanned = scannedSourceFiles.has(entity.filePath);
+    let sourceFileMissing = false;
+    if (!sourceFileScanned) {
+      try {
+        await stat(join(projectPath, entity.filePath));
+      } catch {
+        sourceFileMissing = true;
+      }
+    }
+
+    if (sourceFileScanned || sourceFileMissing) {
       store.changeEntityStatus(entity.id, 'broken', 'scanner');
       removed++;
     }

@@ -33,6 +33,10 @@ interface TelemetryState {
   noticeShown?: boolean;
 }
 
+function isValidInstallId(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{21}$/.test(value);
+}
+
 // Set once from the CLI/daemon entry point so the module need not resolve
 // package.json itself (its dist location is ambiguous).
 let version = 'unknown';
@@ -80,7 +84,7 @@ export function isTelemetryEnabled(): boolean {
 
 function getInstallId(): string {
   const state = readState();
-  if (state?.installId) return state.installId;
+  if (isValidInstallId(state?.installId)) return state.installId;
   const installId = nanoid();
   writeState({ installId, noticeShown: state?.noticeShown });
   return installId;
@@ -126,17 +130,24 @@ export interface TelemetryPayload {
   isError: 0 | 1;
 }
 
+function sanitizeTelemetryLabel(value: string | undefined, fallback?: string): string | undefined {
+  if (!value) return fallback;
+  const normalized = value.trim().toLowerCase();
+  if (/^[a-z][a-z0-9:_-]{0,39}$/.test(normalized)) return normalized;
+  return fallback;
+}
+
 /** Build the payload (pure — used directly by tests to assert the privacy contract). */
 export function buildPayload(opts: TrackOptions, installId: string): TelemetryPayload {
   return {
     installId,
-    event: opts.event ?? 'invoke',
+    event: sanitizeTelemetryLabel(opts.event, 'invoke') ?? 'invoke',
     version,
     platform: os.platform(),
     arch: os.arch(),
     nodeVersion: process.versions.node,
-    command: opts.command,
-    adapter: opts.adapter,
+    command: sanitizeTelemetryLabel(opts.command),
+    adapter: sanitizeTelemetryLabel(opts.adapter),
     isError: opts.isError ? 1 : 0,
   };
 }
@@ -154,6 +165,9 @@ export async function track(opts: TrackOptions): Promise<void> {
     const endpoint = process.env.OPENSWARM_TELEMETRY_URL || DEFAULT_ENDPOINT;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);
+    if (typeof timer === 'object' && timer !== null && 'unref' in timer && typeof timer.unref === 'function') {
+      timer.unref();
+    }
     try {
       await fetch(endpoint, {
         method: 'POST',

@@ -17,6 +17,10 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { searchRepoMemoryText } from '../memory/repoKnowledge.js';
 
+// MCP stdio reserves stdout for protocol frames. Keep all console.log output on
+// stderr for this process lifetime instead of patching/restoring it per request.
+console.log = (...args: unknown[]) => console.error(...args);
+
 const SEARCH_TOOL = {
   name: 'search_memory',
   description:

@@ -4,7 +4,7 @@
 // ============================================
 
 import { Cron } from 'croner';
-import { LinearClient } from '@linear/sdk';
+import { LinearClient, type Project } from '@linear/sdk';
 import { postStatusUpdate } from '../linear/index.js';
 
 let cronJob: Cron | null = null;
@@ -97,8 +97,13 @@ export async function generateDailyReports(): Promise<void> {
       return;
     }
 
-    const projects = await team.projects({ first: 50 });
-    const activeProjects = projects.nodes.filter(p => p.state !== 'canceled');
+    const activeProjects: Project[] = [];
+    let after: string | undefined;
+    do {
+      const projects = await team.projects({ first: 50, after });
+      activeProjects.push(...projects.nodes.filter(p => p.state !== 'canceled'));
+      after = projects.pageInfo.hasNextPage ? projects.pageInfo.endCursor ?? undefined : undefined;
+    } while (after);
 
     if (activeProjects.length === 0) {
       console.log('[DailyReporter] No active projects found');

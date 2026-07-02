@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { mapLinearProject, clearMappingCache } from './projectMapper.js';
+import { mapLinearProject, scanLocalProjects, clearMappingCache } from './projectMapper.js';
 import { REPO_METADATA_FILENAME } from './repoMetadata.js';
 
 const LINEAR_PROJECT_ID = 'c49a99e6-e420-463d-9c9a-ca5ee1fa51c2';
@@ -77,5 +77,38 @@ describe('mapLinearProject — explicit openswarm.json mapping', () => {
       [base],
     );
     expect(result).toBeNull();
+  });
+
+  it('keys local project scan cache by basePaths', async () => {
+    const otherBase = mkdtempSync(join(tmpdir(), 'openswarm-mapper-other-'));
+    try {
+      const first = makeRepo(base, 'first-repo');
+      const second = makeRepo(otherBase, 'second-repo');
+
+      expect((await scanLocalProjects([base])).map((p) => p.path)).toContain(first);
+      expect((await scanLocalProjects([otherBase])).map((p) => p.path)).toContain(second);
+      expect((await scanLocalProjects([otherBase])).map((p) => p.path)).not.toContain(first);
+    } finally {
+      rmSync(otherBase, { recursive: true, force: true });
+    }
+  });
+
+  it('keys Linear mapping cache by basePaths', async () => {
+    const otherBase = mkdtempSync(join(tmpdir(), 'openswarm-mapper-other-'));
+    try {
+      const first = makeRepo(base, 'shared-name', {
+        schemaVersion: 1,
+        linear: { projectId: LINEAR_PROJECT_ID },
+      });
+      const second = makeRepo(otherBase, 'shared-name', {
+        schemaVersion: 1,
+        linear: { projectId: LINEAR_PROJECT_ID },
+      });
+
+      await expect(mapLinearProject(LINEAR_PROJECT_ID, 'shared-name', [base])).resolves.toBe(first);
+      await expect(mapLinearProject(LINEAR_PROJECT_ID, 'shared-name', [otherBase])).resolves.toBe(second);
+    } finally {
+      rmSync(otherBase, { recursive: true, force: true });
+    }
   });
 });

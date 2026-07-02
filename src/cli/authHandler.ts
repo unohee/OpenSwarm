@@ -3,7 +3,7 @@
 // `openswarm auth login/status/logout`
 // ============================================
 
-import { createInterface } from 'node:readline';
+import { password } from '@inquirer/prompts';
 import { AuthProfileStore, ensureValidToken } from '../auth/index.js';
 import {
   loginAndSaveProfile,
@@ -105,17 +105,16 @@ async function loginOpenRouter(opts: AuthLoginOpts): Promise<void> {
 }
 
 function promptForApiKey(): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
-    rl.question('OpenRouter API key (sk-or-...): ', (answer) => {
-      rl.close();
-      const trimmed = answer.trim();
-      if (!trimmed) {
-        reject(new Error('빈 키가 입력되었습니다.'));
-        return;
-      }
-      resolve(trimmed);
-    });
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new Error('비대화형 환경에서는 --api-key 또는 OPENROUTER_API_KEY를 사용하세요.');
+  }
+
+  return password({ message: 'OpenRouter API key (hidden):' }).then((answer) => {
+    const trimmed = answer.trim();
+    if (!trimmed) {
+      throw new Error('빈 키가 입력되었습니다.');
+    }
+    return trimmed;
   });
 }
 

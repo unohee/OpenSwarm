@@ -6,6 +6,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { existsSync, rmSync } from 'node:fs';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 import { registerOwnedPR } from '../automation/prOwnership.js';
 import { runConventionalCommitGuard } from '../agents/pipelineGuards.js';
 
@@ -46,6 +47,37 @@ export function buildBranchName(issueIdentifier: string, title: string): string 
   return `swarm/${issueIdentifier}-${slug}`;
 }
 
+function isPathInside(parent: string, child: string): boolean {
+  const rel = relative(parent, child);
+  return rel === '' || (!!rel && !rel.startsWith('..') && !isAbsolute(rel));
+}
+
+function worktreeRoot(repoPath: string): string {
+  return resolve(repoPath, 'worktree');
+}
+
+function resolveWorktreePath(repoPath: string, issueId: string): string {
+  if (!/^[A-Za-z0-9._-]+$/.test(issueId) || issueId === '.' || issueId === '..') {
+    throw new Error(`Invalid worktree issueId path segment: ${issueId}`);
+  }
+
+  const root = worktreeRoot(repoPath);
+  const path = resolve(join(root, issueId));
+  if (!isPathInside(root, path)) {
+    throw new Error(`Resolved worktree path escapes ${root}: ${path}`);
+  }
+  return path;
+}
+
+function assertManagedWorktreePath(repoPath: string, worktreePath: string): string {
+  const root = worktreeRoot(repoPath);
+  const path = resolve(worktreePath);
+  if (!isPathInside(root, path)) {
+    throw new Error(`Refusing to remove unmanaged worktree path: ${path}`);
+  }
+  return path;
+}
+
 // Worktree Lifecycle
 
 /** Create git worktree + checkout branch */
@@ -54,7 +86,7 @@ export async function createWorktree(
   issueId: string,
   branchName: string,
 ): Promise<WorktreeInfo> {
-  const worktreePath = `${repoPath}/worktree/${issueId}`;
+  const worktreePath = resolveWorktreePath(repoPath, issueId);
 
   // Clean up existing worktree (retry case)
   if (existsSync(worktreePath)) {
@@ -103,10 +135,6 @@ export async function commitAndCreatePR(
     await git(worktreePath, 'add', '-A');
     const commitMsg = [
       `feat(${issueIdentifier}): ${title.slice(0, 72)}`,
-      '',
-      '🤖 Generated with OpenSwarm',
-      '',
-      'Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>',
     ].join('\n');
 
     // Validate conventional commit format (warning only)
@@ -182,13 +210,14 @@ export async function commitAndCreatePR(
 
 /** Clean up worktree */
 export async function removeWorktree(info: WorktreeInfo): Promise<void> {
+  const worktreePath = assertManagedWorktreePath(info.originalPath, info.worktreePath);
   try {
-    await git(info.originalPath, 'worktree', 'remove', '--force', info.worktreePath);
-    console.log(`[Worktree] Removed: ${info.worktreePath}`);
+    await git(info.originalPath, 'worktree', 'remove', '--force', worktreePath);
+    console.log(`[Worktree] Removed: ${worktreePath}`);
   } catch {
     // fallback: direct removal
-    rmSync(info.worktreePath, { recursive: true, force: true });
-    console.log(`[Worktree] Force removed: ${info.worktreePath}`);
+    rmSync(worktreePath, { recursive: true, force: true });
+    console.log(`[Worktree] Force removed: ${worktreePath}`);
   }
 }
 

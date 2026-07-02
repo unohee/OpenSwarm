@@ -260,14 +260,15 @@ export async function saveSession(
   const date = new Date(session.startedAt);
   const { monthDir, prefix } = getDatePaths(date);
   const slug = slugify(session.title);
+  const sessionSuffix = slugify(session.id || String(session.startedAt)).slice(0, 12);
 
   // Create monthly directory
   const monthPath = join(CODEX_DIR, monthDir);
   await fs.mkdir(monthPath, { recursive: true });
 
   // File paths
-  const summaryFilename = `${prefix.split('-')[0]}-${slug}.md`;
-  const detailFilename = `${prefix}-${slug}.md`;
+  const summaryFilename = `${prefix}-${slug}-${sessionSuffix}.md`;
+  const detailFilename = `${prefix}-${slug}-${sessionSuffix}.md`;
 
   const summaryPath = join(monthPath, summaryFilename);
   const detailPath = join(CODEX_DIR, '.sessions', detailFilename);

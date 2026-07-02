@@ -11,6 +11,13 @@ import {
   topologicalSort,
 } from '../orchestration/workflow.js';
 
+const LINEAR_BLOCK_LIMIT = 3000;
+const LINEAR_INLINE_LIMIT = 500;
+
+function truncateForLinear(value: string, limit: number): string {
+  return value.length > limit ? `${value.slice(0, limit)}\n... (truncated)` : value;
+}
+
 // Types
 
 export interface LinearWorkflowOptions {
@@ -191,17 +198,14 @@ export function stepResultToComment(result: StepResult): string {
   if (result.output) {
     parts.push('### Output');
     parts.push('```');
-    parts.push(result.output.slice(0, 3000));  // Linear comment length limit
-    if (result.output.length > 3000) {
-      parts.push('... (truncated)');
-    }
+    parts.push(truncateForLinear(result.output, LINEAR_BLOCK_LIMIT));
     parts.push('```');
   }
 
   if (result.error) {
     parts.push('### Error');
     parts.push('```');
-    parts.push(result.error);
+    parts.push(truncateForLinear(result.error, LINEAR_BLOCK_LIMIT));
     parts.push('```');
   }
 
@@ -282,7 +286,7 @@ export function createExecutionSummary(execution: WorkflowExecution): {
     parts.push('### Failures');
     for (const [stepId, result] of Object.entries(execution.stepResults)) {
       if (result.status === 'failed' && result.error) {
-        parts.push(`- **${stepId}:** ${result.error}`);
+        parts.push(`- **${stepId}:** ${truncateForLinear(result.error, LINEAR_INLINE_LIMIT)}`);
       }
     }
   }

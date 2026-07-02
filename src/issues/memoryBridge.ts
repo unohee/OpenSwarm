@@ -163,14 +163,24 @@ export async function enrichIssueContext(
   const similarIssues: Issue[] = [];
 
   if (searchTerms.length > 0) {
-    const { issues } = store.listIssues({
-      search: searchTerms.join(' OR '),
-      limit: 5,
-      offset: 0,
-    });
-    for (const si of issues) {
-      if (si.id !== issue.id) {
-        similarIssues.push(si);
+    const seen = new Set<string>([issue.id]);
+    for (const term of searchTerms) {
+      const { issues } = store.listIssues({
+        search: term,
+        limit: 5,
+        offset: 0,
+      });
+      for (const si of issues) {
+        if (!seen.has(si.id)) {
+          seen.add(si.id);
+          similarIssues.push(si);
+        }
+        if (similarIssues.length >= 5) {
+          break;
+        }
+      }
+      if (similarIssues.length >= 5) {
+        break;
       }
     }
   }
@@ -189,11 +199,15 @@ export async function digestRecentEvents(
   const events = store.getRecentEvents(limit);
   if (events.length === 0) return 0;
 
-  // 패턴 분석: 반복 블로킹
-  const blockEvents = events.filter((e) => e.type === 'status_changed' && e.newValue === 'blocked');
+  // 패턴 분석: 반복 블로킹. IssueStatus에는 blocked가 없으므로,
+  // 로컬 자동화가 실제로 남기는 blocked/stuck 코멘트 이벤트를 기준으로 본다.
+  const blockEvents = events.filter((e) => (
+    e.type === 'commented'
+    && (/\b(blocked|stuck)\b/i.test(e.content ?? '') || /블로킹|차단/.test(e.content ?? ''))
+  ));
   if (blockEvents.length >= 3) {
     const reasons = blockEvents
-      .map((e) => e.content || e.oldValue || '')
+      .map((e) => e.content || '')
       .filter(Boolean);
 
     if (reasons.length > 0) {

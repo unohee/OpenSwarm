@@ -315,6 +315,30 @@ describe('Safety guards (isCommandBlocked via bash)', () => {
     // Should not be blocked (may still fail for other reasons, but not BLOCKED)
     expect(result.content).not.toContain('BLOCKED');
   });
+
+  it('refuses mutation and shell tools in read-only mode', async () => {
+    const filePath = path.join(TMP_DIR, 'readonly-target.txt');
+    await fs.writeFile(filePath, 'keep', 'utf-8');
+
+    const write = await executeTool(
+      makeCall('write_file', { path: filePath, content: 'changed' }),
+      TMP_DIR,
+      undefined,
+      { readOnly: true },
+    );
+    const bash = await executeTool(
+      makeCall('bash', { command: 'echo changed > readonly-target.txt' }),
+      TMP_DIR,
+      undefined,
+      { readOnly: true },
+    );
+
+    expect(write.is_error).toBe(true);
+    expect(write.content).toContain('READ_ONLY');
+    expect(bash.is_error).toBe(true);
+    expect(bash.content).toContain('READ_ONLY');
+    await expect(fs.readFile(filePath, 'utf-8')).resolves.toBe('keep');
+  });
 });
 
 // ──────────────────────────────────────────────

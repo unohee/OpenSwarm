@@ -22,6 +22,18 @@ describe('buildSubagentTree (EPIC INT-1813 S7)', () => {
     expect(buildSubagentTree([s('t', 'a', 'complete'), s('t', 'b', 'start')])[0].status).toBe('start');
   });
 
+  it('rolls up from the latest status for each stage', () => {
+    const tree = buildSubagentTree([
+      s('t', 'worker', 'start'),
+      s('t', 'worker', 'complete'),
+      s('t', 'reviewer', 'start'),
+      s('t', 'reviewer', 'complete'),
+    ]);
+
+    expect(tree[0].status).toBe('complete');
+    expect(tree[0].stages.map((x) => `${x.stage}:${x.status}`)).toEqual(['worker:complete', 'reviewer:complete']);
+  });
+
   it('returns an empty tree for no stages', () => {
     expect(buildSubagentTree([])).toEqual([]);
   });

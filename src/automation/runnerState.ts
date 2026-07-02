@@ -5,14 +5,14 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, isAbsolute, relative, sep } from 'node:path';
 import type { TaskItem } from '../orchestration/decisionEngine.js';
 
 /** Check if a resolved path matches or is under any enabled project path */
 export function isPathEnabled(resolvedPath: string, enabledProjects: Set<string>): boolean {
-  if (enabledProjects.has(resolvedPath)) return true;
   for (const enabled of enabledProjects) {
-    if (resolvedPath.startsWith(enabled + '/')) return true;
+    const rel = relative(enabled, resolvedPath);
+    if (rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))) return true;
   }
   return false;
 }
@@ -55,6 +55,10 @@ function ensurePaceDir(): void {
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
   }
+}
+
+function ensureParentDir(file: string): void {
+  mkdirSync(dirname(file), { recursive: true });
 }
 
 function ensurePaceLoaded(): PaceState {
@@ -104,7 +108,7 @@ export function loadProjectSelection(file: string = PROJECT_SELECTION_FILE): Pro
 
 export function saveProjectSelection(sel: ProjectSelection, file: string = PROJECT_SELECTION_FILE): void {
   try {
-    mkdirSync(dirname(file), { recursive: true });
+    ensureParentDir(file);
     writeFileSync(file, JSON.stringify(sel, null, 2), 'utf8');
   } catch (err) {
     console.warn('[ProjectSelection] Failed to save:', err);
@@ -217,6 +221,7 @@ export function saveTaskState(state: TaskState): void {
       retryTimes: Object.fromEntries(state.failedTaskRetryTimes),
       updatedAt: new Date().toISOString(),
     };
+    ensureParentDir(TASK_STATE_FILE);
     writeFileSync(TASK_STATE_FILE, JSON.stringify(data, null, 2), 'utf8');
   } catch (err) {
     console.warn('[AutonomousRunner] Failed to save task state:', err);
@@ -303,6 +308,7 @@ export function incrementRejection(issueId: string, reason: string): number {
 
   // Persist to disk
   try {
+    ensureParentDir(REJECTION_STATE_FILE);
     writeFileSync(REJECTION_STATE_FILE, JSON.stringify(state, null, 2), 'utf8');
   } catch (err) {
     console.warn('[RejectionState] Failed to save:', err);
@@ -317,6 +323,7 @@ export function clearRejection(issueId: string): void {
   state.updatedAt = new Date().toISOString();
 
   try {
+    ensureParentDir(REJECTION_STATE_FILE);
     writeFileSync(REJECTION_STATE_FILE, JSON.stringify(state, null, 2), 'utf8');
   } catch (err) {
     console.warn('[RejectionState] Failed to save:', err);
@@ -409,6 +416,7 @@ function resetDailyCounterIfNeeded(): void {
     state.dailyCreationDate = today;
     state.updatedAt = new Date().toISOString();
     try {
+      ensureParentDir(DECOMPOSITION_STATE_FILE);
       writeFileSync(DECOMPOSITION_STATE_FILE, JSON.stringify(state, null, 2), 'utf8');
     } catch (err) {
       console.warn('[DecompositionState] Failed to persist daily reset:', err);
@@ -467,6 +475,7 @@ export function registerDecomposition(
 
   // Persist to disk
   try {
+    ensureParentDir(DECOMPOSITION_STATE_FILE);
     writeFileSync(DECOMPOSITION_STATE_FILE, JSON.stringify(state, null, 2), 'utf8');
   } catch (err) {
     console.warn('[DecompositionState] Failed to save:', err);
@@ -500,6 +509,7 @@ export function appendPipelineHistory(entry: PipelineHistoryEntry): void {
     history.length = MAX_PIPELINE_HISTORY;
   }
   try {
+    ensureParentDir(PIPELINE_HISTORY_FILE);
     writeFileSync(PIPELINE_HISTORY_FILE, JSON.stringify(history, null, 2), 'utf8');
   } catch (err) {
     console.warn('[PipelineHistory] Failed to save:', err);

@@ -8,7 +8,8 @@
 // `openswarm status` reports running/stopped plus port 3847 health.
 
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync, statSync } from 'node:fs';
+import type { ChildProcess } from 'node:child_process';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -57,6 +58,10 @@ function resolveIndexPath(): string {
   return resolve(here, '..', 'index.js');
 }
 
+function closeFdQuietly(fd: number): void {
+  try { closeSync(fd); } catch { /* ignore */ }
+}
+
 /**
  * Start the service as a detached background process.
  * Returns the child PID on success.
@@ -86,19 +91,27 @@ export function startDaemon(): { pid: number; logFile: string } {
   // are interleaved in order.
   const logFd = openSync(LOG_FILE, 'a');
 
-  const child = spawn(process.execPath, [indexPath], {
-    detached: true,
-    stdio: ['ignore', logFd, logFd],
-    // Run from the user's home so relative paths in the service don't depend
-    // on the shell that invoked `openswarm start`.
-    cwd: homedir(),
-    env: { ...process.env, OPENSWARM_DAEMON: '1' },
-  });
+  let child: ChildProcess;
+  try {
+    child = spawn(process.execPath, [indexPath], {
+      detached: true,
+      stdio: ['ignore', logFd, logFd],
+      // Run from the user's home so relative paths in the service don't depend
+      // on the shell that invoked `openswarm start`.
+      cwd: homedir(),
+      env: { ...process.env, OPENSWARM_DAEMON: '1' },
+    });
+  } catch (err) {
+    closeFdQuietly(logFd);
+    throw err;
+  }
 
   if (child.pid === undefined) {
+    closeFdQuietly(logFd);
     throw new Error('Failed to spawn daemon process (no pid assigned).');
   }
 
+  closeFdQuietly(logFd);
   writeFileSync(PID_FILE, String(child.pid), { mode: 0o644 });
 
   // Let the child outlive this process.

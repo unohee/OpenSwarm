@@ -59,9 +59,29 @@ export const OpenSwarmTaskStateSchema = z.object({
   updatedAt: z.string(),
 });
 
+function createTaskMap(
+  entries: Iterable<[string, z.infer<typeof OpenSwarmTaskStateSchema>]> = [],
+): Record<string, z.infer<typeof OpenSwarmTaskStateSchema>> {
+  const tasks: Record<string, z.infer<typeof OpenSwarmTaskStateSchema>> = Object.create(null);
+  for (const [issueId, state] of entries) {
+    tasks[issueId] = state;
+  }
+  return tasks;
+}
+
 const TaskStateStoreSchema = z.object({
   version: z.literal(1).default(1),
-  tasks: z.record(z.string(), OpenSwarmTaskStateSchema).default({}),
+  tasks: z.preprocess(
+    (value) => {
+      if (value === undefined) return [];
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        return Object.entries(value as Record<string, unknown>);
+      }
+      return value;
+    },
+    z.array(z.tuple([z.string(), OpenSwarmTaskStateSchema]))
+      .transform((entries) => createTaskMap(entries))
+  ).default(() => createTaskMap()),
   updatedAt: z.string(),
 });
 
@@ -79,24 +99,34 @@ function ensureStoreLoaded(): TaskStateStore {
   if (cache) return cache;
 
   const path = getStorePath();
-  try {
-    if (existsSync(path)) {
-      const parsed = TaskStateStoreSchema.safeParse(JSON.parse(readFileSync(path, 'utf8')));
-      if (parsed.success) {
-        cache = parsed.data;
-        return cache;
-      }
+  if (existsSync(path)) {
+    let data: unknown;
+    try {
+      data = JSON.parse(readFileSync(path, 'utf8'));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Task state store is corrupt at ${path}: ${message}`);
     }
-  } catch {
-    // Fall back to empty store.
+
+    const parsed = TaskStateStoreSchema.safeParse(data);
+    if (!parsed.success) {
+      throw new Error(`Task state store is invalid at ${path}: ${parsed.error.message}`);
+    }
+
+    cache = parsed.data;
+    return cache;
   }
 
   cache = {
     version: 1,
-    tasks: {},
+    tasks: createTaskMap(),
     updatedAt: new Date().toISOString(),
   };
   return cache;
+}
+
+export function resetTaskStateStoreForTests(): void {
+  cache = null;
 }
 
 function persistStore(): void {
@@ -135,9 +165,13 @@ export function listTaskStates(): OpenSwarmTaskState[] {
 export function upsertTaskState(issueId: string, patch: Partial<OpenSwarmTaskState>): OpenSwarmTaskState {
   const store = ensureStoreLoaded();
   const current = store.tasks[issueId] || createDefaultState(issueId);
+  const { execution, worktree, ...topLevelPatch } = patch;
+  const definedTopLevelPatch = Object.fromEntries(
+    Object.entries(topLevelPatch).filter(([, value]) => value !== undefined)
+  ) as Partial<OpenSwarmTaskState>;
   const merged: OpenSwarmTaskState = {
     ...current,
-    ...patch,
+    ...definedTopLevelPatch,
     issueId,
     childIssueIds: patch.childIssueIds ?? current.childIssueIds ?? [],
     dependencyIssueIds: patch.dependencyIssueIds ?? current.dependencyIssueIds ?? [],
@@ -145,11 +179,11 @@ export function upsertTaskState(issueId: string, patch: Partial<OpenSwarmTaskSta
     fileScope: patch.fileScope ?? current.fileScope ?? [],
     execution: {
       ...current.execution,
-      ...(patch.execution),
+      ...(execution),
     },
     worktree: {
       ...current.worktree,
-      ...(patch.worktree),
+      ...(worktree),
     },
     updatedAt: new Date().toISOString(),
   };
@@ -176,15 +210,19 @@ export function enrichTaskFromState(task: TaskItem): TaskItem {
 
 export function updateTaskLinearState(issueId: string, linearState: string): OpenSwarmTaskState {
   // R5: reconcile stale local execution status against Linear (the source of
-  // truth). If an operator parked an issue (Backlog) or it was completed/
-  // cancelled externally while we still hold 'in_progress', the local state is
-  // stale — downgrade it so the issue isn't treated as actively running. This is
-  // a local-only update; it never writes back to Linear (preserves R7).
+  // truth). If Linear parks, reopens, or completes an issue while local state is
+  // stale, downgrade it so dependencies do not stay incorrectly resolved or
+  // actively running. This is a local-only update; it never writes back to
+  // Linear (preserves R7).
   const patch: Partial<OpenSwarmTaskState> = { linearState };
   const current = getTaskState(issueId);
-  if (current?.execution.status === 'in_progress') {
+  if (current?.execution.status === 'in_progress' || current?.execution.status === 'done') {
     if (linearState === 'Done') {
       patch.execution = { ...current.execution, status: 'done' };
+    } else if (linearState === 'In Progress') {
+      patch.execution = { ...current.execution, status: 'in_progress' };
+    } else if (linearState === 'Todo') {
+      patch.execution = { ...current.execution, status: 'todo' };
     } else if (linearState === 'Backlog' || linearState === 'Canceled' || linearState === 'Cancelled') {
       patch.execution = { ...current.execution, status: 'backlog' };
     }
@@ -462,14 +500,50 @@ export function parseTaskStateSyncComment(body: string): OpenSwarmTaskState | nu
   }
 }
 
+type TaskStateSyncComment = {
+  body: string;
+  createdAt?: string;
+  user?: string;
+  author?: string;
+  source?: string;
+};
+
+function trustedSyncCommentUsers(): Set<string> {
+  return new Set(
+    (process.env.OPENSWARM_TASK_STATE_TRUSTED_COMMENT_USERS || '')
+      .split(',')
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean)
+  );
+}
+
+function isTrustedTaskStateSyncComment(comment: TaskStateSyncComment): boolean {
+  if (!comment.body.includes(TASK_STATE_MARKER)) return false;
+  if (!comment.body.startsWith('🧭 **[OpenSwarm] ')) return false;
+
+  if (comment.source === 'openswarm') return true;
+
+  // The Linear fetcher does not resolve comment authors yet (user: undefined) —
+  // when no author info exists at all, fall back to the marker/prefix checks
+  // above (status quo) instead of silently dropping every sync comment.
+  if (comment.user === undefined && comment.author === undefined && comment.source === undefined) return true;
+
+  const author = (comment.user || comment.author || '').trim().toLowerCase();
+  if (!author) return false;
+
+  if (trustedSyncCommentUsers().has(author)) return true;
+  return author.includes('openswarm') || author.includes('open swarm');
+}
+
 export function hydrateTaskStateFromComments(
   issueId: string,
-  comments: Array<{ body: string; createdAt?: string }> = [],
+  comments: TaskStateSyncComment[] = [],
 ): OpenSwarmTaskState | undefined {
   const latest = [...comments]
     .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
+    .filter(isTrustedTaskStateSyncComment)
     .map((comment) => parseTaskStateSyncComment(comment.body))
-    .find((state): state is OpenSwarmTaskState => Boolean(state));
+    .find((state): state is OpenSwarmTaskState => state !== null && state.issueId === issueId);
 
   if (!latest) return undefined;
 

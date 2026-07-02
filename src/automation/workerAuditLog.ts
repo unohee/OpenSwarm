@@ -22,10 +22,14 @@ function cap(s: string | undefined, n: number): string {
   return trimmed.length > n ? `${trimmed.slice(0, n - 1)}…` : trimmed;
 }
 
+function inlineCode(s: string): string {
+  return `\`${s.replaceAll('`', '\\`')}\``;
+}
+
 /** Render a list as inline code, capped, with an "+N more" suffix when truncated. */
 function codeList(items: string[] | undefined, max: number): string {
   if (!items || items.length === 0) return '_(none)_';
-  const shown = items.slice(0, max).map((i) => `\`${i}\``).join(', ');
+  const shown = items.slice(0, max).map(inlineCode).join(', ');
   const extra = items.length - max;
   return extra > 0 ? `${shown} _+${extra} more_` : shown;
 }

@@ -276,18 +276,20 @@ export function fuzzyMatch(
 
   // Match after whitespace normalization
   const normalizedSearch = normalizeWhitespace(searchText);
-  const normalizedContent = normalizeWhitespace(fileContent);
+  const normalizedContent = normalizeWhitespaceWithMap(fileContent);
 
-  const normalizedIndex = normalizedContent.indexOf(normalizedSearch);
+  const normalizedIndex = normalizedSearch.length > 0
+    ? normalizedContent.text.indexOf(normalizedSearch)
+    : -1;
   if (normalizedIndex !== -1) {
-    // Find position in original (approximate)
-    const ratio = normalizedIndex / normalizedContent.length;
-    const approxStart = Math.floor(ratio * fileContent.length);
+    const normalizedEnd = normalizedIndex + normalizedSearch.length;
+    const start = normalizedContent.offsets[normalizedIndex];
+    const end = normalizedContent.offsets[normalizedEnd - 1] + 1;
 
     return {
       found: true,
-      start: approxStart,
-      end: approxStart + searchText.length,
+      start,
+      end,
       similarity: 0.95,
     };
   }
@@ -315,11 +317,49 @@ export function fuzzyMatch(
  * Normalize whitespace
  */
 function normalizeWhitespace(text: string): string {
-  return text
-    .split('\n')
-    .map(line => line.trimStart())
-    .join('\n')
-    .replace(/\s+/g, ' ');
+  return normalizeWhitespaceWithMap(text).text;
+}
+
+function normalizeWhitespaceWithMap(text: string): { text: string; offsets: number[] } {
+  const chars: string[] = [];
+  const offsets: number[] = [];
+  const lines = text.split('\n');
+  let lineStart = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (i > 0) {
+      chars.push('\n');
+      offsets.push(lineStart - 1);
+    }
+
+    const trimmedStart = line.length - line.trimStart().length;
+    for (let j = trimmedStart; j < line.length; j++) {
+      chars.push(line[j]);
+      offsets.push(lineStart + j);
+    }
+    lineStart += line.length + 1;
+  }
+
+  const normalized: string[] = [];
+  const normalizedOffsets: number[] = [];
+  let inWhitespace = false;
+  for (let i = 0; i < chars.length; i++) {
+    if (/\s/.test(chars[i])) {
+      if (!inWhitespace) {
+        normalized.push(' ');
+        normalizedOffsets.push(offsets[i]);
+      }
+      inWhitespace = true;
+      continue;
+    }
+
+    normalized.push(chars[i]);
+    normalizedOffsets.push(offsets[i]);
+    inWhitespace = false;
+  }
+
+  return { text: normalized.join(''), offsets: normalizedOffsets };
 }
 
 /**

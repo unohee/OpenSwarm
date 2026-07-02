@@ -5,9 +5,10 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { resolve } from 'node:path';
+import { isAbsolute, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import * as fs from 'node:fs/promises';
+import { z } from 'zod';
 
 const execFileAsync = promisify(execFile);
 
@@ -47,12 +48,44 @@ export type RollbackStrategy = 'reset_hard' | 'reset_soft' | 'stash' | 'checkout
 
 const CHECKPOINT_DIR = resolve(homedir(), '.openswarm/checkpoints');
 
+const CheckpointSchema = z.object({
+  id: z.string().min(1),
+  executionId: z.string().min(1),
+  projectPath: z.string().min(1),
+  createdAt: z.number().finite(),
+  commitHash: z.string().regex(/^[0-9a-f]{7,40}$/i),
+  stashId: z.string().optional(),
+  branchName: z.string().min(1),
+  description: z.string().default(''),
+});
+
+function isPathInside(parent: string, child: string): boolean {
+  const rel = relative(parent, child);
+  return rel === '' || (!!rel && !rel.startsWith('..') && !isAbsolute(rel));
+}
+
+function checkpointFilePath(checkpointId: string): string {
+  if (!/^[A-Za-z0-9._-]+$/.test(checkpointId) || checkpointId === '.' || checkpointId === '..') {
+    throw new Error(`Invalid checkpoint id: ${checkpointId}`);
+  }
+  const filePath = resolve(CHECKPOINT_DIR, `${checkpointId}.json`);
+  if (!isPathInside(CHECKPOINT_DIR, filePath)) {
+    throw new Error(`Checkpoint path escapes checkpoint directory: ${checkpointId}`);
+  }
+  return filePath;
+}
+
+function parseCheckpoint(content: string): Checkpoint | null {
+  const parsed = CheckpointSchema.safeParse(JSON.parse(content));
+  return parsed.success ? parsed.data : null;
+}
+
 /**
  * Save checkpoint
  */
 async function saveCheckpoint(checkpoint: Checkpoint): Promise<void> {
   await fs.mkdir(CHECKPOINT_DIR, { recursive: true });
-  const filePath = resolve(CHECKPOINT_DIR, `${checkpoint.id}.json`);
+  const filePath = checkpointFilePath(checkpoint.id);
   await fs.writeFile(filePath, JSON.stringify(checkpoint, null, 2));
 }
 
@@ -61,9 +94,9 @@ async function saveCheckpoint(checkpoint: Checkpoint): Promise<void> {
  */
 async function loadCheckpoint(checkpointId: string): Promise<Checkpoint | null> {
   try {
-    const filePath = resolve(CHECKPOINT_DIR, `${checkpointId}.json`);
+    const filePath = checkpointFilePath(checkpointId);
     const content = await fs.readFile(filePath, 'utf-8');
-    return JSON.parse(content);
+    return parseCheckpoint(content);
   } catch {
     return null;
   }
@@ -78,7 +111,8 @@ export async function findCheckpointByExecution(executionId: string): Promise<Ch
     for (const file of files) {
       if (file.endsWith('.json')) {
         const content = await fs.readFile(resolve(CHECKPOINT_DIR, file), 'utf-8');
-        const checkpoint: Checkpoint = JSON.parse(content);
+        const checkpoint = parseCheckpoint(content);
+        if (!checkpoint) continue;
         if (checkpoint.executionId === executionId) {
           return checkpoint;
         }
@@ -264,8 +298,16 @@ async function rollback(
         if (checkpoint.stashId) {
           try {
             await gitExec(checkpoint.projectPath, 'stash', 'pop', checkpoint.stashId);
-          } catch {
+          } catch (error) {
+            const msg = error instanceof Error ? error.message : String(error);
             console.log('[Rollback] Stash pop failed, may have conflicts');
+            return {
+              success: false,
+              checkpoint,
+              action: 'stash_pop',
+              message: `Reset to ${checkpoint.commitHash.slice(0, 7)}, but stash restoration failed`,
+              error: msg,
+            };
           }
         }
 
@@ -299,8 +341,16 @@ async function rollback(
         if (checkpoint.stashId) {
           try {
             await gitExec(checkpoint.projectPath, 'stash', 'pop', checkpoint.stashId);
-          } catch {
+          } catch (error) {
+            const msg = error instanceof Error ? error.message : String(error);
             console.log('[Rollback] Original stash pop failed');
+            return {
+              success: false,
+              checkpoint,
+              action: 'stash_pop',
+              message: `Checked out ${checkpoint.commitHash.slice(0, 7)}, but original stash restoration failed`,
+              error: msg,
+            };
           }
         }
 
@@ -356,7 +406,8 @@ export async function cleanupOldCheckpoints(maxAgeDays: number = 7): Promise<num
 
       const filePath = resolve(CHECKPOINT_DIR, file);
       const content = await fs.readFile(filePath, 'utf-8');
-      const checkpoint: Checkpoint = JSON.parse(content);
+      const checkpoint = parseCheckpoint(content);
+      if (!checkpoint) continue;
 
       if (now - checkpoint.createdAt > maxAge) {
         await fs.unlink(filePath);

@@ -255,6 +255,8 @@ export interface ToolExecOptions {
   protectedFiles?: string[];
   /** bash tool timeout (default DEFAULT_BASH_TIMEOUT_MS) */
   bashTimeoutMs?: number;
+  /** Refuse mutation and shell tools even if a model emits hidden tool names. */
+  readOnly?: boolean;
 }
 
 const DEFAULT_BASH_TIMEOUT_MS = 30000;
@@ -343,6 +345,13 @@ export async function executeTool(
 
   try {
     const args = JSON.parse(argsJson);
+    if (execOptions?.readOnly && ['write_file', 'edit_file', 'apply_patch', 'bash'].includes(name)) {
+      return {
+        tool_call_id: callId,
+        content: `READ_ONLY: ${name} is disabled for this run. Use read_file/search_files/search_memory only.`,
+        is_error: true,
+      };
+    }
 
     switch (name) {
       case 'read_file': {

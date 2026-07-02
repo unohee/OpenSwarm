@@ -188,6 +188,10 @@ const limiters = new Map<string, RateLimiter>();
  * Initialize rate limiters for known services
  */
 export function initRateLimiters(): void {
+  if (limiters.size > 0) {
+    destroyRateLimiters();
+  }
+
   // Claude API: Conservative limit (adjust based on tier)
   // Free tier: ~50 req/min, Paid: ~1000 req/min
   limiters.set('claude', new RateLimiter('claude', {

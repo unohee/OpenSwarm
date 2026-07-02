@@ -370,6 +370,7 @@ export class CodexResponsesAdapter implements CliAdapter {
       bashTimeoutMs: options.bashTimeoutMs,
       webTools: options.webTools,
       mcpTools: options.mcpTools,
+      readOnly: options.readOnly,
       // codex models are RLHF-trained on the V4A apply_patch format — expose it as
       // the primary edit tool (edit_file stays as fallback). Verified: gpt-5.3-codex-spark
       // emits clean V4A here, whereas non-codex adapters keep edit_file only.

@@ -37,6 +37,7 @@ describe('runPlanner — agentic loop migration', () => {
     await runPlanner({ taskTitle: 't', taskDescription: 'd', projectPath: '/tmp/x' });
     const opts = mockedSpawnCli.mock.calls[0][1];
     expect(opts.prompt).toContain('PLANNING ONLY');
+    expect(opts.readOnly).toBe(true);
     expect(opts.maxTurns).toBeGreaterThan(1);
   });
 

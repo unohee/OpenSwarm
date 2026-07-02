@@ -34,6 +34,16 @@ import type { SubTask } from './planner.js';
 
 let server: ReturnType<typeof createServer> | null = null;
 let runnerRef: AutonomousRunner | undefined;
+const MAX_REQUEST_BODY_BYTES = 1024 * 1024;
+
+class HttpError extends Error {
+  constructor(
+    public statusCode: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
 
 // CORS origin allowlist — hostname-strict match (no substring/prefix pitfalls)
 function isAllowedOrigin(origin: string): boolean {
@@ -66,6 +76,39 @@ function safeErrorMessage(err: unknown): string {
     return err.message;
   }
   return 'Internal error';
+}
+
+function isLoopbackAddress(address: string | undefined): boolean {
+  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
+}
+
+function extractBearerToken(header: string | undefined): string | null {
+  if (!header) return null;
+  const match = header.match(/^Bearer\s+(.+)$/i);
+  return match?.[1]?.trim() || null;
+}
+
+function isAuthorizedMutation(req: IncomingMessage): boolean {
+  if (isLoopbackAddress(req.socket.remoteAddress)) return true;
+
+  const configuredToken = process.env.OPENSWARM_WEB_TOKEN?.trim();
+  if (!configuredToken) return false;
+
+  const presentedToken =
+    extractBearerToken(req.headers.authorization) ||
+    (Array.isArray(req.headers['x-openswarm-token'])
+      ? req.headers['x-openswarm-token'][0]
+      : req.headers['x-openswarm-token']);
+  return presentedToken === configuredToken;
+}
+
+function isMutatingApiRequest(pathname: string, method: string | undefined): boolean {
+  return pathname.startsWith('/api/') && ['DELETE', 'PATCH', 'POST', 'PUT'].includes(method ?? '');
+}
+
+function writeJson(res: ServerResponse, statusCode: number, body: unknown): void {
+  res.writeHead(statusCode, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(body));
 }
 
 // Exec task store (in-memory)
@@ -286,10 +329,33 @@ export function setWebRunner(runner: AutonomousRunner): void {
 
 // Read POST body helper
 function readBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     let data = '';
-    req.on('data', (chunk: Buffer) => { data += chunk.toString(); });
-    req.on('end', () => resolve(data));
+    let totalBytes = 0;
+    let settled = false;
+
+    const fail = (statusCode: number, message: string) => {
+      if (settled) return;
+      settled = true;
+      reject(new HttpError(statusCode, message));
+    };
+
+    req.on('data', (chunk: Buffer) => {
+      if (settled) return;
+      totalBytes += chunk.length;
+      if (totalBytes > MAX_REQUEST_BODY_BYTES) {
+        fail(413, 'Request body too large');
+        return;
+      }
+      data += chunk.toString('utf-8');
+    });
+    req.on('end', () => {
+      if (settled) return;
+      settled = true;
+      resolve(data);
+    });
+    req.on('aborted', () => fail(400, 'Request body aborted'));
+    req.on('error', () => fail(400, 'Request body error'));
   });
 }
 
@@ -302,13 +368,25 @@ export async function startWebServer(port: number = 3847): Promise<void> {
 
   return new Promise((resolve, reject) => {
     server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
-      const url = req.url?.split('?')[0] || '/';
+      try {
+      const requestUrl = new URL(req.url ?? '/', 'http://localhost');
+      const url = requestUrl.pathname;
 
       // CORS: allow localhost, Tauri webview, and Tailscale network
       const origin = req.headers.origin;
       if (origin && isAllowedOrigin(origin)) {
         res.setHeader('Access-Control-Allow-Origin', origin);
         res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-OpenSwarm-Token');
+      }
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      if (isMutatingApiRequest(url, req.method) && !isAuthorizedMutation(req)) {
+        writeJson(res, 403, { error: 'Forbidden' });
+        return;
       }
 
       // ---- GraphQL API (이슈 트래커) ----
@@ -1034,9 +1112,7 @@ export async function startWebServer(port: number = 3847): Promise<void> {
       // Returns: { path, parent, entries: [{name, isDir}] } — dotfiles excluded, dirs first.
       } else if (url.startsWith('/api/fs/list') && req.method === 'GET') {
         try {
-          const qs = url.split('?')[1] ?? '';
-          const params = new URLSearchParams(qs);
-          const requested = params.get('path')?.trim();
+          const requested = requestUrl.searchParams.get('path')?.trim();
           const startPath = requested && requested.length > 0
             ? requested
             : homedir();
@@ -1213,6 +1289,12 @@ export async function startWebServer(port: number = 3847): Promise<void> {
       } else {
         res.writeHead(404);
         res.end('Not Found');
+      }
+      } catch (err) {
+        const statusCode = err instanceof HttpError ? err.statusCode : 500;
+        writeJson(res, statusCode, {
+          error: err instanceof HttpError ? err.message : safeErrorMessage(err),
+        });
       }
     });
 

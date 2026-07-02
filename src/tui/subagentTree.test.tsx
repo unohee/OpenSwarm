@@ -20,4 +20,35 @@ describe('SubagentTree component (EPIC INT-1813 S7)', () => {
     expect(f).toContain('worker');
     expect(f).toContain('reviewer');
   });
+
+  it('honors zero display limits', () => {
+    const stages: StageEntry[] = [
+      { taskId: 'INT-1940-x', stage: 'worker', status: 'complete', model: 'gpt-5.2-codex' },
+    ];
+
+    expect(render(<SubagentTree tasks={buildSubagentTree(stages)} max={0} />).lastFrame()).toContain('no active agents');
+
+    const f = render(<SubagentTree tasks={buildSubagentTree(stages)} maxStages={0} />).lastFrame()!;
+    expect(f).toContain('INT-1940-x');
+    expect(f).not.toContain('worker');
+  });
+
+  it('strips terminal control sequences from labels before rendering', () => {
+    const stages: StageEntry[] = [
+      {
+        taskId: '\x1b]52;c;AAAA\x07INT-1940-x',
+        stage: 'worker\x1b[31m',
+        status: 'complete',
+        model: 'gpt\x1b]0;bad\x07',
+      },
+    ];
+
+    const f = render(<SubagentTree tasks={buildSubagentTree(stages)} />).lastFrame()!;
+    expect(f).toContain('INT-1940-x');
+    expect(f).toContain('worker');
+    expect(f).toContain('gpt');
+    expect(f).not.toContain('\x1b');
+    expect(f).not.toContain('AAAA');
+    expect(f).not.toContain('bad');
+  });
 });

@@ -19,6 +19,87 @@ async function gitExec(cwd: string, ...args: string[]): Promise<string> {
   return stdout;
 }
 
+type PRIssueComment = {
+  author: string;
+  body: string;
+  createdAt: string;
+};
+
+type AutoStash = {
+  hash: string;
+};
+
+const CRITICAL_COMMENT_KEYWORDS = ['🔴', 'critical', '버그', 'bug', '수정 필요', 'must fix', '필수', 'required'];
+const FEEDBACK_ADDRESSED_MARKERS = [
+  'Review feedback addressed',
+  'Auto-fix completed - CI passing',
+];
+
+function parseStashList(output: string): Array<{ hash: string; ref: string; subject: string }> {
+  return output
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => {
+      const [hash = '', ref = '', subject = ''] = line.split('\x00');
+      return { hash, ref, subject };
+    })
+    .filter((stash) => stash.hash && stash.ref);
+}
+
+async function stashLocalChanges(cwd: string, message: string): Promise<AutoStash | null> {
+  try {
+    const before = new Set(
+      parseStashList(await gitExec(cwd, 'stash', 'list', '--format=%H%x00%gd%x00%s'))
+        .map((stash) => stash.hash)
+    );
+    await gitExec(cwd, 'stash', 'push', '-u', '-m', message);
+    const created = parseStashList(await gitExec(cwd, 'stash', 'list', '--format=%H%x00%gd%x00%s'))
+      .find((stash) => !before.has(stash.hash) && stash.subject.includes(message));
+    return created ? { hash: created.hash } : null;
+  } catch {
+    return null;
+  }
+}
+
+async function restoreAutoStash(cwd: string, stash: AutoStash | null): Promise<void> {
+  if (!stash) return;
+  try {
+    const stashRef = parseStashList(await gitExec(cwd, 'stash', 'list', '--format=%H%x00%gd%x00%s'))
+      .find((entry) => entry.hash === stash.hash)?.ref;
+    if (!stashRef) return;
+    await gitExec(cwd, 'stash', 'apply', stashRef);
+    await gitExec(cwd, 'stash', 'drop', stashRef);
+  } catch (err) {
+    console.error(`[PRProcessor] Failed to restore auto-stash ${stash.hash}:`, err);
+  }
+}
+
+function isClaudeComment(comment: PRIssueComment): boolean {
+  const author = comment.author.toLowerCase();
+  return author === 'claude' || author.includes('claude');
+}
+
+function getActiveCriticalComments(comments: PRIssueComment[]): PRIssueComment[] {
+  const lastAddressedAt = comments.reduce<number | null>((latest, comment) => {
+    if (!FEEDBACK_ADDRESSED_MARKERS.some((marker) => comment.body.includes(marker))) {
+      return latest;
+    }
+    const createdAt = new Date(comment.createdAt).getTime();
+    if (Number.isNaN(createdAt)) return latest;
+    return latest === null || createdAt > latest ? createdAt : latest;
+  }, null);
+
+  return comments.filter((comment) => {
+    const createdAt = new Date(comment.createdAt).getTime();
+    if (lastAddressedAt !== null && (!Number.isNaN(createdAt) && createdAt <= lastAddressedAt)) {
+      return false;
+    }
+    const bodyLower = comment.body.toLowerCase();
+    return isClaudeComment(comment) &&
+      CRITICAL_COMMENT_KEYWORDS.some((keyword) => bodyLower.includes(keyword.toLowerCase()));
+  });
+}
+
 import {
   getOpenPRs,
   getPRContext,
@@ -57,6 +138,7 @@ type PRStateEntry = {
   status: 'pending' | 'processing' | 'completed' | 'failed';
   iterations: number;
   lastProcessed?: string;
+  lastReviewFeedbackProcessed?: string;
   lastError?: string;
 };
 
@@ -181,11 +263,12 @@ export class PRProcessor {
 
           // Also check PR comments for review feedback (from claude-review action)
           const comments = await getPRComments(repo, pr.number);
-          const criticalKeywords = ['🔴', 'critical', '버그', 'bug', '수정 필요', 'must fix', '필수', 'required'];
-          const hasCommentFeedback = comments.some(c => {
-            const bodyLower = c.body.toLowerCase();
-            return (c.author === 'claude' || c.author.includes('claude')) &&
-                   criticalKeywords.some(keyword => bodyLower.includes(keyword.toLowerCase()));
+          const existingState = state.prs[key];
+          const hasCommentFeedback = getActiveCriticalComments(comments).some((comment) => {
+            if (!existingState?.lastReviewFeedbackProcessed) return true;
+            const createdAt = new Date(comment.createdAt).getTime();
+            const lastProcessed = new Date(existingState.lastReviewFeedbackProcessed).getTime();
+            return Number.isNaN(createdAt) || Number.isNaN(lastProcessed) || createdAt > lastProcessed;
           });
 
           const hasReviewFeedback = hasFormalReviewFeedback || hasCommentFeedback;
@@ -333,6 +416,7 @@ export class PRProcessor {
     let totalIterations = 0;
     let lastError: string | undefined;
     let retryCount = 0;
+    let autoStash: AutoStash | null = null;
 
     try {
       // 1. Fetch detailed PR context
@@ -385,11 +469,10 @@ export class PRProcessor {
       await gitExec(projectPath, 'fetch', 'origin', pr.branch);
 
       // Stash local changes before checkout
-      try {
-        await gitExec(projectPath, 'stash', 'push', '-u', '-m', `PRProcessor auto-stash for ${key}`);
-      } catch {
-        // Ignore if nothing to stash
-      }
+      autoStash = await stashLocalChanges(
+        projectPath,
+        `PRProcessor auto-stash for ${key} at ${new Date().toISOString()}`
+      );
 
       await gitExec(projectPath, 'checkout', pr.branch);
 
@@ -510,6 +593,10 @@ export class PRProcessor {
 
           // Process review feedback after CI success
           await this.processReviewFeedback(pr, projectPath, state, key, totalIterations);
+          if (state.prs[key].status === 'failed') {
+            console.log(`[PRProcessor] ${key}: Review feedback processing failed`);
+            return;
+          }
 
           state.prs[key].status = 'completed';
           state.prs[key].iterations = totalIterations;
@@ -573,10 +660,15 @@ export class PRProcessor {
 
     } finally {
       // Restore branch
+      let restoredBranch = false;
       try {
         await gitExec(projectPath, 'checkout', originalBranch);
+        restoredBranch = true;
       } catch (restoreErr) {
         console.error(`[PRProcessor] Failed to restore branch ${originalBranch}:`, restoreErr);
+      }
+      if (restoredBranch) {
+        await restoreAutoStash(projectPath, autoStash);
       }
     }
   }
@@ -593,6 +685,7 @@ export class PRProcessor {
   ): Promise<void> {
     const MAX_REVIEW_ITERATIONS = 5;
     let reviewIteration = 0;
+    let autoStash: AutoStash | null = null;
 
     // Save current branch for restoration
     let originalBranch = 'main';
@@ -607,11 +700,10 @@ export class PRProcessor {
       await gitExec(projectPath, 'fetch', 'origin', pr.branch);
 
       // Stash local changes before checkout
-      try {
-        await gitExec(projectPath, 'stash', 'push', '-u', '-m', `PRProcessor review feedback for ${key}`);
-      } catch {
-        // Ignore if nothing to stash
-      }
+      autoStash = await stashLocalChanges(
+        projectPath,
+        `PRProcessor review feedback for ${key} at ${new Date().toISOString()}`
+      );
 
       await gitExec(projectPath, 'checkout', pr.branch);
 
@@ -638,12 +730,13 @@ export class PRProcessor {
         r => r.state === 'CHANGES_REQUESTED'
       );
 
-      // Check for critical feedback in PR comments (from claude-review action)
-      const criticalKeywords = ['🔴', 'critical', '버그', 'bug', '수정 필요', 'must fix', '필수', 'required'];
-      const criticalComments = prComments.filter(c => {
-        const bodyLower = c.body.toLowerCase();
-        return (c.author === 'claude' || c.author.includes('claude')) &&
-               criticalKeywords.some(keyword => bodyLower.includes(keyword.toLowerCase()));
+      // Check for active critical feedback in PR comments (from claude-review action)
+      const lastReviewFeedbackProcessed = state.prs[key]?.lastReviewFeedbackProcessed;
+      const criticalComments = getActiveCriticalComments(prComments).filter((comment) => {
+        if (!lastReviewFeedbackProcessed) return true;
+        const createdAt = new Date(comment.createdAt).getTime();
+        const lastProcessed = new Date(lastReviewFeedbackProcessed).getTime();
+        return Number.isNaN(createdAt) || Number.isNaN(lastProcessed) || createdAt > lastProcessed;
       });
 
       if (changesRequested.length === 0 && criticalComments.length === 0) {
@@ -787,6 +880,7 @@ export class PRProcessor {
       );
 
       console.log(`[PRProcessor] ${key}: Review feedback iteration ${reviewIteration} complete`);
+      state.prs[key].lastReviewFeedbackProcessed = new Date().toISOString();
 
       // Small delay before checking reviews again
       await new Promise(resolve => setTimeout(resolve, 5000));
@@ -806,8 +900,9 @@ export class PRProcessor {
       );
 
       // Update state
-      state.prs[key].status = 'completed';
+      state.prs[key].status = 'failed';
       state.prs[key].iterations = totalIterations;
+      state.prs[key].lastError = `Max review feedback iterations (${MAX_REVIEW_ITERATIONS}) reached`;
 
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
@@ -817,10 +912,15 @@ export class PRProcessor {
 
     } finally {
       // Restore branch
+      let restoredBranch = false;
       try {
         await gitExec(projectPath, 'checkout', originalBranch);
+        restoredBranch = true;
       } catch (restoreErr) {
         console.error(`[PRProcessor] Failed to restore branch ${originalBranch}:`, restoreErr);
+      }
+      if (restoredBranch) {
+        await restoreAutoStash(projectPath, autoStash);
       }
     }
   }

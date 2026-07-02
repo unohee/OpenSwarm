@@ -55,6 +55,28 @@ export interface SchedulerStats {
   byProject: Map<string, number>;
 }
 
+function normalizeSchedulerConfig(config: SchedulerConfig): SchedulerConfig {
+  const normalized: SchedulerConfig = {
+    allowSameProjectConcurrent: false,
+    ...config,
+  };
+
+  // Same-project parallelism REQUIRES per-task worktree isolation. Without it,
+  // two concurrent tasks would mutate one shared working tree and corrupt each
+  // other. Guard at the one place that holds both flags: force-disable + warn.
+  // (INT-1975)
+  if (normalized.allowSameProjectConcurrent && !normalized.worktreeMode) {
+    console.warn(
+      '[Scheduler] allowSameProjectConcurrent ignored: requires worktreeMode ' +
+        '(a shared working tree would be corrupted by concurrent tasks). ' +
+        'Set worktreeMode:true to enable same-project parallelism.'
+    );
+    normalized.allowSameProjectConcurrent = false;
+  }
+
+  return normalized;
+}
+
 // Task Scheduler
 
 export class TaskScheduler extends EventEmitter {
@@ -67,23 +89,7 @@ export class TaskScheduler extends EventEmitter {
 
   constructor(config: SchedulerConfig) {
     super();
-    const merged: SchedulerConfig = {
-      allowSameProjectConcurrent: false,
-      ...config,
-    };
-    // Same-project parallelism REQUIRES per-task worktree isolation. Without it,
-    // two concurrent tasks would mutate one shared working tree and corrupt each
-    // other. Guard at the one place that holds both flags: force-disable + warn.
-    // (INT-1975)
-    if (merged.allowSameProjectConcurrent && !merged.worktreeMode) {
-      console.warn(
-        '[Scheduler] allowSameProjectConcurrent ignored: requires worktreeMode ' +
-          '(a shared working tree would be corrupted by concurrent tasks). ' +
-          'Set worktreeMode:true to enable same-project parallelism.'
-      );
-      merged.allowSameProjectConcurrent = false;
-    }
-    this.config = merged;
+    this.config = normalizeSchedulerConfig(config);
   }
 
   // ============================================
@@ -244,12 +250,19 @@ export class TaskScheduler extends EventEmitter {
     executor: (signal: AbortSignal) => Promise<PipelineResult>
   ): void {
     const abortController = new AbortController();
+    let resolveTask!: (result: PipelineResult) => void;
+    let rejectTask!: (error: unknown) => void;
+    const promise = new Promise<PipelineResult>((resolve, reject) => {
+      resolveTask = resolve;
+      rejectTask = reject;
+    });
+
     const runningTask: RunningTask = {
       task,
       projectPath,
       startedAt: Date.now(),
       abortController,
-      promise: executor(abortController.signal),
+      promise,
     };
 
     this.runningTasks.set(task.id, runningTask);
@@ -264,6 +277,12 @@ export class TaskScheduler extends EventEmitter {
       .catch((error) => {
         this.handleTaskError(task.id, error);
       });
+
+    try {
+      Promise.resolve(executor(abortController.signal)).then(resolveTask, rejectTask);
+    } catch (error) {
+      rejectTask(error);
+    }
   }
 
   /**
@@ -305,7 +324,9 @@ export class TaskScheduler extends EventEmitter {
     this.failedCount++;
 
     console.error(`[Scheduler] Task error: ${running.task.title}`, error.message);
-    this.emit('error', { task: running.task, error });
+    if (this.listenerCount('error') > 0) {
+      this.emit('error', { task: running.task, error });
+    }
     this.emit('slotFreed');
   }
 
@@ -452,7 +473,7 @@ export class TaskScheduler extends EventEmitter {
    * Update configuration
    */
   updateConfig(config: Partial<SchedulerConfig>): void {
-    this.config = { ...this.config, ...config };
+    this.config = normalizeSchedulerConfig({ ...this.config, ...config });
     console.log('[Scheduler] Config updated:', this.config);
   }
 }

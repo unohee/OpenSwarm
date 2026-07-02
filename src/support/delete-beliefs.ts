@@ -5,10 +5,12 @@
 import { connect } from '@lancedb/lancedb';
 import { resolve } from 'path';
 import { homedir } from 'os';
+import { fileURLToPath } from 'url';
 
 const MEMORY_DIR = resolve(homedir(), '.openswarm/memory');
+const DELETE_FILTER = `type = 'belief' AND content LIKE '%service end-to-end test and bug fix%' AND content LIKE '%failed%'`;
 
-async function deleteFailedBeliefs() {
+export async function deleteFailedBeliefs(options: { confirm?: boolean } = {}) {
   console.log('[Delete] Connecting to LanceDB at:', MEMORY_DIR);
 
   const db = await connect(MEMORY_DIR);
@@ -28,13 +30,14 @@ async function deleteFailedBeliefs() {
   const beforeCount = await table.countRows();
   console.log(`[Delete] Total records before: ${beforeCount}`);
 
-  // Use LanceDB delete with SQL where condition
-  // Delete belief type records containing specific string in content
-  const deleteFilter = `type = 'belief' AND content LIKE '%service end-to-end test and bug fix%' AND content LIKE '%failed%'`;
+  console.log('[Delete] Filter:', DELETE_FILTER);
 
-  console.log('[Delete] Applying filter:', deleteFilter);
+  if (!options.confirm) {
+    console.log('[Delete] Dry run only. Re-run with --confirm to delete matching records.');
+    return;
+  }
 
-  await table.delete(deleteFilter);
+  await table.delete(DELETE_FILTER);
 
   const afterCount = await table.countRows();
   console.log(`[Delete] Total records after: ${afterCount}`);
@@ -43,4 +46,13 @@ async function deleteFailedBeliefs() {
   console.log('[Delete] Done!');
 }
 
-deleteFailedBeliefs().catch(console.error);
+function isDirectRun(): boolean {
+  return process.argv[1] ? resolve(process.argv[1]) === fileURLToPath(import.meta.url) : false;
+}
+
+if (isDirectRun()) {
+  deleteFailedBeliefs({ confirm: process.argv.includes('--confirm') }).catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+}

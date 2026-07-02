@@ -2,7 +2,7 @@
 // OpenSwarm - Memory Compaction
 // ============================================
 
-import { getDb, getTable, initDatabase, EMBEDDING_DIM, PERMANENT_EXPIRY, normalizeRecords } from './memoryCore.js';
+import { getDb, getTable, initDatabase, EMBEDDING_DIM, PERMANENT_EXPIRY, normalizeRecords, setTable } from './memoryCore.js';
 import type { CognitiveMemoryRecord } from './memoryCore.js';
 
 const ARCHIVE_THRESHOLD = 0.7;
@@ -43,6 +43,15 @@ function removeDuplicates(records: CognitiveMemoryRecord[]): CognitiveMemoryReco
     // Check similarity with existing unique records
     let isDuplicate = false;
     for (const existing of unique) {
+      if (
+        record.repo !== existing.repo ||
+        record.type !== existing.type ||
+        record.derivedFrom !== existing.derivedFrom ||
+        record.metadata !== existing.metadata
+      ) {
+        continue;
+      }
+
       const similarity = cosineSimilarity(record.vector, existing.vector);
 
       if (similarity >= CONSOLIDATION_SIMILARITY) {
@@ -132,13 +141,34 @@ export async function compactMemoryTable(): Promise<{
     const afterDedup = deduplicated.length;
     console.log(`[Compaction] After deduplication: ${afterDedup} records (merged ${afterFilter - afterDedup})`);
 
-    // 4. Drop and recreate table
-    console.log('[Compaction] Dropping old table...');
-    await db.dropTable('cognitive_memory');
-
-    console.log('[Compaction] Creating new table with compacted data...');
+    // 4. Validate replacement before touching the live table
     const normalized = normalizeRecords(deduplicated);
-    await db.createTable('cognitive_memory', normalized);
+    const targetTableName = table.name;
+    const tempTableName = `${targetTableName}_compact_${Date.now()}`;
+
+    console.log(`[Compaction] Creating validated replacement for ${targetTableName}...`);
+    if (normalized.length > 0) {
+      await db.createTable(tempTableName, normalized);
+    } else {
+      await db.createEmptyTable(tempTableName, await table.schema());
+    }
+
+    try {
+      console.log(`[Compaction] Replacing ${targetTableName} with compacted data...`);
+      if (normalized.length > 0) {
+        await db.createTable(targetTableName, normalized, { mode: 'overwrite' });
+      } else {
+        await db.createEmptyTable(targetTableName, await table.schema(), { mode: 'overwrite' });
+      }
+      const newTable = await db.openTable(targetTableName);
+      setTable(newTable);
+    } finally {
+      try {
+        await db.dropTable(tempTableName);
+      } catch (cleanupError) {
+        console.warn(`[Compaction] Failed to drop temporary table ${tempTableName}:`, cleanupError);
+      }
+    }
 
     const stats = {
       before: beforeCount,

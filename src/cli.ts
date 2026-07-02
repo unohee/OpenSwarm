@@ -3,7 +3,7 @@
 // OpenSwarm - CLI Entry Point
 // `openswarm run`, `openswarm init`, `openswarm validate`, `openswarm chat`, `openswarm start`
 
-import { Command } from 'commander';
+import { Command, InvalidArgumentError } from 'commander';
 import { writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,6 +25,18 @@ const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8
 const VERSION = pkg.version;
 
 const program = new Command();
+
+function parsePositiveIntegerOption(value: string): number {
+  const trimmed = value.trim();
+  if (!/^[1-9]\d*$/.test(trimmed)) {
+    throw new InvalidArgumentError('must be a positive integer');
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new InvalidArgumentError('must be a safe positive integer');
+  }
+  return parsed;
+}
 
 // Anonymous, opt-out usage telemetry (INT-1992). Honors OPENSWARM_TELEMETRY=0 /
 // DO_NOT_TRACK / CI. One event per command invocation (command name only — never
@@ -56,7 +68,7 @@ program
   .option('-m, --model <model>', 'Model override for worker agent')
   .option('--pipeline', 'Full pipeline: worker + reviewer + tester + documenter')
   .option('--worker-only', 'Worker only, no review')
-  .option('--max-iterations <n>', 'Max retry iterations', parseInt)
+  .option('--max-iterations <n>', 'Max retry iterations', parsePositiveIntegerOption)
   .option('-v, --verbose', 'Enable detailed execution logging')
   .option('--no-learn', 'Do not record this run into the repo knowledge memory')
   .action(async (task: string, opts: {
@@ -254,8 +266,8 @@ program
   .option('--debug', 'Verbose logging')
   // --max: full-codebase multi-agent audit (INT-2006)
   .option('--max', 'Audit the whole codebase: fan reviewer subagents out over directory-shaped areas')
-  .option('--concurrency <n>', 'Max reviewer subagents in flight for --max (default 4)', (v) => parseInt(v, 10))
-  .option('--max-files-per-area <n>', 'Files per area before chunking, for --max (default 12)', (v) => parseInt(v, 10))
+  .option('--concurrency <n>', 'Max reviewer subagents in flight for --max (default 4)', parsePositiveIntegerOption)
+  .option('--max-files-per-area <n>', 'Files per area before chunking, for --max (default 12)', parsePositiveIntegerOption)
   .option('--yes', 'Skip the --max cost-confirmation prompt')
   .option('--dry-run', 'For --max: print the area partition plan and exit (no subagents)')
   .option('--out <file>', 'For --max: write the markdown report here (default .openswarm/audit/audit-<ts>.md)')

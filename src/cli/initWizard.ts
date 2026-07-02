@@ -43,6 +43,12 @@ const NOTIFY_CHOICES: { name: string; value: NotifyChannel; description: string 
   { name: 'webhook', value: 'webhook', description: 'Generic webhook URL' },
 ];
 
+function yamlScalar(value: string): string {
+  return value === '' || /[\r\n#]/.test(value) || /:\s/.test(value) || /^\s|\s$/.test(value)
+    ? JSON.stringify(value)
+    : value;
+}
+
 /** ChatGPT-OAuth providers share the openai-gpt profile; openrouter has its own. */
 function authPlanFor(provider: ProviderId): { providerArg: 'gpt' | 'openrouter'; profileKey: string } | null {
   if (provider === 'codex-responses' || provider === 'gpt') return { providerArg: 'gpt', profileKey: 'openai-gpt:default' };
@@ -64,7 +70,7 @@ export function buildWizardConfig(
   if (agent) {
     cfg = cfg.replace(
       /agents:\n[\s\S]*?\n\n(# Default heartbeat)/,
-      `agents:\n  - name: ${agent.name}\n    projectPath: ${agent.projectPath}\n    heartbeatInterval: 1800000\n    enabled: true\n    paused: false\n\n$1`,
+      `agents:\n  - name: ${yamlScalar(agent.name)}\n    projectPath: ${yamlScalar(agent.projectPath)}\n    heartbeatInterval: 1800000\n    enabled: true\n    paused: false\n\n$1`,
     );
   }
   const uncomment = (field: string) => {

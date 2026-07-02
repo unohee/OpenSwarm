@@ -122,6 +122,8 @@ export interface AgenticLoopOptions {
   bashTimeoutMs?: number;
   /** Expose web_fetch + web_search tools (default true). Disabled e.g. for SWE-bench integrity. */
   webTools?: boolean;
+  /** Read-only mode: hide mutation/shell tools and refuse response-text edits. */
+  readOnly?: boolean;
   /** Expose the apply_patch (V4A) tool — codex adapters only (codex models are
    * RLHF-trained on V4A; non-codex models emit malformed V4A). Default false. */
   applyPatch?: boolean;
@@ -185,6 +187,7 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
     protectedFiles,
     bashTimeoutMs,
     webTools = true,
+    readOnly = false,
     applyPatch = false,
     mcpTools,
     signal,
@@ -215,10 +218,13 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
   const baseTools = editFormat === 'json'
     ? TOOL_DEFINITIONS
     : TOOL_DEFINITIONS.filter(t => t.function.name !== 'edit_file');
+  const visibleBaseTools = readOnly
+    ? baseTools.filter((t) => !['write_file', 'edit_file', 'bash'].includes(t.function.name))
+    : baseTools;
   const tools = enableTools
     ? [
-        ...baseTools,
-        ...(applyPatch && editFormat === 'json' ? [APPLY_PATCH_TOOL] : []),
+        ...visibleBaseTools,
+        ...(applyPatch && editFormat === 'json' && !readOnly ? [APPLY_PATCH_TOOL] : []),
         ...(webTools ? WEB_TOOL_DEFINITIONS : []),
         ...(mcpTools ?? []),
       ]
@@ -329,7 +335,7 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
     if (!assistantMsg.tool_calls || assistantMsg.tool_calls.length === 0) {
       // SEARCH/REPLACE 모드 — 도구 호출이 아니라 응답 본문의 S/R 블록으로 편집한다.
       // 블록이 있으면 직접 적용하고(보호 파일은 거부) 결과를 되돌려 루프를 잇는다. (INT-1676)
-      if (editFormat === 'search-replace' && assistantMsg.content) {
+      if (!readOnly && editFormat === 'search-replace' && assistantMsg.content) {
         const parsed = parseSearchReplaceBlocks(assistantMsg.content);
         if (parsed.blocks.length > 0) {
           const resultLines = await Promise.all(parsed.blocks.map(async (block) => {
@@ -425,7 +431,7 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
       }
     }
 
-    const results: ToolResult[] = await executeToolCalls(toolCalls, cwd, readCache, { protectedFiles, bashTimeoutMs });
+    const results: ToolResult[] = await executeToolCalls(toolCalls, cwd, readCache, { protectedFiles, bashTimeoutMs, readOnly });
     toolCallCount += toolCalls.length;
     // Count only SUCCESSFUL edits — a model whose edit_file calls all fail
     // (old_string not found, protected file) has not modified anything, and

@@ -74,6 +74,14 @@ function resolveFallbackAdapter(opts: ReviewMaxOptions): AdapterName | undefined
   return primary === 'codex' || primary === 'codex-responses' ? 'claude' : undefined;
 }
 
+function positiveIntegerOption(value: number | undefined, fallback: number, name: string): number {
+  const n = value ?? fallback;
+  if (!Number.isInteger(n) || n < 1) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+  return n;
+}
+
 /** Interactive cost gate. Non-TTY always proceeds (scripted runs). */
 async function confirmCost(areas: number, files: number, concurrency: number): Promise<boolean> {
   if (!process.stdin.isTTY) return true;
@@ -141,7 +149,8 @@ async function filePerAreaFollowups(cwd: string, fileIssue: string | boolean, ru
  */
 export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<{ decision: string } | null> {
   const cwd = opts.path ?? process.cwd();
-  const concurrency = Math.max(1, opts.concurrency ?? 4);
+  const concurrency = positiveIntegerOption(opts.concurrency, 4, '--concurrency');
+  const maxFilesPerArea = positiveIntegerOption(opts.maxFilesPerArea, 12, '--max-files-per-area');
 
   let files: string[];
   try {
@@ -156,7 +165,7 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
   }
   // Split down to fill the reviewer pool: fewer areas than `concurrency` would
   // leave subagents idle, so the fastest audit maximizes parallel spread. (INT-2249)
-  const areas: AuditArea[] = balanceAreasToConcurrency(files, concurrency, opts.maxFilesPerArea ?? 12);
+  const areas: AuditArea[] = balanceAreasToConcurrency(files, concurrency, maxFilesPerArea);
 
   if (opts.dryRun) {
     console.log(`Audit plan — ${files.length} file(s) across ${areas.length} area(s):`);

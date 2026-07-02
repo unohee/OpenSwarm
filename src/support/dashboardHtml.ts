@@ -991,10 +991,11 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           data.stuckIssues.forEach(issue => {
             const priorityColor = issue.priority === 1 ? 'var(--red)' : issue.priority === 2 ? 'var(--amber)' : 'var(--dim)';
             html += '<div style="margin-bottom: 6px; padding: 4px; border-left: 2px solid ' + priorityColor + '; background: rgba(255, 170, 0, 0.05);">';
-            html += '<div style="color: var(--white); font-size: 10px; margin-bottom: 2px;">' + issue.identifier + ': ' + issue.title.substring(0, 40) + (issue.title.length > 40 ? '...' : '') + '</div>';
-            html += '<div style="color: var(--amber); font-size: 9px;">' + issue.reason + '</div>';
+            const title = String(issue.title || '');
+            html += '<div style="color: var(--white); font-size: 10px; margin-bottom: 2px;">' + escapeHtml(issue.identifier) + ': ' + escapeHtml(title.substring(0, 40)) + (title.length > 40 ? '...' : '') + '</div>';
+            html += '<div style="color: var(--amber); font-size: 9px;">' + escapeHtml(issue.reason) + '</div>';
             if (issue.project?.name) {
-              html += '<div style="color: var(--dim); font-size: 9px; margin-top: 2px;">📁 ' + issue.project.name + '</div>';
+              html += '<div style="color: var(--dim); font-size: 9px; margin-top: 2px;">📁 ' + escapeHtml(issue.project.name) + '</div>';
             }
             html += '</div>';
           });
@@ -1007,10 +1008,11 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           data.failedIssues.forEach(issue => {
             const priorityColor = issue.priority === 1 ? 'var(--red)' : issue.priority === 2 ? 'var(--amber)' : 'var(--dim)';
             html += '<div style="margin-bottom: 6px; padding: 4px; border-left: 2px solid ' + priorityColor + '; background: rgba(255, 51, 51, 0.05);">';
-            html += '<div style="color: var(--white); font-size: 10px; margin-bottom: 2px;">' + issue.identifier + ': ' + issue.title.substring(0, 40) + (issue.title.length > 40 ? '...' : '') + '</div>';
-            html += '<div style="color: var(--red); font-size: 9px;">' + issue.reason + '</div>';
+            const title = String(issue.title || '');
+            html += '<div style="color: var(--white); font-size: 10px; margin-bottom: 2px;">' + escapeHtml(issue.identifier) + ': ' + escapeHtml(title.substring(0, 40)) + (title.length > 40 ? '...' : '') + '</div>';
+            html += '<div style="color: var(--red); font-size: 9px;">' + escapeHtml(issue.reason) + '</div>';
             if (issue.project?.name) {
-              html += '<div style="color: var(--dim); font-size: 9px; margin-top: 2px;">📁 ' + issue.project.name + '</div>';
+              html += '<div style="color: var(--dim); font-size: 9px; margin-top: 2px;">📁 ' + escapeHtml(issue.project.name) + '</div>';
             }
             html += '</div>';
           });
@@ -1049,11 +1051,11 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         };
 
         let html = '<div style="display: flex; flex-direction: column; gap: 6px;">';
-        html += '<div><span style="color: var(--dim);">Schedule:</span> <span style="color: var(--text);">' + (data.schedule || "N/A") + '</span></div>';
+        html += '<div><span style="color: var(--dim);">Schedule:</span> <span style="color: var(--text);">' + escapeHtml(data.schedule || "N/A") + '</span></div>';
         html += '<div><span style="color: var(--dim);">Repos:</span> <span style="color: var(--text);">' + (data.repos?.length || 0) + '</span></div>';
 
         if (data.currentPR) {
-          html += '<div><span style="color: var(--amber);">Processing:</span> <span style="color: var(--text); font-family: monospace; font-size: 10px;">' + data.currentPR + '</span></div>';
+          html += '<div><span style="color: var(--amber);">Processing:</span> <span style="color: var(--text); font-family: monospace; font-size: 10px;">' + escapeHtml(data.currentPR) + '</span></div>';
         }
 
         html += '<div><span style="color: var(--dim);">Last run:</span> <span style="color: var(--text);">' + formatTime(data.lastRun) + '</span></div>';
@@ -1067,7 +1069,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         body.innerHTML = html;
       } catch (e) {
         const body = document.getElementById("pr-proc-body");
-        body.innerHTML = '<div style="color: var(--red);">Error: ' + e.message + '</div>';
+        body.innerHTML = '<div style="color: var(--red);">Error: ' + escapeHtml(e.message) + '</div>';
       }
     }
 
@@ -1831,7 +1833,10 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       const d = document.createElement("div"); d.textContent = String(text || ""); return d.innerHTML;
     }
     function escapeAttr(text) {
-      return String(text || "").replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+      return String(text || "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+    function escapeJsArgAttr(text) {
+      return escapeAttr(JSON.stringify(String(text || "")));
     }
 
     // ---- Repo Picker ----
@@ -1935,7 +1940,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         rows.push(
           "<div class=\\"scan-path-row\\">" +
             "<span class=\\"path\\">" + escapeHtml(p) + "</span>" +
-            "<button class=\\"scan-path-remove\\" title=\\"remove\\" onclick=\\"removeScanPath('" + escapeAttr(p) + "')\\">✕</button>" +
+            "<button class=\\"scan-path-remove\\" title=\\"remove\\" onclick=\\"removeScanPath(" + escapeJsArgAttr(p) + ")\\">✕</button>" +
           "</div>"
         );
       }
@@ -1943,7 +1948,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         rows.push(
           "<div class=\\"scan-path-row\\">" +
             "<span class=\\"path\\">" + escapeHtml(p) + "</span>" +
-            "<button class=\\"scan-path-remove\\" onclick=\\"removeScanPath('" + escapeAttr(p) + "')\\">✕</button>" +
+            "<button class=\\"scan-path-remove\\" onclick=\\"removeScanPath(" + escapeJsArgAttr(p) + ")\\">✕</button>" +
           "</div>"
         );
       }
@@ -2145,8 +2150,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           // a CANCEL button (aborts the pipeline + its in-flight adapter call).
           var lead = isPipeline ? escapeHtml(p.taskId || "task") : p.pid;
           var btn = isPipeline
-            ? '<button class="proc-kill" onclick="stopProcess(\\'' + escapeAttr(String(p.id)) + '\\', true)">CANCEL</button>'
-            : '<button class="proc-kill" onclick="stopProcess(\\'' + escapeAttr(String(p.id)) + '\\', false)">KILL</button>';
+            ? '<button class="proc-kill" onclick="stopProcess(' + escapeJsArgAttr(String(p.id)) + ', true)">CANCEL</button>'
+            : '<button class="proc-kill" onclick="stopProcess(' + escapeJsArgAttr(String(p.id)) + ', false)">KILL</button>';
           return '<div class="proc-row">' +
             '<span class="proc-pid">' + lead + '</span>' +
             '<span class="proc-stage">' + escapeHtml(p.stage) + '</span>' +

@@ -43,4 +43,13 @@ describe('monitorRows (EPIC INT-1813 S6)', () => {
     const t = issuesToTable([{ id: '1', title: 'fix it', status: 'open', priority: 2 }]);
     expect(t.rows[0]).toEqual(['fix it', 'open', 'high']);
   });
+
+  it('issuesToTable maps GraphQL enum priorities', () => {
+    const t = issuesToTable([
+      { id: '1', title: 'urgent issue', status: 'open', priority: 'urgent' },
+      { id: '2', title: 'medium issue', status: 'open', priority: 'medium' },
+      { id: '3', title: 'none issue', status: 'open', priority: 'none' },
+    ]);
+    expect(t.rows.map((r) => r[2])).toEqual(['urgent', 'med', 'none']);
+  });
 });

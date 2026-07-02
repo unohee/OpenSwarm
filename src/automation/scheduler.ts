@@ -67,10 +67,18 @@ const runningProcesses: Map<string, ReturnType<typeof spawn>> = new Map();
 // Recent results (for reporting)
 const recentResults: JobResult[] = [];
 const MAX_RESULTS = 50;
+const MAX_CLI_BUFFER_CHARS = 128 * 1024;
 
 // Result listener (Discord reporting, etc.)
 type ResultListener = (result: JobResult) => void;
 let resultListener: ResultListener | null = null;
+
+function appendBounded(current: string, chunk: string): string {
+  const next = current + chunk;
+  return next.length > MAX_CLI_BUFFER_CHARS
+    ? next.slice(next.length - MAX_CLI_BUFFER_CHARS)
+    : next;
+}
 
 /**
  * Register result listener
@@ -134,81 +142,76 @@ async function runClaudeCli(
   return new Promise((resolve) => {
     const expandedPath = projectPath.replace('~', homedir());
 
-    // Save prompt to file
-    const promptFile = `${SCHEDULE_DIR}/prompt-${jobId}.txt`;
-    fs.writeFile(promptFile, prompt).then(() => {
-      // Invoke claude directly (no shell). `cwd` already handles the directory
-      // change, and the prompt file is read via a fd redirection set on spawn.
-      console.log(`[Scheduler] Spawning Claude CLI for ${jobId}...`);
-      const proc = spawn(
-        'claude',
-        [
-          '-p',
-          prompt,
-          '--output-format',
-          'stream-json',
-          '--verbose',
-          '--permission-mode',
-          'bypassPermissions',
-          '--max-turns',
-          '15',
-        ],
-        {
-          cwd: expandedPath,
-          env: process.env,
-          stdio: ['ignore', 'pipe', 'pipe'],
-        },
-      );
+    // Invoke claude directly (no shell). `cwd` already handles the directory.
+    console.log(`[Scheduler] Spawning Claude CLI for ${jobId}...`);
+    const proc = spawn(
+      'claude',
+      [
+        '-p',
+        prompt,
+        '--output-format',
+        'stream-json',
+        '--verbose',
+        '--permission-mode',
+        'bypassPermissions',
+        '--max-turns',
+        '15',
+      ],
+      {
+        cwd: expandedPath,
+        env: process.env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
 
-      runningProcesses.set(jobId, proc);
+    runningProcesses.set(jobId, proc);
 
-      let stdout = '';
-      let stderr = '';
+    let stdout = '';
+    let stderr = '';
 
-      proc.stdout?.on('data', (data) => {
-        stdout += data.toString();
-      });
+    proc.stdout?.on('data', (data) => {
+      stdout = appendBounded(stdout, data.toString());
+    });
 
-      proc.stderr?.on('data', (data) => {
-        stderr += data.toString();
-      });
+    proc.stderr?.on('data', (data) => {
+      stderr = appendBounded(stderr, data.toString());
+    });
 
-      proc.on('close', (code) => {
-        runningProcesses.delete(jobId);
+    proc.on('close', (code) => {
+      runningProcesses.delete(jobId);
 
-        // Extract cost from stream-json output
-        const costInfo = extractCostFromStreamJson(stdout);
-        if (costInfo) {
-          console.log(`[Scheduler] Job ${jobId} cost: ${formatCost(costInfo)}`);
+      // Extract cost from stream-json output
+      const costInfo = extractCostFromStreamJson(stdout);
+      if (costInfo) {
+        console.log(`[Scheduler] Job ${jobId} cost: ${formatCost(costInfo)}`);
+      }
+
+      // Extract result from stream-json output
+      let resultText = stdout;
+      try {
+        const lines = stdout.split('\n').filter(Boolean);
+        const resultLine = lines.find((l) => l.includes('"type":"result"'));
+        if (resultLine) {
+          const parsed = JSON.parse(resultLine);
+          resultText = parsed.result || stdout;
         }
+      } catch {
+        // Use original on parse failure
+      }
 
-        // Extract result from stream-json output
-        let resultText = stdout;
-        try {
-          const lines = stdout.split('\n').filter(Boolean);
-          const resultLine = lines.find((l) => l.includes('"type":"result"'));
-          if (resultLine) {
-            const parsed = JSON.parse(resultLine);
-            resultText = parsed.result || stdout;
-          }
-        } catch {
-          // Use original on parse failure
-        }
-
-        resolve({
-          success: code === 0,
-          output: resultText.slice(0, 2000), // max 2000 chars
-          error: stderr || undefined,
-        });
+      resolve({
+        success: code === 0,
+        output: resultText.slice(0, 2000), // max 2000 chars
+        error: stderr || undefined,
       });
+    });
 
-      proc.on('error', (err) => {
-        runningProcesses.delete(jobId);
-        resolve({
-          success: false,
-          output: '',
-          error: err.message,
-        });
+    proc.on('error', (err) => {
+      runningProcesses.delete(jobId);
+      resolve({
+        success: false,
+        output: '',
+        error: err.message,
       });
     });
   });
@@ -217,23 +220,28 @@ async function runClaudeCli(
 /**
  * Run scheduled job
  */
-async function runScheduledJob(job: ScheduledJob): Promise<void> {
+async function runScheduledJob(
+  job: ScheduledJob,
+  opts: { bypassTimeWindow?: boolean } = {},
+): Promise<boolean> {
   // Check time window
-  const timeCheck = checkWorkAllowed();
-  if (!timeCheck.allowed) {
-    console.log(
-      `[Scheduler] Job "${job.name}" skipped: ${timeCheck.reason} (current: ${timeCheck.currentTime})`
-    );
-    return;
+  if (!opts.bypassTimeWindow) {
+    const timeCheck = checkWorkAllowed();
+    if (!timeCheck.allowed) {
+      console.log(
+        `[Scheduler] Job "${job.name}" skipped: ${timeCheck.reason} (current: ${timeCheck.currentTime})`
+      );
+      return false;
+    }
   }
 
   // Check if already running
   if (runningProcesses.has(job.id)) {
     console.log(`[Scheduler] Job "${job.name}" already running, skipping`);
-    return;
+    return false;
   }
 
-  console.log(`[Scheduler] Running job: ${job.name}`);
+  console.log(`[Scheduler] Running job: ${job.name}${opts.bypassTimeWindow ? ' (bypassing time window)' : ''}`);
   const startedAt = Date.now();
 
   try {
@@ -289,8 +297,10 @@ async function runScheduledJob(job: ScheduledJob): Promise<void> {
     console.log(
       `[Scheduler] Job ${job.name} ${success ? 'completed' : 'failed'} (${Math.round((result.finishedAt - startedAt) / 1000)}s)`
     );
+    return success;
   } catch (err) {
     console.error(`[Scheduler] Job ${job.name} error:`, err);
+    return false;
   }
 }
 
@@ -471,19 +481,10 @@ export async function runNow(
   if (!job) return false;
 
   if (bypassTimeWindow) {
-    console.log(`[Scheduler] Running job: ${job.name} (bypassing time window)`);
-    const { success } = await runClaudeCli(job.projectPath, job.prompt, job.id);
-
-    const updatedSchedules = await loadSchedules();
-    const updated = updatedSchedules.map((s) =>
-      s.id === job.id ? { ...s, lastRun: Date.now() } : s
-    );
-    await saveSchedules(updated);
-    return success;
+    return runScheduledJob(job, { bypassTimeWindow: true });
   }
 
-  await runScheduledJob(job);
-  return true;
+  return runScheduledJob(job);
 }
 
 /**

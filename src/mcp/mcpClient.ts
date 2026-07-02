@@ -21,6 +21,20 @@ import type { ToolDefinition } from '../adapters/tools.js';
 /** Qualified tool name separator: `<server>__<tool>`. */
 const SEP = '__';
 const MCP_JSON_PATH = join(homedir(), '.openswarm', 'mcp.json');
+const MCP_STDIO_ENV_ALLOWLIST = new Set([
+  'PATH',
+  'HOME',
+  'USER',
+  'LOGNAME',
+  'SHELL',
+  'TMPDIR',
+  'TMP',
+  'TEMP',
+  'SystemRoot',
+  'ComSpec',
+  'PATHEXT',
+]);
+const MAX_MCP_TOOL_RESULT_CHARS = 20_000;
 
 interface ServerConfig {
   transport: 'stdio' | 'http' | 'sse';
@@ -45,8 +59,13 @@ export const BUILTIN_MCP_SERVERS: Record<string, ServerConfig> = {
   },
 };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 /** A persisted entry: `{preset}`, `{command,args,env}` (stdio) or `{url,headers,transport?}` (remote). */
-function normalizeEntry(raw: Record<string, unknown>): ServerConfig | null {
+function normalizeEntry(raw: unknown): ServerConfig | null {
+  if (!isRecord(raw)) return null;
   if (typeof raw.preset === 'string' && raw.preset) {
     return BUILTIN_MCP_SERVERS[raw.preset] ?? null;
   }
@@ -115,7 +134,7 @@ function makeTransport(cfg: ServerConfig) {
     return new StdioClientTransport({
       command: cfg.command!,
       args: cfg.args ?? [],
-      env: { ...(process.env as Record<string, string>), ...cfg.env },
+      env: { ...safeInheritedEnv(), ...cfg.env },
     });
   }
   const url = new URL(cfg.url!);
@@ -123,10 +142,19 @@ function makeTransport(cfg: ServerConfig) {
   return cfg.transport === 'sse' ? new SSEClientTransport(url, init) : new StreamableHTTPClientTransport(url, init);
 }
 
+function safeInheritedEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const key of MCP_STDIO_ENV_ALLOWLIST) {
+    const value = process.env[key];
+    if (typeof value === 'string') env[key] = value;
+  }
+  return env;
+}
+
 async function withClient<T>(cfg: ServerConfig, fn: (c: Client) => Promise<T>): Promise<T> {
   const client = new Client({ name: 'openswarm', version: '0.7.0' }, { capabilities: {} });
-  await client.connect(makeTransport(cfg));
   try {
+    await client.connect(makeTransport(cfg));
     return await fn(client);
   } finally {
     await client.close().catch(() => {});
@@ -135,7 +163,16 @@ async function withClient<T>(cfg: ServerConfig, fn: (c: Client) => Promise<T>): 
 
 /** A qualified MCP tool name carries the `__` separator. */
 export function isMcpTool(name: string): boolean {
-  return name.includes(SEP);
+  const parts = name.split(SEP);
+  return parts.length === 2 && parts.every(isValidToolNameSegment) && isValidToolName(name);
+}
+
+function isValidToolNameSegment(name: string): boolean {
+  return /^[A-Za-z0-9_-]+$/.test(name);
+}
+
+function isValidToolName(name: string): boolean {
+  return /^[A-Za-z0-9_-]{1,64}$/.test(name);
 }
 
 // Resolved at initMcpTools(); callMcpTool() looks the server up here.
@@ -159,7 +196,12 @@ export async function initMcpTools(registry = loadRegistry()): Promise<ToolDefin
     try {
       const listed = (await withClient(cfg, (c) => c.listTools())) as { tools?: McpTool[] };
       for (const tool of listed.tools ?? []) {
+        if (typeof tool.name !== 'string') continue;
         const qualified = `${server}${SEP}${tool.name}`;
+        if (!isMcpTool(qualified)) {
+          console.warn(`[MCP] server "${server}" returned invalid tool name "${tool.name}" — skipped`);
+          continue;
+        }
         serverByTool[qualified] = { cfg, toolName: tool.name };
         defs.push({
           type: 'function',
@@ -237,11 +279,32 @@ export async function callMcpTool(qualified: string, args: Record<string, unknow
       c.callTool({ name: entry.toolName, arguments: args }),
     )) as { content?: Array<{ type?: string; text?: string }>; isError?: boolean };
     const content = Array.isArray(result.content) ? result.content : [];
-    const text = content
-      .map((b) => (b.type === 'text' && typeof b.text === 'string' ? b.text : JSON.stringify(b)))
-      .join('\n');
+    const text = renderMcpToolContent(content);
+    if (result.isError) return `MCP error calling ${qualified}: ${text || '(empty error result)'}`;
     return text || '(empty result)';
   } catch (err) {
     return `MCP error calling ${qualified}: ${err instanceof Error ? err.message : String(err)}`;
   }
+}
+
+function renderMcpToolContent(content: Array<{ type?: string; text?: string }>): string {
+  let out = '';
+  let truncated = false;
+  for (const block of content) {
+    const piece = block.type === 'text' && typeof block.text === 'string'
+      ? block.text
+      : JSON.stringify(block);
+    const prefix = out ? '\n' : '';
+    const remaining = MAX_MCP_TOOL_RESULT_CHARS - out.length - prefix.length;
+    if (remaining <= 0) {
+      truncated = true;
+      break;
+    }
+    out += prefix + piece.slice(0, remaining);
+    if (piece.length > remaining) {
+      truncated = true;
+      break;
+    }
+  }
+  return truncated ? `${out}\n[truncated MCP tool result at ${MAX_MCP_TOOL_RESULT_CHARS} chars]` : out;
 }

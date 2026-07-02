@@ -12,6 +12,7 @@ import * as linear from '../linear/index.js';
 import { getIssueStore } from '../issues/index.js';
 import type { IIssueStore } from '../issues/sqliteStore.js';
 import type { Issue, IssueStatus, IssuePriority } from '../issues/schema.js';
+import { formatAutomationComment, type CommentSection } from '../linear/format.js';
 import type { TaskItem } from '../orchestration/decisionEngine.js';
 import { enrichTaskFromState } from '../taskState/store.js';
 
@@ -101,6 +102,10 @@ const STATE_TO_STATUS: Record<TaskState, IssueStatus> = {
   'In Progress': 'in_progress', 'In Review': 'in_review', Done: 'done', Backlog: 'backlog', Todo: 'todo',
 };
 
+function inlineCode(s: string): string {
+  return `\`${s.replaceAll('`', '\\`')}\``;
+}
+
 /** Map a local SQLite Issue → the runner's TaskItem. */
 export function issueToTask(issue: Issue): TaskItem {
   return {
@@ -161,26 +166,109 @@ export class SqliteTaskSource implements ITaskSource {
     }
   }
   async logPairStart(issueId: string, _sessionId: string, _projectPath: string): Promise<void> {
-    await this.addComment(issueId, '🔄 [Automation] Pair started');
+    await this.addComment(issueId, formatAutomationComment({
+      heading: 'Pair session started',
+      summary: 'Starting work in Worker/Reviewer pair mode.',
+      meta: { Session: _sessionId, Project: _projectPath },
+    }));
+    await this.updateState(issueId, 'In Progress');
   }
-  async logPairComplete(issueId: string, _sessionId: string, stats: PairCompleteStats): Promise<void> {
-    await this.addComment(issueId, `✅ [Automation] Pair complete — ${stats.attempts} attempt(s), ${stats.filesChanged.length} file(s)`);
+  async logPairComplete(issueId: string, sessionId: string, stats: PairCompleteStats): Promise<void> {
+    const durationStr = stats.duration < 60
+      ? `${stats.duration}s`
+      : `${Math.floor(stats.duration / 60)}m ${stats.duration % 60}s`;
+    const sections: CommentSection[] = [];
+    if (stats.workerCommands && stats.workerCommands.length > 0) {
+      sections.push({ label: 'Commands run', body: stats.workerCommands.slice(0, 5).map(inlineCode) });
+    }
+    if (stats.reviewerFeedback) {
+      sections.push({
+        label: `Reviewer — ${stats.reviewerDecision || 'APPROVE'}`,
+        body: stats.reviewerFeedback.trim(),
+      });
+    }
+    if (stats.testResults) {
+      const { passed, failed, coverage, failedTests } = stats.testResults;
+      const totalTests = passed + failed;
+      const passRate = totalTests > 0 ? ((passed / totalTests) * 100).toFixed(1) : '0';
+      const lines = [`Passed ${passed}/${totalTests} (${passRate}%)`];
+      if (coverage !== undefined) lines.push(`Coverage ${coverage.toFixed(1)}%`);
+      if (failed > 0 && failedTests && failedTests.length > 0) {
+        const extra = failedTests.length > 3 ? ` (+${failedTests.length - 3} more)` : '';
+        lines.push(`Failed: ${failedTests.slice(0, 3).join(', ')}${extra}`);
+      }
+      sections.push({ label: 'Tests', body: lines });
+    }
+    if (stats.remainingWork) {
+      sections.push({ label: 'Remaining work', body: stats.remainingWork.trim() });
+    }
+    sections.push({
+      label: 'Changed files',
+      body: stats.filesChanged.length > 0
+        ? stats.filesChanged.slice(0, 10).map(inlineCode)
+        : ['(none)'],
+    });
+
+    await this.addComment(issueId, formatAutomationComment({
+      heading: 'Task complete',
+      summary: stats.workerSummary?.trim() || undefined,
+      sections,
+      meta: {
+        Session: sessionId,
+        Iterations: stats.attempts,
+        Duration: durationStr,
+        Files: stats.filesChanged.length,
+      },
+      attribution: 'Worker/Reviewer/Tester pipeline',
+    }));
+    await this.updateState(issueId, 'Done');
   }
   async logBlocked(issueId: string, _sessionName: string, reason: string): Promise<void> {
-    await this.addComment(issueId, `🚧 [Automation] Blocked: ${reason}`);
+    await this.addComment(issueId, formatAutomationComment({
+      heading: 'Blocked — user intervention required',
+      sections: [{ label: 'Reason', body: reason }],
+      meta: { Agent: _sessionName },
+    }));
+    await this.updateState(issueId, 'Todo');
   }
   async logStuck(issueId: string, _sessionName: string, reason: string): Promise<void> {
-    await this.addComment(issueId, `🛑 [Automation] Stuck — retries exhausted: ${reason}`);
+    await this.addComment(issueId, formatAutomationComment({
+      heading: 'Stuck — automatic retries exhausted',
+      sections: [
+        { label: 'Reason', body: reason },
+        { label: 'How to retry', body: [
+          'Move this issue back to Todo / In Progress.',
+          'The agent will not retry on its own until then.',
+        ] },
+      ],
+      meta: { Agent: _sessionName },
+    }));
     await this.updateState(issueId, 'Backlog');
   }
   async unstick(_issueId: string): Promise<void> {
     // Local store has no label concept; recovery is via moving the issue back to an active state.
   }
   async logHalt(issueId: string, _sessionId: string, confidence: number, iteration: number, reason: string): Promise<void> {
-    await this.addComment(issueId, `⚠️ [Automation] HALT (confidence ${confidence}%, attempt #${iteration}): ${reason}`);
+    await this.addComment(issueId, formatAutomationComment({
+      heading: 'HALT — low confidence',
+      summary: `Confidence ${confidence}% is below threshold on attempt #${iteration}; manual input needed.`,
+      sections: [
+        { label: 'Reason', body: reason },
+        { label: 'Suggested next step', body: ['Review the task requirements', 'Provide more context', 'Break it into smaller sub-tasks'] },
+      ],
+      meta: { Session: _sessionId, Confidence: `${confidence}%`, Attempt: `#${iteration}` },
+    }));
   }
   async markAsDecomposed(issueId: string, subIssueCount: number, totalMinutes: number): Promise<void> {
-    await this.addComment(issueId, `🔀 [Automation] Decomposed into ${subIssueCount} sub-task(s) (~${totalMinutes}min)`);
+    await this.addComment(issueId, formatAutomationComment({
+      heading: 'Decomposed into sub-issues',
+      summary: 'The parent is parked while child issues execute.',
+      sections: [{
+        label: 'Result',
+        body: [`Sub-issues created: ${subIssueCount}`, `Total estimated time: ${totalMinutes} min`],
+      }],
+      attribution: 'Planner agent',
+    }));
     await this.updateState(issueId, 'Backlog');
   }
 }

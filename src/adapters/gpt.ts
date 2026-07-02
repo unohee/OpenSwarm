@@ -95,6 +95,7 @@ export class GptCliAdapter implements CliAdapter {
       protectedFiles: options.protectedFiles,
       bashTimeoutMs: options.bashTimeoutMs,
       webTools: options.webTools,
+      readOnly: options.readOnly,
       mcpTools,
       signal: options.signal,
       editFormat: options.editFormat,

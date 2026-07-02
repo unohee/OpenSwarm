@@ -10,50 +10,152 @@ import type {
   CodeEntity, CodeEntityFilter, EntityStatus, WarningSeverity, WarningCategory, RelationType,
 } from '../schema.js';
 
+const DEFAULT_ENTITY_LIMIT = 50;
+const MAX_ENTITY_LIMIT = 200;
+const DEFAULT_SEARCH_LIMIT = 20;
+const MAX_SEARCH_LIMIT = 100;
+const DEFAULT_EVENT_LIMIT = 20;
+const MAX_EVENT_LIMIT = 200;
+const MAX_BULK_REGISTER_ENTITIES = 100;
+
+function clampLimit(limit: number | undefined, defaultLimit: number, maxLimit: number): number {
+  if (limit === undefined || !Number.isInteger(limit)) return defaultLimit;
+  return Math.min(Math.max(limit, 1), maxLimit);
+}
+
+function clampOffset(offset: number | undefined): number {
+  if (offset === undefined || !Number.isInteger(offset)) return 0;
+  return Math.max(offset, 0);
+}
+
+function normalizeSearchText(search: string | undefined): string | undefined {
+  const normalized = search
+    ?.split('')
+    .map((char) => {
+      const code = char.charCodeAt(0);
+      return code < 32 || code === 127 ? ' ' : char;
+    })
+    .join('')
+    .trim()
+    .replace(/\s+/g, ' ');
+  return normalized || undefined;
+}
+
+function sanitizeSearch(search: string | undefined): string | undefined {
+  const normalized = normalizeSearchText(search);
+  if (!normalized) return undefined;
+  return normalized
+    .split(' ')
+    .map((term) => `"${term.replace(/"/g, '""')}"`)
+    .join(' AND ');
+}
+
+function pageList<T>(items: T[], limit: number | undefined, offset: number | undefined): T[] {
+  const start = clampOffset(offset);
+  return items.slice(start, start + clampLimit(limit, DEFAULT_ENTITY_LIMIT, MAX_ENTITY_LIMIT));
+}
+
+function normalizeEntityFilter(filter: CodeEntityFilter | undefined): CodeEntityFilter {
+  return {
+    ...filter,
+    search: sanitizeSearch(filter?.search),
+    limit: clampLimit(filter?.limit, DEFAULT_ENTITY_LIMIT, MAX_ENTITY_LIMIT),
+    offset: clampOffset(filter?.offset),
+  };
+}
+
 export const registryResolvers = {
   Query: {
     codeEntity: (_: unknown, { id }: { id: string }) => {
       return getRegistryStore().getEntity(id);
     },
 
-    codeEntityByName: (_: unknown, { qualifiedName }: { qualifiedName: string }) => {
-      return getRegistryStore().getEntityByName(qualifiedName);
+    codeEntityByName: (_: unknown, { qualifiedName, projectId }: { qualifiedName: string; projectId?: string }) => {
+      return getRegistryStore().getEntityByName(qualifiedName, projectId);
     },
 
     codeEntities: (_: unknown, { filter }: { filter?: CodeEntityFilter }) => {
-      return getRegistryStore().listEntities(filter);
+      return getRegistryStore().listEntities(normalizeEntityFilter(filter));
     },
 
-    fileBrief: (_: unknown, { filePath }: { filePath: string }) => {
-      return getRegistryStore().fileBrief(filePath);
+    fileBrief: (_: unknown, { filePath, projectId }: { filePath: string; projectId?: string }) => {
+      return getRegistryStore().fileBrief(filePath, projectId);
     },
 
     registryStats: (_: unknown, { projectId }: { projectId?: string }) => {
       return getRegistryStore().getStats(projectId);
     },
 
-    deprecatedEntities: (_: unknown, { projectId }: { projectId?: string }) => {
-      return getRegistryStore().deprecatedEntities(projectId);
+    deprecatedEntities: (_: unknown, { projectId, limit, offset }: {
+      projectId?: string; limit?: number; offset?: number;
+    }) => {
+      return getRegistryStore().listEntities({
+        projectId,
+        status: ['deprecated'],
+        limit: clampLimit(limit, DEFAULT_ENTITY_LIMIT, MAX_ENTITY_LIMIT),
+        offset: clampOffset(offset),
+      }).entities;
     },
 
-    untestedEntities: (_: unknown, { projectId }: { projectId?: string }) => {
-      return getRegistryStore().untestedEntities(projectId);
+    untestedEntities: (_: unknown, { projectId, limit, offset }: {
+      projectId?: string; limit?: number; offset?: number;
+    }) => {
+      return getRegistryStore().listEntities({
+        projectId,
+        status: ['active'],
+        hasTests: false,
+        limit: clampLimit(limit, DEFAULT_ENTITY_LIMIT, MAX_ENTITY_LIMIT),
+        offset: clampOffset(offset),
+      }).entities;
     },
 
-    highRiskEntities: (_: unknown, { projectId }: { projectId?: string }) => {
-      return getRegistryStore().highRiskEntities(projectId);
+    highRiskEntities: (_: unknown, { projectId, limit, offset }: {
+      projectId?: string; limit?: number; offset?: number;
+    }) => {
+      return getRegistryStore().listEntities({
+        projectId,
+        riskLevel: ['high'],
+        limit: clampLimit(limit, DEFAULT_ENTITY_LIMIT, MAX_ENTITY_LIMIT),
+        offset: clampOffset(offset),
+      }).entities;
     },
 
-    entitiesByTag: (_: unknown, { tag, value }: { tag: string; value?: string }) => {
-      return getRegistryStore().entitiesByTag(tag, value ?? undefined);
+    entitiesByTag: (_: unknown, { tag, value, projectId, limit, offset }: {
+      tag: string; value?: string; projectId?: string; limit?: number; offset?: number;
+    }) => {
+      if (value === undefined) {
+        return getRegistryStore().listEntities({
+          projectId,
+          tags: [tag],
+          limit: clampLimit(limit, DEFAULT_ENTITY_LIMIT, MAX_ENTITY_LIMIT),
+          offset: clampOffset(offset),
+        }).entities;
+      }
+      const entities = getRegistryStore()
+        .entitiesByTag(tag, value)
+        .filter((entity) => !projectId || entity.projectId === projectId);
+      return pageList(entities, limit, offset);
     },
 
-    entityWarnings: (_: unknown, { severity }: { severity?: WarningSeverity }) => {
-      return getRegistryStore().getUnresolvedWarnings(severity);
+    entityWarnings: (_: unknown, { severity, projectId, limit, offset }: {
+      severity?: WarningSeverity; projectId?: string; limit?: number; offset?: number;
+    }) => {
+      const store = getRegistryStore();
+      const warnings = store.getUnresolvedWarnings(severity)
+        .filter((warning) => !projectId || store.getEntity(warning.entityId)?.projectId === projectId);
+      return pageList(warnings, limit, offset);
     },
 
-    searchEntities: (_: unknown, { query, limit }: { query: string; limit?: number }) => {
-      return getRegistryStore().searchEntities(query, limit ?? 20);
+    searchEntities: (_: unknown, { query, projectId, limit }: { query: string; projectId?: string; limit?: number }) => {
+      const search = normalizeSearchText(query);
+      if (!search) return [];
+      const cappedLimit = clampLimit(limit, DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT);
+      const searchLimit = projectId ? MAX_SEARCH_LIMIT : cappedLimit;
+      return getRegistryStore().searchEntities(
+        search,
+        searchLimit,
+      ).filter((entity) => !projectId || entity.projectId === projectId)
+        .slice(0, cappedLimit);
     },
   },
 
@@ -63,6 +165,9 @@ export const registryResolvers = {
     },
 
     bulkRegisterEntities: (_: unknown, { input }: { input: RegisterEntityInput[] }) => {
+      if (input.length > MAX_BULK_REGISTER_ENTITIES) {
+        throw new Error(`bulkRegisterEntities input is limited to ${MAX_BULK_REGISTER_ENTITIES} entities`);
+      }
       return getRegistryStore().bulkRegisterEntities(input);
     },
 
@@ -122,30 +227,39 @@ export const registryResolvers = {
     addEntityRelation: (_: unknown, { sourceId, targetId, relationType }: {
       sourceId: string; targetId: string; relationType: RelationType;
     }) => {
-      getRegistryStore().addRelation(sourceId, targetId, relationType);
-      return true;
+      const store = getRegistryStore();
+      store.addRelation(sourceId, targetId, relationType);
+      return store.getRelations(sourceId).some((rel) =>
+        rel.targetId === targetId && rel.relationType === relationType
+      );
     },
 
     removeEntityRelation: (_: unknown, { sourceId, targetId, relationType }: {
       sourceId: string; targetId: string; relationType: RelationType;
     }) => {
-      getRegistryStore().removeRelation(sourceId, targetId, relationType);
-      return true;
+      const store = getRegistryStore();
+      store.removeRelation(sourceId, targetId, relationType);
+      return !store.getRelations(sourceId).some((rel) =>
+        rel.targetId === targetId && rel.relationType === relationType
+      );
     },
 
     linkEntityToIssue: (_: unknown, { entityId, issueId }: { entityId: string; issueId: string }) => {
-      getRegistryStore().linkIssue(entityId, issueId);
-      return true;
+      const store = getRegistryStore();
+      store.linkIssue(entityId, issueId);
+      return store.getEntity(entityId)?.linkedIssueIds.includes(issueId) ?? false;
     },
 
     unlinkEntityFromIssue: (_: unknown, { entityId, issueId }: { entityId: string; issueId: string }) => {
-      getRegistryStore().unlinkIssue(entityId, issueId);
-      return true;
+      const store = getRegistryStore();
+      store.unlinkIssue(entityId, issueId);
+      return !(store.getEntity(entityId)?.linkedIssueIds.includes(issueId) ?? false);
     },
 
     linkEntityToMemory: (_: unknown, { entityId, memoryId }: { entityId: string; memoryId: string }) => {
-      getRegistryStore().linkMemory(entityId, memoryId);
-      return true;
+      const store = getRegistryStore();
+      store.linkMemory(entityId, memoryId);
+      return store.getEntity(entityId)?.linkedMemoryIds.includes(memoryId) ?? false;
     },
 
     addEntityNote: (_: unknown, { entityId, content, actor }: {
@@ -164,7 +278,7 @@ export const registryResolvers = {
       return getRegistryStore().getRelations(entity.id);
     },
     events: (entity: CodeEntity, { limit }: { limit?: number }) => {
-      return getRegistryStore().getEvents(entity.id, limit ?? 20);
+      return getRegistryStore().getEvents(entity.id, clampLimit(limit, DEFAULT_EVENT_LIMIT, MAX_EVENT_LIMIT));
     },
   },
 };

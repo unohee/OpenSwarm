@@ -272,8 +272,9 @@ export class SqliteIssueStore implements IIssueStore {
         now, now,
       );
 
-      for (const labelId of input.labels ?? []) {
-        insertLabel.run(id, labelId);
+      for (const label of input.labels ?? []) {
+        const labelId = this.ensureLabelId(label);
+        if (labelId) insertLabel.run(id, labelId);
       }
       for (const depId of input.dependencies ?? []) {
         insertDep.run(id, depId);
@@ -298,6 +299,12 @@ export class SqliteIssueStore implements IIssueStore {
     return this.rowToIssue(row);
   }
 
+  getIssueByLinearId(linearId: string): Issue | null {
+    const row = this.db.prepare('SELECT * FROM issues WHERE linear_id = ?').get(linearId) as any;
+    if (!row) return null;
+    return this.rowToIssue(row);
+  }
+
   updateIssue(id: string, patch: Partial<CreateIssueInput>): Issue | null {
     const existing = this.getIssue(id);
     if (!existing) return null;
@@ -308,7 +315,7 @@ export class SqliteIssueStore implements IIssueStore {
 
     const fieldMap: Record<string, string> = {
       projectId: 'project_id', title: 'title', description: 'description',
-      status: 'status', priority: 'priority', source: 'source',
+      priority: 'priority', source: 'source',
       assignee: 'assignee', milestone: 'milestone',
       estimateMinutes: 'estimate_minutes', complexity: 'complexity',
       parentId: 'parent_id', linearId: 'linear_id',
@@ -322,7 +329,7 @@ export class SqliteIssueStore implements IIssueStore {
       }
     }
 
-    if (fields.length === 0 && !patch.labels && !patch.dependencies
+    if (fields.length === 0 && patch.status === undefined && !patch.labels && !patch.dependencies
       && !patch.relevantFiles && !patch.acceptanceCriteria) {
       return existing;
     }
@@ -339,7 +346,10 @@ export class SqliteIssueStore implements IIssueStore {
       if (patch.labels !== undefined) {
         this.db.prepare('DELETE FROM issue_labels WHERE issue_id = ?').run(id);
         const ins = this.db.prepare('INSERT OR IGNORE INTO issue_labels (issue_id, label_id) VALUES (?, ?)');
-        for (const labelId of patch.labels) ins.run(id, labelId);
+        for (const label of patch.labels) {
+          const labelId = this.ensureLabelId(label);
+          if (labelId) ins.run(id, labelId);
+        }
       }
 
       if (patch.dependencies !== undefined) {
@@ -360,6 +370,10 @@ export class SqliteIssueStore implements IIssueStore {
         for (let i = 0; i < patch.acceptanceCriteria.length; i++) {
           ins.run(id, patch.acceptanceCriteria[i], i);
         }
+      }
+
+      if (patch.status !== undefined) {
+        this.applyStatusChange(id, existing.status, patch.status, 'system');
       }
     });
 
@@ -402,17 +416,21 @@ export class SqliteIssueStore implements IIssueStore {
     }
     if (filter?.labels && filter.labels.length > 0) {
       conditions.push(`i.id IN (
-        SELECT issue_id FROM issue_labels WHERE label_id IN (${filter.labels.map(() => '?').join(',')})
+        SELECT il.issue_id FROM issue_labels il
+        JOIN labels l ON l.id = il.label_id
+        WHERE il.label_id IN (${filter.labels.map(() => '?').join(',')})
+          OR l.name IN (${filter.labels.map(() => '?').join(',')})
       )`);
-      params.push(...filter.labels);
+      params.push(...filter.labels, ...filter.labels);
     }
 
     // FTS 전문검색
     let ftsJoin = '';
-    if (filter?.search) {
+    const ftsQuery = filter?.search ? toFtsQuery(filter.search) : null;
+    if (ftsQuery) {
       ftsJoin = 'INNER JOIN issues_fts ON issues_fts.rowid = i.rowid';
       conditions.push('issues_fts MATCH ?');
-      params.push(filter.search);
+      params.push(ftsQuery);
     }
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -450,21 +468,26 @@ export class SqliteIssueStore implements IIssueStore {
     const existing = this.getIssue(id);
     if (!existing) return null;
 
+    this.applyStatusChange(id, existing.status, status, actor ?? 'system');
+    return this.getIssue(id);
+  }
+
+  private applyStatusChange(id: string, oldStatus: IssueStatus, status: IssueStatus, actor: string): void {
     const now = new Date().toISOString();
     const closedAt = (status === 'done' || status === 'cancelled') ? now : null;
 
     this.db.prepare(`
-      UPDATE issues SET status = ?, updated_at = ?, closed_at = COALESCE(?, closed_at)
+      UPDATE issues SET status = ?, updated_at = ?, closed_at = ?
       WHERE id = ?
     `).run(status, now, closedAt, id);
 
-    this.addEvent(id, 'status_changed', {
-      oldValue: existing.status,
-      newValue: status,
-      actor: actor ?? 'system',
-    });
-
-    return this.getIssue(id);
+    if (status !== oldStatus) {
+      this.addEvent(id, 'status_changed', {
+        oldValue: oldStatus,
+        newValue: status,
+        actor,
+      });
+    }
   }
 
   // ============ 이벤트 로그 ============
@@ -516,9 +539,19 @@ export class SqliteIssueStore implements IIssueStore {
   // ============ 라벨 ============
 
   createLabel(name: string, color = '#6B7280', description?: string): Label {
+    const existing = this.db.prepare('SELECT * FROM labels WHERE name = ? LIMIT 1').get(name) as any;
+    if (existing) {
+      return {
+        id: existing.id,
+        name: existing.name,
+        color: existing.color,
+        description: existing.description ?? undefined,
+      };
+    }
+
     const id = nanoid(8);
     this.db.prepare(
-      'INSERT OR IGNORE INTO labels (id, name, color, description) VALUES (?, ?, ?, ?)'
+      'INSERT INTO labels (id, name, color, description) VALUES (?, ?, ?, ?)'
     ).run(id, name, color, description ?? null);
     return { id, name, color, description };
   }
@@ -623,8 +656,11 @@ export class SqliteIssueStore implements IIssueStore {
     const id = row.id;
 
     const labels = (this.db.prepare(
-      'SELECT label_id FROM issue_labels WHERE issue_id = ?'
-    ).all(id) as any[]).map((r) => r.label_id);
+      `SELECT COALESCE(l.name, il.label_id) as label
+       FROM issue_labels il
+       LEFT JOIN labels l ON l.id = il.label_id
+       WHERE il.issue_id = ?`
+    ).all(id) as any[]).map((r) => r.label);
 
     const dependencies = (this.db.prepare(
       'SELECT depends_on_id FROM issue_dependencies WHERE issue_id = ?'
@@ -687,6 +723,81 @@ export class SqliteIssueStore implements IIssueStore {
       createdAt: row.created_at,
     };
   }
+
+  private ensureLabelId(label: string): string | null {
+    const name = label.trim();
+    if (!name) return null;
+
+    const existing = this.db.prepare(
+      'SELECT id FROM labels WHERE id = ? OR name = ? LIMIT 1'
+    ).get(name, name) as { id: string } | undefined;
+    if (existing) return existing.id;
+
+    this.db.prepare(
+      'INSERT INTO labels (id, name, color, description) VALUES (?, ?, ?, ?)'
+    ).run(name, name, '#6B7280', null);
+    return name;
+  }
+}
+
+function toFtsQuery(search: string): string | null {
+  const rawTokens: Array<{ type: 'term' | 'operator'; value: string }> = [];
+  let i = 0;
+
+  while (i < search.length) {
+    while (/\s/.test(search[i] ?? '')) i++;
+    if (i >= search.length) break;
+
+    if (search[i] === '"') {
+      i++;
+      let phrase = '';
+      while (i < search.length) {
+        if (search[i] === '"' && search[i + 1] === '"') {
+          phrase += '"';
+          i += 2;
+          continue;
+        }
+        if (search[i] === '"') {
+          i++;
+          break;
+        }
+        phrase += search[i];
+        i++;
+      }
+      const value = phrase.trim();
+      if (value) rawTokens.push({ type: 'term', value });
+      continue;
+    }
+
+    const start = i;
+    while (i < search.length && !/\s/.test(search[i])) i++;
+    const value = search.slice(start, i).trim();
+    if (!value) continue;
+
+    const upper = value.toUpperCase();
+    if (upper === 'AND' || upper === 'OR' || upper === 'NOT') {
+      rawTokens.push({ type: 'operator', value: upper });
+    } else {
+      rawTokens.push({ type: 'term', value });
+    }
+  }
+
+  const tokens: string[] = [];
+  let expectTerm = true;
+  for (const token of rawTokens) {
+    if (token.type === 'operator') {
+      if (expectTerm) continue;
+      tokens.push(token.value);
+      expectTerm = true;
+      continue;
+    }
+
+    tokens.push(`"${token.value.replace(/"/g, '""')}"`);
+    expectTerm = false;
+  }
+
+  while (tokens.length > 0 && ['AND', 'OR', 'NOT'].includes(tokens[tokens.length - 1])) tokens.pop();
+  return tokens.length > 0 ? tokens.join(' ') : null;
 }
 
 // 싱글톤 인스턴스

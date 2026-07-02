@@ -26,12 +26,18 @@ interface CacheStats {
   hitRate: number;
 }
 
+type CacheLookup<T> = { hit: true; data: T } | { hit: false };
+
 export class APICache {
   private cache: Map<string, CacheEntry<unknown>> = new Map();
   private stats: Map<string, CacheStats> = new Map();
   private cleanupInterval: NodeJS.Timeout | null = null;
+  private readonly maxEntries: number;
+  private readonly maxStats: number;
 
-  constructor(cleanupIntervalMs: number = 60000) {
+  constructor(cleanupIntervalMs: number = 60000, maxEntries: number = 1000, maxStats: number = 2000) {
+    this.maxEntries = maxEntries;
+    this.maxStats = maxStats;
     // 1분마다 만료된 캐시 정리
     this.cleanupInterval = setInterval(() => this.cleanup(), cleanupIntervalMs);
   }
@@ -40,36 +46,50 @@ export class APICache {
    * 캐시에서 데이터 조회
    */
   get<T>(key: string): T | null {
+    const result = this.lookup<T>(key);
+    return result.hit ? result.data : null;
+  }
+
+  /**
+   * null 값도 캐시 히트로 구분해야 하는 호출자를 위한 조회
+   */
+  lookup<T>(key: string): CacheLookup<T> {
     const entry = this.cache.get(key) as CacheEntry<T> | undefined;
 
     if (!entry) {
       this.recordMiss(key);
-      return null;
+      return { hit: false };
     }
 
     // TTL 확인
     if (Date.now() - entry.timestamp > entry.ttlMs) {
       this.cache.delete(key);
       this.recordMiss(key);
-      return null;
+      return { hit: false };
     }
 
     // 히트 기록
     entry.hits++;
+    this.cache.delete(key);
+    this.cache.set(key, entry);
     this.recordHit(key);
-    return entry.data;
+    return { hit: true, data: entry.data };
   }
 
   /**
    * 캐시에 데이터 저장
    */
   set<T>(key: string, data: T, ttlMs: number): void {
+    if (this.cache.has(key)) {
+      this.cache.delete(key);
+    }
     this.cache.set(key, {
       data,
       timestamp: Date.now(),
       ttlMs,
       hits: 0,
     });
+    this.evictCacheIfNeeded();
   }
 
   /**
@@ -137,6 +157,7 @@ export class APICache {
     const total = stat.hits + stat.misses;
     stat.hitRate = total > 0 ? stat.hits / total : 0;
     this.stats.set(key, stat);
+    this.evictStatsIfNeeded();
   }
 
   /**
@@ -148,6 +169,23 @@ export class APICache {
     const total = stat.hits + stat.misses;
     stat.hitRate = total > 0 ? stat.hits / total : 0;
     this.stats.set(key, stat);
+    this.evictStatsIfNeeded();
+  }
+
+  private evictCacheIfNeeded(): void {
+    while (this.cache.size > this.maxEntries) {
+      const oldest = this.cache.keys().next().value;
+      if (oldest === undefined) break;
+      this.cache.delete(oldest);
+    }
+  }
+
+  private evictStatsIfNeeded(): void {
+    while (this.stats.size > this.maxStats) {
+      const oldest = this.stats.keys().next().value;
+      if (oldest === undefined) break;
+      this.stats.delete(oldest);
+    }
   }
 
   /**
@@ -177,9 +215,9 @@ export class CachedAPI {
     ttlMs: number = 10000,
   ): Promise<T> {
     // 캐시 확인
-    const cached = apiCache.get<T>(key);
-    if (cached !== null) {
-      return cached;
+    const cached = apiCache.lookup<T>(key);
+    if (cached.hit) {
+      return cached.data;
     }
 
     // 캐시 미스: 함수 실행

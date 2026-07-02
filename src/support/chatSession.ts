@@ -8,7 +8,7 @@
 // ============================================
 
 import { homedir } from 'node:os';
-import { resolve } from 'node:path';
+import { resolve, relative, isAbsolute } from 'node:path';
 import { readFile, writeFile, mkdir, readdir, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { loadConfig } from '../core/config.js';
@@ -51,11 +51,12 @@ export async function ensureChatDir(dir: string = getChatDir()): Promise<void> {
 export async function saveSession(session: Session, dir: string = getChatDir()): Promise<void> {
   await ensureChatDir(dir);
   session.updatedAt = new Date().toISOString();
-  await writeFile(resolve(dir, `${session.id}.json`), JSON.stringify(session, null, 2));
+  await writeFile(resolveSessionPath(session.id, dir), JSON.stringify(session, null, 2));
 }
 
 export async function loadSession(id: string, dir: string = getChatDir()): Promise<Session | null> {
-  const path = resolve(dir, `${id}.json`);
+  const path = resolveSessionPath(id, dir, false);
+  if (!path) return null;
   if (!existsSync(path)) return null;
   const data = JSON.parse(await readFile(path, 'utf-8'));
   // Validate the persisted provider — a stale/removed adapter (e.g. `claude`)
@@ -73,6 +74,25 @@ export async function loadSession(id: string, dir: string = getChatDir()): Promi
     totalCost: data.totalCost ?? 0,
     totalTokens: data.totalTokens ?? 0,
   };
+}
+
+function resolveSessionPath(id: string, dir: string): string;
+function resolveSessionPath(id: string, dir: string, throwOnInvalid: true): string;
+function resolveSessionPath(id: string, dir: string, throwOnInvalid: false): string | null;
+function resolveSessionPath(id: string, dir: string, throwOnInvalid = true): string | null {
+  if (!/^[A-Za-z0-9_-]+$/.test(id)) {
+    if (throwOnInvalid) throw new Error('Invalid chat session id');
+    return null;
+  }
+
+  const baseDir = resolve(dir);
+  const filePath = resolve(baseDir, `${id}.json`);
+  const rel = relative(baseDir, filePath);
+  if (rel.startsWith('..') || isAbsolute(rel)) {
+    if (throwOnInvalid) throw new Error('Chat session path escapes chat directory');
+    return null;
+  }
+  return filePath;
 }
 
 export function generateSessionId(): string {

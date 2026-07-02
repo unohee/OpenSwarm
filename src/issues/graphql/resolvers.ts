@@ -8,6 +8,49 @@ import { getIssueStore } from '../sqliteStore.js';
 import { autoLinkMemories, enrichIssueContext } from '../memoryBridge.js';
 import type { IssueFilter } from '../schema.js';
 
+const DEFAULT_ISSUE_LIMIT = 50;
+const MAX_ISSUE_LIMIT = 200;
+const DEFAULT_EVENT_LIMIT = 50;
+const DEFAULT_RECENT_EVENT_LIMIT = 20;
+const MAX_EVENT_LIMIT = 200;
+
+function clampLimit(limit: number | undefined, defaultLimit: number, maxLimit: number): number {
+  if (limit === undefined || !Number.isInteger(limit)) return defaultLimit;
+  return Math.min(Math.max(limit, 1), maxLimit);
+}
+
+function clampOffset(offset: number | undefined): number {
+  if (offset === undefined || !Number.isInteger(offset)) return 0;
+  return Math.max(offset, 0);
+}
+
+function sanitizeSearch(search: string | undefined): string | undefined {
+  const normalized = search
+    ?.split('')
+    .map((char) => {
+      const code = char.charCodeAt(0);
+      return code < 32 || code === 127 ? ' ' : char;
+    })
+    .join('')
+    .trim()
+    .replace(/\s+/g, ' ');
+  if (!normalized) return undefined;
+
+  return normalized
+    .split(' ')
+    .map((term) => `"${term.replace(/"/g, '""')}"`)
+    .join(' AND ');
+}
+
+function normalizeIssueFilter(filter: IssueFilter | undefined): IssueFilter {
+  return {
+    ...filter,
+    search: sanitizeSearch(filter?.search),
+    limit: clampLimit(filter?.limit, DEFAULT_ISSUE_LIMIT, MAX_ISSUE_LIMIT),
+    offset: clampOffset(filter?.offset),
+  };
+}
+
 export const resolvers = {
   Query: {
     issue: (_: unknown, { id }: { id: string }) => {
@@ -15,18 +58,18 @@ export const resolvers = {
     },
 
     issues: (_: unknown, { filter }: { filter?: IssueFilter }) => {
-      return getIssueStore().listIssues(filter);
+      return getIssueStore().listIssues(normalizeIssueFilter(filter));
     },
 
     labels: () => getIssueStore().listLabels(),
     milestones: () => getIssueStore().listMilestones(),
 
     issueEvents: (_: unknown, { issueId, limit }: { issueId: string; limit?: number }) => {
-      return getIssueStore().getEvents(issueId, limit);
+      return getIssueStore().getEvents(issueId, clampLimit(limit, DEFAULT_EVENT_LIMIT, MAX_EVENT_LIMIT));
     },
 
     recentEvents: (_: unknown, { limit }: { limit?: number }) => {
-      return getIssueStore().getRecentEvents(limit);
+      return getIssueStore().getRecentEvents(clampLimit(limit, DEFAULT_RECENT_EVENT_LIMIT, MAX_EVENT_LIMIT));
     },
 
     issueStats: (_: unknown, { projectId }: { projectId?: string }) => {

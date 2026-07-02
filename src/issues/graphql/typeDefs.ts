@@ -50,11 +50,6 @@ export const typeDefs = /* GraphQL */ `
     autoLinkMemories(issueId: ID!): [String!]!
   }
 
-  type Subscription {
-    issueUpdated(projectId: String): Issue!
-    issueEventAdded(issueId: ID): IssueEvent!
-  }
-
   # ---- Types ----
 
   type Issue {

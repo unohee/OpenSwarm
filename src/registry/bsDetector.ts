@@ -86,8 +86,8 @@ const BS_PATTERNS: BsPattern[] = [
     severity: 'critical',
     category: 'hardcoded_secret',
     message: '하드코딩된 비밀키/토큰 패턴',
-    pattern: /(?:password|secret|api_key|apikey|token|private_key)\s*[:=]\s*['"][^'"]{8,}['"]/i,
-    excludeIf: (line, fp) => isTestPath(fp) || /example|sample|template|placeholder|dummy|config\.example/i.test(fp) || /process\.env|env\.|getenv|os\.environ/i.test(line) || /token:\s*'[a-z_]+'/.test(line),
+    pattern: /(?:password|secret|api_key|apikey|token|private_key)\s*[:=]\s*(?:(?:process\.env|env\.|getenv|os\.environ).*?(?:\|\||\?\?|,)\s*)?['"][^'"]{8,}['"]/i,
+    excludeIf: (line, fp) => isTestPath(fp) || /example|sample|template|placeholder|dummy|config\.example/i.test(fp) || /token:\s*'[a-z_]+'/.test(line),
   },
 
   // 디버그 코드 잔류

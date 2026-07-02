@@ -339,6 +339,7 @@ export const ISSUE_BOARD_HTML = `<!DOCTYPE html>
       { status: 'in_progress', label: 'IN PROGRESS', color: 'var(--amber)' },
       { status: 'in_review', label: 'IN REVIEW', color: 'var(--cyan)' },
       { status: 'done', label: 'DONE', color: 'var(--green)' },
+      { status: 'cancelled', label: 'CANCELLED', color: 'var(--red)' },
     ];
 
     let allIssues = [];
@@ -411,7 +412,7 @@ export const ISSUE_BOARD_HTML = `<!DOCTYPE html>
       const current = sel.value;
       const opts = ['<option value="">all projects</option>'];
       for (const p of projects) {
-        opts.push('<option value="' + p + '"' + (p === current ? ' selected' : '') + '>' + p + '</option>');
+        opts.push('<option value="' + escAttr(p) + '"' + (p === current ? ' selected' : '') + '>' + escHtml(p) + '</option>');
       }
       sel.innerHTML = opts.join('');
     }
@@ -464,16 +465,16 @@ export const ISSUE_BOARD_HTML = `<!DOCTYPE html>
       card.addEventListener('click', () => openDetail(iss.id));
 
       const priorityClass = 'p-' + iss.priority;
-      const labels = (iss.labels || []).map(l => '<span class="card-label">' + l + '</span>').join('');
+      const labels = (iss.labels || []).map(l => '<span class="card-label">' + escHtml(l) + '</span>').join('');
       const timeAgo = formatTimeAgo(iss.updatedAt);
 
       card.innerHTML = \`
-        <div class="card-title"><span class="card-priority \${priorityClass}"></span>\${escHtml(iss.title)}</div>
+        <div class="card-title"><span class="card-priority \${escAttr(priorityClass)}"></span>\${escHtml(iss.title)}</div>
         <div class="card-meta">
-          <span class="card-id">\${iss.id.slice(0, 6)}</span>
-          <span>\${iss.projectId}</span>
-          \${iss.assignee ? '<span>' + iss.assignee + '</span>' : ''}
-          <span>\${timeAgo}</span>
+          <span class="card-id">\${escHtml(iss.id.slice(0, 6))}</span>
+          <span>\${escHtml(iss.projectId)}</span>
+          \${iss.assignee ? '<span>' + escHtml(iss.assignee) + '</span>' : ''}
+          <span>\${escHtml(timeAgo)}</span>
         </div>
         \${labels ? '<div class="card-meta" style="margin-top:3px">' + labels + '</div>' : ''}
       \`;
@@ -504,21 +505,23 @@ export const ISSUE_BOARD_HTML = `<!DOCTYPE html>
       const content = document.getElementById('detail-content');
 
       const statusOptions = COLUMNS.map(c =>
-        '<option value="' + c.status + '"' + (c.status === iss.status ? ' selected' : '') + '>' + c.label + '</option>'
+        '<option value="' + escAttr(c.status) + '"' + (c.status === iss.status ? ' selected' : '') + '>' + escHtml(c.label) + '</option>'
       ).join('');
+      const linearLink = iss.linearIdentifier && iss.linearUrl
+        ? ' | <a href="' + escAttr(safeUrl(iss.linearUrl)) + '" style="color:var(--cyan)" target="_blank" rel="noopener noreferrer">' + escHtml(iss.linearIdentifier) + '</a>'
+        : '';
 
       content.innerHTML = \`
         <div class="detail-title">\${escHtml(iss.title)}</div>
         <div style="color:var(--dim);font-size:10px;margin-bottom:1rem">
-          \${iss.id} | \${iss.projectId}
-          \${iss.linearIdentifier ? ' | <a href="' + iss.linearUrl + '" style="color:var(--cyan)" target="_blank">' + iss.linearIdentifier + '</a>' : ''}
+          \${escHtml(iss.id)} | \${escHtml(iss.projectId)}
+          \${linearLink}
         </div>
 
         <div class="detail-section">
           <h4>STATUS</h4>
-          <select class="filter-select" onchange="changeStatus('\${iss.id}', this.value)" style="width:100%">
+          <select class="filter-select" onchange="changeStatus('\${escJsArg(iss.id)}', this.value)" style="width:100%">
             \${statusOptions}
-            <option value="cancelled"\${iss.status==='cancelled'?' selected':''}>CANCELLED</option>
           </select>
         </div>
 
@@ -531,16 +534,16 @@ export const ISSUE_BOARD_HTML = `<!DOCTYPE html>
 
         \${iss.acceptanceCriteria.length ? '<div class="detail-section"><h4>ACCEPTANCE CRITERIA</h4><ul>' + iss.acceptanceCriteria.map(c => '<li>' + escHtml(c) + '</li>').join('') + '</ul></div>' : ''}
 
-        \${iss.dependencies.length ? '<div class="detail-section"><h4>DEPENDENCIES</h4><p>' + iss.dependencies.join(', ') + '</p></div>' : ''}
+        \${iss.dependencies.length ? '<div class="detail-section"><h4>DEPENDENCIES</h4><p>' + iss.dependencies.map(d => escHtml(d)).join(', ') + '</p></div>' : ''}
 
         <div class="detail-section">
           <h4>ACTIVITY (\${events.length})</h4>
           \${events.map(ev => \`
             <div class="event-item">
-              <span class="ev-type">\${ev.type}</span>
+              <span class="ev-type">\${escHtml(ev.type)}</span>
               \${ev.content ? ': ' + escHtml(ev.content).slice(0, 100) : ''}
-              \${ev.oldValue && ev.newValue ? ': ' + ev.oldValue + ' → ' + ev.newValue : ''}
-              <span style="float:right">\${formatTimeAgo(ev.createdAt)}</span>
+              \${ev.oldValue && ev.newValue ? ': ' + escHtml(ev.oldValue) + ' → ' + escHtml(ev.newValue) : ''}
+              <span style="float:right">\${escHtml(formatTimeAgo(ev.createdAt))}</span>
             </div>
           \`).join('')}
         </div>
@@ -548,11 +551,11 @@ export const ISSUE_BOARD_HTML = `<!DOCTYPE html>
         <div class="detail-section" style="margin-top:1.5rem">
           <h4>ADD COMMENT</h4>
           <textarea id="comment-input" style="width:100%;background:var(--bg3);color:var(--white);border:1px solid var(--border);padding:6px;font-family:inherit;font-size:12px;min-height:60px;border-radius:3px" placeholder="코멘트 입력..."></textarea>
-          <button class="btn btn-primary" style="margin-top:4px" onclick="addComment('\${iss.id}')">COMMENT</button>
+          <button class="btn btn-primary" style="margin-top:4px" onclick="addComment('\${escJsArg(iss.id)}')">COMMENT</button>
         </div>
 
         <div class="form-actions" style="margin-top:1.5rem;justify-content:flex-start">
-          <button class="btn" style="color:var(--red);border-color:var(--red)" onclick="deleteIssue('\${iss.id}')">DELETE</button>
+          <button class="btn" style="color:var(--red);border-color:var(--red)" onclick="deleteIssue('\${escJsArg(iss.id)}')">DELETE</button>
         </div>
       \`;
 
@@ -587,7 +590,7 @@ export const ISSUE_BOARD_HTML = `<!DOCTYPE html>
     // 이슈 생성
     function openCreateModal() {
       const sel = document.getElementById('new-project');
-      sel.innerHTML = [...projects].map(p => '<option value="' + p + '">' + p + '</option>').join('');
+      sel.innerHTML = [...projects].map(p => '<option value="' + escAttr(p) + '">' + escHtml(p) + '</option>').join('');
       if (sel.options.length === 0) {
         sel.innerHTML = '<option value="default">default</option>';
       }
@@ -631,7 +634,24 @@ export const ISSUE_BOARD_HTML = `<!DOCTYPE html>
     // 유틸
     function escHtml(s) {
       if (!s) return '';
-      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+    }
+
+    function escAttr(s) {
+      return escHtml(s);
+    }
+
+    function escJsArg(s) {
+      return escAttr(String(s).replace(/\\\\/g, '\\\\\\\\').replace(/'/g, "\\\\'"));
+    }
+
+    function safeUrl(url) {
+      try {
+        const parsed = new URL(url, window.location.origin);
+        return ['http:', 'https:'].includes(parsed.protocol) ? parsed.href : '#';
+      } catch {
+        return '#';
+      }
     }
 
     function formatTimeAgo(iso) {

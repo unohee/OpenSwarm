@@ -98,21 +98,25 @@ export class CIWorker {
       const state = await loadCIState();
 
       for (const repo of this.config.repos) {
-        const current = state.repos[repo];
-        const { health, transition } = await checkRepoHealth(repo, current);
+        try {
+          const current = state.repos[repo];
+          const { health, transition } = await checkRepoHealth(repo, current, this.config.maxAgeDays);
 
-        // Update state
-        state.repos[repo] = health;
+          // Update state
+          state.repos[repo] = health;
 
-        // Handle transitions
-        if (transition) {
-          await this.handleTransition(transition);
-        }
+          // Handle transitions
+          if (transition) {
+            await this.handleTransition(transition);
+          }
 
-        // Handle persistent failures (reminder)
-        if (needsReminder(health, 24)) {
-          await this.handlePersistentFailure(health);
-          health.lastReminder = new Date().toISOString();
+          // Handle persistent failures (reminder)
+          if (needsReminder(health, 24)) {
+            await this.handlePersistentFailure(health);
+            health.lastReminder = new Date().toISOString();
+          }
+        } catch (err) {
+          console.error(`[CIWorker] Failed to process repo ${repo}:`, err);
         }
       }
 

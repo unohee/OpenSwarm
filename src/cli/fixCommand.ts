@@ -311,8 +311,19 @@ export async function runFixCommand(opts: FixOptions = {}, deps: FixDeps = {}): 
       log(r.filesChanged.length ? `  ${status.ok(`${area.label} — ${r.filesChanged.length} file(s)`)}` : `  ${status.warn(`${area.label} — no edit`)}`);
       return r;
     });
+    const workerErrors = settled.filter((s) => s.error !== undefined);
+    for (const s of workerErrors) {
+      const area = areas[s.index];
+      const message = s.error instanceof Error ? s.error.message : String(s.error);
+      log(`  ${status.err(`${area?.label ?? `area:${s.index}`} — worker error: ${message}`)}`);
+    }
     const filesChanged = [...new Set(settled.flatMap((s) => s.value?.filesChanged ?? []))];
     rounds.push({ round, outcomes, filesChanged });
+
+    if (workerErrors.length === settled.length) {
+      log(`\n${status.err(`All ${workerErrors.length} fix worker(s) failed this round — stopping.`)}`);
+      return { green: false, rounds, reason: 'no-progress' };
+    }
 
     const failKey = failing.map((f) => f.key).sort().join(',');
     if (failKey === prevFailKey && filesChanged.length === 0) {

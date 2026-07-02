@@ -48,6 +48,7 @@ const HEALTH_TIMEOUT_MS = 3000;
 const AUTO_START_TIMEOUT_MS = 30000;
 const DEFAULT_TASK_TIMEOUT_S = 600;
 const POLL_INTERVAL_MS = 3000;
+const POLL_REQUEST_TIMEOUT_MS = 5000;
 
 // Helpers
 
@@ -146,20 +147,31 @@ async function pollForResult(taskId: string, timeoutS: number): Promise<ExecTask
   const deadline = Date.now() + timeoutS * 1000;
 
   while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+    await new Promise((r) => setTimeout(r, Math.min(POLL_INTERVAL_MS, Math.max(0, deadline - Date.now()))));
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) break;
 
     try {
-      const res = await fetch(`${BASE_URL}/api/exec/${taskId}`);
-      if (!res.ok) continue;
+      const controller = new AbortController();
+      const timer = setTimeout(
+        () => controller.abort(),
+        Math.min(POLL_REQUEST_TIMEOUT_MS, remainingMs),
+      );
+      try {
+        const res = await fetch(`${BASE_URL}/api/exec/${taskId}`, { signal: controller.signal });
+        if (!res.ok) continue;
 
-      const status = (await res.json()) as ExecTaskStatus;
-      if (status.status === 'completed' || status.status === 'failed') {
-        return status;
-      }
+        const status = (await res.json()) as ExecTaskStatus;
+        if (status.status === 'completed' || status.status === 'failed') {
+          return status;
+        }
 
-      // Show progress
-      if (status.currentStage) {
-        process.stdout.write(`\r  ~ ${status.currentStage}...`);
+        // Show progress
+        if (status.currentStage) {
+          process.stdout.write(`\r  ~ ${status.currentStage}...`);
+        }
+      } finally {
+        clearTimeout(timer);
       }
     } catch {
       // Network error, retry

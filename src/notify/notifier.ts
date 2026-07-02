@@ -25,23 +25,47 @@ export type NotificationsConfig = {
 /** Discord's content shape (string or embeds) — the existing sendToChannel signature. */
 type DiscordSend = (content: string | { embeds: EmbedBuilder[] }) => Promise<void>;
 
+const NOTIFICATION_TEXT_LIMIT = 4096;
+const NOTIFICATION_POST_TIMEOUT_MS = 10_000;
+const TRUNCATED_SUFFIX = '\n[truncated]';
+
+function truncateNotificationText(text: string): string {
+  if (text.length <= NOTIFICATION_TEXT_LIMIT) return text;
+  return `${text.slice(0, NOTIFICATION_TEXT_LIMIT - TRUNCATED_SUFFIX.length)}${TRUNCATED_SUFFIX}`;
+}
+
 /** Flatten a string|Embed into readable plain text for non-Discord channels. */
 export function messageToText(message: string | EmbedBuilder): string {
-  if (typeof message === 'string') return message;
+  if (typeof message === 'string') return truncateNotificationText(message);
   const d = message.data;
   const parts: string[] = [];
   if (d.title) parts.push(d.title);
   if (d.description) parts.push(d.description);
   for (const f of d.fields ?? []) parts.push(`${f.name}: ${f.value}`);
-  return parts.join('\n') || '(notification)';
+  return truncateNotificationText(parts.join('\n') || '(notification)');
 }
 
 async function postJson(url: string, body: unknown): Promise<void> {
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'User-Agent': 'OpenSwarm/0.7' },
-    body: JSON.stringify(body),
+  const controller = new AbortController();
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      controller.abort();
+      reject(new Error(`notification webhook timed out after ${NOTIFICATION_POST_TIMEOUT_MS}ms`));
+    }, NOTIFICATION_POST_TIMEOUT_MS);
   });
+  const res = await Promise.race([
+    fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'User-Agent': 'OpenSwarm/0.7' },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    }),
+    timeout,
+  ]).finally(() => {
+    if (timeoutId) clearTimeout(timeoutId);
+  });
+  await res.arrayBuffer();
   if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
 }
 
@@ -60,7 +84,7 @@ class DiscordNotifier implements Notifier {
       if (typeof message === 'string') {
         // Lazy import keeps discord.js out of the load path for non-Discord users.
         const { EmbedBuilder } = await import('discord.js');
-        const embed = new EmbedBuilder().setDescription(message).setColor(0x00ff41).setTimestamp();
+        const embed = new EmbedBuilder().setDescription(messageToText(message)).setColor(0x00ff41).setTimestamp();
         await this.send({ embeds: [embed] });
       } else {
         await this.send({ embeds: [message] });

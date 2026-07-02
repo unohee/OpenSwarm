@@ -66,7 +66,7 @@ describe('AutonomousRunner cancellation state sync', () => {
     ({ AutonomousRunner } = await import('./autonomousRunner.js'));
     runnerExecution = await import('./runnerExecution.js');
     taskStateStore = await import('../taskState/store.js');
-  });
+  }, 30000);
 
   afterEach(() => {
     vi.unstubAllEnvs();

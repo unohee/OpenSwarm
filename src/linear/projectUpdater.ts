@@ -389,11 +389,19 @@ async function refreshProjectOverview(projectId: string, projectPath?: string): 
     if (!project) return;
 
     // Issue stats: count issues by state and priority
-    const issues = await project.issues({ first: 250 });
+    const issueNodes: Array<Awaited<ReturnType<typeof project.issues>>['nodes'][number]> = [];
+    let after: string | undefined;
+    while (true) {
+      const issues = await project.issues({ first: 250, after });
+      issueNodes.push(...issues.nodes);
+      if (!issues.pageInfo.hasNextPage) break;
+      after = issues.pageInfo.endCursor ?? undefined;
+      if (!after) break;
+    }
     const stateCounts = new Map<string, number>();
     const priorityCounts = new Map<number, number>();
 
-    for (const issue of issues.nodes) {
+    for (const issue of issueNodes) {
       const state = (await issue.state)?.name ?? 'Unknown';
       stateCounts.set(state, (stateCounts.get(state) ?? 0) + 1);
       priorityCounts.set(issue.priority, (priorityCounts.get(issue.priority) ?? 0) + 1);

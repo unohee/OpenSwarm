@@ -56,7 +56,7 @@ describe('SqliteIssueStore', () => {
         acceptanceCriteria: ['단위 테스트 통과', 'E2E 통과'],
       });
 
-      expect(issue.labels).toEqual([label.id]);
+      expect(issue.labels).toEqual([label.name]);
       expect(issue.relevantFiles).toEqual(expect.arrayContaining(['src/foo.ts', 'src/bar.ts']));
       expect(issue.acceptanceCriteria).toEqual(['단위 테스트 통과', 'E2E 통과']);
     });
@@ -105,7 +105,7 @@ describe('SqliteIssueStore', () => {
       const issue = store.createIssue({ projectId: 'p1', title: 't', labels: [l1.id] });
 
       const updated = store.updateIssue(issue.id, { labels: [l2.id] });
-      expect(updated?.labels).toEqual([l2.id]);
+      expect(updated?.labels).toEqual([l2.name]);
     });
   });
 
@@ -152,6 +152,29 @@ describe('SqliteIssueStore', () => {
       const { issues } = store.listIssues({ search: 'API', limit: 50, offset: 0 });
       expect(issues.length).toBe(1);
       expect(issues[0].title).toContain('API');
+    });
+
+    it('FTS OR 검색', () => {
+      store.createIssue({ projectId: 'p1', title: 'API endpoint failure' });
+      store.createIssue({ projectId: 'p1', title: 'login regression' });
+      store.createIssue({ projectId: 'p1', title: 'billing cleanup' });
+
+      const { issues } = store.listIssues({ search: 'API OR login', limit: 50, offset: 0 });
+      expect(issues.map((i) => i.title)).toEqual(expect.arrayContaining([
+        'API endpoint failure',
+        'login regression',
+      ]));
+      expect(issues).toHaveLength(2);
+    });
+
+    it('FTS 정규화된 quoted AND 검색', () => {
+      store.createIssue({ projectId: 'p1', title: 'API login failure' });
+      store.createIssue({ projectId: 'p1', title: 'API billing failure' });
+      store.createIssue({ projectId: 'p1', title: 'login page copy' });
+
+      const { issues } = store.listIssues({ search: '"API" AND "login"', limit: 50, offset: 0 });
+      expect(issues).toHaveLength(1);
+      expect(issues[0].title).toBe('API login failure');
     });
 
     it('우선순위 정렬 (urgent > high > medium > low)', () => {
@@ -205,6 +228,16 @@ describe('SqliteIssueStore', () => {
 
       store.deleteLabel(label.id);
       expect(store.listLabels().length).toBe(0);
+    });
+
+    it('중복 라벨 생성 시 기존 행을 반환', () => {
+      const first = store.createLabel('bug', '#ff0000', '버그');
+      const second = store.createLabel('bug', '#00ff00', '중복');
+
+      expect(second.id).toBe(first.id);
+      expect(second.color).toBe(first.color);
+      expect(store.listLabels()).toHaveLength(1);
+      expect(store.deleteLabel(second.id)).toBe(true);
     });
 
     it('마일스톤 생성', () => {

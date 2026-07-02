@@ -140,7 +140,7 @@ export function isWorkAllowed(config: TimeWindowConfig = DEFAULT_TIME_WINDOW): {
         allowed: false,
         reason: t('timeWindow.blockedWindow', { start: blocked.start, end: blocked.end }),
         currentTime: currentTimeStr,
-        nextAllowedTime: blocked.end,
+        nextAllowedTime: findNextAllowedWindow(kstMinutes, config.allowedWindows),
       };
     }
   }
@@ -212,22 +212,34 @@ function formatCurrentTime(): string {
 /**
  * Get current market status
  */
-export function getMarketStatus(): {
+export function getMarketStatus(config: TimeWindowConfig = DEFAULT_TIME_WINDOW): {
   status: 'pre_market' | 'regular' | 'post_market' | 'closed';
   description: string;
   canWork: boolean;
 } {
-  const result = isWorkAllowed();
+  const result = isWorkAllowed(config);
   const time = result.currentTime;
   const [hours, minutes] = time.split(':').map(Number);
   const totalMinutes = hours * 60 + minutes;
+  const now = new Date();
+  const kstOffset = 9 * 60;
+  const utcMinutes = now.getUTCHours() * 60 + now.getUTCMinutes();
+  const kstDay = (now.getUTCDay() + (utcMinutes + kstOffset >= 24 * 60 ? 1 : 0)) % 7;
+
+  if (config.restrictedDays && config.restrictedDays.length > 0 && !config.restrictedDays.includes(kstDay)) {
+    return {
+      status: 'closed',
+      description: t('timeWindow.marketStatus.closed'),
+      canWork: result.allowed,
+    };
+  }
 
   // Pre-market hours: 08:30 ~ 09:00
   if (totalMinutes >= 510 && totalMinutes < 540) {
     return {
       status: 'pre_market',
       description: t('timeWindow.marketStatus.preMarket'),
-      canWork: false,
+      canWork: result.allowed,
     };
   }
 
@@ -236,7 +248,7 @@ export function getMarketStatus(): {
     return {
       status: 'regular',
       description: t('timeWindow.marketStatus.regular'),
-      canWork: false,
+      canWork: result.allowed,
     };
   }
 
@@ -245,7 +257,7 @@ export function getMarketStatus(): {
     return {
       status: 'post_market',
       description: t('timeWindow.marketStatus.postMarket'),
-      canWork: false,
+      canWork: result.allowed,
     };
   }
 
@@ -253,7 +265,7 @@ export function getMarketStatus(): {
   return {
     status: 'closed',
     description: t('timeWindow.marketStatus.closed'),
-    canWork: true,
+    canWork: result.allowed,
   };
 }
 

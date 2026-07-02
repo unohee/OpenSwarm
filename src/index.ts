@@ -90,11 +90,18 @@ async function main(): Promise<void> {
   const isDaemon = process.env.OPENSWARM_DAEMON === '1';
   const shutdown = async (signal: string): Promise<void> => {
     console.log(`\nReceived ${signal}, shutting down...`);
-    await stopService();
-    if (isDaemon) {
-      try { unlinkSync(DAEMON_PATHS.PID_FILE); } catch { /* ignore */ }
+    let exitCode = 0;
+    try {
+      await stopService();
+    } catch (err) {
+      exitCode = 1;
+      console.error('Failed to stop service cleanly:', err);
+    } finally {
+      if (isDaemon) {
+        try { unlinkSync(DAEMON_PATHS.PID_FILE); } catch { /* ignore */ }
+      }
+      process.exit(exitCode);
     }
-    process.exit(0);
   };
 
   process.on('SIGINT', () => shutdown('SIGINT'));

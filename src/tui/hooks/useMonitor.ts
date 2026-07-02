@@ -25,7 +25,10 @@ export function useMonitor(
   useEffect(() => {
     if (!port) return;
     let cancelled = false;
+    let inFlight = false;
     const load = async () => {
+      if (inFlight) return;
+      inFlight = true;
       setLoading(true);
       try {
         const t = await fetcher(port);
@@ -36,6 +39,7 @@ export function useMonitor(
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
       } finally {
+        inFlight = false;
         if (!cancelled) setLoading(false);
       }
     };

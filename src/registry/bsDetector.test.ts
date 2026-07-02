@@ -78,8 +78,15 @@ describe('scanFileContent', () => {
       expect(secrets).toHaveLength(0);
     });
 
-    it('excludes lines referencing process.env', () => {
+    it('flags a hardcoded fallback literal after process.env (still a leaked secret)', () => {
       const code = 'const token = process.env.TOKEN || "sk-fallback1234"';
+      const issues = scanFileContent(code, 'src/config.ts', 'typescript');
+      const secrets = issues.filter(i => i.category === 'hardcoded_secret');
+      expect(secrets).toHaveLength(1);
+    });
+
+    it('does not flag pure env reads without a literal fallback', () => {
+      const code = 'const token = process.env.TOKEN;';
       const issues = scanFileContent(code, 'src/config.ts', 'typescript');
       const secrets = issues.filter(i => i.category === 'hardcoded_secret');
       expect(secrets).toHaveLength(0);

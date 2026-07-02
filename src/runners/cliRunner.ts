@@ -3,13 +3,13 @@
 // Standalone task execution without daemon services
 // ============================================
 
-import { execSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { accessSync, constants, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 
 import { PairPipeline, type PipelineResult } from '../agents/pairPipeline.js';
 import type { TaskItem } from '../orchestration/decisionEngine.js';
 import type { PipelineStage, RoleConfig } from '../core/types.js';
+import { getAdapter, getDefaultAdapterName, listAvailableAdapters } from '../adapters/index.js';
 import { initLocale } from '../locale/index.js';
 import { expandPath } from '../core/config.js';
 import { startProgressHeartbeat, type ReviewProgress } from '../cli/reviewProgress.js';
@@ -33,14 +33,18 @@ export interface CliRunOptions {
 
 // expandPath imported from core/config.ts (with resolveRelative=true for CLI paths)
 
-/** Check if Claude CLI is installed */
-function checkClaudeCli(): boolean {
-  try {
-    execSync('which claude', { stdio: 'ignore' });
-    return true;
-  } catch {
-    return false;
+/** Check if the configured/default adapter can run before starting the pipeline */
+async function checkDefaultAdapter(): Promise<boolean> {
+  return getAdapter(getDefaultAdapterName()).isAvailable();
+}
+
+function validateMaxIterations(value: number | undefined): number {
+  const maxIterations = value ?? 3;
+  if (!Number.isInteger(maxIterations) || maxIterations < 1) {
+    console.error(`Error: --max-iterations must be a positive integer. Received: ${String(value)}`);
+    process.exit(1);
   }
+  return maxIterations;
 }
 
 /** Format duration as human-readable string */
@@ -59,17 +63,41 @@ export async function runCli(options: CliRunOptions): Promise<void> {
   // Initialize locale (needed for prompt templates)
   initLocale('en');
 
-  // 1. Check Claude CLI
-  if (!checkClaudeCli()) {
-    console.error('Error: Claude CLI not found.');
-    console.error('Install it: https://docs.anthropic.com/en/docs/claude-code');
+  // 1. Check configured/default adapter
+  if (!await checkDefaultAdapter()) {
+    const adapterName = getDefaultAdapterName();
+    const availableAdapters = await listAvailableAdapters();
+    console.error(`Error: CLI adapter "${adapterName}" is not available.`);
+    console.error(
+      availableAdapters.length > 0
+        ? `Available adapters: ${availableAdapters.join(', ')}`
+        : 'No registered adapters are currently available.'
+    );
     process.exit(1);
   }
 
   // 2. Resolve project path
   const projectPath = expandPath(options.projectPath ?? process.cwd(), true);
-  if (!existsSync(projectPath)) {
-    console.error(`Error: Project path does not exist: ${projectPath}`);
+  let projectStats: ReturnType<typeof statSync>;
+  try {
+    projectStats = statSync(projectPath);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    console.error(
+      code === 'ENOENT'
+        ? `Error: Project path does not exist: ${projectPath}`
+        : `Error: Project path is not accessible: ${projectPath}`
+    );
+    process.exit(1);
+  }
+  if (!projectStats.isDirectory()) {
+    console.error(`Error: Project path is not a directory: ${projectPath}`);
+    process.exit(1);
+  }
+  try {
+    accessSync(projectPath, constants.R_OK | constants.X_OK);
+  } catch {
+    console.error(`Error: Project path is not accessible: ${projectPath}`);
     process.exit(1);
   }
 
@@ -101,9 +129,10 @@ export async function runCli(options: CliRunOptions): Promise<void> {
   };
 
   // 6. Create pipeline
+  const maxIterations = validateMaxIterations(options.maxIterations);
   const pipeline = new PairPipeline({
     stages,
-    maxIterations: options.maxIterations ?? 3,
+    maxIterations,
     roles: Object.keys(roles).length > 0 ? roles as any : undefined,
     verbose: options.verbose,
   });
@@ -125,7 +154,6 @@ export async function runCli(options: CliRunOptions): Promise<void> {
   console.log('');
 
   // 8. Attach event listeners for progress
-  const stageStartTimes = new Map<string, number>();
   // Every stage (worker included) gets the same animated braille heartbeat the
   // reviewer has, so a running stage never looks frozen. On a non-TTY or in
   // verbose mode (where each tool line is printed) we fall back to plain lines.
@@ -138,7 +166,6 @@ export async function runCli(options: CliRunOptions): Promise<void> {
   };
 
   pipeline.on('stage:start', ({ stage }: { stage: string }) => {
-    stageStartTimes.set(stage, Date.now());
     if (liveSpinner) heartbeat = startProgressHeartbeat(`${stage}…`, { write: (s) => process.stdout.write(s) });
     else process.stdout.write(`  ~ ${stage}...\n`);
   });

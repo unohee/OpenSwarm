@@ -23,4 +23,14 @@ describe('renderMarkdown (INT-1943)', () => {
   it('trims trailing whitespace', () => {
     expect(renderMarkdown('hi\n\n\n')).not.toMatch(/\s$/);
   });
+
+  it('strips terminal control sequences from assistant-controlled markdown', () => {
+    const out = renderMarkdown('\x1b]52;c;AAAA\x07Hello \x1b[31mred\x1b[0m');
+
+    expect(out).toContain('Hello');
+    expect(out).toContain('red');
+    expect(out).not.toContain('AAAA');
+    expect(out).not.toContain('\x1b]52');
+    expect(out).not.toContain('\x1b[31m');
+  });
 });

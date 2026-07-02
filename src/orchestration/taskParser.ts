@@ -3,7 +3,7 @@
 // Analyze Linear issues and decompose into executable subtasks
 // ============================================
 
-import { resolve } from 'path';
+import { basename, isAbsolute, relative, resolve } from 'path';
 import { homedir } from 'os';
 import * as fs from 'fs/promises';
 import { WorkflowConfig, WorkflowStep } from './workflow.js';
@@ -522,6 +522,7 @@ ${template.prompt}
     subtasks.push({
       ...template,
       id: `${type}-${template.id}`,
+      dependsOn: template.dependsOn.map(dep => `${type}-${dep}`),
       prompt: contextualPrompt,
     });
   }
@@ -609,12 +610,34 @@ function subtasksToWorkflow(
 
 const PARSED_TASKS_DIR = resolve(homedir(), '.openswarm/parsed-tasks');
 
+function parsedTaskFilePath(issueId: string): string {
+  if (
+    !issueId ||
+    issueId !== basename(issueId) ||
+    issueId === '.' ||
+    issueId === '..' ||
+    issueId.includes('/') ||
+    issueId.includes('\\') ||
+    issueId.includes('\0')
+  ) {
+    throw new Error(`Invalid parsed task ID: ${issueId}`);
+  }
+
+  const filePath = resolve(PARSED_TASKS_DIR, `${issueId}.json`);
+  const rel = relative(PARSED_TASKS_DIR, filePath);
+  if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) {
+    throw new Error(`Invalid parsed task ID: ${issueId}`);
+  }
+
+  return filePath;
+}
+
 /**
  * Save parsed result
  */
 export async function saveParsedTask(parsed: ParsedTask): Promise<void> {
   await fs.mkdir(PARSED_TASKS_DIR, { recursive: true });
-  const filePath = resolve(PARSED_TASKS_DIR, `${parsed.original.id}.json`);
+  const filePath = parsedTaskFilePath(parsed.original.id);
   await fs.writeFile(filePath, JSON.stringify(parsed, null, 2));
 }
 
@@ -623,7 +646,7 @@ export async function saveParsedTask(parsed: ParsedTask): Promise<void> {
  */
 export async function loadParsedTask(issueId: string): Promise<ParsedTask | null> {
   try {
-    const filePath = resolve(PARSED_TASKS_DIR, `${issueId}.json`);
+    const filePath = parsedTaskFilePath(issueId);
     const content = await fs.readFile(filePath, 'utf-8');
     return JSON.parse(content);
   } catch {

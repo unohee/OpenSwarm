@@ -191,6 +191,11 @@ async function handlePairStart(msg: Message, taskId?: string): Promise<void> {
       await msg.reply(`❌ ${t('discord.errors.issueNotFound', { id: taskId || '' })}`);
       return;
     }
+
+    if (!task) {
+      await msg.reply(`❌ ${t('discord.errors.issueNotFound', { id: taskId || '' })}`);
+      return;
+    }
   } else {
     // Select first pending issue
     try {
@@ -357,6 +362,11 @@ async function runPairLoop(sessionId: string, thread: ThreadChannel): Promise<vo
       issueIdentifier: session.taskId,
     });
 
+    session = agentPair.getPairSession(sessionId);
+    if (!session || session.status === 'cancelled') {
+      return;
+    }
+
     lastWorkerResult = workerResult;
     agentPair.saveWorkerResult(sessionId, workerResult);
     await thread.send(worker.formatWorkReport(workerResult, {
@@ -403,6 +413,11 @@ async function runPairLoop(sessionId: string, thread: ThreadChannel): Promise<vo
       projectPath: session.projectPath,
       timeoutMs: 180000, // 3 minutes
     });
+
+    session = agentPair.getPairSession(sessionId);
+    if (!session || session.status === 'cancelled') {
+      return;
+    }
 
     agentPair.saveReviewerResult(sessionId, reviewResult);
     await thread.send(reviewer.formatReviewFeedback(reviewResult));

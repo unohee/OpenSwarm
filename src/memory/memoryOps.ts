@@ -10,9 +10,7 @@ import {
   normalizeRecords,
   initDatabase,
   getEmbedding,
-  getDb,
   getTable,
-  setTable,
   searchMemory,
   calculateStability,
   calculateFreshness,
@@ -21,6 +19,36 @@ import {
   type MemorySearchResult,
   type CognitiveMemoryRecord,
 } from './memoryCore.js';
+
+type MemoryTable = NonNullable<ReturnType<typeof getTable>>;
+
+function sqlString(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+function idPredicate(id: string): string {
+  return `id = ${sqlString(id)}`;
+}
+
+function idsPredicate(ids: string[]): string {
+  return `id IN (${ids.map(sqlString).join(', ')})`;
+}
+
+async function loadMemoryById(table: MemoryTable, id: string): Promise<any | null> {
+  const rows = await table.query().where(idPredicate(id)).limit(1).toArray();
+  return rows[0] ?? null;
+}
+
+async function updateMemoryRecord(table: MemoryTable, record: any): Promise<void> {
+  const normalized = normalizeRecords([record])[0];
+  const { id, ...values } = normalized;
+  await table.update({ where: idPredicate(id), values: values as Record<string, any> });
+}
+
+async function deleteMemoryIds(table: MemoryTable, ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  await table.delete(idsPredicate(ids));
+}
 
 // Memory Revision Loop (PRD Phase 3)
 
@@ -39,12 +67,10 @@ export async function reviseMemory(
   try {
     await initDatabase();
     const table = getTable();
-    const db = getDb();
-    if (!table || !db) return false;
+    if (!table) return false;
 
     // Find existing memory
-    const results = await table.search(Array.from({ length: EMBEDDING_DIM }, () => 0)).limit(10000).toArray();
-    const existing = results.find((r: any) => r.id === memoryId);
+    const existing = await loadMemoryById(table, memoryId);
 
     if (!existing) {
       console.log(`[Memory] Revision failed: memory ${memoryId} not found`);
@@ -74,16 +100,7 @@ export async function reviseMemory(
       }),
     };
 
-    // LanceDB doesn't support update, so we delete and re-add
-    // Create new table without the old record, then add revised
-    const allRecords = results.filter((r: any) => r.id !== memoryId);
-    allRecords.push(revised);
-
-    // Recreate table with updated data (normalization applied)
-    const tableName = 'cognitive_memory';
-    await db.dropTable(tableName);
-    const newTable = await db.createTable(tableName, normalizeRecords(allRecords));
-    setTable(newTable);
+    await updateMemoryRecord(table, revised);
 
     console.log(`[Memory] Revised ${memoryId} (rev: ${newRevisionCount}, stability: ${revised.stability})`);
     return true;
@@ -148,12 +165,10 @@ export async function markContradiction(memoryId1: string, memoryId2: string): P
   try {
     await initDatabase();
     const table = getTable();
-    const db = getDb();
-    if (!table || !db) return false;
+    if (!table) return false;
 
-    const results = await table.search(Array.from({ length: EMBEDDING_DIM }, () => 0)).limit(10000).toArray();
-    const memory1 = results.find((r: any) => r.id === memoryId1);
-    const memory2 = results.find((r: any) => r.id === memoryId2);
+    const memory1 = await loadMemoryById(table, memoryId1);
+    const memory2 = await loadMemoryById(table, memoryId2);
 
     if (!memory1 || !memory2) {
       console.log('[Memory] Cannot mark contradiction: one or both memories not found');
@@ -174,11 +189,8 @@ export async function markContradiction(memoryId1: string, memoryId2: string): P
     memory1.importance = Math.max(0.2, (memory1.importance ?? 0.5) - 0.15);
     memory2.importance = Math.max(0.2, (memory2.importance ?? 0.5) - 0.15);
 
-    // Recreate table (normalization applied)
-    const tableName = 'cognitive_memory';
-    await db.dropTable(tableName);
-    const newTable = await db.createTable(tableName, normalizeRecords(results));
-    setTable(newTable);
+    await updateMemoryRecord(table, memory1);
+    await updateMemoryRecord(table, memory2);
 
     console.log(`[Memory] Marked contradiction between ${memoryId1} and ${memoryId2}`);
     return true;
@@ -199,12 +211,10 @@ export async function reconcileContradiction(
   try {
     await initDatabase();
     const table = getTable();
-    const db = getDb();
-    if (!table || !db) return false;
+    if (!table) return false;
 
-    const results = await table.search(Array.from({ length: EMBEDDING_DIM }, () => 0)).limit(10000).toArray();
-    const keepMemory = results.find((r: any) => r.id === keepId);
-    const archiveMemory = results.find((r: any) => r.id === archiveId);
+    const keepMemory = await loadMemoryById(table, keepId);
+    const archiveMemory = await loadMemoryById(table, archiveId);
 
     if (!keepMemory || !archiveMemory) {
       console.log('[Memory] Cannot reconcile: one or both memories not found');
@@ -227,11 +237,8 @@ export async function reconcileContradiction(
       },
     });
 
-    // Recreate table (normalization applied)
-    const tableName = 'cognitive_memory';
-    await db.dropTable(tableName);
-    const newTable = await db.createTable(tableName, normalizeRecords(results));
-    setTable(newTable);
+    await updateMemoryRecord(table, keepMemory);
+    await updateMemoryRecord(table, archiveMemory);
 
     console.log(`[Memory] Reconciled: kept ${keepId}, archived ${archiveId}`);
     return true;
@@ -357,8 +364,7 @@ export async function cleanupExpired(): Promise<number> {
   try {
     await initDatabase();
     const table = getTable();
-    const db = getDb();
-    if (!table || !db) return 0;
+    if (!table) return 0;
 
     const now = Date.now();
     const results = await table.search(Array.from({ length: EMBEDDING_DIM }, () => 0)).limit(10000).toArray();
@@ -368,9 +374,8 @@ export async function cleanupExpired(): Promise<number> {
       .map((r: any) => r.id);
 
     if (expiredIds.length > 0) {
-      // LanceDB doesn't support direct deletion, requires table replacement
-      // For now, just logging
-      console.log(`[Memory] Found ${expiredIds.length} expired records`);
+      await deleteMemoryIds(table, expiredIds);
+      console.log(`[Memory] Deleted ${expiredIds.length} expired records`);
     }
 
     return expiredIds.length;
@@ -398,14 +403,14 @@ export async function applyMemoryDecay(daysSinceLastRun: number = 7): Promise<{
   try {
     await initDatabase();
     const table = getTable();
-    const db = getDb();
-    if (!table || !db) return { decayed: 0, archived: 0 };
+    if (!table) return { decayed: 0, archived: 0 };
 
     const results = await table.search(Array.from({ length: EMBEDDING_DIM }, () => 0)).limit(10000).toArray();
     const now = Date.now();
 
     let decayed = 0;
     let archived = 0;
+    const changedRecords: any[] = [];
 
     for (const r of results) {
       if (r.id === 'init') continue;
@@ -434,15 +439,14 @@ export async function applyMemoryDecay(daysSinceLastRun: number = 7): Promise<{
           r.importance = 0.05;  // Near zero but not deleted
           archived++;
         }
+        changedRecords.push(r);
       }
     }
 
-    if (decayed > 0) {
-      // Recreate table (normalization applied)
-      const tableName = 'cognitive_memory';
-      await db.dropTable(tableName);
-      const newTable = await db.createTable(tableName, normalizeRecords(results));
-      setTable(newTable);
+    if (changedRecords.length > 0) {
+      for (const record of changedRecords) {
+        await updateMemoryRecord(table, record);
+      }
       console.log(`[Memory] Decay applied: ${decayed} memories decayed, ${archived} archived`);
     }
 
@@ -464,14 +468,14 @@ export async function consolidateMemories(): Promise<{
   try {
     await initDatabase();
     const table = getTable();
-    const db = getDb();
-    if (!table || !db) return { merged: 0, groups: [] };
+    if (!table) return { merged: 0, groups: [] };
 
     const results = await table.search(Array.from({ length: EMBEDDING_DIM }, () => 0)).limit(10000).toArray();
     const validMemories = results.filter((r: any) => r.id !== 'init');
 
     const merged: string[] = [];
     const groups: Array<{ kept: string; merged: string[] }> = [];
+    const updatedKept: any[] = [];
 
     // Find similar memory groups
     for (let i = 0; i < validMemories.length; i++) {
@@ -508,6 +512,7 @@ export async function consolidateMemories(): Promise<{
         // Boost kept memory
         kept.confidence = Math.min(1, (kept.confidence ?? 0.7) + 0.05 * toMerge.length);
         kept.revisionCount = (kept.revisionCount ?? 0) + toMerge.length;
+        updatedKept.push(kept);
 
         groups.push({
           kept: kept.id,
@@ -519,14 +524,10 @@ export async function consolidateMemories(): Promise<{
     }
 
     if (merged.length > 0) {
-      // Remove merged memories
-      const remainingRecords = results.filter((r: any) => !merged.includes(r.id));
-
-      // Recreate table (normalization applied)
-      const tableName = 'cognitive_memory';
-      await db.dropTable(tableName);
-      const newTable = await db.createTable(tableName, normalizeRecords(remainingRecords));
-      setTable(newTable);
+      for (const record of updatedKept) {
+        await updateMemoryRecord(table, record);
+      }
+      await deleteMemoryIds(table, merged);
 
       console.log(`[Memory] Consolidation complete: ${merged.length} memories merged`);
     }
@@ -718,7 +719,6 @@ export async function getRecentConversations(
         // channelId matching: derivedFrom or metadata.issueRef
         if (!channelId) return true;  // All
         if (r.derivedFrom === channelId) return true;
-        if (r.derivedFrom === 'unknown') return true;  // Include legacy data
 
         // metadata.issueRef fallback
         try {

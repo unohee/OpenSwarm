@@ -86,6 +86,7 @@ export const en: LocaleMessages = {
     },
     issue: {
       title: 'Issue Details',
+      stateLabel: 'State: {{state}}',
       notFound: 'Issue not found: `{{id}}`',
       fetchError: 'Failed to fetch issue: {{error}}',
       noDescription: '(no description)',
@@ -147,6 +148,7 @@ export const en: LocaleMessages = {
       runUsage: 'Usage: `!schedule run <name>`',
       runStarted: '**{{name}}** schedule executing now',
       notFound: 'Schedule not found: `{{name}}`',
+      toggleUsage: 'Usage: `!schedule toggle <name>`',
       toggleEnabled: 'Enabled: **{{name}}**',
       toggleDisabled: 'Disabled: **{{name}}**',
       addUsage: '**Usage:**\n`!schedule add <name> <project_path> <interval> "<prompt>"`\n\n**Example:**\n`!schedule add myproject-check ~/dev/myproject 30m "run tests and report results"`\n\n**interval:** `30m`, `1h`, `2h`, `1d` or cron expression',
@@ -169,9 +171,11 @@ export const en: LocaleMessages = {
     },
     auto: {
       title: 'Autonomous Execution Status',
+      statusLabel: 'Status',
       statusRunning: 'Running',
       statusStopped: 'Stopped',
       completedFailed: '{{completed}}/{{failed}}',
+      pendingApprovalLabel: 'Pending Approval',
       pendingApproval: 'Pending',
       noPending: 'None',
       lastHeartbeatLabel: 'Last Heartbeat',

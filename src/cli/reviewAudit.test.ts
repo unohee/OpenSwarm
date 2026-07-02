@@ -114,13 +114,13 @@ describe('aggregateAuditResults (INT-2006)', () => {
     expect(aggregateAuditResults(results).decision).toBe('approve');
   });
 
-  it('counts errored areas without letting them affect the verdict', () => {
+  it('counts errored areas and makes incomplete audits non-approving', () => {
     const results: AuditAreaResult[] = [
       { area: area('a'), review: review({ decision: 'approve' }) },
       { area: area('b'), error: 'subagent timed out' },
     ];
     const sum = aggregateAuditResults(results);
-    expect(sum.decision).toBe('approve');
+    expect(sum.decision).toBe('reject');
     expect(sum.completed).toBe(1);
     expect(sum.failed).toBe(1);
     expect(sum.areas.find((a) => a.label === 'b')?.decision).toBe('error');

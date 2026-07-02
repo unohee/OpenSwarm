@@ -24,11 +24,23 @@ export function buildSubagentTree(stages: StageEntry[]): TaskNode[] {
     if (arr) arr.push(s);
     else byTask.set(s.taskId, [s]);
   }
-  return [...byTask.entries()].map(([taskId, taskStages]) => ({
-    taskId,
-    stages: taskStages,
-    status: rollUp(taskStages),
-  }));
+  return [...byTask.entries()].map(([taskId, taskStages]) => {
+    const latestStages = latestByStage(taskStages);
+    return {
+      taskId,
+      stages: latestStages,
+      status: rollUp(latestStages),
+    };
+  });
+}
+
+function latestByStage(stages: StageEntry[]): StageEntry[] {
+  const latest = new Map<string, StageEntry>();
+  for (const stage of stages) {
+    latest.delete(stage.stage);
+    latest.set(stage.stage, stage);
+  }
+  return [...latest.values()];
 }
 
 function rollUp(stages: StageEntry[]): TaskStatus {

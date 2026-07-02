@@ -107,6 +107,7 @@ export async function runPlanner(options: PlannerOptions): Promise<PlannerResult
       maxTurns: options.maxTurns ?? 15,
       onLog: options.onLog ? (line: string) => options.onLog!(humanizePlannerOutput(line)) : undefined,
       systemPrompt: getPrompts().systemPrompt,
+      readOnly: true,
       // Planner is a judgment role — keep reasoning ON (unlike the worker).
     });
 

@@ -21,12 +21,15 @@ export const TABS: readonly TabDef[] = [
 
 /** Move `current` by `delta` with wraparound across the tab count. */
 export function nextTab(current: number, delta: number, total: number = TABS.length): number {
+  if (!Number.isInteger(total) || total <= 0) return 0;
+  if (!Number.isInteger(current) || !Number.isInteger(delta)) return 0;
   return (((current + delta) % total) + total) % total;
 }
 
 /** Map a 1-based digit key to a 0-based tab index, or null if out of range. */
 export function tabFromDigit(input: string): number | null {
+  if (!/^[1-9]$/.test(input)) return null;
   const n = Number(input);
-  if (!Number.isInteger(n) || n < 1 || n > TABS.length) return null;
+  if (n > TABS.length) return null;
   return n - 1;
 }

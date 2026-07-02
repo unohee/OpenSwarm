@@ -17,6 +17,41 @@ async function ghExec(...args: string[]): Promise<string> {
   return stdout;
 }
 
+const ACTIVE_FAILURE_RUN_LIMIT = 1000;
+
+function normalizePRCheck(c: any): { name: string; status: string; conclusion: string } {
+  const bucket = String(c.bucket ?? '').toLowerCase();
+  const state = String(c.state ?? '').toLowerCase();
+
+  switch (bucket || state) {
+    case 'pass':
+    case 'success':
+      return { name: c.name, status: 'completed', conclusion: 'success' };
+    case 'fail':
+    case 'failure':
+    case 'startup_failure':
+      return { name: c.name, status: 'completed', conclusion: 'failure' };
+    case 'timed_out':
+      return { name: c.name, status: 'completed', conclusion: 'timed_out' };
+    case 'pending':
+    case 'queued':
+    case 'in_progress':
+    case 'requested':
+    case 'waiting':
+    case 'action_required':
+      return { name: c.name, status: 'pending', conclusion: 'pending' };
+    case 'skipping':
+    case 'skipped':
+    case 'neutral':
+      return { name: c.name, status: 'completed', conclusion: 'skipped' };
+    case 'cancel':
+    case 'cancelled':
+      return { name: c.name, status: 'completed', conclusion: 'cancelled' };
+    default:
+      return { name: c.name, status: state || 'unknown', conclusion: state || 'unknown' };
+  }
+}
+
 /**
  * Failed Workflow Run
  */
@@ -178,14 +213,9 @@ export async function getPRChecks(
   prNumber: number
 ): Promise<{ name: string; status: string; conclusion: string }[]> {
   try {
-    const stdout = await ghExec('pr', 'checks', String(prNumber), '-R', repo, '--json', 'name,state');
+    const stdout = await ghExec('pr', 'checks', String(prNumber), '-R', repo, '--json', 'name,state,bucket');
     const checks = JSON.parse(stdout);
-    // Map state to conclusion for backward compatibility
-    return checks.map((c: any) => ({
-      name: c.name,
-      status: c.state,
-      conclusion: c.state === 'failure' ? 'failure' : c.state === 'success' ? 'success' : c.state
-    }));
+    return checks.map(normalizePRCheck);
   } catch (err) {
     console.error(`Failed to get PR checks for ${repo}#${prNumber}:`, err);
     return [];
@@ -304,9 +334,12 @@ export async function saveCIState(state: CIState): Promise<void> {
  */
 export async function getActiveFailures(repo: string, maxAgeDays: number = 30): Promise<ActiveFailure[] | null> {
   try {
+    const since = new Date(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
     const { stdout } = await execFileAsync('gh', [
       'run', 'list', '-R', repo,
-      '--json', 'databaseId,name,headBranch,createdAt,conclusion,url', '-L', '20'
+      '--created', `>=${since}`,
+      '--json', 'databaseId,name,headBranch,createdAt,conclusion,url',
+      '-L', String(ACTIVE_FAILURE_RUN_LIMIT)
     ]);
     const runs = JSON.parse(stdout);
     if (runs.length === 0) return [];
@@ -350,12 +383,13 @@ export async function getActiveFailures(repo: string, maxAgeDays: number = 30): 
  */
 export async function checkRepoHealth(
   repo: string,
-  current?: RepoHealth
+  current?: RepoHealth,
+  maxAgeDays: number = 30,
 ): Promise<{ health: RepoHealth; transition: HealthTransition | null }> {
   const now = new Date().toISOString();
   const prevStatus = current?.status ?? 'unknown';
 
-  const activeFailures = await getActiveFailures(repo);
+  const activeFailures = await getActiveFailures(repo, maxAgeDays);
 
   // gh CLI error -> preserve existing state
   if (activeFailures === null) {
@@ -681,7 +715,7 @@ export async function checkPRCIStatus(repo: string, prNumber: number): Promise<C
       return { status: 'pending' };
     }
 
-    const failed = checks.filter(c => c.conclusion === 'failure' || c.conclusion === 'timed_out');
+    const failed = checks.filter(c => c.conclusion === 'failure' || c.conclusion === 'timed_out' || c.conclusion === 'cancelled');
     if (failed.length > 0) {
       return {
         status: 'failure',

@@ -25,11 +25,20 @@ import { ChatInput } from '../components/ChatInput.js';
 import { CommandPalette } from '../components/CommandPalette.js';
 import { SelectList } from '../components/SelectList.js';
 import { listAdapterNames } from '../../adapters/index.js';
-import { callChatModel, loadDefaultProvider, saveSession, generateSessionId } from '../../support/chatSession.js';
+import { callChatModel, loadDefaultProvider, saveSession, generateSessionId, type Message } from '../../support/chatSession.js';
 import { getDefaultChatModel, listChatModels } from '../../support/chatBackend.js';
 import { runPlanCommand, type PlanIO } from '../../support/planCommand.js';
 import { runGoalCommand, buildGoalPursuitPrompt, GOAL_PURSUIT_MAX_TURNS } from '../../support/goalCommand.js';
 import type { AdapterName } from '../../adapters/types.js';
+
+function buildConversationPrompt(messages: Message[]): string {
+  if (messages.length <= 1) return messages[0]?.content ?? '';
+  return [
+    'Use the following conversation history as context. Continue by answering the latest user message.',
+    '',
+    messages.map((m) => `${m.role === 'assistant' ? 'Assistant' : 'User'}: ${m.content}`).join('\n\n'),
+  ].join('\n');
+}
 
 export interface ChatPanelProps {
   active: boolean;
@@ -63,6 +72,7 @@ export function ChatPanel({ active, provider: providerProp, model: modelProp, pr
   const createdAtRef = useRef<string>(new Date().toISOString());
   const goalRef = useRef<string | undefined>(goalProp);
   const abortRef = useRef<AbortController | null>(null);
+  const persistenceErrorRef = useRef<string | null>(null);
   // When set, the next submitted line is routed here (a /plan confirm or edit)
   // instead of being treated as chat — the Ink analogue of blessed pendingInput.
   const [pending, setPending] = useState<{ resolve: (value: string) => void } | null>(null);
@@ -90,7 +100,16 @@ export function ChatPanel({ active, provider: providerProp, model: modelProp, pr
       createdAt: createdAtRef.current,
       updatedAt: '', // saveSession stamps this
       goal: goalRef.current,
-    });
+    })
+      .then(() => {
+        persistenceErrorRef.current = null;
+      })
+      .catch((e) => {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (persistenceErrorRef.current === msg) return;
+        persistenceErrorRef.current = msg;
+        dispatch({ type: 'system', content: `✖ failed to save session: ${msg}` });
+      });
   }, [state.history, provider, model]);
 
   const ask = useCallback(
@@ -291,14 +310,21 @@ export function ChatPanel({ active, provider: providerProp, model: modelProp, pr
   const submit = useCallback(
     async (raw: string) => {
       setInput('');
+      const parsed = parseInput(raw);
       // A pending /plan confirm/edit consumes the next line verbatim.
       if (pending) {
+        if (parsed?.kind === 'command' && parsed.name === '/goal' && parsed.args.trim() === 'clear') {
+          const { resolve } = pending;
+          setPending(null);
+          runCommand(parsed.name, parsed.args);
+          resolve('no');
+          return;
+        }
         const { resolve } = pending;
         setPending(null);
         resolve(raw);
         return;
       }
-      const parsed = parseInput(raw);
       if (!parsed) return;
       // While a goal is actively being pursued, only "/goal clear" is honored —
       // the pursuit runs to completion and nothing else can interrupt it. (INT-2014)
@@ -315,9 +341,9 @@ export function ChatPanel({ active, provider: providerProp, model: modelProp, pr
         return;
       }
       dispatch({ type: 'user', content: parsed.text });
-      await streamChat(parsed.text);
+      await streamChat(buildConversationPrompt([...historyToMessages(state.history), { role: 'user', content: parsed.text }]));
     },
-    [pending, runCommand, streamChat, goalActive, busy],
+    [pending, runCommand, streamChat, goalActive, busy, state.history],
   );
 
   // Keep the field active while a /plan confirm is pending, or while a goal is

@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import {
   upsertTaskState,
+  getTaskState,
   getTaskReadiness,
   releaseDependentTasks,
   enrichTaskFromState,
@@ -11,17 +15,45 @@ import {
   buildTaskStateSyncComment,
   hydrateTaskStateFromComments,
   markTaskBacklog,
+  resetTaskStateStoreForTests,
+  type OpenSwarmTaskState,
 } from './store.js';
 
 describe('task state store', () => {
-  const stateFile = `/tmp/openswarm-task-state-${process.pid}.json`;
+  let stateFile: string;
+
+  function taskState(
+    issueId: string,
+    status: OpenSwarmTaskState['execution']['status'],
+    linearState: string,
+  ): OpenSwarmTaskState {
+    return {
+      version: 1,
+      issueId,
+      childIssueIds: [],
+      dependencyIssueIds: [],
+      dependencyTitles: [],
+      fileScope: [],
+      execution: { status, retryCount: 0 },
+      worktree: {},
+      linearState,
+      updatedAt: new Date().toISOString(),
+    };
+  }
 
   beforeEach(() => {
+    stateFile = join(tmpdir(), `openswarm-task-state-${process.pid}-${Date.now()}-${Math.random()}.json`);
     process.env.OPENSWARM_TASK_STATE_FILE = stateFile;
+    resetTaskStateStoreForTests();
   });
 
   afterEach(() => {
+    resetTaskStateStoreForTests();
+    if (existsSync(stateFile)) {
+      unlinkSync(stateFile);
+    }
     delete process.env.OPENSWARM_TASK_STATE_FILE;
+    delete process.env.OPENSWARM_TASK_STATE_TRUSTED_COMMENT_USERS;
   });
 
   it('enriches a task with canonical dependency data', () => {
@@ -184,6 +216,24 @@ describe('task state store', () => {
     expect(parked.worktree.worktreePath).toBeUndefined();
   });
 
+  it('preserves existing top-level metadata when convenience patches omit it', () => {
+    markTaskInProgress('KT-451', {
+      issueIdentifier: 'KT-451',
+      title: 'Preserve metadata',
+      projectId: 'project-1',
+      projectName: 'OpenSwarm',
+      linearState: 'In Progress',
+      branchName: 'fix/kt-451',
+    });
+
+    const done = markTaskDone('KT-451');
+    expect(done.issueIdentifier).toBe('KT-451');
+    expect(done.title).toBe('Preserve metadata');
+    expect(done.projectId).toBe('project-1');
+    expect(done.projectName).toBe('OpenSwarm');
+    expect(done.linearState).toBe('Done');
+  });
+
   it('completes decomposed parent only after all child issues are done', () => {
     upsertTaskState('PARENT-1', {
       childIssueIds: ['CHILD-1', 'CHILD-2'],
@@ -237,5 +287,47 @@ describe('task state store', () => {
 
     expect(hydrated?.execution.status).toBe('done');
     expect(hydrated?.linearState).toBe('Done');
+  });
+
+  it('ignores untrusted or mismatched task-state sync comments', () => {
+    const olderTrusted = buildTaskStateSyncComment(
+      taskState('ISSUE-10', 'blocked', 'Backlog'),
+      'Task blocked'
+    );
+    const newerUntrusted = buildTaskStateSyncComment(
+      taskState('ISSUE-10', 'done', 'Done'),
+      'Task completed'
+    );
+    const otherIssue = buildTaskStateSyncComment(
+      taskState('ISSUE-OTHER', 'done', 'Done'),
+      'Task completed'
+    );
+
+    const hydrated = hydrateTaskStateFromComments('ISSUE-10', [
+      { body: olderTrusted, createdAt: '2026-03-18T00:00:00.000Z', user: 'OpenSwarm Bot' },
+      { body: newerUntrusted, createdAt: '2026-03-18T01:00:00.000Z', user: 'Mallory' },
+      { body: otherIssue, createdAt: '2026-03-18T02:00:00.000Z', user: 'OpenSwarm Bot' },
+    ]);
+
+    expect(hydrated?.execution.status).toBe('blocked');
+    expect(hydrated?.linearState).toBe('Backlog');
+  });
+
+  it('allows explicitly configured task-state sync comment authors', () => {
+    process.env.OPENSWARM_TASK_STATE_TRUSTED_COMMENT_USERS = 'unohee';
+    const body = buildTaskStateSyncComment(taskState('ISSUE-11', 'done', 'Done'), 'Task completed');
+
+    const hydrated = hydrateTaskStateFromComments('ISSUE-11', [
+      { body, createdAt: '2026-03-18T01:00:00.000Z', user: 'unohee' },
+    ]);
+
+    expect(hydrated?.execution.status).toBe('done');
+  });
+
+  it('fails closed on corrupt persisted task-state files without overwriting them', () => {
+    writeFileSync(stateFile, '{not-json', 'utf8');
+
+    expect(() => getTaskState('ISSUE-CORRUPT')).toThrow(/Task state store is corrupt/);
+    expect(readFileSync(stateFile, 'utf8')).toBe('{not-json');
   });
 });

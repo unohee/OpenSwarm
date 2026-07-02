@@ -42,13 +42,13 @@ export function normalizeRecords(records: any[]): CognitiveMemoryRecord[] {
     content: String(r.content || ''),
     vector: Array.isArray(r.vector) ? r.vector.map(Number) : Array.from({ length: EMBEDDING_DIM }, () => 0),
 
-    importance: Number(r.importance) || 0.5,
-    confidence: Number(r.confidence) || 0.7,
+    importance: clamp01(r.importance, 0.5),
+    confidence: clamp01(r.confidence, 0.7),
     createdAt: Number(r.createdAt) || now,
     lastUpdated: Number(r.lastUpdated) || now,
     lastAccessed: Number(r.lastAccessed) || now,
     revisionCount: Number(r.revisionCount) || 0,
-    decay: Number(r.decay) || 0,
+    decay: clamp01(r.decay, 0),
 
     stability: (r.stability as StabilityLevel) || 'low',
     contradicts: typeof r.contradicts === 'string' ? r.contradicts : JSON.stringify(r.contradicts || []),
@@ -58,9 +58,15 @@ export function normalizeRecords(records: any[]): CognitiveMemoryRecord[] {
     repo: String(r.repo || 'unknown'),
     title: String(r.title || ''),
     metadata: typeof r.metadata === 'string' ? r.metadata : JSON.stringify(r.metadata || {}),
-    trust: Number(r.trust) || 0.5,
+    trust: clamp01(r.trust, 0.5),
     expiresAt: Number(r.expiresAt) || PERMANENT_EXPIRY,
   }));
+}
+
+export function clamp01(value: unknown, fallback: number): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.min(1, n));
 }
 
 // PRD Memory Types (Cognitive Memory)
@@ -185,9 +191,11 @@ async function initEmbeddingPipeline(): Promise<FeatureExtractionPipeline> {
     return embeddingPipeline;
   }
 
-  // If previously failed, return the same error
+  // Previous failures may be transient (cache/model IO), so allow retry.
   if (pipelineInitFailed && pipelineInitError) {
-    throw pipelineInitError;
+    console.warn('[Memory] Retrying embedding model load after previous failure:', pipelineInitError.message);
+    pipelineInitFailed = false;
+    pipelineInitError = null;
   }
 
   // If initializing, wait for existing Promise (prevents race conditions)
@@ -203,6 +211,8 @@ async function initEmbeddingPipeline(): Promise<FeatureExtractionPipeline> {
         quantized: true,
       });
       embeddingPipeline = loadedPipeline;
+      pipelineInitFailed = false;
+      pipelineInitError = null;
       console.log('[Memory] Embedding model loaded:', EMBEDDING_MODEL);
       return loadedPipeline;
     } catch (error) {
@@ -557,11 +567,13 @@ export async function saveMemory(
   }
 
   // Calculate importance
-  const importance = options?.importance ??
+  const importance = clamp01(options?.importance,
     calculateImportance(type, {
       isRepeated: options?.isRepeated,
       isVerified: options?.isVerified,
-    });
+    }));
+  const confidence = clamp01(options?.confidence, 0.7);
+  const trust = clamp01(options?.trust, 0.8);
 
   const record: CognitiveMemoryRecord = {
     id,
@@ -571,7 +583,7 @@ export async function saveMemory(
 
     // PRD Mandatory Fields
     importance,
-    confidence: options?.confidence ?? 0.7,
+    confidence,
     createdAt: now,
     lastUpdated: now,
     lastAccessed: now,
@@ -588,7 +600,7 @@ export async function saveMemory(
     repo,
     title,
     metadata: JSON.stringify(options?.metadata || {}),
-    trust: options?.trust ?? 0.8,
+    trust,
     expiresAt,
   };
 
@@ -626,7 +638,8 @@ export async function saveCognitiveMemory(
   const now = Date.now();
   const id = `${type}-${now}-${Math.random().toString(36).slice(2, 8)}`;
 
-  const importance = options?.importance ?? BASE_IMPORTANCE[type];
+  const importance = clamp01(options?.importance, BASE_IMPORTANCE[type]);
+  const confidence = clamp01(options?.confidence, 0.7);
 
   const record: CognitiveMemoryRecord = {
     id,
@@ -635,7 +648,7 @@ export async function saveCognitiveMemory(
     vector: await getEmbedding(content),
 
     importance,
-    confidence: options?.confidence ?? 0.7,
+    confidence,
     createdAt: now,
     lastUpdated: now,
     lastAccessed: now,
@@ -651,7 +664,7 @@ export async function saveCognitiveMemory(
     repo: options?.repo ?? 'cognitive',
     title: content.slice(0, 100),
     metadata: '{}',
-    trust: options?.confidence ?? 0.7,
+    trust: confidence,
     expiresAt: PERMANENT_EXPIRY,
   };
 
@@ -820,7 +833,11 @@ export async function searchMemorySafe(
       };
     }
 
-    const results = await table.vectorSearch(queryVector).limit(limit * 5).toArray();
+    const hasPostVectorFilters = Boolean(types?.length || repo || !includeExpired || minTrust > 0 || minFreshness > 0);
+    const resultWindow = hasPostVectorFilters
+      ? Math.min(Math.max(limit * 20, 100), 1000)
+      : Math.max(limit * 5, limit);
+    const results = await table.vectorSearch(queryVector).limit(resultWindow).toArray();
     const now = Date.now();
 
     // Hybrid Retrieval with PRD scoring
@@ -832,12 +849,12 @@ export async function searchMemorySafe(
         if (repo && r.repo !== repo && r.repo !== 'system' && r.repo !== 'cognitive') return false;
         const confidence = r.confidence ?? r.trust ?? 0;
         if (confidence < minTrust) return false;
-        const similarity = r._distance ? 1 - r._distance : 0;
+        const similarity = typeof r._distance === 'number' ? 1 - r._distance : 0;
         if (similarity < minSimilarity) return false;
         return true;
       })
       .map((r: any) => {
-        const similarity = r._distance ? 1 - r._distance : 0;
+        const similarity = typeof r._distance === 'number' ? 1 - r._distance : 0;
         const recency = calculateFreshness(r.createdAt);
         const importance = r.importance ?? calculateImportance(r.type);
         const accessCount = r.accessCount ?? 1;
@@ -904,10 +921,12 @@ export async function searchMemory(
  * Update last_accessed timestamp for retrieved memories
  */
 async function updateAccessTime(ids: string[]): Promise<void> {
-  // Note: LanceDB doesn't support in-place updates easily
-  // This would require table rewrite - implement in Phase 3
-  // For now, just log
-  if (ids.length > 0) {
-    console.log(`[Memory] Access logged for ${ids.length} memories`);
-  }
+  if (!table || ids.length === 0) return;
+
+  const uniqueIds = [...new Set(ids)];
+  const quotedIds = uniqueIds.map(id => `'${String(id).replace(/'/g, "''")}'`).join(', ');
+  await table.update({
+    where: `id IN (${quotedIds})`,
+    values: { lastAccessed: Date.now() },
+  });
 }

@@ -11,20 +11,24 @@ import type { Issue, IssueStatus, IssuePriority } from './schema.js';
 // Linear SDK는 동적 import (Linear 미사용 시 로드 안 함)
 let linearClient: any = null;
 let linearTeamId: string = '';
+let linearInitPromise: Promise<void> | null = null;
 
 /**
  * Linear 브릿지 초기화
  * config.yaml에서 linear.enabled: true 일 때만 호출
  */
-export function initLinearBridge(apiKey: string, teamId: string): void {
+export function initLinearBridge(apiKey: string, teamId: string): Promise<void> {
   // 기존 linear.ts의 클라이언트를 재사용하기 위해 동적 import
   linearTeamId = teamId;
-  import('@linear/sdk').then(({ LinearClient }) => {
+  linearClient = null;
+  linearInitPromise = import('@linear/sdk').then(({ LinearClient }) => {
     linearClient = new LinearClient({ apiKey });
     console.log('[LinearBridge] 초기화 완료 — team:', teamId);
   }).catch((err) => {
+    linearClient = null;
     console.warn('[LinearBridge] Linear SDK 로드 실패:', err);
   });
+  return linearInitPromise;
 }
 
 /**
@@ -35,6 +39,7 @@ export async function syncFromLinear(
   projectId: string,
   options?: { states?: string[]; limit?: number },
 ): Promise<{ created: number; updated: number }> {
+  await waitForLinearBridgeInit();
   if (!linearClient) {
     console.warn('[LinearBridge] 클라이언트 미초기화');
     return { created: 0, updated: 0 };
@@ -92,6 +97,7 @@ export async function pushToLinear(
   store: SqliteIssueStore,
   issueId: string,
 ): Promise<string | null> {
+  await waitForLinearBridgeInit();
   if (!linearClient) {
     console.warn('[LinearBridge] 클라이언트 미초기화');
     return null;
@@ -143,6 +149,7 @@ export async function syncStatusToLinear(
   issueId: string,
   newStatus: IssueStatus,
 ): Promise<boolean> {
+  await waitForLinearBridgeInit();
   if (!linearClient) return false;
 
   const issue = store.getIssue(issueId);
@@ -161,11 +168,14 @@ export async function syncStatusToLinear(
 
 // ============ 매핑 유틸 ============
 
+async function waitForLinearBridgeInit(): Promise<void> {
+  if (linearInitPromise) {
+    await linearInitPromise;
+  }
+}
+
 function findByLinearId(store: SqliteIssueStore, linearId: string): Issue | null {
-  // linear ID로 검색하려면 직접 쿼리가 필요
-  // 간단히 전체 목록에서 찾기 (비효율적이지만 동기화는 드물게 실행)
-  const { issues: all } = store.listIssues({ limit: 1000, offset: 0 });
-  return all.find((i) => i.linearId === linearId) ?? null;
+  return store.getIssueByLinearId(linearId);
 }
 
 async function mapLinearToLocal(

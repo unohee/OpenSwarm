@@ -562,7 +562,7 @@ export async function getMyIssues(
 
       const withState = [
         ...todoIssues.nodes.map(i => ({ issue: i, state: 'Todo' })),
-        ...inProgressIssues.nodes.map(i => ({ issue: i, state: 'In Progress' })),
+        ...inProgressIssues.nodes.map(i => ({ issue: i, state: i.state?.name ?? 'Unknown' })),
         ...backlogIssues.nodes.map(i => ({ issue: i, state: 'Backlog' })),
       ];
 
@@ -655,13 +655,13 @@ export async function getIssue(issueIdOrIdentifier: string): Promise<LinearIssue
 
     let issue;
     if (isIdentifier) {
-      // Search by identifier - use number field
-      const numPart = issueIdOrIdentifier.split('-')[1];
+      // Search by identifier - match both team key and number.
+      const [teamKey, numPart] = issueIdOrIdentifier.split('-');
       const issueNumber = parseInt(numPart, 10);
 
       const issues = await linear.issues({
         filter: {
-          team: teamFilter(),
+          team: { key: { eq: teamKey } },
           number: { eq: issueNumber },
         },
         first: 1,
@@ -1189,8 +1189,10 @@ export async function createSubIssue(
       return { error: `Parent issue not found: ${parentId}` };
     }
 
-    // Look up label IDs
-    const team = await linear.team(teamIds[0] ?? teamId);
+    // Create the sub-issue under the parent issue's team, and resolve labels there.
+    const parentTeam = await parentIssue.team;
+    const subIssueTeamId = parentTeam?.id ?? (teamIds[0] ?? teamId);
+    const team = await linear.team(subIssueTeamId);
     const teamLabels = await team.labels();
     const labelIds = (options?.labels || [])
       .map((name) => teamLabels.nodes.find((l) => l.name === name)?.id)
@@ -1202,9 +1204,6 @@ export async function createSubIssue(
       labelIds.push(autoLabel.id);
     }
 
-    // Create the sub-issue (use parent issue's team ID, not global)
-    const parentTeam = await parentIssue.team;
-    const subIssueTeamId = parentTeam?.id ?? (teamIds[0] ?? teamId);
     const issuePayload = await linear.createIssue({
       teamId: subIssueTeamId,
       parentId,  // Link to parent issue
@@ -1312,7 +1311,8 @@ export async function proposeWork(
   const linear = getClient();
 
   // Look up Backlog state ID
-  const team = await linear.team(teamIds[0] ?? teamId);
+  const proposalTeamId = teamIds[0] ?? teamId;
+  const team = await linear.team(proposalTeamId);
   const states = await team.states();
   const backlogState = states.nodes.find((s) =>
     s.name.toLowerCase() === 'backlog'
@@ -1344,7 +1344,7 @@ ${suggestedApproach ? `### Suggested Approach\n${suggestedApproach}` : ''}
 _This issue was auto-created by an agent. Please review and adjust priority or delete as needed._`;
 
   const issuePayload = await linear.createIssue({
-    teamId,
+    teamId: proposalTeamId,
     title: `[Proposal] ${title}`,
     description,
     labelIds,

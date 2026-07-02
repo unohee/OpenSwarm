@@ -46,4 +46,13 @@ describe('TaskScheduler same-project concurrency (INT-1975)', () => {
     // Without the flag this would return null (project busy); with it, 'b' is dispatchable.
     expect(s.getNextExecutable()?.task.id).toBe('b');
   });
+
+  it('reapplies the same-project worktree guard when config is updated', () => {
+    const s = new TaskScheduler({ maxConcurrent: 4, worktreeMode: true, allowSameProjectConcurrent: true });
+    s.updateConfig({ worktreeMode: false, allowSameProjectConcurrent: true });
+    s.startTask(task('a'), '/repo', pendingExecutor());
+
+    expect(s.isProjectBusy('/repo')).toBe(true);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('requires worktreeMode'));
+  });
 });

@@ -286,11 +286,10 @@ export async function runChatCompletion(options: ChatCompletionOptions): Promise
       cwd,
       model,
     });
-    const cmd = [command, ...args].join(' ');
 
     return await new Promise<ChatCompletionResult>((resolve, reject) => {
-      const proc = spawn(cmd, {
-        shell: true,
+      const proc = spawn(command, args, {
+        shell: false,
         cwd,
         env: process.env,
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -407,5 +406,4 @@ function extractCodexChatResponse(stdout: string): string {
   }
   return lastMessage;
 }
-
 

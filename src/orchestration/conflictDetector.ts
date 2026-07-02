@@ -135,14 +135,14 @@ export async function detectFileConflicts(
       }
 
       if (shared.length > 0) {
-        uf.union(i, j);
-        const key = `${uf.find(i)}`;
+        const key = `${i}:${j}`;
         if (!pairShared.has(key)) {
           pairShared.set(key, new Set());
         }
         for (const mod of shared) {
           pairShared.get(key)!.add(mod);
         }
+        uf.union(i, j);
       }
     }
   }
@@ -161,7 +161,7 @@ export async function detectFileConflicts(
   const safe: TaskItem[] = [];
   const conflictGroups: ConflictGroup[] = [];
 
-  for (const [root, indices] of groups) {
+  for (const [, indices] of groups) {
     // 영향 분석이 없는 태스크(그래프 미존재)는 단독 그룹으로 safe
     const hasImpact = indices.some(i => taskImpacts.has(i));
 
@@ -175,7 +175,17 @@ export async function detectFileConflicts(
 
     // 충돌 그룹: 최고 우선순위(낮은 숫자) 태스크만 safe에 포함
     const groupTasks = indices.map(i => tasks[i]);
-    const sharedModules = Array.from(pairShared.get(`${root}`) || []);
+    const sharedModuleSet = new Set<string>();
+    for (let a = 0; a < indices.length; a++) {
+      for (let b = a + 1; b < indices.length; b++) {
+        const shared = pairShared.get(`${indices[a]}:${indices[b]}`);
+        if (!shared) continue;
+        for (const mod of shared) {
+          sharedModuleSet.add(mod);
+        }
+      }
+    }
+    const sharedModules = Array.from(sharedModuleSet);
 
     // 우선순위 기준 정렬 (1=Urgent > 4=Low)
     groupTasks.sort((a, b) => a.priority - b.priority);

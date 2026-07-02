@@ -3,7 +3,7 @@
 // Autonomous action scope control and task decision
 // ============================================
 
-import { resolve } from 'path';
+import { isAbsolute, relative, resolve } from 'path';
 import { homedir } from 'os';
 import * as fs from 'fs/promises';
 import {
@@ -217,6 +217,26 @@ const DEFAULT_CONFIG: DecisionEngineConfig = {
   includeBacklog: false,    // Backlog is parked, not a queue (R5)
 };
 
+function expandHomePath(input: string): string {
+  if (input === '~') return homedir();
+  if (input.startsWith('~/')) return resolve(homedir(), input.slice(2));
+  return input;
+}
+
+function normalizeProjectPath(input: string): string {
+  return resolve(expandHomePath(input));
+}
+
+export function isAllowedProjectPath(projectPath: string, allowedProjects: string[]): boolean {
+  const normalizedProjectPath = normalizeProjectPath(projectPath);
+
+  return allowedProjects.some(allowedProject => {
+    const normalizedAllowedProject = normalizeProjectPath(allowedProject);
+    const rel = relative(normalizedAllowedProject, normalizedProjectPath);
+    return rel === '' || (!!rel && !rel.startsWith('..') && !isAbsolute(rel));
+  });
+}
+
 /**
  * Linear states the daemon will NOT act on. Backlog is "parked" (opt back in via
  * DecisionEngineConfig.includeBacklog); Done/Canceled are terminal.
@@ -375,12 +395,12 @@ export class DecisionEngine {
    * Heartbeat execution - returns multiple tasks (for parallel processing)
    * @param tasks - Candidate task list
    * @param maxTasks - Maximum number of tasks to return
-   * @param _excludeProjects - Project paths to exclude (already running projects)
+   * @param excludeProjects - Project paths or Linear project IDs to exclude (already running projects)
    */
   async heartbeatMultiple(
     tasks: TaskItem[],
     maxTasks: number = 3,
-    _excludeProjects: string[] = []
+    excludeProjects: string[] = []
   ): Promise<DecisionResultMultiple> {
     console.log(`[DecisionEngine] Heartbeat multiple triggered (max: ${maxTasks})`);
 
@@ -421,7 +441,13 @@ export class DecisionEngine {
     }
 
     // 4. Filter executable tasks
-    const executableTasks = this.filterExecutableTasks(tasks);
+    const excludedProjects = new Set(excludeProjects.filter(Boolean));
+    const executableTasks = this.filterExecutableTasks(tasks).filter(task => {
+      return !(
+        (task.projectPath && excludedProjects.has(task.projectPath)) ||
+        (task.linearProject?.id && excludedProjects.has(task.linearProject.id))
+      );
+    });
     if (executableTasks.length === 0) {
       return {
         action: 'skip',
@@ -525,10 +551,7 @@ export class DecisionEngine {
     return tasks.filter(task => {
       // Check if project is allowed
       if (task.projectPath && this.config.allowedProjects.length > 0) {
-        const allowed = this.config.allowedProjects.some(p =>
-          task.projectPath!.includes(p) || p.includes(task.projectPath!)
-        );
-        if (!allowed) {
+        if (!isAllowedProjectPath(task.projectPath, this.config.allowedProjects)) {
           console.log(`[DecisionEngine] Filtered out ${task.issueIdentifier}: project not allowed (${task.projectPath})`);
           return false;
         }
@@ -618,13 +641,8 @@ export class DecisionEngine {
 
     // 3. Project path validation
     if (task.projectPath) {
-      const expanded = task.projectPath.replace('~', homedir());
       if (this.config.allowedProjects.length > 0) {
-        const allowed = this.config.allowedProjects.some(p => {
-          const expandedAllowed = p.replace('~', homedir());
-          return expanded.startsWith(expandedAllowed) || expandedAllowed.startsWith(expanded);
-        });
-        if (!allowed) {
+        if (!isAllowedProjectPath(task.projectPath, this.config.allowedProjects)) {
           return {
             valid: false,
             reason: `Project path "${task.projectPath}" not in allowed list`,

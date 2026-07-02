@@ -14,9 +14,9 @@
 // openswarm.json — registering a path alone wouldn't tell the daemon which
 // Linear project's issues belong to it.
 
-import { existsSync, readFileSync, writeFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, statSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { expandPath } from '../core/config.js';
 import { c } from '../support/colors.js';
 import { loadRepoMetadata, RepoMetadataError } from '../support/repoMetadata.js';
@@ -51,6 +51,7 @@ export function loadRepos(file: string = REPOS_FILE): ReposConfig {
 }
 
 function saveRepos(cfg: ReposConfig, file: string = REPOS_FILE): void {
+  mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, JSON.stringify(cfg, null, 2) + '\n', 'utf-8');
 }
 

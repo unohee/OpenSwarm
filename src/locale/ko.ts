@@ -86,6 +86,7 @@ export const ko: LocaleMessages = {
     },
     issue: {
       title: '📋 이슈 상세',
+      stateLabel: '상태: {{state}}',
       notFound: '이슈를 찾을 수 없습니다: `{{id}}`',
       fetchError: '이슈 조회 실패: {{error}}',
       noDescription: '(설명 없음)',
@@ -147,6 +148,7 @@ export const ko: LocaleMessages = {
       runUsage: '사용법: `!schedule run <name>`',
       runStarted: '▶️ **{{name}}** 스케줄 즉시 실행 시작',
       notFound: '❌ 스케줄을 찾을 수 없습니다: `{{name}}`',
+      toggleUsage: '사용법: `!schedule toggle <name>`',
       toggleEnabled: '🟢 활성화: **{{name}}**',
       toggleDisabled: '⏸️ 비활성화: **{{name}}**',
       addUsage: '**사용법:**\n`!schedule add <name> <project_path> <interval> "<prompt>"`\n\n**예시:**\n`!schedule add myproject-check ~/dev/myproject 30m "테스트 실행하고 결과 보고해줘"`\n\n**interval:** `30m`, `1h`, `2h`, `1d` 또는 cron 표현식',
@@ -169,9 +171,11 @@ export const ko: LocaleMessages = {
     },
     auto: {
       title: '🤖 자율 실행 상태',
+      statusLabel: '상태',
       statusRunning: '✅ 실행 중',
       statusStopped: '⏹️ 중지',
       completedFailed: '{{completed}}/{{failed}}',
+      pendingApprovalLabel: '승인 대기',
       pendingApproval: '⏳ 있음',
       noPending: '없음',
       lastHeartbeatLabel: '마지막 Heartbeat',

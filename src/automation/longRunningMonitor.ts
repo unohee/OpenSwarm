@@ -4,7 +4,7 @@
 // ============================================
 
 import { execFile } from 'node:child_process';
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import type {
@@ -17,29 +17,21 @@ import { broadcastEvent } from '../core/eventHub.js';
 
 // Constants
 
-const PERSIST_FILE = join(homedir(), '.claude', 'openswarm-monitors.json');
+const PERSIST_DIR = join(homedir(), '.openswarm');
+const PERSIST_FILE = join(PERSIST_DIR, 'openswarm-monitors.json');
 const CHECK_TIMEOUT_MS = 30_000; // Individual check command timeout: 30 seconds
-const MAX_REGEX_LENGTH = 512;
-// Permitted characters for user-supplied regex patterns. Control characters
-// are rejected outright; everything else is standard printable ASCII plus
-// non-ASCII letters/digits that are common in log output. The allowlist
-// doubles as a CodeQL sanitizer for `js/regex-injection`.
-const ALLOWED_REGEX_CHARS = /^[\x20-\x7E\t\u00A0-\uFFFF]*$/;
+const MAX_OUTPUT_PATTERN_LENGTH = 512;
+const ALLOWED_OUTPUT_PATTERN_CHARS = /^[\x20-\x7E\t\u00A0-\uFFFF]*$/;
 
 /**
- * Safely compile a user-supplied pattern. Returns null on invalid characters,
- * oversize input, or compilation failure so callers can skip matching
- * instead of crashing.
+ * Treat configured output patterns as literal strings. This preserves the
+ * completion-check shape without evaluating user-supplied regular expressions.
  */
-function safeCompileRegex(pattern: string | undefined): RegExp | null {
-  if (!pattern) return null;
-  if (pattern.length > MAX_REGEX_LENGTH) return null;
-  if (!ALLOWED_REGEX_CHARS.test(pattern)) return null;
-  try {
-    return new RegExp(pattern);
-  } catch {
-    return null;
-  }
+function outputIncludesPattern(stdout: string, pattern: string | undefined): boolean {
+  if (!pattern) return false;
+  if (pattern.length > MAX_OUTPUT_PATTERN_LENGTH) return false;
+  if (!ALLOWED_OUTPUT_PATTERN_CHARS.test(pattern)) return false;
+  return stdout.includes(pattern);
 }
 
 // Argv validation: reject null bytes, newlines, and other control chars.
@@ -145,6 +137,7 @@ function loadFromDisk(): void {
 
 function saveToDisk(): void {
   try {
+    mkdirSync(PERSIST_DIR, { recursive: true });
     const active = Array.from(monitors.values()).filter(
       m => m.state === 'pending' || m.state === 'running'
     );
@@ -211,12 +204,10 @@ function evaluateResult(
     }
 
     case 'output-regex': {
-      const failureRe = safeCompileRegex(check.failurePattern);
-      if (failureRe && failureRe.test(stdout)) {
+      if (outputIncludesPattern(stdout, check.failurePattern)) {
         return 'failed';
       }
-      const successRe = safeCompileRegex(check.successPattern);
-      if (successRe && successRe.test(stdout)) {
+      if (outputIncludesPattern(stdout, check.successPattern)) {
         return 'completed';
       }
       return 'running';

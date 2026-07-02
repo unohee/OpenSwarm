@@ -15,6 +15,7 @@ import type { CodeEntity } from './schema.js';
 export function getEntitiesForIssue(
   issueId: string,
   relevantFiles?: string[],
+  projectId?: string,
 ): CodeEntity[] {
   const store = getRegistryStore();
   const entityMap = new Map<string, CodeEntity>();
@@ -27,7 +28,7 @@ export function getEntitiesForIssue(
   // 2. relevantFiles 경로로 암시적 연결
   if (relevantFiles) {
     for (const filePath of relevantFiles) {
-      const brief = store.fileBrief(filePath);
+      const brief = store.fileBrief(filePath, projectId);
       for (const entity of brief.entities) {
         entityMap.set(entity.id, entity);
       }

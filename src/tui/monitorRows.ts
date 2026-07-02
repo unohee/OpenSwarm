@@ -70,11 +70,17 @@ export interface ApiStuckIssue {
   identifier: string;
   title: string;
   reason: string;
-  priority: number;
+  priority: number | string;
   project?: { name: string };
 }
 
-const PRIO = (p: number) => (p === 1 ? 'urgent' : p === 2 ? 'high' : p === 3 ? 'med' : 'low');
+const PRIO = (p: number | string) => {
+  if (typeof p === 'string') {
+    const normalized = p.toLowerCase();
+    return normalized === 'medium' ? 'med' : normalized;
+  }
+  return p === 1 ? 'urgent' : p === 2 ? 'high' : p === 3 ? 'med' : 'low';
+};
 
 export function stuckToTable(stuck: ApiStuckIssue[], failed: ApiStuckIssue[]): Table {
   const row = (kind: string) => (i: ApiStuckIssue): string[] => [
@@ -94,7 +100,7 @@ export interface ApiIssue {
   id: string;
   title: string;
   status: string;
-  priority: number;
+  priority: number | string;
 }
 
 export function issuesToTable(issues: ApiIssue[]): Table {

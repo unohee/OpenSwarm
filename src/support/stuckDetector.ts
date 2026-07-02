@@ -86,11 +86,12 @@ export class StuckDetector {
    * Detect same error loop
    */
   private detectErrorLoop(): StuckResult {
-    const recentErrors = this.history
-      .filter(e => !e.success && e.error)
-      .slice(-this.thresholds.sameErrorRepeat);
+    const recentErrors = this.history.slice(-this.thresholds.sameErrorRepeat);
 
     if (recentErrors.length < this.thresholds.sameErrorRepeat) {
+      return { isStuck: false };
+    }
+    if (!recentErrors.every(e => !e.success && e.error)) {
       return { isStuck: false };
     }
 
@@ -145,11 +146,12 @@ export class StuckDetector {
    * Detect same output repeat
    */
   private detectOutputRepeat(): StuckResult {
-    const recentOutputs = this.history
-      .filter(e => e.output)
-      .slice(-this.thresholds.sameOutputRepeat);
+    const recentOutputs = this.history.slice(-this.thresholds.sameOutputRepeat);
 
     if (recentOutputs.length < this.thresholds.sameOutputRepeat) {
+      return { isStuck: false };
+    }
+    if (!recentOutputs.every(e => e.output)) {
       return { isStuck: false };
     }
 

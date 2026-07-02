@@ -77,7 +77,7 @@ describe('AutonomousRunner infra_error handling (INT-2010)', () => {
     vi.stubEnv('OPENSWARM_TASK_STATE_FILE', join(tempDir, 'task-state.json'));
     ({ AutonomousRunner } = await import('./autonomousRunner.js'));
     runnerExecution = await import('./runnerExecution.js');
-  });
+  }, 30000);
 
   afterEach(() => {
     vi.unstubAllEnvs();

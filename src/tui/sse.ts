@@ -48,12 +48,17 @@ export interface EventStreamOptions {
   reconnectMs?: number;
 }
 
+export function eventStreamPath(skipReplay: boolean): string {
+  return skipReplay ? '/api/events?skipReplay=1' : '/api/events';
+}
+
 /** Subscribe to the daemon's /api/events SSE stream, auto-reconnecting on drop. */
 export function connectEventStream(opts: EventStreamOptions): EventStreamHandle {
   const host = opts.host ?? '127.0.0.1';
   const reconnectMs = opts.reconnectMs ?? 2000;
   let buffer = '';
   let closed = false;
+  let connectedOnce = false;
   let req: http.ClientRequest | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -66,8 +71,9 @@ export function connectEventStream(opts: EventStreamOptions): EventStreamHandle 
   function connect() {
     if (closed) return;
     req = http.get(
-      { host, port: opts.port, path: '/api/events', headers: { Accept: 'text/event-stream' } },
+      { host, port: opts.port, path: eventStreamPath(connectedOnce), headers: { Accept: 'text/event-stream' } },
       (res) => {
+        connectedOnce = true;
         opts.onStatus?.(true);
         res.setEncoding('utf-8');
         res.on('data', (chunk: string) => {

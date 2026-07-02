@@ -11,6 +11,18 @@ import { dedupeDoubledGrapheme } from '../chatModel.js';
 
 // Read once at module load — toggling mid-session isn't a use case. (INT-1964)
 const INPUT_DEBUG = inputDebugEnabled();
+const GRAPHEME_SEGMENTER = typeof Intl.Segmenter === 'function'
+  ? new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+  : null;
+
+export function deleteLastGrapheme(value: string): string {
+  if (!value) return '';
+  if (!GRAPHEME_SEGMENTER) return Array.from(value).slice(0, -1).join('');
+
+  let lastIndex = 0;
+  for (const segment of GRAPHEME_SEGMENTER.segment(value)) lastIndex = segment.index;
+  return value.slice(0, lastIndex);
+}
 
 export interface ChatInputProps {
   value: string;
@@ -52,7 +64,7 @@ export function ChatInput({
         return;
       }
       if (key.backspace || key.delete) {
-        onChange(value.slice(0, -1));
+        onChange(deleteLastGrapheme(value));
         return;
       }
       if (key.tab || key.leftArrow || key.rightArrow || key.upArrow || key.downArrow || key.escape) return;

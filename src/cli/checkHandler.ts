@@ -355,10 +355,11 @@ export async function handleCheck(
       return;
     }
 
-    // --stats: full statistics
+    // --stats: full statistics (기본: 현재 디렉터리 프로젝트 스코프)
     if (opts.stats) {
-      const stats = store.getStats(opts.project);
-      console.log(`\n${c.bold('Registry Stats')}`);
+      const statsProjectId = opts.project ?? resolveProjectId(process.cwd());
+      const stats = store.getStats(statsProjectId);
+      console.log(`\n${c.bold('Registry Stats')} ${c.dim(`(project: ${statsProjectId})`)}`);
       console.log(`${'─'.repeat(40)}`);
       console.log(`  Total entities:  ${c.bold(String(stats.total))}`);
       console.log(`  Deprecated:      ${(stats.deprecated > 0 ? c.red : c.green)(String(stats.deprecated))}`);
@@ -383,7 +384,7 @@ export async function handleCheck(
 
     // --deprecated
     if (opts.deprecated) {
-      const entities = store.deprecatedEntities(opts.project);
+      const entities = store.deprecatedEntities(opts.project ?? resolveProjectId(process.cwd()));
       console.log(`\n${c.bold('Deprecated Entities')} (${entities.length})\n`);
       if (entities.length === 0) {
         console.log(`  ${c.green('None')}\n`);
@@ -396,7 +397,7 @@ export async function handleCheck(
 
     // --untested
     if (opts.untested) {
-      const entities = store.untestedEntities(opts.project);
+      const entities = store.untestedEntities(opts.project ?? resolveProjectId(process.cwd()));
       console.log(`\n${c.bold('Untested Active Entities')} (${entities.length})\n`);
       if (entities.length === 0) {
         console.log(`  ${c.green('All tested')}\n`);
@@ -409,7 +410,7 @@ export async function handleCheck(
 
     // --high-risk
     if (opts.highRisk) {
-      const entities = store.highRiskEntities(opts.project);
+      const entities = store.highRiskEntities(opts.project ?? resolveProjectId(process.cwd()));
       console.log(`\n${c.bold('High Risk Entities')} (${entities.length})\n`);
       if (entities.length === 0) {
         console.log(`  ${c.green('None')}\n`);
@@ -463,14 +464,15 @@ export async function handleCheck(
       return;
     }
 
-    // 인자 없이 호출 시: 간단 통계 + 도움말
-    const stats = store.getStats();
+    // 인자 없이 호출 시: 간단 통계 + 도움말 (현재 프로젝트 스코프)
+    const summaryProjectId = resolveProjectId(process.cwd());
+    const stats = store.getStats(summaryProjectId);
     if (stats.total === 0) {
-      console.log(`\n${c.bold('Code Registry')}: empty`);
+      console.log(`\n${c.bold('Code Registry')}: empty ${c.dim(`(project: ${summaryProjectId})`)}`);
       console.log(`  ${c.dim('Register entities via GraphQL at :3847/graphql')}`);
       console.log(`  ${c.dim('or use: openswarm check --help')}\n`);
     } else {
-      console.log(`\n${c.bold('Code Registry')}: ${stats.total} entities`);
+      console.log(`\n${c.bold('Code Registry')}: ${stats.total} entities ${c.dim(`(project: ${summaryProjectId})`)}`);
       console.log(`  ${stats.deprecated} deprecated, ${stats.untested} untested, ${stats.highRisk} high-risk, ${stats.withWarnings} with warnings`);
       console.log(`\n  ${c.dim('Usage:')}`);
       console.log(`  ${c.dim('  openswarm check <file>       ')}File brief`);

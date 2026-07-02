@@ -18,6 +18,7 @@ import type {
 } from './schema.js';
 
 const DEFAULT_DB_PATH = resolve(homedir(), '.openswarm', 'registry.db');
+const SQLITE_IN_CHUNK_SIZE = 500;
 
 // ============ 인터페이스 ============
 
@@ -171,7 +172,7 @@ export class SqliteRegistryStore {
         project_id TEXT NOT NULL,
         kind TEXT NOT NULL,
         name TEXT NOT NULL,
-        qualified_name TEXT NOT NULL UNIQUE,
+        qualified_name TEXT NOT NULL,
         file_path TEXT NOT NULL,
         line_start INTEGER,
         line_end INTEGER,
@@ -260,6 +261,7 @@ export class SqliteRegistryStore {
       CREATE INDEX IF NOT EXISTS idx_ce_kind ON code_entities(kind);
       CREATE INDEX IF NOT EXISTS idx_ce_file ON code_entities(file_path);
       CREATE INDEX IF NOT EXISTS idx_ce_status ON code_entities(status);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_ce_project_qualified_name ON code_entities(project_id, qualified_name);
       CREATE INDEX IF NOT EXISTS idx_ce_has_tests ON code_entities(has_tests);
       CREATE INDEX IF NOT EXISTS idx_ce_risk ON code_entities(risk_level);
       CREATE INDEX IF NOT EXISTS idx_ce_knowledge ON code_entities(knowledge_node_id);
@@ -355,10 +357,14 @@ export class SqliteRegistryStore {
     return this.rowToEntity(row);
   }
 
-  getEntityByName(qualifiedName: string): CodeEntity | null {
-    const row = this.db.prepare(
-      'SELECT * FROM code_entities WHERE qualified_name = ?'
-    ).get(qualifiedName) as EntityRow | undefined;
+  getEntityByName(qualifiedName: string, projectId?: string): CodeEntity | null {
+    const row = projectId
+      ? this.db.prepare(
+        'SELECT * FROM code_entities WHERE project_id = ? AND qualified_name = ?'
+      ).get(projectId, qualifiedName) as EntityRow | undefined
+      : this.db.prepare(
+        'SELECT * FROM code_entities WHERE qualified_name = ? ORDER BY project_id LIMIT 1'
+      ).get(qualifiedName) as EntityRow | undefined;
     if (!row) return null;
     return this.rowToEntity(row);
   }
@@ -727,10 +733,14 @@ export class SqliteRegistryStore {
 
   // ============ 특화 쿼리 ============
 
-  fileBrief(filePath: string): FileBrief {
-    const rows = this.db.prepare(
-      'SELECT * FROM code_entities WHERE file_path = ? ORDER BY line_start NULLS LAST, name'
-    ).all(filePath) as EntityRow[];
+  fileBrief(filePath: string, projectId?: string): FileBrief {
+    const rows = projectId
+      ? this.db.prepare(
+        'SELECT * FROM code_entities WHERE project_id = ? AND file_path = ? ORDER BY line_start NULLS LAST, name'
+      ).all(projectId, filePath) as EntityRow[]
+      : this.db.prepare(
+        'SELECT * FROM code_entities WHERE file_path = ? ORDER BY line_start NULLS LAST, name'
+      ).all(filePath) as EntityRow[];
 
     const entities = this.rowsToEntities(rows);
 
@@ -900,12 +910,20 @@ export class SqliteRegistryStore {
     if (rows.length === 0) return [];
 
     const ids = rows.map(r => r.id);
-    const placeholders = ids.map(() => '?').join(',');
+    const loadByIds = <T>(sqlForPlaceholders: (placeholders: string) => string): T[] => {
+      const loaded: T[] = [];
+      for (let i = 0; i < ids.length; i += SQLITE_IN_CHUNK_SIZE) {
+        const chunk = ids.slice(i, i + SQLITE_IN_CHUNK_SIZE);
+        const placeholders = chunk.map(() => '?').join(',');
+        loaded.push(...this.db.prepare(sqlForPlaceholders(placeholders)).all(...chunk) as T[]);
+      }
+      return loaded;
+    };
 
     // 배치 태그 로딩
-    const tagRows = this.db.prepare(
-      `SELECT entity_id, tag, value FROM code_entity_tags WHERE entity_id IN (${placeholders})`
-    ).all(...ids) as (TagRow & { entity_id: string })[];
+    const tagRows = loadByIds<TagRow & { entity_id: string }>(
+      placeholders => `SELECT entity_id, tag, value FROM code_entity_tags WHERE entity_id IN (${placeholders})`
+    );
     const tagsByEntity = new Map<string, EntityTag[]>();
     for (const r of tagRows) {
       const list = tagsByEntity.get(r.entity_id) ?? [];
@@ -914,9 +932,9 @@ export class SqliteRegistryStore {
     }
 
     // 배치 경고 로딩
-    const warningRows = this.db.prepare(
-      `SELECT * FROM code_entity_warnings WHERE entity_id IN (${placeholders}) ORDER BY created_at DESC`
-    ).all(...ids) as WarningRow[];
+    const warningRows = loadByIds<WarningRow>(
+      placeholders => `SELECT * FROM code_entity_warnings WHERE entity_id IN (${placeholders}) ORDER BY created_at DESC`
+    );
     const warningsByEntity = new Map<string, EntityWarning[]>();
     for (const r of warningRows) {
       const list = warningsByEntity.get(r.entity_id) ?? [];
@@ -925,9 +943,9 @@ export class SqliteRegistryStore {
     }
 
     // 배치 이슈 링크 로딩
-    const issueRows = this.db.prepare(
-      `SELECT entity_id, issue_id FROM code_entity_issue_links WHERE entity_id IN (${placeholders}) ORDER BY linked_at`
-    ).all(...ids) as IssueLinkRow[];
+    const issueRows = loadByIds<IssueLinkRow>(
+      placeholders => `SELECT entity_id, issue_id FROM code_entity_issue_links WHERE entity_id IN (${placeholders}) ORDER BY linked_at`
+    );
     const issuesByEntity = new Map<string, string[]>();
     for (const r of issueRows) {
       const list = issuesByEntity.get(r.entity_id) ?? [];
@@ -936,9 +954,9 @@ export class SqliteRegistryStore {
     }
 
     // 배치 메모리 링크 로딩
-    const memoryRows = this.db.prepare(
-      `SELECT entity_id, memory_id FROM code_entity_memory_links WHERE entity_id IN (${placeholders}) ORDER BY linked_at`
-    ).all(...ids) as MemoryLinkRow[];
+    const memoryRows = loadByIds<MemoryLinkRow>(
+      placeholders => `SELECT entity_id, memory_id FROM code_entity_memory_links WHERE entity_id IN (${placeholders}) ORDER BY linked_at`
+    );
     const memorysByEntity = new Map<string, string[]>();
     for (const r of memoryRows) {
       const list = memorysByEntity.get(r.entity_id) ?? [];

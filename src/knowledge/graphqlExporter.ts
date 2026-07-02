@@ -196,6 +196,42 @@ function findEntrypoints(nodes: GraphNode[], edges: GraphEdge[]): Set<string> {
   return entrypoints;
 }
 
+function buildFilteredSummary(moduleNodes: GraphNode[], testEdges: GraphEdge[]): RepoSnapshot['project']['summary'] & {
+  totalModules: number;
+  totalTestFiles: number;
+} {
+  const modules = moduleNodes.filter(n => n.type === 'module');
+  const testFiles = moduleNodes.filter(n => n.type === 'test_file');
+  const testedModuleIds = new Set(testEdges.map(e => e.target));
+  const churnScores = modules
+    .map(m => m.gitInfo?.churnScore ?? 0)
+    .filter(score => score > 0);
+  const avgChurnScore = churnScores.length > 0
+    ? churnScores.reduce((sum, score) => sum + score, 0) / churnScores.length
+    : 0;
+
+  return {
+    totalModules: modules.length,
+    totalTestFiles: testFiles.length,
+    avgChurnScore: Math.round(avgChurnScore * 1000) / 1000,
+    hotModules: modules
+      .filter(m => m.gitInfo?.churnScore !== undefined)
+      .sort((a, b) => (b.gitInfo?.churnScore ?? 0) - (a.gitInfo?.churnScore ?? 0))
+      .slice(0, 5)
+      .map(m => m.id),
+    untestedModules: modules
+      .filter(m => !testedModuleIds.has(m.id))
+      .map(m => m.id),
+    stableCount: modules.filter(m => m.metadata?.state === 'stable').length,
+    experimentalCount: modules.filter(m => m.metadata?.state === 'experimental').length,
+    deprecatedCount: modules.filter(m => m.metadata?.state === 'deprecated').length,
+  };
+}
+
+function toGraphQLEnum(value: string | undefined): string | null {
+  return value ? value.toUpperCase() : null;
+}
+
 export interface RepoSnapshot {
   schemaVersion: 1;
   projectName: string;
@@ -254,9 +290,13 @@ export function buildSnapshot(graph: KnowledgeGraph, projectPath: string): RepoS
     (n.type === 'module' || n.type === 'test_file') && isSourceFile(n.path)
   );
   const moduleIds = new Set(moduleNodes.map(n => n.id));
-  const importEdges = allEdges.filter((e: GraphEdge) => e.type === 'imports' && moduleIds.has(e.source));
-  const testEdges = allEdges.filter((e: GraphEdge) => e.type === 'tests' && moduleIds.has(e.source));
-  const summary = graph.buildSummary();
+  const importEdges = allEdges.filter((e: GraphEdge) =>
+    e.type === 'imports' && moduleIds.has(e.source) && moduleIds.has(e.target)
+  );
+  const testEdges = allEdges.filter((e: GraphEdge) =>
+    e.type === 'tests' && moduleIds.has(e.source) && moduleIds.has(e.target)
+  );
+  const summary = buildFilteredSummary(moduleNodes, testEdges);
 
   // 의존성 맵 구축
   const dependsOnMap = new Map<string, string[]>();
@@ -277,8 +317,7 @@ export function buildSnapshot(graph: KnowledgeGraph, projectPath: string): RepoS
 
   const entrypoints = findEntrypoints(moduleNodes, importEdges);
   const hotModulesSet = new Set(summary.hotModules);
-  const sourceEdges = allEdges.filter((e: GraphEdge) => moduleIds.has(e.source) && moduleIds.has(e.target));
-  const cycles = detectCycles(moduleNodes, sourceEdges);
+  const cycles = detectCycles(moduleNodes, importEdges);
 
   // 언어 통계
   const langStats = new Map<string, { count: number; loc: number }>();
@@ -321,9 +360,9 @@ export function buildSnapshot(graph: KnowledgeGraph, projectPath: string): RepoS
         avgChurnScore: summary.avgChurnScore,
         hotModules: summary.hotModules,
         untestedModules: summary.untestedModules,
-        stableCount: summary.stableModules ?? 0,
-        experimentalCount: summary.experimentalModules ?? 0,
-        deprecatedCount: summary.deprecatedModules ?? 0,
+        stableCount: summary.stableCount,
+        experimentalCount: summary.experimentalCount,
+        deprecatedCount: summary.deprecatedCount,
       },
     },
 
@@ -349,7 +388,7 @@ export function buildSnapshot(graph: KnowledgeGraph, projectPath: string): RepoS
         lastCommitDate: n.gitInfo?.lastCommitDate
           ? new Date(n.gitInfo.lastCommitDate).toISOString()
           : null,
-        state: n.metadata?.state ?? null,
+        state: toGraphQLEnum(n.metadata?.state),
         techDebt: n.metadata?.techDebt ?? null,
         isEntrypoint: entrypoints.has(n.id),
         isHotspot: hotModulesSet.has(n.id),

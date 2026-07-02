@@ -22,11 +22,13 @@ export async function getChangedFiles(
 
     // Include staged files
     const stagedOutput = await runGitCommand(projectPath, ['diff', '--name-only', '--cached']);
+    const untrackedOutput = await runGitCommand(projectPath, ['ls-files', '--others', '--exclude-standard']);
 
     const files = new Set<string>();
 
     output.split('\n').filter(Boolean).forEach(f => files.add(f));
     stagedOutput.split('\n').filter(Boolean).forEach(f => files.add(f));
+    untrackedOutput.split('\n').filter(Boolean).forEach(f => files.add(f));
 
     return Array.from(files);
   } catch (error) {
@@ -71,12 +73,16 @@ export async function getChangedFilesSinceSnapshot(
     const stagedOutput = await runGitCommand(projectPath, [
       'diff', '--name-only', '--cached'
     ]);
+    const untrackedOutput = await runGitCommand(projectPath, [
+      'ls-files', '--others', '--exclude-standard'
+    ]);
 
     const files = new Set<string>();
 
     committedOutput.split('\n').filter(Boolean).forEach(f => files.add(f));
     uncommittedOutput.split('\n').filter(Boolean).forEach(f => files.add(f));
     stagedOutput.split('\n').filter(Boolean).forEach(f => files.add(f));
+    untrackedOutput.split('\n').filter(Boolean).forEach(f => files.add(f));
 
     return Array.from(files);
   } catch (error) {
@@ -86,12 +92,12 @@ export async function getChangedFilesSinceSnapshot(
 }
 
 /**
- * Auto-commit with attribution
+ * Auto-commit staged project changes.
  */
 export async function autoCommit(
   projectPath: string,
   message: string,
-  model: string = 'claude'
+  _model: string = 'claude'
 ): Promise<{ success: boolean; hash?: string; error?: string }> {
   try {
     // 1. Stage all changes
@@ -103,9 +109,8 @@ export async function autoCommit(
       return { success: true, hash: undefined }; // Nothing to commit
     }
 
-    // 3. Commit with Co-Authored-By
-    const fullMessage = `${message}\n\nCo-Authored-By: ${model} <noreply@anthropic.com>`;
-    await runGitCommand(projectPath, ['commit', '-m', fullMessage]);
+    // 3. Commit using the caller-provided message verbatim.
+    await runGitCommand(projectPath, ['commit', '-m', message]);
 
     // 4. Get commit hash
     const hash = await runGitCommand(projectPath, ['rev-parse', 'HEAD']);

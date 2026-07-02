@@ -171,8 +171,8 @@ export function balanceAreasToConcurrency(
 
 /**
  * Roll N per-area results into one verdict + merged issues/actions. The worst
- * decision wins (reject > revise > approve); errored areas are counted but don't
- * affect the decision (a crashed subagent shouldn't silently "approve"). Pure.
+ * decision wins (reject > revise > approve); errored areas make the aggregate
+ * reject so incomplete codebase audits cannot silently approve. Pure.
  */
 export function aggregateAuditResults(results: AuditAreaResult[]): AuditSummary {
   const areas: AuditAreaSummary[] = [];
@@ -232,7 +232,7 @@ export function aggregateAuditResults(results: AuditAreaResult[]): AuditSummary 
     });
   }
 
-  return { decision: worst, totalAreas: results.length, completed, failed, areas, issues, recommendedActions };
+  return { decision: failed ? 'reject' : worst, totalAreas: results.length, completed, failed, areas, issues, recommendedActions };
 }
 
 /**

@@ -120,6 +120,8 @@ const RoleConfigSchema = z.object({
   escalateModel: z.string().optional(),
   /** Escalate after this iteration number (default: 3) */
   escalateAfterIteration: z.number().min(1).optional(),
+  /** Max agentic turns per CLI invocation */
+  maxTurns: z.number().min(1).optional(),
 });
 
 /** Default roles configuration schema */
@@ -232,6 +234,8 @@ const AutonomousConfigSchema = z.object({
   maxAttempts: z.number().min(1).max(10).default(3),
   /** Allowed project paths */
   allowedProjects: z.array(z.string()).default(['~/dev']),
+  /** Treat Linear Backlog as a work queue (legacy). Default false = Backlog parked. */
+  includeBacklog: z.boolean().optional(),
   /** Model configuration (legacy) */
   models: ModelConfigSchema,
   /** Worker timeout (ms) - 0 = unlimited (legacy) */
@@ -295,6 +299,9 @@ const PRProcessorConfigSchema = z.object({
   schedule: z.string().default('*/15 * * * *'),
   cooldownHours: z.number().default(6),
   maxIterations: z.number().min(1).max(10).default(3),
+  maxRetries: z.number().min(1).max(10).optional(),
+  ciTimeoutMs: z.number().positive().optional(),
+  ciPollIntervalMs: z.number().positive().optional(),
   conflictResolver: ConflictResolverConfigSchema,
   repoMappings: z.record(z.string(), z.string()).optional(),
 }).optional();
@@ -348,6 +355,11 @@ const TelemetryConfigSchema = z
   })
   .optional();
 
+const DailyReporterConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  schedule: z.string().default('0 18 * * *'),
+}).optional();
+
 const RawConfigSchema = z.object({
   adapter: AdapterNameSchema.default('codex'),
   language: z.enum(['en', 'ko']).default('en'),
@@ -361,6 +373,7 @@ const RawConfigSchema = z.object({
   prProcessor: PRProcessorConfigSchema,
   ciWorker: CIWorkerConfigSchema,
   monitors: z.array(LongRunningMonitorConfigSchema).optional(),
+  dailyReporter: DailyReporterConfigSchema,
   mcp: McpConfigSchema,
   telemetry: TelemetryConfigSchema,
   agents: z.array(AgentSessionSchema).min(1, 'At least one agent is required'),
@@ -521,6 +534,7 @@ function transformConfig(raw: RawConfig): SwarmConfig {
       schedule: raw.autonomous.schedule,
       maxAttempts: raw.autonomous.maxAttempts,
       allowedProjects: raw.autonomous.allowedProjects,
+      includeBacklog: raw.autonomous.includeBacklog,
       models: raw.autonomous.models ? {
         worker: raw.autonomous.models.worker,
         reviewer: raw.autonomous.models.reviewer,
@@ -558,7 +572,11 @@ function transformConfig(raw: RawConfig): SwarmConfig {
       schedule: raw.prProcessor.schedule,
       cooldownHours: raw.prProcessor.cooldownHours,
       maxIterations: raw.prProcessor.maxIterations,
+      maxRetries: raw.prProcessor.maxRetries,
+      ciTimeoutMs: raw.prProcessor.ciTimeoutMs,
+      ciPollIntervalMs: raw.prProcessor.ciPollIntervalMs,
       conflictResolver: raw.prProcessor.conflictResolver as ConflictResolverConfig | undefined,
+      repoMappings: raw.prProcessor.repoMappings,
     } : undefined,
     ciWorker: raw.ciWorker ? {
       enabled: raw.ciWorker.enabled,
@@ -568,6 +586,7 @@ function transformConfig(raw: RawConfig): SwarmConfig {
       maxAgeDays: raw.ciWorker.maxAgeDays,
     } : undefined,
     monitors: raw.monitors as LongRunningMonitorConfig[] | undefined,
+    dailyReporter: raw.dailyReporter,
     mcp: raw.mcp ? { servers: raw.mcp.servers as McpConfig['servers'] } : undefined,
     telemetry: raw.telemetry ? { enabled: raw.telemetry.enabled } : undefined,
   };

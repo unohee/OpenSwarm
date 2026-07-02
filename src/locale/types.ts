@@ -88,6 +88,7 @@ export interface LocaleMessages {
     };
     issue: {
       title: string;
+      stateLabel: string;                 // {{state}}
       notFound: string;                  // {{id}}
       fetchError: string;                // {{error}}
       noDescription: string;
@@ -149,6 +150,7 @@ export interface LocaleMessages {
       runUsage: string;
       runStarted: string;            // {{name}}
       notFound: string;              // {{name}}
+      toggleUsage: string;
       toggleEnabled: string;         // {{name}}
       toggleDisabled: string;        // {{name}}
       addUsage: string;
@@ -171,9 +173,11 @@ export interface LocaleMessages {
     };
     auto: {
       title: string;
+      statusLabel: string;
       statusRunning: string;
       statusStopped: string;
       completedFailed: string;       // {{completed}}, {{failed}}
+      pendingApprovalLabel: string;
       pendingApproval: string;
       noPending: string;
       lastHeartbeatLabel: string;    // {{time}}

@@ -3,7 +3,7 @@
 // Agent task dependency management and execution
 // ============================================
 
-import { resolve } from 'path';
+import { basename, isAbsolute, relative, resolve } from 'path';
 import { homedir } from 'os';
 import * as fs from 'fs/promises';
 import * as yaml from 'yaml';
@@ -249,12 +249,34 @@ export function getParallelGroups(steps: WorkflowStep[]): WorkflowStep[][] {
 const WORKFLOW_DIR = resolve(homedir(), '.openswarm/workflows');
 const EXECUTION_DIR = resolve(homedir(), '.openswarm/executions');
 
+function storageFilePath(rootDir: string, id: string, extension: string): string {
+  if (
+    !id ||
+    id !== basename(id) ||
+    id === '.' ||
+    id === '..' ||
+    id.includes('/') ||
+    id.includes('\\') ||
+    id.includes('\0')
+  ) {
+    throw new Error(`Invalid storage ID: ${id}`);
+  }
+
+  const filePath = resolve(rootDir, `${id}${extension}`);
+  const rel = relative(rootDir, filePath);
+  if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) {
+    throw new Error(`Invalid storage ID: ${id}`);
+  }
+
+  return filePath;
+}
+
 /**
  * Save workflow
  */
 export async function saveWorkflow(workflow: WorkflowConfig): Promise<void> {
+  const filePath = storageFilePath(WORKFLOW_DIR, workflow.id, '.yaml');
   await fs.mkdir(WORKFLOW_DIR, { recursive: true });
-  const filePath = resolve(WORKFLOW_DIR, `${workflow.id}.yaml`);
   await fs.writeFile(filePath, yaml.stringify(workflow), 'utf-8');
   console.log(`[Workflow] Saved: ${workflow.name} (${workflow.id})`);
 }
@@ -264,7 +286,7 @@ export async function saveWorkflow(workflow: WorkflowConfig): Promise<void> {
  */
 export async function loadWorkflow(workflowId: string): Promise<WorkflowConfig | null> {
   try {
-    const filePath = resolve(WORKFLOW_DIR, `${workflowId}.yaml`);
+    const filePath = storageFilePath(WORKFLOW_DIR, workflowId, '.yaml');
     const content = await fs.readFile(filePath, 'utf-8');
     return yaml.parse(content) as WorkflowConfig;
   } catch {
@@ -298,8 +320,8 @@ export async function listWorkflows(): Promise<WorkflowConfig[]> {
  * Save execution state
  */
 export async function saveExecution(execution: WorkflowExecution): Promise<void> {
+  const filePath = storageFilePath(EXECUTION_DIR, execution.executionId, '.json');
   await fs.mkdir(EXECUTION_DIR, { recursive: true });
-  const filePath = resolve(EXECUTION_DIR, `${execution.executionId}.json`);
   await fs.writeFile(filePath, JSON.stringify(execution, null, 2), 'utf-8');
 }
 
@@ -308,7 +330,7 @@ export async function saveExecution(execution: WorkflowExecution): Promise<void>
  */
 export async function loadExecution(executionId: string): Promise<WorkflowExecution | null> {
   try {
-    const filePath = resolve(EXECUTION_DIR, `${executionId}.json`);
+    const filePath = storageFilePath(EXECUTION_DIR, executionId, '.json');
     const content = await fs.readFile(filePath, 'utf-8');
     return JSON.parse(content);
   } catch {
