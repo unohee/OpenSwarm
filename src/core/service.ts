@@ -232,8 +232,6 @@ export async function startService(config: SwarmConfig): Promise<void> {
       guards: config.autonomous.guards,
       // Bad-edit / reflection self-repair budget
       maxReflections: config.autonomous.maxReflections,
-      // Daily pace control
-      dailyTaskCap: config.autonomous.dailyTaskCap ?? 6,
       interTaskCooldownMs: config.autonomous.interTaskCooldownMs ?? 1_800_000,
       jobProfiles: config.autonomous.jobProfiles,
     });

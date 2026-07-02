@@ -260,8 +260,6 @@ const AutonomousConfigSchema = z.object({
   guards: PipelineGuardsConfigSchema,
   /** Max objective self-repair attempts (lint/bs/test) before giving up */
   maxReflections: z.number().min(1).max(10).default(3),
-  /** Daily task completion cap (default: 6) */
-  dailyTaskCap: z.number().min(1).max(50).default(6),
   /** Cooldown between task completions in ms (default: 1800000 = 30min) */
   interTaskCooldownMs: z.number().min(0).default(1800000),
 }).optional();
@@ -561,7 +559,6 @@ function transformConfig(raw: RawConfig): SwarmConfig {
       allowSameProjectConcurrent: raw.autonomous.allowSameProjectConcurrent,
       guards: raw.autonomous.guards,
       maxReflections: raw.autonomous.maxReflections,
-      dailyTaskCap: raw.autonomous.dailyTaskCap,
       interTaskCooldownMs: raw.autonomous.interTaskCooldownMs,
       // jobProfiles was validated by the schema but dropped here, so per-task
       // model selection silently fell back to defaultRoles. Carry it through.

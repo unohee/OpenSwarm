@@ -120,15 +120,9 @@ function pruneOldEntries(entries: ProjectPaceEntry[]): ProjectPaceEntry[] {
   return entries.filter(e => new Date(e.completedAt).getTime() > cutoff);
 }
 
-export function getProjectWindowCount(projectName: string): number {
-  const state = ensurePaceLoaded();
-  const entries = state.projects[projectName] ?? [];
-  return pruneOldEntries(entries).length;
-}
-
-export function canProjectAcceptTask(projectName: string, cap: number): boolean {
-  return getProjectWindowCount(projectName) < cap;
-}
+// Cap helpers (getProjectWindowCount / canProjectAcceptTask / getTotalWindowCount)
+// were removed with the per-project 5h cap (INT-2317). Completion recording stays
+// below — daily-pace.json remains useful as a cost/throughput telemetry trail.
 
 export function recordProjectCompletion(projectName: string, costUsd?: number): void {
   const state = ensurePaceLoaded();
@@ -138,15 +132,6 @@ export function recordProjectCompletion(projectName: string, costUsd?: number): 
   state.updatedAt = new Date().toISOString();
   savePace();
   console.log(`[Pace] ${projectName}: ${state.projects[projectName].length} tasks in 5h window`);
-}
-
-export function getTotalWindowCount(): number {
-  const state = ensurePaceLoaded();
-  let total = 0;
-  for (const entries of Object.values(state.projects)) {
-    total += pruneOldEntries(entries).length;
-  }
-  return total;
 }
 
 export function getDailyPaceInfo(): DailyPaceState {
@@ -166,17 +151,6 @@ export function getDailyPaceInfo(): DailyPaceState {
   }
 
   return { completedToday: totalToday, dateKey: today, lastCompletionAt: lastCompletion, projectCounts };
-}
-
-// 하위 호환 래퍼
-export function getDailyCompletedCount(): number {
-  return getTotalWindowCount();
-}
-export function incrementDailyCompleted(): void {
-  // no-op — recordProjectCompletion으로 대체
-}
-export function canAcceptMoreTasks(cap: number): boolean {
-  return getTotalWindowCount() < cap;
 }
 
 export interface TaskState {

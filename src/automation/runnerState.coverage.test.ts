@@ -61,16 +61,11 @@ describe('runnerState persistence and helpers', () => {
     }));
     vi.resetModules();
     mod = await import('./runnerState.js');
-    expect(mod.getProjectWindowCount('Alpha')).toBe(1);
-    expect(mod.canProjectAcceptTask('Alpha', 2)).toBe(true);
-    expect(mod.canProjectAcceptTask('Alpha', 1)).toBe(false);
-    expect(mod.getTotalWindowCount()).toBe(1);
+    // Cap helpers were removed with the per-project 5h cap (INT-2317) —
+    // the rolling-window prune is still observable via getDailyPaceInfo.
+    expect(mod.getDailyPaceInfo().projectCounts.Alpha).toBe(1);
 
     mod.recordProjectCompletion('Alpha', 1.25);
-    expect(mod.getProjectWindowCount('Alpha')).toBe(2);
-    expect(mod.canAcceptMoreTasks(3)).toBe(true);
-    expect(mod.getDailyCompletedCount()).toBe(2);
-    mod.incrementDailyCompleted();
     const info = mod.getDailyPaceInfo();
     expect(info.completedToday).toBe(2);
     expect(info.projectCounts.Alpha).toBe(2);

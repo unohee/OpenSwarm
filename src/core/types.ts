@@ -478,8 +478,6 @@ export type AutonomousStartupConfig = {
    * Default: 3.
    */
   maxReflections?: number;
-  /** Daily task completion cap (default: 6) */
-  dailyTaskCap?: number;
   /** Cooldown between task completions in ms (default: 1800000 = 30min) */
   interTaskCooldownMs?: number;
   /** Job profiles used to select models based on task traits */
