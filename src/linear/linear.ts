@@ -7,6 +7,7 @@ import type { LinearIssueInfo, LinearProjectInfo } from '../core/types.js';
 import { formatAutomationComment, type CommentSection } from './format.js';
 import { setLinearClient } from './projectUpdater.js';
 import { withRateLimit } from '../support/rateLimiter.js';
+import { c, status } from '../support/colors.js';
 
 /**
  * Extract project info from an issue
@@ -157,7 +158,7 @@ export function clearLinearCache(): void {
   inProgressCache.clear();
   backlogCache.clear();
   myIssuesCache.clear();
-  console.log('[Linear] Cache cleared');
+  console.log(`${status.info('[Linear]')} ${c.dim('cache cleared')}`);
 }
 
 /**
@@ -200,7 +201,7 @@ export function initLinear(credential: string, team: string, isOAuth = false): v
   teamId = team;
   teamIds = team.split(',').map(id => id.trim()).filter(Boolean);
   setLinearClient(client);
-  console.log(`[Linear] Client initialized (${isOAuth ? 'OAuth' : 'apiKey'})`);
+  console.log(`${status.info('[Linear]')} ${c.dim('client initialized')} ${c.yellow(isOAuth ? 'OAuth' : 'apiKey')}`);
 }
 
 /**
@@ -219,7 +220,7 @@ export async function ensureLinearAuthFresh(): Promise<void> {
       client = new LinearClient({ accessToken: token });
       currentToken = token;
       setLinearClient(client);
-      console.log('[Linear] OAuth token refreshed — client reinitialized');
+      console.log(`${status.ok('[Linear] OAuth token refreshed')} ${c.dim('client reinitialized')}`);
     }
   } catch (err) { // cxt-ignore: error_swallow,exception_hiding — best-effort; logged, must not crash the heartbeat
     console.error(`[Linear] OAuth refresh failed: ${(err as Error).message}`);

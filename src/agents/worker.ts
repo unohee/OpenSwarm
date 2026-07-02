@@ -31,6 +31,8 @@ export interface WorkerOptions {
   issueIdentifier?: string;    // Linear issue ID (e.g., INT-123)
   projectName?: string;        // Linear project name
   onLog?: (line: string) => void;  // Callback for stdout streaming
+  /** Route worker status through onLog without printing raw console lines. */
+  suppressStatusLogs?: boolean;
   processContext?: ProcessContext;
   /** 코드 컨텍스트 (impact analysis + registry briefs) */
   workerContext?: WorkerContext;
@@ -115,6 +117,18 @@ function isWorkerQuotaFailure(result: WorkerResult): boolean {
   );
 }
 
+function emitWorkerStatus(options: WorkerOptions, line: string): void {
+  options.onLog?.(line);
+  if (!options.suppressStatusLogs) console.log(line);
+}
+
+export function formatWorkerGitChangeStatus(files: string[]): string {
+  if (files.length === 0) return '[Worker] No file changes detected by Git or LLM';
+  const shown = files.slice(0, 4).join(', ');
+  const more = files.length > 4 ? ` +${files.length - 4} more` : '';
+  return `[Worker] Git detected ${files.length} changed file(s): ${shown}${more}`;
+}
+
 // Worker Execution
 
 /**
@@ -132,7 +146,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
   const isGitRepo = await gitTracker.isGitRepo(cwd);
   if (isGitRepo) {
     snapshotHash = await gitTracker.takeSnapshot(cwd);
-    console.log(`[Worker] Git snapshot: ${snapshotHash.slice(0, 8)}`);
+    emitWorkerStatus(options, `[Worker] Git snapshot: ${snapshotHash.slice(0, 8)}`);
   }
 
   const runAttempt = async (
@@ -189,7 +203,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       const gitChangedFiles = await gitTracker.getChangedFilesSinceSnapshot(cwd, snapshotHash);
 
       if (gitChangedFiles.length > 0) {
-        console.log(`[Worker] Git detected changes: ${gitChangedFiles.join(', ')}`);
+        emitWorkerStatus(options, formatWorkerGitChangeStatus(gitChangedFiles));
 
         // Merge with LLM-reported files (Git results take priority)
         const mergedFiles = new Set([
@@ -202,14 +216,14 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
         // the model never produced a JSON block. Only an explicit error/halt in the
         // output should keep success=false here.
         if (!parsedResult.success && !parsedResult.error && !parsedResult.haltReason) {
-          console.log('[Worker] Promoting to success: git changes present, no error signal');
+          emitWorkerStatus(options, '[Worker] Promoting to success: git changes present, no error signal');
           parsedResult.success = true;
           if (!parsedResult.summary || parsedResult.summary === t('common.fallback.noSummary')) {
             parsedResult.summary = `Modified ${gitChangedFiles.length} file(s): ${gitChangedFiles.slice(0, 5).join(', ')}`;
           }
         }
       } else if (parsedResult.filesChanged.length === 0) {
-        console.log('[Worker] No file changes detected by Git or LLM');
+        emitWorkerStatus(options, formatWorkerGitChangeStatus([]));
       }
     }
 

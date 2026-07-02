@@ -1,7 +1,7 @@
 // Purpose: enableProject must also add the repo to allowedProjects so
 // resolveProjectPath reads its openswarm.json mapping (INT-1973).
 import { describe, it, expect } from 'vitest';
-import { AutonomousRunner } from './autonomousRunner.js';
+import { AutonomousRunner, decisionSelectionBudget } from './autonomousRunner.js';
 import type { AutonomousConfig } from './runnerTypes.js';
 
 const cfg = (over: Partial<AutonomousConfig> = {}): AutonomousConfig => ({
@@ -28,6 +28,19 @@ describe('AutonomousRunner.enableProject (INT-1973)', () => {
     r.enableProject('/x/a');
     expect(r.getAllowedProjects().filter((p) => p === '/x/a')).toHaveLength(1);
     expect(r.getEnabledProjects()).toContain('/x/a');
+  });
+});
+
+describe('decisionSelectionBudget', () => {
+  it('oversamples candidates so post-selection skips do not leave slots idle', () => {
+    expect(decisionSelectionBudget(3, 50)).toBe(9);
+    expect(decisionSelectionBudget(6, 50)).toBe(18);
+  });
+
+  it('never exceeds available candidates and handles empty inputs', () => {
+    expect(decisionSelectionBudget(6, 4)).toBe(4);
+    expect(decisionSelectionBudget(0, 10)).toBe(0);
+    expect(decisionSelectionBudget(3, 0)).toBe(0);
   });
 });
 

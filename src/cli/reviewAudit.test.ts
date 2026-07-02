@@ -6,6 +6,7 @@ import {
   balanceAreasToConcurrency,
   aggregateAuditResults,
   formatAuditReport,
+  formatAuditSummary,
   runMaxReview,
   runAreaFixes,
   fixTargets,
@@ -217,6 +218,38 @@ describe('formatAuditReport (INT-2022)', () => {
   });
 });
 
+describe('formatAuditSummary terminal output', () => {
+  it('separates issue area, body, action type, and location for scanability', () => {
+    const summary: AuditSummary = {
+      decision: 'revise',
+      totalAreas: 1,
+      completed: 1,
+      failed: 0,
+      areas: [{ label: 'src', decision: 'revise', issueCount: 1, actionCount: 1 }],
+      issues: [
+        '[src] src/python-bridge.ts:201 - child 이벤트 핸들러가 해당 child 인스턴스에 스코프되지 않고 pendingRequest 전역 상태를 직접 수정합니다.',
+      ],
+      recommendedActions: [
+        {
+          type: 'bug',
+          title: 'Scope PythonBridge child event handling to the active process instance',
+          location: 'src: src/python-bridge.ts:201',
+        },
+      ],
+    };
+
+    const out = formatAuditSummary(summary);
+    expect(out).toContain('Issues (1):');
+    expect(out).toContain('⚠ src');
+    expect(out).toContain('    src/python-bridge.ts:201 - child 이벤트');
+    expect(out).toContain('Recommended follow-ups (1):');
+    expect(out).toContain('✎ [bug] Scope PythonBridge child event handling');
+    expect(out).toContain('    loc: src: src/python-bridge.ts:201');
+    expect(out).not.toContain('  - [src]');
+    expect(out).not.toContain('  - [bug]');
+  });
+});
+
 describe('runMaxReview orchestration (INT-2006)', () => {
   const mkAreas = (n: number): AuditArea[] =>
     Array.from({ length: n }, (_, i) => ({ label: `src/m${i}`, dir: `src/m${i}`, files: [`src/m${i}/f.ts`] }));
@@ -367,6 +400,23 @@ describe('fixTargets + runAreaFixes (INT-2249)', () => {
     expect(seen.sort()).toEqual(['src/b', 'src/c']); // approve + error areas skipped
     expect(fixes.every((f) => f.applied)).toBe(true);
     expect(fixes.flatMap((f) => f.filesChanged).sort()).toEqual(['src/b/f.ts', 'src/c/f.ts']);
+  });
+
+  it('emits fix worker log progress for a live status board', async () => {
+    const events: string[] = [];
+    await runAreaFixes(run(), '/repo', { concurrency: 1 }, {
+      fix: async (a, _review, onLog) => {
+        onLog(`[Worker] Git detected 1 changed file(s): ${a.files[0]}`);
+        return { success: true, filesChanged: a.files };
+      },
+      onProgress: (e) => {
+        if (e.type === 'log') events.push(`${e.label}: ${e.line}`);
+      },
+    });
+    expect(events).toEqual([
+      'src/b: [Worker] Git detected 1 changed file(s): src/b/f.ts',
+      'src/c: [Worker] Git detected 1 changed file(s): src/c/f.ts',
+    ]);
   });
 
   it('a failed fix lands as an error, not a throw', async () => {

@@ -6,7 +6,7 @@ import type { TaskItem } from './decisionEngine.js';
 // carries an explicit scope, detection never touches the Knowledge Graph, so
 // results are fully deterministic without any project graph on disk.
 
-function task(id: string, priority: number, fileScope: string[]): TaskItem {
+function task(id: string, priority: number, fileScope?: string[]): TaskItem {
   return {
     id,
     source: 'linear',
@@ -77,5 +77,28 @@ describe('detectFileConflicts (planner-declared file scope)', () => {
     // Exactly one of A/B runs now; the other is deferred.
     expect([safeIds.has('A'), safeIds.has('B')].filter(Boolean)).toHaveLength(1);
     expect(result.safe).toHaveLength(2);
+  });
+
+  it('ignores stale generated/worktree scope entries instead of creating false conflicts', async () => {
+    const result = await detectFileConflicts(
+      [
+        task('A', 2, ['trash/worktree_123/src/shared.ts', 'worktree/old/src/shared.ts', 'src/a.ts']),
+        task('B', 2, ['src/shared.ts']),
+      ],
+      PROJECT,
+    );
+
+    expect(new Set(result.safe.map((t) => t.id))).toEqual(new Set(['A', 'B']));
+    expect(result.conflictGroups).toHaveLength(0);
+  });
+
+  it('treats unknown scope as a soft PR-time risk, not a hard scheduling conflict', async () => {
+    const result = await detectFileConflicts(
+      [task('A', 2, ['unknown-file-scope']), task('B', 2, ['src/shared.ts'])],
+      PROJECT,
+    );
+
+    expect(new Set(result.safe.map((t) => t.id))).toEqual(new Set(['A', 'B']));
+    expect(result.conflictGroups).toHaveLength(0);
   });
 });

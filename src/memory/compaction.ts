@@ -4,8 +4,8 @@
 
 import { getDb, getTable, initDatabase, EMBEDDING_DIM, PERMANENT_EXPIRY, normalizeRecords, setTable } from './memoryCore.js';
 import type { CognitiveMemoryRecord } from './memoryCore.js';
+import { isTransientReviewRejectionMemory } from './memoryFilters.js';
 
-const ARCHIVE_THRESHOLD = 0.7;
 const MIN_IMPORTANCE = 0.1;
 const CONSOLIDATION_SIMILARITY = 0.85;
 
@@ -78,8 +78,8 @@ function removeDuplicates(records: CognitiveMemoryRecord[]): CognitiveMemoryReco
 }
 
 /**
- * Compact memory table by removing expired/decayed/unimportant records
- * and deduplicating similar memories
+ * Compact memory table by removing expired/unimportant/noisy records,
+ * deduplicating similar memories, and rewriting to the lean v3 schema.
  *
  * @returns Statistics about compaction
  */
@@ -118,14 +118,14 @@ export async function compactMemoryTable(): Promise<{
     // 2. Filter valid records
     const now = Date.now();
     const validRecords = allRecords.filter((r: any) => {
-      // Keep if permanent (expiresAt >= PERMANENT_EXPIRY)
-      if (r.expiresAt >= PERMANENT_EXPIRY) return true;
+      if (r.id === 'init') return true;
+
+      // Remove transient infrastructure failures that were previously stored as
+      // high-importance reviewer constraints.
+      if (isTransientReviewRejectionMemory(r)) return false;
 
       // Remove if expired
-      if (r.expiresAt < now) return false;
-
-      // Remove if too decayed
-      if (r.decay >= ARCHIVE_THRESHOLD) return false;
+      if (r.expiresAt < PERMANENT_EXPIRY && r.expiresAt < now) return false;
 
       // Remove if unimportant
       if (r.importance < MIN_IMPORTANCE) return false;
@@ -202,23 +202,28 @@ export async function shouldCompact(): Promise<boolean> {
 
     const now = Date.now();
 
-    // Count expired/decayed records
+    // Count expired/noisy records
     let expiredCount = 0;
-    let decayedCount = 0;
+    let noisyCount = 0;
+    let legacyColumnCount = 0;
 
     for (const r of allRecords) {
       if (r.expiresAt < PERMANENT_EXPIRY && r.expiresAt < now) expiredCount++;
-      if (r.decay >= ARCHIVE_THRESHOLD) decayedCount++;
+      if (isTransientReviewRejectionMemory(r)) noisyCount++;
+      if ('revisionCount' in r || 'decay' in r || 'stability' in r || 'contradicts' in r || 'supports' in r) {
+        legacyColumnCount++;
+      }
     }
 
-    const totalWaste = expiredCount + decayedCount;
+    const totalWaste = expiredCount + noisyCount;
     const wasteRatio = totalWaste / allRecords.length;
 
-    // Compact if > 20% waste or > 1000 records
-    const shouldCompact = wasteRatio > 0.2 || allRecords.length > 1000;
+    // Compact if > 20% waste, > 1000 records, or legacy v2 fields are still
+    // present and need a schema rewrite.
+    const shouldCompact = wasteRatio > 0.2 || allRecords.length > 1000 || legacyColumnCount > 0;
 
     if (shouldCompact) {
-      console.log(`[Compaction] Compaction recommended: ${totalWaste}/${allRecords.length} waste (${(wasteRatio * 100).toFixed(1)}%)`);
+      console.log(`[Compaction] Compaction recommended: ${totalWaste}/${allRecords.length} waste (${(wasteRatio * 100).toFixed(1)}%), ${legacyColumnCount} legacy rows`);
     }
 
     return shouldCompact;

@@ -12,6 +12,7 @@
 import { realpathSync } from 'node:fs';
 import path from 'node:path';
 import { saveMemory, searchMemorySafe } from './memoryCore.js';
+import { isTransientReviewerFailure } from './memoryFilters.js';
 import type { WorkerResult, RecommendedAction } from '../agents/agentPair.js';
 
 /**
@@ -130,13 +131,31 @@ export async function recordTaskOutcome(
   try {
     const repo = repoKey(projectPath);
     if (outcome.rejectionFeedback) {
+      if (isTransientReviewerFailure(outcome.rejectionFeedback)) {
+        console.log('[RepoKnowledge] skipped transient reviewer failure memory');
+        return;
+      }
+
+      const feedback = outcome.rejectionFeedback.slice(0, 600);
       await saveMemory(
         'constraint',
         repo,
         `Review rejection: ${outcome.taskTitle.slice(0, 80)}`,
         `Task "${outcome.taskTitle}" was rejected by the reviewer.\n` +
-        `Reviewer feedback (avoid repeating this): ${outcome.rejectionFeedback.slice(0, 600)}`,
-        { derivedFrom: outcome.derivedFrom, isVerified: true, skipDistillation: true },
+        `Actionable reviewer feedback: ${feedback}`,
+        {
+          derivedFrom: outcome.derivedFrom,
+          confidence: 0.82,
+          importance: 0.82,
+          skipDistillation: true,
+          metadata: {
+            kind: 'review_rejection',
+            transient: false,
+            actionable: true,
+            taskTitle: outcome.taskTitle,
+            feedback,
+          },
+        },
       );
       return;
     }
@@ -159,7 +178,17 @@ export async function recordTaskOutcome(
       repo,
       `Solved: ${outcome.taskTitle.slice(0, 80)}`,
       parts.join('\n'),
-      { derivedFrom: outcome.derivedFrom, isVerified: true, skipDistillation: true },
+      {
+        derivedFrom: outcome.derivedFrom,
+        confidence: 0.82,
+        importance: outcome.iterations && outcome.iterations > 1 ? 0.78 : 0.74,
+        skipDistillation: true,
+        metadata: {
+          kind: 'task_success',
+          filesChanged: files.slice(0, 20),
+          iterations: outcome.iterations ?? 1,
+        },
+      },
     );
   } catch (err) {
     // Memory write failures must never stop the pipeline
@@ -192,10 +221,27 @@ export async function recordAuditFindings(
     ]
       .filter(Boolean)
       .join('\n');
+    const decision = summary.decision.toLowerCase();
+    const importance = decision === 'reject'
+      ? 0.9
+      : decision === 'revise'
+        ? 0.84
+        : 0.68;
     await saveMemory('constraint', repo, `Audit findings (${when})`, body, {
       derivedFrom: 'cli:review-max',
-      isVerified: true,
+      importance,
+      confidence: 0.86,
       skipDistillation: true,
+      metadata: {
+        kind: 'audit_findings',
+        decision: summary.decision,
+        actionCount: summary.recommendedActions.length,
+        topActions: top.map(a => ({
+          type: a.type,
+          title: a.title,
+          location: a.location,
+        })),
+      },
     });
   } catch (err) {
     console.warn('[RepoKnowledge] recordAuditFindings failed (non-critical):', err);

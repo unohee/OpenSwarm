@@ -105,7 +105,7 @@ export async function searchChatHistory(
 
   // Filter by channelId (stored in derivedFrom)
   if (options?.channelId) {
-    memories = memories.filter(m => m.metadata.derivedFrom === options.channelId);
+    memories = memories.filter(m => m.derivedFrom === options.channelId || m.metadata.issueRef === options.channelId);
   }
 
   // Filter by source (extract from content)

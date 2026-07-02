@@ -1,9 +1,9 @@
 /**
- * Persistent Cognitive Memory Module v2.0
+ * Persistent Cognitive Memory Module v3.0
  *
  * Barrel re-export: preserves existing import paths
- * - memoryCore.ts: types, embedding, distillation, DB, save, search
- * - memoryOps.ts: revision, formatting, background, stats, legacy
+ * - memoryCore.ts: lean types, embedding, distillation, DB, save, search
+ * - memoryOps.ts: formatting, maintenance, stats, legacy
  * - compaction.ts: memory table compaction and cleanup
  */
 export * from './codex.js';

@@ -60,6 +60,16 @@ export type { AutonomousConfig, RunnerState } from './runnerTypes.js';
 export type { ProjectInfo } from './runnerState.js';
 
 let runnerInstance: AutonomousRunner | null = null;
+const DECISION_SELECTION_OVERSAMPLE = 3;
+
+type RunnableCandidate = { task: TaskItem; projectPath: string };
+
+export function decisionSelectionBudget(availableSlots: number, candidateCount: number): number {
+  const slots = Math.max(0, Math.floor(availableSlots));
+  const candidates = Math.max(0, Math.floor(candidateCount));
+  if (slots === 0 || candidates === 0) return 0;
+  return Math.min(candidates, Math.max(slots, slots * DECISION_SELECTION_OVERSAMPLE));
+}
 
 export class AutonomousRunner {
   private config: AutonomousConfig;
@@ -961,26 +971,71 @@ export class AutonomousRunner {
       this.syslog(`  Tasks: ${tasksForEngine.length} enabled-or-uncached / ${executableTasks.length} executable / ${tasks.length} total`);
     }
 
-    // Get validated task list from DecisionEngine
-    this.syslog('⟳ Decision Engine evaluating tasks...');
-    const decision = await this.engine.heartbeatMultiple(
-      tasksForEngine,
-      maxSlots,
-      [] // No project exclusion — worktree mode isolates each task
-    );
+    let enqueuedCount = 0;
+    let skippedCount = 0;
+    const consideredTaskIds = new Set<string>();
+    let pass = 0;
 
-    console.log(`[AutonomousRunner] Decision: ${decision.action} — ${decision.reason} (${decision.tasks?.length ?? 0} tasks)`);
-    if (decision.action === 'skip' || decision.action === 'defer') {
-      this.syslog(`→ Decision: ${decision.action} — ${decision.reason}`);
-      return;
+    while (enqueuedCount < maxSlots) {
+      const remainingSlots = maxSlots - enqueuedCount;
+      const selectableTasks = tasksForEngine.filter(task => !consideredTaskIds.has(task.id));
+      const selectionBudget = decisionSelectionBudget(remainingSlots, selectableTasks.length);
+      if (selectionBudget === 0) break;
+
+      this.syslog(pass === 0
+        ? '⟳ Decision Engine evaluating tasks...'
+        : `⟳ Backfill pass (${remainingSlots} slot(s) open)...`);
+
+      const decision = await this.engine.heartbeatMultiple(
+        selectableTasks,
+        selectionBudget,
+        [] // No project exclusion — worktree mode isolates each task
+      );
+
+      console.log(`[AutonomousRunner] Decision: ${decision.action} — ${decision.reason} (${decision.tasks?.length ?? 0} tasks)`);
+      skippedCount += decision.skippedCount ?? 0;
+      if (decision.action === 'skip' || decision.action === 'defer') {
+        this.syslog(`→ Decision: ${decision.action} — ${decision.reason}`);
+        break;
+      }
+
+      for (const { task } of decision.tasks) {
+        consideredTaskIds.add(task.id);
+      }
+
+      const candidates = await this.resolveRunnableCandidates(decision.tasks);
+      const safeTasks = await this.detectSafeCandidateIds(candidates);
+      const before = enqueuedCount;
+
+      for (const { task, projectPath } of candidates) {
+        if (enqueuedCount >= maxSlots) break;
+        if (!safeTasks.has(task.id)) continue;
+
+        this.enqueueCandidate(task, projectPath);
+        enqueuedCount++;
+      }
+
+      pass++;
+
+      if (enqueuedCount >= maxSlots) break;
+      if (decision.tasks.length === 0) break;
+      if (selectionBudget >= selectableTasks.length) break;
+      if (enqueuedCount === before) continue;
     }
 
-    // Add validated tasks to queue (with conflict detection)
-    let enqueuedCount = 0;
+    if (enqueuedCount === 0 && skippedCount > 0) {
+      this.syslog(`— No new tasks queued (skipped: ${skippedCount})`);
+    } else {
+      this.syslog(`✓ Enqueued ${enqueuedCount} task(s) | skipped: ${skippedCount}`);
+    }
 
-    // Pre-filter: resolve project paths and skip invalid tasks
+    // Execute tasks
+    await this.runAvailableTasks();
+  }
+
+  private async resolveRunnableCandidates(decisionTasks: Array<{ task: TaskItem }>): Promise<RunnableCandidate[]> {
     const candidates: { task: TaskItem; projectPath: string }[] = [];
-    for (const { task } of decision.tasks) {
+    for (const { task } of decisionTasks) {
       if (this.scheduler.isTaskQueued(task.id) || this.scheduler.isTaskRunning(task.id)) {
         this.syslog(`  Skip (already queued/running): ${task.issueIdentifier || task.id.slice(0, 8)} ${task.title}`);
         continue;
@@ -1014,6 +1069,10 @@ export class AutonomousRunner {
       candidates.push({ task, projectPath });
     }
 
+    return candidates;
+  }
+
+  private async detectSafeCandidateIds(candidates: RunnableCandidate[]): Promise<Set<string>> {
     // Group candidates by projectPath for conflict detection
     const byProject = new Map<string, { task: TaskItem; projectPath: string }[]>();
     for (const c of candidates) {
@@ -1055,31 +1114,20 @@ export class AutonomousRunner {
       }
     }
 
-    // Enqueue safe tasks only
-    for (const { task, projectPath } of candidates) {
-      if (!safeTasks.has(task.id)) continue;
+    return safeTasks;
+  }
 
-      this.scheduler.enqueue(task, projectPath);
-      broadcastEvent({ type: 'task:queued', data: { taskId: task.id, title: task.title, projectPath, issueIdentifier: task.issueIdentifier } });
-      this.syslog(`✓ Queued: ${task.issueIdentifier || ''} ${task.title} → ${projectPath.split('/').slice(-2).join('/')}`);
-      enqueuedCount++;
+  private enqueueCandidate(task: TaskItem, projectPath: string): void {
+    this.scheduler.enqueue(task, projectPath);
+    broadcastEvent({ type: 'task:queued', data: { taskId: task.id, title: task.title, projectPath, issueIdentifier: task.issueIdentifier } });
+    this.syslog(`✓ Queued: ${task.issueIdentifier || ''} ${task.title} → ${projectPath.split('/').slice(-2).join('/')}`);
 
-      // Claim the task immediately: set Linear to 'In Progress' so restarts don't re-queue it
-      if (task.issueId) {
-        getTaskSource()?.updateState(task.issueId, 'In Progress').catch((err: Error) =>
-          console.warn(`[AutonomousRunner] Failed to claim issue ${task.issueIdentifier}:`, err)
-        );
-      }
+    // Claim the task immediately: set Linear to 'In Progress' so restarts don't re-queue it
+    if (task.issueId) {
+      getTaskSource()?.updateState(task.issueId, 'In Progress').catch((err: Error) =>
+        console.warn(`[AutonomousRunner] Failed to claim issue ${task.issueIdentifier}:`, err)
+      );
     }
-
-    if (enqueuedCount === 0 && decision.skippedCount > 0) {
-      this.syslog(`— No new tasks queued (skipped: ${decision.skippedCount})`);
-    } else {
-      this.syslog(`✓ Enqueued ${enqueuedCount} task(s) | skipped: ${decision.skippedCount}`);
-    }
-
-    // Execute tasks
-    await this.runAvailableTasks();
   }
 
   /** Execute task in pair mode */

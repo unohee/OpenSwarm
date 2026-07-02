@@ -4,7 +4,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { WorkerResult } from './agentPair.js';
-import { formatWorkReport, type WorkerOptions } from './worker.js';
+import { formatWorkReport, formatWorkerGitChangeStatus, type WorkerOptions } from './worker.js';
 
 describe('worker', () => {
   beforeEach(() => {
@@ -13,6 +13,21 @@ describe('worker', () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+  });
+
+  describe('formatWorkerGitChangeStatus', () => {
+    it('summarizes changed files instead of dumping an unbounded list', () => {
+      const files = Array.from({ length: 8 }, (_, i) => `src/file${i}.ts`);
+      const status = formatWorkerGitChangeStatus(files);
+      expect(status).toContain('8 changed file(s)');
+      expect(status).toContain('src/file0.ts');
+      expect(status).toContain('+4 more');
+      expect(status).not.toContain('src/file7.ts');
+    });
+
+    it('formats the no-change status', () => {
+      expect(formatWorkerGitChangeStatus([])).toBe('[Worker] No file changes detected by Git or LLM');
+    });
   });
 
   describe('formatWorkReport', () => {

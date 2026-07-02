@@ -55,4 +55,28 @@ describe('AuditBoard (INT-2006)', () => {
     });
     expect(r.lastFrame()).toContain('1 failed');
   });
+
+  it('renders fix-pass progress with edited file tally', async () => {
+    const events = new EventEmitter();
+    const r = render(<AuditBoard areas={areas} concurrency={2} events={events} mode="fix" />);
+    await act(tick);
+
+    await act(async () => {
+      events.emit('progress', { type: 'start', label: 'src/a', done: 0, total: 2 });
+      events.emit('progress', { type: 'log', label: 'src/a', line: '[Worker] Git detected 3 changed file(s): a, b, c' });
+      await tick();
+    });
+    expect(r.lastFrame()).toContain('Review fix pass');
+    expect(r.lastFrame()).toContain('src/a');
+    expect(r.lastFrame()).toContain('Git detected 3 changed file');
+
+    await act(async () => {
+      events.emit('progress', { type: 'done', label: 'src/a', filesChanged: 3, done: 1, total: 2 });
+      await tick();
+    });
+    const f = r.lastFrame()!;
+    expect(f).toContain('1/2 areas');
+    expect(f).toContain('1 edited');
+    expect(f).toContain('3 files');
+  });
 });

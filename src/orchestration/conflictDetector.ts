@@ -69,13 +69,34 @@ function normalizeScope(entries: string[] | undefined): Set<string> {
   if (!entries) return out;
   for (const raw of entries) {
     if (typeof raw !== 'string') continue;
-    const normalized = raw.trim().replace(/^\.\//, '').toLowerCase();
+    const normalized = raw.trim().replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
+    if (isVolatileScopePath(normalized)) continue;
     if (normalized) out.add(normalized);
   }
   return out;
 }
 
 const UNKNOWN_SCOPE = 'unknown-file-scope';
+const VOLATILE_SCOPE_SEGMENTS = new Set([
+  'trash',
+  'worktree',
+  '.openswarm',
+  'node_modules',
+  'dist',
+  'build',
+  'coverage',
+  '__pycache__',
+  '.pytest_cache',
+  '.mypy_cache',
+  '.ruff_cache',
+]);
+const VOLATILE_SCOPE_PREFIXES = ['worktree_'];
+
+function isVolatileScopePath(path: string): boolean {
+  if (!path || path === UNKNOWN_SCOPE) return true;
+  const parts = path.split('/').filter(Boolean);
+  return parts.some(part => VOLATILE_SCOPE_SEGMENTS.has(part) || VOLATILE_SCOPE_PREFIXES.some(prefix => part.startsWith(prefix)));
+}
 
 /**
  * Detect file-scope overlap between tasks. Each task's scope prefers the
@@ -135,12 +156,9 @@ export async function detectFileConflicts(
     for (let j = i + 1; j < tasks.length; j++) {
       const modulesJ = taskImpacts.get(j);
       if (unknownScopeIndices.has(i) || unknownScopeIndices.has(j)) {
-        const key = `${i}:${j}`;
-        if (!pairShared.has(key)) {
-          pairShared.set(key, new Set());
-        }
-        pairShared.get(key)!.add(UNKNOWN_SCOPE);
-        uf.union(i, j);
+        // Unknown scope is a soft risk, not proof of a file conflict. Let the
+        // PR processor handle any real merge conflicts later instead of
+        // starving worker slots on uncertainty.
         continue;
       }
 

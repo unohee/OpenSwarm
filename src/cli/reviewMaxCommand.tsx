@@ -23,13 +23,14 @@ import {
   formatAuditReport,
   mergeFallback,
   type AuditArea,
+  type FixAreaResult,
   type AuditRun,
   type AuditSummary,
 } from './reviewAudit.js';
 import { AuditBoard } from '../tui/components/AuditBoard.js';
 import { resolveIssueFromBranch, ensureTaskSource, resolveProjectId } from './reviewCommand.js';
 import { synthesizeAuditIssues } from './auditPM.js';
-import { status } from '../support/colors.js';
+import { c, status } from '../support/colors.js';
 import type { AdapterName } from '../adapters/types.js';
 
 export interface ReviewMaxOptions {
@@ -251,27 +252,48 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
       console.log('\n--fix: nothing to apply (every area approved).');
     } else {
       console.log(`\nApplying fixes across ${targets.length} area(s) with ${concurrency} concurrent worker(s)...`);
-      const fixes = await runAreaFixes(
-        run,
-        cwd,
-        // 15 min per area: without an explicit timeoutMs the adapter default (5 min)
-        // SIGKILLed fix workers on issue-heavy areas mid-edit.
-        { concurrency, adapter: opts.adapter as AdapterName | undefined, timeoutMs: 900_000 },
-        {
-          onProgress: (e) => {
-            if (e.type === 'done') console.log(`  ${status.ok(`${e.label} — ${e.filesChanged} file(s) changed`)}`);
-            else if (e.type === 'error') console.log(`  ${status.err(`${e.label} — ${e.error}`)}`);
+      const fixEvents = new EventEmitter();
+      fixEvents.setMaxListeners(0);
+      const showFixBoard = Boolean((process.stderr as NodeJS.WriteStream).isTTY);
+      const fixBoard = showFixBoard
+        ? render(
+            <AuditBoard
+              areas={targets.map((t) => t.area)}
+              concurrency={concurrency}
+              events={fixEvents}
+              mode="fix"
+            />,
+            { stdout: process.stderr as unknown as NodeJS.WriteStream },
+          )
+        : undefined;
+      let fixes: FixAreaResult[];
+      try {
+        fixes = await runAreaFixes(
+          run,
+          cwd,
+          // 15 min per area: without an explicit timeoutMs the adapter default (5 min)
+          // SIGKILLed fix workers on issue-heavy areas mid-edit.
+          { concurrency, adapter: opts.adapter as AdapterName | undefined, timeoutMs: 900_000 },
+          {
+            onProgress: (e) => {
+              if (showFixBoard) fixEvents.emit('progress', e);
+              else if (e.type === 'done') console.log(`  ${status.ok(`${e.label} — ${e.filesChanged} file(s) changed`)}`);
+              else if (e.type === 'error') console.log(`  ${status.err(`${e.label} — ${e.error}`)}`);
+            },
           },
-        },
-      );
+        );
+      } finally {
+        fixBoard?.unmount();
+      }
       const edited = fixes.filter((f) => f.applied && f.filesChanged.length);
       const failed = fixes.filter((f) => !f.applied);
       const touched = [...new Set(edited.flatMap((f) => f.filesChanged))];
       console.log(
-        `\n--fix: ${edited.length}/${targets.length} area(s) edited, ${touched.length} file(s) touched` +
-          `${failed.length ? `, ${failed.length} failed` : ''}.`,
+        `\n${status.ok(`--fix: ${edited.length}/${targets.length} area(s) edited`)}` +
+          ` ${c.yellow(`${touched.length} file(s) touched`)}` +
+          `${failed.length ? ` ${status.err(`${failed.length} failed`)}` : ''}`,
       );
-      console.log('Changes are in the working tree — review the diff before committing.');
+      console.log(c.dim('Changes are in the working tree — review the diff before committing.'));
     }
   }
 
@@ -315,7 +337,7 @@ async function createMasterAuditIssue(
 ): Promise<string | null> {
   const source = await ensureTaskSource();
   if (!source) {
-    console.log('Linear not connected — report saved to file only. `openswarm auth login --provider linear` to enable.');
+    console.log(status.warn('Linear not connected — report saved to file only. `openswarm auth login --provider linear` to enable.'));
     return null;
   }
   const projectId = await resolveProjectId(cwd);
@@ -323,7 +345,7 @@ async function createMasterAuditIssue(
   try {
     const res = await source.createTask(title, report, projectId);
     if ('identifier' in res) {
-      console.log(`Linear master audit issue: ${res.identifier}`);
+      console.log(`${status.ok('Linear master audit issue')} ${c.cyan(res.identifier)}`);
       return res.id;
     }
     console.warn(`Could not create Linear issue (report saved to file): ${res.error}`);
@@ -351,13 +373,13 @@ async function filePmSynthesizedIssues(
 ): Promise<void> {
   const actions = summary.recommendedActions;
   if (!actions.length) {
-    console.log('No follow-ups to file.');
+    console.log(status.info('No follow-ups to file.'));
     return;
   }
   const source = await ensureTaskSource();
   if (!source) {
     console.log(
-      'Could not file follow-ups: Linear not connected. Run `openswarm auth login --provider linear` (or set linearApiKey).',
+      status.warn('Could not file follow-ups: Linear not connected. Run `openswarm auth login --provider linear` (or set linearApiKey).'),
     );
     return;
   }
@@ -380,7 +402,7 @@ async function filePmSynthesizedIssues(
     parentId = (await createMasterAuditIssue(cwd, summary, report, ts)) ?? undefined;
   }
 
-  console.log(`Synthesizing ${actions.length} follow-up(s) into cohesive issues (PM pass)...`);
+  console.log(`${status.running('PM synthesis')} ${c.yellow(`${actions.length} follow-up(s)`)} ${c.dim('into cohesive issues')}`);
   const issues = await synthesizeAuditIssues(actions, {
     adapter: opts.adapter,
     cwd,
@@ -390,9 +412,11 @@ async function filePmSynthesizedIssues(
 
   if (!issues.length) {
     console.log(
-      parentId
-        ? 'PM synthesis produced no grouped issues — the master audit issue captures all follow-ups.'
-        : 'PM synthesis produced no grouped issues — follow-ups are captured in the saved report.',
+      status.warn(
+        parentId
+          ? 'PM synthesis produced no grouped issues — the master audit issue captures all follow-ups.'
+          : 'PM synthesis produced no grouped issues — follow-ups are captured in the saved report.',
+      ),
     );
     return;
   }

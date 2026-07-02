@@ -1,9 +1,13 @@
 import { describe, it, expect, vi } from 'vitest';
 
+const mocks = vi.hoisted(() => ({
+  saveMemory: vi.fn(async () => 'memory-id'),
+}));
+
 // Stub the memory core so searchRepoMemoryText is tested without LanceDB / embeddings.
 // Branch on the query string to exercise each path.
 vi.mock('./memoryCore.js', () => ({
-  saveMemory: async () => {},
+  saveMemory: mocks.saveMemory,
   searchMemorySafe: async (query: string) => {
     if (query === 'fail') return { success: false, memories: [], errorCode: 'DB_INIT_FAILED' };
     if (query === 'empty') return { success: true, memories: [] };
@@ -14,7 +18,7 @@ vi.mock('./memoryCore.js', () => ({
   },
 }));
 
-import { searchRepoMemoryText, repoKey } from './repoKnowledge.js';
+import { recordTaskOutcome, searchRepoMemoryText, repoKey } from './repoKnowledge.js';
 
 describe('repoKey', () => {
   it('normalizes a per-issue worktree path back to the repo', () => {
@@ -48,5 +52,43 @@ describe('searchRepoMemoryText', () => {
     expect(text).toContain('Repository knowledge (1):');
     expect(text).toContain('[system_pattern] Solved: add logout');
     expect(text).toContain('wired it into the header');
+  });
+});
+
+describe('recordTaskOutcome', () => {
+  it('does not store transient reviewer/API failures as repo constraints', async () => {
+    mocks.saveMemory.mockClear();
+
+    await recordTaskOutcome('/repo', {
+      taskTitle: 'run benchmark',
+      derivedFrom: 'INT-1',
+      rejectionFeedback: 'API error: Codex responses error (429): {"error":{"type":"usage_limit_reached"}}',
+    });
+
+    expect(mocks.saveMemory).not.toHaveBeenCalled();
+  });
+
+  it('stores actionable reviewer rejection with calibrated importance and metadata', async () => {
+    mocks.saveMemory.mockClear();
+
+    await recordTaskOutcome('/repo', {
+      taskTitle: 'wire logout',
+      derivedFrom: 'INT-2',
+      rejectionFeedback: 'Implementation changed no files and did not run verification.',
+    });
+
+    expect(mocks.saveMemory).toHaveBeenCalledTimes(1);
+    const call = mocks.saveMemory.mock.calls[0];
+    expect(call[0]).toBe('constraint');
+    expect(call[3]).toContain('Actionable reviewer feedback');
+    expect(call[4]).toMatchObject({
+      importance: 0.82,
+      confidence: 0.82,
+      metadata: {
+        kind: 'review_rejection',
+        transient: false,
+        actionable: true,
+      },
+    });
   });
 });

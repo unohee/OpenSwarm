@@ -322,16 +322,63 @@ export function formatAuditSummary(summary: AuditSummary): string {
   }
 
   if (summary.issues.length) {
-    lines.push('', `Issues (${summary.issues.length}):`);
-    summary.issues.forEach((i) => lines.push(`  - ${i}`));
+    lines.push('', c.bold(c.yellow(`Issues (${summary.issues.length}):`)));
+    summary.issues.forEach((issue) => {
+      const parsed = parseAreaPrefixedIssue(issue);
+      if (parsed) {
+        lines.push(`  ${status.glyph('warn')} ${c.cyan(parsed.area)}`);
+        pushWrapped(lines, parsed.text, '    ', '    ');
+      } else {
+        pushWrapped(lines, issue, `  ${status.glyph('warn')} `, '    ');
+      }
+    });
   }
   if (summary.recommendedActions.length) {
-    lines.push('', `Recommended follow-ups (${summary.recommendedActions.length}):`);
-    summary.recommendedActions.forEach((a) =>
-      lines.push(`  - [${a.type}] ${a.title}${a.location ? ` (${a.location})` : ''}`),
-    );
+    lines.push('', c.bold(c.magenta(`Recommended follow-ups (${summary.recommendedActions.length}):`)));
+    summary.recommendedActions.forEach((a) => {
+      pushWrapped(lines, a.title, `  ${status.glyph('revise')} ${c.magenta(`[${a.type}]`)} `, '    ');
+      if (a.location) lines.push(`    ${c.gray('loc:')} ${c.cyan(a.location)}`);
+    });
   }
   return lines.join('\n');
+}
+
+function parseAreaPrefixedIssue(issue: string): { area: string; text: string } | null {
+  const match = issue.match(/^\[([^\]]+)]\s*(.+)$/);
+  return match ? { area: match[1], text: match[2] } : null;
+}
+
+function pushWrapped(lines: string[], text: string, firstPrefix: string, nextPrefix: string): void {
+  const width = Math.max(60, Math.min(process.stdout.columns || 100, 120));
+  const firstWidth = Math.max(20, width - firstPrefix.length);
+  const nextWidth = Math.max(20, width - nextPrefix.length);
+  const wrapped = wrapPlainText(text, firstWidth, nextWidth);
+  if (wrapped.length === 0) {
+    lines.push(firstPrefix.trimEnd());
+    return;
+  }
+  lines.push(`${firstPrefix}${wrapped[0]}`);
+  wrapped.slice(1).forEach((line) => lines.push(`${nextPrefix}${line}`));
+}
+
+function wrapPlainText(text: string, firstWidth: number, nextWidth: number): string[] {
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  const lines: string[] = [];
+  let width = firstWidth;
+  let current = '';
+  for (const word of words) {
+    if (!current) {
+      current = word;
+    } else if (current.length + 1 + word.length <= width) {
+      current += ` ${word}`;
+    } else {
+      lines.push(current);
+      current = word;
+      width = nextWidth;
+    }
+  }
+  if (current) lines.push(current);
+  return lines;
 }
 
 // ── Orchestration ────────────────────────────────────────────────────────────
@@ -529,6 +576,7 @@ async function defaultFixArea(
     nudgeMaxOnNoEdit: 1,
     signal: opts.signal,
     onLog,
+    suppressStatusLogs: true,
   });
   return { success: result.success, filesChanged: result.filesChanged };
 }

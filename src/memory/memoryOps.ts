@@ -1,7 +1,7 @@
 /**
- * Persistent Cognitive Memory Module v2.0 - Operations
+ * Persistent Cognitive Memory Module v3.0 - Operations
  *
- * Revision, formatting, background cognition, stats, and legacy compat.
+ * Formatting, compaction helpers, stats, and legacy compat.
  * Core types, save, search are in memoryCore.ts.
  */
 import {
@@ -12,7 +12,6 @@ import {
   getEmbedding,
   getTable,
   searchMemory,
-  calculateStability,
   calculateFreshness,
   safeParseMetadata,
   logWork,
@@ -51,11 +50,9 @@ async function deleteMemoryIds(table: MemoryTable, ids: string[]): Promise<void>
   await table.delete(idsPredicate(ids));
 }
 
-// Memory Revision Loop (PRD Phase 3)
-
 /**
- * Revise existing belief with new information
- * PRD: moving beyond append-only - revise existing beliefs
+ * Revise existing memory content. v3 keeps revision history in metadata rather
+ * than maintaining unused top-level revision/stability columns.
  */
 export async function reviseMemory(
   memoryId: string,
@@ -79,8 +76,8 @@ export async function reviseMemory(
     }
 
     const now = Date.now();
-    const newRevisionCount = (existing.revisionCount ?? 0) + 1;
-    const age = now - existing.createdAt;
+    const meta = safeParseMetadata(existing.metadata);
+    const revisions = Array.isArray(meta.revisions) ? meta.revisions : [];
 
     // Create revised record
     const revised: CognitiveMemoryRecord = {
@@ -88,11 +85,17 @@ export async function reviseMemory(
       content: newContent,
       vector: await getEmbedding(newContent),
       lastUpdated: now,
-      revisionCount: newRevisionCount,
       confidence: options?.newConfidence ?? Math.max(0.3, (existing.confidence ?? 0.7) - 0.1),
-      stability: calculateStability(newRevisionCount, age),
       metadata: JSON.stringify({
-        ...safeParseMetadata(existing.metadata),
+        ...meta,
+        revisions: [
+          ...revisions,
+          {
+            timestamp: now,
+            reason: options?.reason || 'manual revision',
+            previousContent: existing.content.slice(0, 200),
+          },
+        ],
         lastRevision: {
           timestamp: now,
           reason: options?.reason || 'manual revision',
@@ -103,7 +106,7 @@ export async function reviseMemory(
 
     await updateMemoryRecord(table, revised);
 
-    console.log(`[Memory] Revised ${memoryId} (rev: ${newRevisionCount}, stability: ${revised.stability})`);
+    console.log(`[Memory] Revised ${memoryId}`);
     return true;
   } catch (error) {
     console.error('[Memory] Revision error:', error);
@@ -113,7 +116,6 @@ export async function reviseMemory(
 
 /**
  * Find contradicting memories
- * PRD: detect semantic conflicts
  */
 export async function findContradictions(content: string): Promise<MemorySearchResult[]> {
   try {
@@ -176,19 +178,19 @@ export async function markContradiction(memoryId1: string, memoryId2: string): P
       return false;
     }
 
-    // Update contradicts arrays
-    const contradicts1 = JSON.parse(memory1.contradicts || '[]');
-    const contradicts2 = JSON.parse(memory2.contradicts || '[]');
+    const meta1 = safeParseMetadata(memory1.metadata);
+    const meta2 = safeParseMetadata(memory2.metadata);
+    const contradicts1 = Array.isArray(meta1.contradicts) ? meta1.contradicts : [];
+    const contradicts2 = Array.isArray(meta2.contradicts) ? meta2.contradicts : [];
 
     if (!contradicts1.includes(memoryId2)) contradicts1.push(memoryId2);
     if (!contradicts2.includes(memoryId1)) contradicts2.push(memoryId1);
 
-    memory1.contradicts = JSON.stringify(contradicts1);
-    memory2.contradicts = JSON.stringify(contradicts2);
-
     // Lower importance for both (PRD: decrease importance on contradiction)
     memory1.importance = Math.max(0.2, (memory1.importance ?? 0.5) - 0.15);
     memory2.importance = Math.max(0.2, (memory2.importance ?? 0.5) - 0.15);
+    memory1.metadata = JSON.stringify({ ...meta1, contradicts: contradicts1 });
+    memory2.metadata = JSON.stringify({ ...meta2, contradicts: contradicts2 });
 
     await updateMemoryRecord(table, memory1);
     await updateMemoryRecord(table, memory2);
@@ -224,10 +226,9 @@ export async function reconcileContradiction(
 
     // Boost kept memory
     keepMemory.confidence = Math.min(1, (keepMemory.confidence ?? 0.7) + 0.1);
-    keepMemory.stability = 'high';
 
-    // Archive the other (set high decay, low importance)
-    archiveMemory.decay = 0.9;
+    // Archive the other via metadata + low importance. v3 does not maintain a
+    // top-level decay field.
     archiveMemory.importance = 0.1;
     archiveMemory.metadata = JSON.stringify({
       ...safeParseMetadata(archiveMemory.metadata),
@@ -250,14 +251,14 @@ export async function reconcileContradiction(
 }
 
 /**
- * Format memories as context (PRD v2.0 - Cognitive + Legacy)
+ * Format memories as prompt context.
  */
 export function formatMemoryContext(memories: MemorySearchResult[]): string {
   if (memories.length === 0) return '';
 
   // Cognitive + Legacy types
   const grouped: Record<string, MemorySearchResult[]> = {
-    // Cognitive (PRD)
+    // Cognitive
     constraint: [],
     user_model: [],
     strategy: [],
@@ -278,10 +279,10 @@ export function formatMemoryContext(memories: MemorySearchResult[]): string {
 
   const sections: string[] = [];
 
-  // PRD Cognitive Types (ordered by importance, highest first)
+  // Cognitive types (ordered by importance, highest first)
   if (grouped.constraint.length > 0) {
     const items = grouped.constraint.map(m =>
-      `- ⚠️ **${m.content.slice(0, 100)}** (importance: ${(m.importance * 100).toFixed(0)}%, stability: ${m.stability})`
+      `- ⚠️ **${m.content.slice(0, 100)}** (importance: ${(m.importance * 100).toFixed(0)}%, confidence: ${(m.confidence * 100).toFixed(0)}%)`
     ).join('\n');
     sections.push(`### 🚫 Constraints (CRITICAL)\n${items}`);
   }
@@ -295,14 +296,14 @@ export function formatMemoryContext(memories: MemorySearchResult[]): string {
 
   if (grouped.strategy.length > 0) {
     const items = grouped.strategy.map(m =>
-      `- **${m.content.slice(0, 100)}** (verified: ${m.stability === 'high' ? '✓' : '△'})`
+      `- **${m.content.slice(0, 100)}** (confidence: ${(m.confidence * 100).toFixed(0)}%)`
     ).join('\n');
     sections.push(`### 🎯 Verified Strategies\n${items}`);
   }
 
   if (grouped.belief.length > 0) {
     const items = grouped.belief.map(m =>
-      `- ${m.content.slice(0, 100)} (rev: ${m.revisionCount}, decay: ${(m.decay * 100).toFixed(0)}%)`
+      `- ${m.content.slice(0, 100)} (importance: ${(m.importance * 100).toFixed(0)}%)`
     ).join('\n');
     sections.push(`### 💡 Beliefs\n${items}`);
   }
@@ -345,7 +346,7 @@ export function formatMemoryContext(memories: MemorySearchResult[]): string {
 
   if (sections.length === 0) return '';
 
-  return `## 🧠 Cognitive Memory (PRD v2.0)\n\n${sections.join('\n\n')}\n\n---\n⚠️ The above information is for reference only. It may differ from the current state; verify directly if needed.`;
+  return `## 🧠 Repository Memory\n\n${sections.join('\n\n')}\n\n---\n⚠️ The above information is for reference only. It may differ from the current state; verify directly if needed.`;
 }
 
 /**
@@ -386,81 +387,11 @@ export async function cleanupExpired(): Promise<number> {
   }
 }
 
-// Background Cognition (PRD Phase 4)
-
-// Decay and archive thresholds
-const DECAY_INCREMENT = 0.03;      // PRD: decay += 0.03 weekly if not accessed
-const ARCHIVE_THRESHOLD = 0.7;    // PRD: archive when threshold exceeded
+// Maintenance
 const CONSOLIDATION_SIMILARITY = 0.85;  // Duplicate detection threshold
 
 /**
- * Apply decay to all memories (Background Worker)
- * PRD: Forgetting is a feature
- */
-export async function applyMemoryDecay(daysSinceLastRun: number = 7): Promise<{
-  decayed: number;
-  archived: number;
-}> {
-  try {
-    await initDatabase();
-    const table = getTable();
-    if (!table) return { decayed: 0, archived: 0 };
-
-    const results = await table.search(Array.from({ length: EMBEDDING_DIM }, () => 0)).limit(10000).toArray();
-    const now = Date.now();
-
-    let decayed = 0;
-    let archived = 0;
-    const changedRecords: any[] = [];
-
-    for (const r of results) {
-      if (r.id === 'init') continue;
-
-      // Calculate days since last access
-      const lastAccess = r.lastAccessed ?? r.createdAt ?? now;
-      const daysSinceAccess = (now - lastAccess) / (24 * 60 * 60 * 1000);
-
-      // Apply decay if not accessed recently
-      if (daysSinceAccess > 7) {
-        const weeksNotAccessed = Math.floor(daysSinceAccess / 7);
-        const decayAmount = Math.min(DECAY_INCREMENT * weeksNotAccessed * (daysSinceLastRun / 7), 0.3);
-        r.decay = Math.min(1, (r.decay ?? 0) + decayAmount);
-        decayed++;
-
-        // Archive if decay exceeds threshold
-        if (r.decay >= ARCHIVE_THRESHOLD) {
-          r.metadata = JSON.stringify({
-            ...safeParseMetadata(r.metadata),
-            archived: {
-              timestamp: now,
-              reason: 'decay_threshold_exceeded',
-              finalDecay: r.decay,
-            },
-          });
-          r.importance = 0.05;  // Near zero but not deleted
-          archived++;
-        }
-        changedRecords.push(r);
-      }
-    }
-
-    if (changedRecords.length > 0) {
-      for (const record of changedRecords) {
-        await updateMemoryRecord(table, record);
-      }
-      console.log(`[Memory] Decay applied: ${decayed} memories decayed, ${archived} archived`);
-    }
-
-    return { decayed, archived };
-  } catch (error) {
-    console.error('[Memory] Decay error:', error);
-    return { decayed: 0, archived: 0 };
-  }
-}
-
-/**
  * Consolidate duplicate/similar memories
- * PRD: Memory Consolidation - merge duplicates
  */
 export async function consolidateMemories(): Promise<{
   merged: number;
@@ -512,7 +443,14 @@ export async function consolidateMemories(): Promise<{
 
         // Boost kept memory
         kept.confidence = Math.min(1, (kept.confidence ?? 0.7) + 0.05 * toMerge.length);
-        kept.revisionCount = (kept.revisionCount ?? 0) + toMerge.length;
+        const meta = safeParseMetadata(kept.metadata);
+        kept.metadata = JSON.stringify({
+          ...meta,
+          consolidatedFrom: [
+            ...(Array.isArray(meta.consolidatedFrom) ? meta.consolidatedFrom : []),
+            ...toMerge.map((m: any) => m.id),
+          ],
+        });
         updatedKept.push(kept);
 
         groups.push({
@@ -561,23 +499,18 @@ function cosineSimilarity(a: number[], b: number[]): number {
 }
 
 /**
- * Run all background cognitive tasks
- * PRD: recommended interval of 6-12 hours
+ * Run lightweight memory maintenance.
  */
 export async function runBackgroundCognition(): Promise<{
-  decay: { decayed: number; archived: number };
   consolidation: { merged: number };
   contradictions: number;
 }> {
-  console.log('[Memory] Starting background cognition tasks...');
+  console.log('[Memory] Starting memory maintenance tasks...');
 
-  // 1. Apply decay
-  const decayResult = await applyMemoryDecay();
-
-  // 2. Consolidate duplicates
+  // 1. Consolidate duplicates
   const consolidationResult = await consolidateMemories();
 
-  // 3. Detect contradictions (log only, don't auto-resolve)
+  // 2. Detect contradictions (log only, don't auto-resolve)
   const _stats = await getMemoryStats(); // For future expansion
   let contradictionCount = 0;
 
@@ -596,14 +529,11 @@ export async function runBackgroundCognition(): Promise<{
   }
 
   console.log('[Memory] Background cognition complete:', {
-    decayed: decayResult.decayed,
-    archived: decayResult.archived,
     merged: consolidationResult.merged,
     potentialContradictions: contradictionCount,
   });
 
   return {
-    decay: decayResult,
     consolidation: { merged: consolidationResult.merged },
     contradictions: contradictionCount,
   };
@@ -625,26 +555,24 @@ const DEFAULT_BY_TYPE: Record<MemoryType, number> = {
 };
 
 /**
- * Memory statistics (PRD v2.0)
+ * Memory statistics.
  */
 export async function getMemoryStats(): Promise<{
   total: number;
   byType: Record<MemoryType, number>;
   byRepo: Record<string, number>;
   avgImportance: number;
-  avgDecay: number;
 }> {
   try {
     await initDatabase();
     const table = getTable();
-    if (!table) return { total: 0, byType: { ...DEFAULT_BY_TYPE }, byRepo: {}, avgImportance: 0, avgDecay: 0 };
+    if (!table) return { total: 0, byType: { ...DEFAULT_BY_TYPE }, byRepo: {}, avgImportance: 0 };
 
     const results = await table.search(Array.from({ length: EMBEDDING_DIM }, () => 0)).limit(10000).toArray();
 
     const byType: Record<MemoryType, number> = { ...DEFAULT_BY_TYPE };
     const byRepo: Record<string, number> = {};
     let totalImportance = 0;
-    let totalDecay = 0;
     let count = 0;
 
     for (const r of results) {
@@ -654,7 +582,6 @@ export async function getMemoryStats(): Promise<{
       }
       byRepo[r.repo] = (byRepo[r.repo] || 0) + 1;
       totalImportance += r.importance ?? 0.5;
-      totalDecay += r.decay ?? 0;
       count++;
     }
 
@@ -663,11 +590,10 @@ export async function getMemoryStats(): Promise<{
       byType,
       byRepo,
       avgImportance: count > 0 ? totalImportance / count : 0,
-      avgDecay: count > 0 ? totalDecay / count : 0,
     };
   } catch (error) {
     console.error('[Memory] Stats error:', error);
-    return { total: 0, byType: { ...DEFAULT_BY_TYPE }, byRepo: {}, avgImportance: 0, avgDecay: 0 };
+    return { total: 0, byType: { ...DEFAULT_BY_TYPE }, byRepo: {}, avgImportance: 0 };
   }
 }
 
@@ -744,9 +670,7 @@ export async function getRecentConversations(
       freshness: calculateFreshness(r.createdAt),
       importance: r.importance,
       confidence: r.confidence,
-      stability: r.stability,
-      revisionCount: r.revisionCount,
-      decay: r.decay,
+      derivedFrom: r.derivedFrom ?? 'unknown',
       similarityScore: 1.0,
     }));
   } catch (error) {

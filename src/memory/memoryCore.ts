@@ -1,13 +1,13 @@
 /**
- * Persistent Cognitive Memory Module v2.0 - Core
+ * Persistent Cognitive Memory Module v3.0 - Core
  *
- * Types, embedding, distillation, database init, save, search.
- * High-level operations (revision, formatting, background) are in memoryOps.ts.
+ * Lean repo memory: embedding, storage, save, search.
  */
 import { connect, Table, Connection } from '@lancedb/lancedb';
 import { pipeline, type FeatureExtractionPipeline } from '@xenova/transformers';
 import { resolve } from 'path';
 import { homedir } from 'os';
+import { c, status } from '../support/colors.js';
 
 // Memory storage path
 const MEMORY_DIR = resolve(homedir(), '.openswarm/memory');
@@ -30,9 +30,12 @@ const TTL_REPOMAP = 30 * 24 * 60 * 60 * 1000; // 30 days
 export const PERMANENT_EXPIRY = new Date('9999-12-31T23:59:59Z').getTime();
 
 /**
- * Normalize records before LanceDB createTable
- * - Prevents type inference errors (especially expiresAt)
- * - Converts BigInt to Number, undefined to defaults
+ * Normalize records before LanceDB createTable.
+ *
+ * v3 keeps only fields that are actively used by save/search/recall. Older
+ * v2 columns such as revisionCount/decay/stability/contradicts/supports are
+ * intentionally not copied so compaction can rewrite the table to the lean
+ * schema.
  */
 export function normalizeRecords(records: any[]): CognitiveMemoryRecord[] {
   const now = Date.now();
@@ -47,12 +50,6 @@ export function normalizeRecords(records: any[]): CognitiveMemoryRecord[] {
     createdAt: Number(r.createdAt) || now,
     lastUpdated: Number(r.lastUpdated) || now,
     lastAccessed: Number(r.lastAccessed) || now,
-    revisionCount: Number(r.revisionCount) || 0,
-    decay: clamp01(r.decay, 0),
-
-    stability: (r.stability as StabilityLevel) || 'low',
-    contradicts: typeof r.contradicts === 'string' ? r.contradicts : JSON.stringify(r.contradicts || []),
-    supports: typeof r.supports === 'string' ? r.supports : JSON.stringify(r.supports || []),
     derivedFrom: String(r.derivedFrom || 'unknown'),
 
     repo: String(r.repo || 'unknown'),
@@ -66,6 +63,9 @@ export function normalizeRecords(records: any[]): CognitiveMemoryRecord[] {
 export function clamp01(value: unknown, fallback: number): number {
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
+  // Legacy callers used a 1-10 scale. Preserve intent instead of saturating
+  // everything above 1 to 1.00.
+  if (n > 1 && n <= 10) return n / 10;
   return Math.max(0, Math.min(1, n));
 }
 
@@ -93,7 +93,7 @@ function normalizedL2DistanceToSimilarity(distance: unknown): number {
   return Math.max(-1, Math.min(1, 1 - d / 2));
 }
 
-// PRD Memory Types (Cognitive Memory)
+// Memory types
 export type CognitiveMemoryType = 'belief' | 'strategy' | 'user_model' | 'system_pattern' | 'constraint';
 
 // Legacy types for backward compatibility
@@ -102,10 +102,8 @@ export type LegacyMemoryType = 'decision' | 'repomap' | 'journal' | 'fact';
 // Combined type
 export type MemoryType = CognitiveMemoryType | LegacyMemoryType;
 
-// Stability levels for beliefs
-export type StabilityLevel = 'low' | 'medium' | 'high';
-
-// PRD Memory Schema (Base + Extensions)
+// Lean memory schema. Existing LanceDB rows may still contain older v2 columns,
+// but new writes and compaction no longer emit them.
 export interface CognitiveMemoryRecord {
   [key: string]: unknown;
   id: string;
@@ -113,22 +111,13 @@ export interface CognitiveMemoryRecord {
   content: string;              // normalized semantic statement
   vector: number[];
 
-  // PRD Mandatory Fields
   importance: number;           // 0-1, impact on reasoning
   confidence: number;           // 0-1, certainty level
   createdAt: number;
   lastUpdated: number;
   lastAccessed: number;
-  revisionCount: number;
-  decay: number;                // 0-1, degree of forgetting
-
-  // PRD Extensions
-  stability: StabilityLevel;
-  contradicts: string;          // JSON array of memory IDs
-  supports: string;             // JSON array of memory IDs
   derivedFrom: string;          // source conversation/session ID
 
-  // Legacy compatibility
   repo: string;
   title: string;
   metadata: string;
@@ -139,24 +128,24 @@ export interface CognitiveMemoryRecord {
 // Legacy compatibility alias (exported for use)
 export interface MemoryRecord extends CognitiveMemoryRecord {}
 
-// Importance Score by Type (PRD Table)
+// Importance score by type
 export const BASE_IMPORTANCE: Record<CognitiveMemoryType, number> = {
-  constraint: 0.9,
-  user_model: 0.85,
-  strategy: 0.8,
-  belief: 0.7,
-  system_pattern: 0.75,
+  constraint: 0.85,
+  user_model: 0.82,
+  strategy: 0.78,
+  belief: 0.65,
+  system_pattern: 0.72,
 };
 
 // Legacy type importance (mapped to similar cognitive types)
 const LEGACY_IMPORTANCE: Record<LegacyMemoryType, number> = {
-  decision: 0.8,    // similar to strategy
-  fact: 0.85,       // similar to constraint
+  decision: 0.75,   // similar to strategy
+  fact: 0.78,       // similar to constraint
   repomap: 0.6,     // lower, structural info
   journal: 0.4,     // temporary insight
 };
 
-// Search result interface (PRD Enhanced)
+// Search result interface
 export interface MemorySearchResult {
   id: string;
   type: MemoryType;
@@ -169,12 +158,9 @@ export interface MemorySearchResult {
   score: number;              // hybrid score (not just similarity)
   freshness: number;          // recency (0-1)
 
-  // PRD additions
   importance: number;
   confidence: number;
-  stability: StabilityLevel;
-  revisionCount: number;
-  decay: number;
+  derivedFrom: string;
   similarityScore: number;    // raw semantic similarity
 }
 
@@ -200,11 +186,60 @@ export interface SearchResult {
 // Singleton connection
 let db: Connection | null = null;
 let table: Table | null = null;
+const LEGACY_SCHEMA_COLUMNS = new Set(['revisionCount', 'decay', 'stability', 'contradicts', 'supports']);
 
 // Singleton accessors (for memoryOps)
 export function getDb(): Connection | null { return db; }
 export function getTable(): Table | null { return table; }
 export function setTable(t: Table | null): void { table = t; }
+
+async function hasLegacySchemaColumns(t: Table): Promise<boolean> {
+  const schema = await t.schema();
+  return schema.fields.some(field => LEGACY_SCHEMA_COLUMNS.has(field.name));
+}
+
+async function migrateLeanSchemaIfNeeded(database: Connection, current: Table): Promise<Table> {
+  if (!(await hasLegacySchemaColumns(current))) return current;
+
+  const tableName = current.name;
+  console.log(`${status.info('[Memory]')} ${c.dim('migrating')} ${c.cyan(tableName)} ${c.dim('to v3 lean schema')}`);
+  const rows = await current.query().limit(100_000).toArray();
+  let normalized = normalizeRecords(rows);
+  if (normalized.length === 0) {
+    const now = Date.now();
+    normalized = [{
+      id: 'init',
+      type: 'system_pattern',
+      content: 'Cognitive memory system initialized with v3 lean schema',
+      vector: Array.from({ length: EMBEDDING_DIM }, () => 0),
+      importance: 0.5,
+      confidence: 1.0,
+      createdAt: now,
+      lastUpdated: now,
+      lastAccessed: now,
+      derivedFrom: 'system_init',
+      repo: 'system',
+      title: 'Memory system initialized',
+      metadata: '{}',
+      trust: 1.0,
+      expiresAt: PERMANENT_EXPIRY,
+    }];
+  }
+  const tempTableName = `${tableName}_v3_${Date.now()}`;
+
+  await database.createTable(tempTableName, normalized);
+
+  try {
+    await database.createTable(tableName, normalized, { mode: 'overwrite' });
+    return await database.openTable(tableName);
+  } finally {
+    try {
+      await database.dropTable(tempTableName);
+    } catch (cleanupError) {
+      console.warn(`[Memory] Failed to drop temporary migration table ${tempTableName}:`, cleanupError);
+    }
+  }
+}
 
 /**
  * Initialize embedding pipeline (Promise-based, prevents race conditions)
@@ -230,14 +265,14 @@ async function initEmbeddingPipeline(): Promise<FeatureExtractionPipeline> {
   // Start new initialization
   pipelineInitPromise = (async () => {
     try {
-      console.log('[Memory] Loading embedding model (first time may take a while)...');
+      console.log(`${status.info('[Memory]')} ${c.dim('loading embedding model')} ${c.yellow('(first time may take a while)')}`);
       const loadedPipeline = await pipeline('feature-extraction', EMBEDDING_MODEL, {
         quantized: true,
       });
       embeddingPipeline = loadedPipeline;
       pipelineInitFailed = false;
       pipelineInitError = null;
-      console.log('[Memory] Embedding model loaded:', EMBEDDING_MODEL);
+      console.log(`${status.ok('[Memory] embedding model loaded')} ${c.cyan(EMBEDDING_MODEL)}`);
       return loadedPipeline;
     } catch (error) {
       pipelineInitFailed = true;
@@ -278,10 +313,10 @@ export async function getEmbedding(text: string): Promise<number[]> {
   return vector;
 }
 
-// Semantic Distillation Engine (PRD Phase 1)
+// Semantic distillation
 
 /**
- * Distillation Quality Test (PRD core)
+ * Distillation quality test
  * "Would future reasoning performance degrade if this memory disappeared?"
  */
 interface DistillationResult {
@@ -292,7 +327,7 @@ interface DistillationResult {
   reason: string;
 }
 
-// Rejection patterns (PRD: NEVER store)
+// Rejection patterns: never store
 const REJECTION_PATTERNS = [
   /^(안녕|ㅎㅇ|ㅋㅋ|ㅎㅎ|오케이|넵|확인|감사)/,          // Chit-chat
   /^(좋아|싫어|화나|슬퍼)/,                              // Ephemeral emotions
@@ -300,7 +335,7 @@ const REJECTION_PATTERNS = [
   /^(test|테스트|asdf|qwer)/i,                           // Test data
 ];
 
-// Extraction target patterns (PRD: Extract ONLY if)
+// Extraction target patterns
 const EXTRACTION_PATTERNS: { pattern: RegExp; type: CognitiveMemoryType; baseImportance: number }[] = [
   // Constraints (highest priority)
   { pattern: /(절대|반드시|금지|필수|MUST|NEVER|ALWAYS)/i, type: 'constraint', baseImportance: 0.9 },
@@ -406,7 +441,7 @@ export function distillContent(content: string, context?: {
 }
 
 /**
- * Calculate importance score (PRD Table + Adjustments)
+ * Calculate importance score.
  */
 export function calculateImportance(
   type: MemoryType,
@@ -421,15 +456,14 @@ export function calculateImportance(
   let importance = (BASE_IMPORTANCE[type as CognitiveMemoryType] ??
                    LEGACY_IMPORTANCE[type as LegacyMemoryType] ?? 0.5);
 
-  // Increase: repeated appearance
+  // Increase: repeated appearance. Keep this small so repeated broad audit
+  // summaries do not flatten the score distribution.
   if (options?.isRepeated) {
-    importance = Math.min(1, importance + 0.1);
+    importance = Math.min(0.95, importance + 0.05);
   }
 
-  // Increase: verified in practice
-  if (options?.isVerified) {
-    importance = Math.min(1, importance + 0.1);
-  }
+  // Verification should raise confidence at the call site, not force every
+  // verified item to maximum importance.
 
   // Decrease: aged (subtract 0.1 if older than 30 days)
   if (options?.age && options.age > 30 * 24 * 60 * 60 * 1000) {
@@ -445,21 +479,6 @@ export function calculateImportance(
 }
 
 /**
- * Determine stability based on revision history
- */
-export function calculateStability(revisionCount: number, age: number): StabilityLevel {
-  const ageInDays = age / (24 * 60 * 60 * 1000);
-
-  // Old with no revisions = high
-  if (ageInDays > 7 && revisionCount === 0) return 'high';
-
-  // Recently created or frequently revised = low
-  if (ageInDays < 1 || revisionCount > 3) return 'low';
-
-  return 'medium';
-}
-
-/**
  * Initialize database
  */
 export async function initDatabase(): Promise<void> {
@@ -472,39 +491,32 @@ export async function initDatabase(): Promise<void> {
     db = await connect(MEMORY_DIR);
     const tableNames = await db.tableNames();
 
-    // v2.0: cognitive memory table
+    // v3.0: lean cognitive memory table. Existing v2 tables are read
+    // compatibly and rewritten by compaction.
     if (tableNames.includes('cognitive_memory')) {
       table = await db.openTable('cognitive_memory');
-      console.log('[Memory] Loaded cognitive_memory table (v2.0)');
+      table = await migrateLeanSchemaIfNeeded(db, table);
+      console.log(`${status.info('[Memory]')} ${c.dim('loaded table')} ${c.cyan('cognitive_memory v3.0')}`);
     } else if (tableNames.includes('devmemory')) {
       // Legacy table - will migrate later
       table = await db.openTable('devmemory');
-      console.log('[Memory] Loaded legacy devmemory table');
+      console.log(`${status.warn('[Memory] loaded legacy table')} ${c.cyan('devmemory')}`);
     } else {
-      // Create new table (v2.0 schema)
+      // Create new table (v3.0 schema)
       const now = Date.now();
       const initialRecord: CognitiveMemoryRecord = {
         id: 'init',
         type: 'system_pattern',
-        content: 'Cognitive memory system initialized with PRD v2.0 schema',
+        content: 'Cognitive memory system initialized with v3 lean schema',
         vector: await getEmbedding('Cognitive memory system initialized'),
 
-        // PRD Mandatory Fields
         importance: 0.5,
         confidence: 1.0,
         createdAt: now,
         lastUpdated: now,
         lastAccessed: now,
-        revisionCount: 0,
-        decay: 0,
-
-        // PRD Extensions
-        stability: 'high',
-        contradicts: '[]',
-        supports: '[]',
         derivedFrom: 'system_init',
 
-        // Legacy compatibility
         repo: 'system',
         title: 'Memory system initialized',
         metadata: '{}',
@@ -513,7 +525,7 @@ export async function initDatabase(): Promise<void> {
       };
 
       table = await db.createTable('cognitive_memory', [initialRecord]);
-      console.log('[Memory] Created cognitive_memory table (v2.0)');
+      console.log(`${status.ok('[Memory] created table')} ${c.cyan('cognitive_memory v3.0')}`);
     }
   } catch (error) {
     console.error('[Memory] Database init error:', error);
@@ -531,7 +543,7 @@ export function calculateFreshness(createdAt: number, halfLifeDays: number = 7):
 }
 
 /**
- * Save memory (PRD v2.0 with Distillation)
+ * Save memory with distillation.
  */
 export async function saveMemory(
   type: MemoryType,
@@ -542,7 +554,6 @@ export async function saveMemory(
     metadata?: Record<string, unknown>;
     trust?: number;
     ttlDays?: number;
-    // PRD v2.0 options
     importance?: number;
     confidence?: number;
     skipDistillation?: boolean;   // Force save (bypass distillation)
@@ -554,7 +565,7 @@ export async function saveMemory(
   await initDatabase();
   if (!table) throw new Error('Table not initialized');
 
-  // PRD: Semantic Distillation (unless bypassed)
+  // Semantic distillation (unless bypassed)
   if (!options?.skipDistillation) {
     const distillation = distillContent(content, {
       isRepeated: options?.isRepeated,
@@ -562,7 +573,7 @@ export async function saveMemory(
     });
 
     if (!distillation.shouldStore) {
-      console.log(`[Memory] Rejected by distillation: ${distillation.reason}`);
+      console.log(`${status.warn('[Memory] rejected by distillation')} ${distillation.reason}`);
       return null;
     }
 
@@ -574,7 +585,7 @@ export async function saveMemory(
     // caller that didn't know the flag (see repoKnowledge.ts). Contract: explicit
     // type + isVerified wins; unverified content is still auto-refined.
     if (!options?.isVerified && distillation.type !== type && isCognitiveType(distillation.type)) {
-      console.log(`[Memory] Type adjusted by distillation: ${type} → ${distillation.type}`);
+      console.log(`${status.info('[Memory] type adjusted by distillation')} ${c.yellow(type)} → ${c.yellow(distillation.type)}`);
       type = distillation.type;
     }
   }
@@ -605,19 +616,11 @@ export async function saveMemory(
     content,
     vector: await getEmbedding(`${title}\n${content}`),
 
-    // PRD Mandatory Fields
     importance,
     confidence,
     createdAt: now,
     lastUpdated: now,
     lastAccessed: now,
-    revisionCount: 0,
-    decay: 0,
-
-    // PRD Extensions
-    stability: 'low',  // Newly created starts as low
-    contradicts: '[]',
-    supports: '[]',
     derivedFrom: options?.derivedFrom || 'unknown',
 
     // Legacy compatibility
@@ -629,7 +632,7 @@ export async function saveMemory(
   };
 
   await table.add([record]);
-  console.log(`[Memory] Saved ${type} (importance: ${importance.toFixed(2)}) for ${repo}: ${title}`);
+  console.log(`${status.ok(`[Memory] saved ${type}`)} ${c.yellow(`importance: ${importance.toFixed(2)}`)} ${c.dim('repo:')} ${c.cyan(repo)} ${c.dim('title:')} ${title}`);
   return id;
 }
 
@@ -641,7 +644,7 @@ function isCognitiveType(type: MemoryType): type is CognitiveMemoryType {
 }
 
 /**
- * Save cognitive memory directly (for PRD Schema)
+ * Save cognitive memory directly.
  */
 export async function saveCognitiveMemory(
   type: CognitiveMemoryType,
@@ -650,8 +653,6 @@ export async function saveCognitiveMemory(
     importance?: number;
     confidence?: number;
     derivedFrom?: string;
-    supports?: string[];
-    contradicts?: string[];
     /** Repo scope for the record. Defaults to 'cognitive' (unscoped) for back-compat. */
     repo?: string;
   }
@@ -676,12 +677,6 @@ export async function saveCognitiveMemory(
     createdAt: now,
     lastUpdated: now,
     lastAccessed: now,
-    revisionCount: 0,
-    decay: 0,
-
-    stability: 'low',
-    contradicts: JSON.stringify(options?.contradicts || []),
-    supports: JSON.stringify(options?.supports || []),
     derivedFrom: options?.derivedFrom || 'unknown',
 
     // Legacy fields (minimal)
@@ -693,7 +688,7 @@ export async function saveCognitiveMemory(
   };
 
   await table.add([record]);
-  console.log(`[Memory] Saved cognitive ${type} (importance: ${importance.toFixed(2)}): ${content.slice(0, 50)}...`);
+  console.log(`${status.ok(`[Memory] saved cognitive ${type}`)} ${c.yellow(`importance: ${importance.toFixed(2)}`)} ${content.slice(0, 50)}...`);
   return id;
 }
 
@@ -796,28 +791,27 @@ export async function recordFact(
   return id!;
 }
 
-// Hybrid Retrieval (PRD Phase 2)
+// Hybrid retrieval
 
 /**
- * PRD Hybrid Score calculation
- * final_score = 0.55*similarity + 0.20*importance + 0.15*recency + 0.10*frequency
+ * Hybrid score: semantic relevance first, then curated importance and recency.
+ * Removed access frequency/decay inputs because the table never maintained
+ * meaningful values for them.
  */
 function calculateHybridScore(
   similarity: number,
   importance: number,
-  recency: number,
-  accessFrequency: number
+  recency: number
 ): number {
   return (
-    0.55 * similarity +
-    0.20 * importance +
-    0.15 * recency +
-    0.10 * Math.min(1, accessFrequency / 10)  // normalize frequency
+    0.60 * similarity +
+    0.25 * importance +
+    0.15 * recency
   );
 }
 
 /**
- * Search memory (PRD Hybrid Retrieval) - Safe version
+ * Search memory with hybrid retrieval - safe version.
  * Distinguishes between errors and empty results
  */
 export async function searchMemorySafe(
@@ -882,7 +876,7 @@ export async function searchMemorySafe(
     }
     const results = await vectorQuery.limit(resultWindow).toArray();
 
-    // Hybrid Retrieval with PRD scoring
+    // Hybrid retrieval scoring
     const scored = results
       .filter((r: any) => {
         if (r.id === 'init') return false;
@@ -899,10 +893,8 @@ export async function searchMemorySafe(
         const similarity = normalizedL2DistanceToSimilarity(r._distance);
         const recency = calculateFreshness(r.createdAt);
         const importance = r.importance ?? calculateImportance(r.type);
-        const accessCount = r.accessCount ?? 1;
-        const effectiveImportance = importance * (1 - (r.decay ?? 0));
-        const hybridScore = calculateHybridScore(similarity, effectiveImportance, recency, accessCount);
-        return { record: r, similarity, recency, importance: effectiveImportance, hybridScore };
+        const hybridScore = calculateHybridScore(similarity, importance, recency);
+        return { record: r, similarity, recency, importance, hybridScore };
       })
       .filter(item => item.recency >= minFreshness)
       .sort((a, b) => b.hybridScore - a.hybridScore)
@@ -923,13 +915,11 @@ export async function searchMemorySafe(
       freshness: recency,
       importance,
       confidence: r.confidence ?? r.trust ?? 0.7,
-      stability: r.stability ?? 'medium',
-      revisionCount: r.revisionCount ?? 0,
-      decay: r.decay ?? 0,
+      derivedFrom: r.derivedFrom ?? 'unknown',
       similarityScore: similarity,
     }));
 
-    console.log(`[Memory] Found ${formatted.length} memories (hybrid retrieval, query: "${query.slice(0, 30)}...")`);
+    console.log(`${status.info(`[Memory] found ${formatted.length} memories`)} ${c.dim('hybrid retrieval')} ${c.dim(`query: "${query.slice(0, 30)}..."`)}`);
     return { success: true, memories: formatted };
 
   } catch (error) {
@@ -945,7 +935,7 @@ export async function searchMemorySafe(
 }
 
 /**
- * Search memory (PRD Hybrid Retrieval) - Legacy compatible
+ * Search memory - legacy compatible.
  * @deprecated Use searchMemorySafe instead
  */
 export async function searchMemory(

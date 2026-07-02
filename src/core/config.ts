@@ -9,6 +9,7 @@ import { z } from 'zod';
 import YAML from 'yaml';
 import type { SwarmConfig, AgentSession, LongRunningMonitorConfig, ConflictResolverConfig, McpConfig } from './types.js';
 import { setTimeWindowConfig, DEFAULT_TIME_WINDOW } from '../support/timeWindow.js';
+import { c, status } from '../support/colors.js';
 
 // Constants
 
@@ -604,7 +605,7 @@ export function loadConfig(customPath?: string): SwarmConfig {
     );
   }
 
-  console.log(`Loading config from: ${configPath}`);
+  console.log(`${status.info('Config')} ${c.dim('loading from')} ${c.cyan(configPath)}`);
 
   // 2. Parse file
   let rawData: unknown;
@@ -620,12 +621,12 @@ export function loadConfig(customPath?: string): SwarmConfig {
   // 3.5. Optional 블록 정리: 환경변수 미설정 시 빈 문자열이 들어온 블록 제거
   const discordBlock = substituted.discord as Record<string, unknown> | undefined;
   if (discordBlock && (!discordBlock.token || !discordBlock.channelId)) {
-    console.log('[Config] Discord credentials not set — disabling Discord integration');
+    console.log(status.warn('[Config] Discord credentials not set — disabling Discord integration'));
     delete substituted.discord;
   }
   const linearBlock = substituted.linear as Record<string, unknown> | undefined;
   if (linearBlock && (!linearBlock.apiKey || !linearBlock.teamId)) {
-    console.log('[Config] Linear credentials not set — disabling Linear integration');
+    console.log(status.warn('[Config] Linear credentials not set — disabling Linear integration'));
     delete substituted.linear;
   }
 
@@ -645,10 +646,10 @@ export function loadConfig(customPath?: string): SwarmConfig {
   // 6. Apply time window config
   if (config.timeWindow) {
     setTimeWindowConfig(config.timeWindow);
-    console.log(`[Config] TimeWindow config loaded (enabled: ${config.timeWindow.enabled})`);
+    console.log(`${status.info('[Config] TimeWindow')} ${c.dim('loaded')} ${c.yellow(`enabled: ${config.timeWindow.enabled}`)}`);
   } else {
     setTimeWindowConfig(DEFAULT_TIME_WINDOW);
-    console.log(`[Config] Using default TimeWindow config`);
+    console.log(`${status.info('[Config] TimeWindow')} ${c.dim('using default config')}`);
   }
 
   return config;

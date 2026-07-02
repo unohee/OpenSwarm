@@ -29,8 +29,8 @@ export async function onEntityDeprecated(entity: CodeEntity): Promise<void> {
     `${entity.kind} ${entity.name} deprecated`,
     content,
     {
-      importance: 7,
-      confidence: 9,
+      importance: 0.7,
+      confidence: 0.9,
       derivedFrom: `registry:${entity.id}`,
       metadata: {
         registryEntityId: entity.id,
@@ -67,8 +67,8 @@ export async function onEntityWarningAdded(
     `${warning.category} ${warning.severity}: ${entity.name}`,
     content,
     {
-      importance: warning.severity === 'critical' ? 9 : 7,
-      confidence: 8,
+      importance: warning.severity === 'critical' ? 0.9 : 0.7,
+      confidence: 0.8,
       derivedFrom: `registry:${entity.id}:warning:${warning.id}`,
       metadata: {
         registryEntityId: entity.id,

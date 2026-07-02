@@ -38,6 +38,17 @@ function parsePositiveIntegerOption(value: string): number {
   return parsed;
 }
 
+function loadTelemetryEnabledQuietly(quiet: boolean): boolean | undefined {
+  if (!quiet) return loadConfig().telemetry?.enabled;
+  const originalLog = console.log;
+  try {
+    console.log = () => undefined;
+    return loadConfig().telemetry?.enabled;
+  } finally {
+    console.log = originalLog;
+  }
+}
+
 // Anonymous, opt-out usage telemetry (INT-1992). Honors OPENSWARM_TELEMETRY=0 /
 // DO_NOT_TRACK / CI. One event per command invocation (command name only — never
 // arguments). Fire-and-forget: not awaited, and track() never throws.
@@ -46,7 +57,9 @@ program.hook('preAction', (_thisCommand, actionCommand) => {
   // Honor config telemetry.enabled when a config exists (best-effort — `run`/`init`
   // may have none, in which case the env opt-out still applies).
   try {
-    initTelemetry({ version: VERSION, enabled: loadConfig().telemetry?.enabled });
+    const opts = actionCommand.opts() as { json?: boolean };
+    const quietConfigLoad = !!opts.json || actionCommand.name() === 'memory';
+    initTelemetry({ version: VERSION, enabled: loadTelemetryEnabledQuietly(quietConfigLoad) });
   } catch {
     /* no/invalid config — leave the opt-out default */
   }
@@ -209,6 +222,24 @@ program
         const { resetMcpTools } = await import('./mcp/mcpClient.js');
         resetMcpTools();
       }
+    } catch (e) {
+      console.error(e instanceof Error ? e.message : String(e));
+      process.exitCode = 1;
+    }
+  });
+
+// openswarm memory status|compact
+
+program
+  .command('memory')
+  .description('Inspect and maintain the repo knowledge memory DB')
+  .argument('<action>', 'status | compact')
+  .option('--json', 'Print JSON')
+  .option('--force', 'Allow compact while the daemon is running')
+  .action(async (action: string, opts: { json?: boolean; force?: boolean }) => {
+    const { runMemoryCommand } = await import('./cli/memoryCommand.js');
+    try {
+      console.log(await runMemoryCommand(action, opts));
     } catch (e) {
       console.error(e instanceof Error ? e.message : String(e));
       process.exitCode = 1;
