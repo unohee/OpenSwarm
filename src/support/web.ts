@@ -84,8 +84,11 @@ function isLoopbackAddress(address: string | undefined): boolean {
 
 function extractBearerToken(header: string | undefined): string | null {
   if (!header) return null;
-  const match = header.match(/^Bearer\s+(.+)$/i);
-  return match?.[1]?.trim() || null;
+  // Linear-time parse (no regex): 'Bearer' + one space/tab + token. A
+  // backtracking /^Bearer\s+(.+)$/ is polynomial on adversarial whitespace runs.
+  const prefix = header.slice(0, 7).toLowerCase();
+  if (prefix !== 'bearer ' && prefix !== 'bearer\t') return null;
+  return header.slice(7).trim() || null;
 }
 
 function isAuthorizedMutation(req: IncomingMessage): boolean {
