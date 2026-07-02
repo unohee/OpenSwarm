@@ -20,6 +20,10 @@ const SKIP_DIRS = new Set([
   // registry to 624650 entities (normal ~1,594) and the conflict detector then treated those
   // trash files as shared between unrelated issues → false conflicts.
   'trash', '.openswarm', 'htmlcov', '.ruff_cache', 'worktree',
+  // INT-2320: vendored third-party trees are not the repo's own code. Thousands of
+  // short generic filenames (a.py, run.py, api.py) poisoned issue-impact matching,
+  // so the conflict detector deferred every same-project task pair as "conflicting".
+  'google-cloud-sdk', 'third_party', 'vendor', 'vendors',
 ]);
 
 // Prefix-based skip: any directory name starting with these prefixes

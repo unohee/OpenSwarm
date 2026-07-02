@@ -8,6 +8,19 @@ import type { ImpactAnalysis, ProjectSummary } from './types.js';
 
 // Issue Impact Analysis
 
+const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * Whole-word match: `run` matches "fix run loop" but not "running" or
+ * "pruner". Raw substring matching made every short vendored filename
+ * (`a.py`, `run.py`, `api.py`) hit every issue, so the conflict detector saw
+ * all task pairs as overlapping. (INT-2320)
+ */
+function matchesWord(text: string, needle: string): boolean {
+  if (needle.length < 3) return false; // 1–2 char names match everything
+  return new RegExp(`(?:^|[^a-z0-9])${escapeRegExp(needle)}(?:$|[^a-z0-9])`).test(text);
+}
+
 /**
  * Analyze issue text to identify affected modules
  */
@@ -28,7 +41,7 @@ export function analyzeIssueImpact(
     const pathParts = mod.path.split('/');
 
     // Filename matching (e.g., "decisionEngine" → decisionEngine.ts)
-    if (text.includes(name.toLowerCase())) {
+    if (matchesWord(text, name.toLowerCase())) {
       directModules.push(mod.id);
       continue;
     }

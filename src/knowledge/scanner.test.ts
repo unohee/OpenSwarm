@@ -119,4 +119,16 @@ describe('knowledge scanner', () => {
       }
     }
   });
+
+  it('skips vendored third-party trees (INT-2320)', async () => {
+    await writeProjectFile('src/app.ts', 'export const app = 1;\n');
+    await writeProjectFile('google-cloud-sdk/lib/surface/run.py', 'x = 1\n');
+    await writeProjectFile('third_party/requests/api.py', 'x = 1\n');
+    await writeProjectFile('vendor/dns/a.py', 'x = 1\n');
+
+    const graph = await scanProject(tmp, 'test-project');
+    const ids = graph.getNodesByType('module').map(n => n.id);
+    expect(ids).toContain('src/app.ts');
+    expect(ids.filter(id => id.includes('google-cloud-sdk') || id.includes('third_party') || id.includes('vendor/'))).toEqual([]);
+  });
 });

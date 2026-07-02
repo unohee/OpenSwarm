@@ -107,6 +107,30 @@ describe('Knowledge Graph Analyzer', () => {
       expect(result.testFiles).toEqual([]);
     });
 
+    it('does not match short generic vendored filenames as substrings (INT-2320)', () => {
+      // a.py / run.py used to substring-match virtually every issue text,
+      // making the conflict detector see all task pairs as overlapping.
+      graph.addNode(mod('vendor/dns/a.py'));
+      graph.addNode(mod('vendor/tasks/run.py'));
+      graph.addNode(mod('vendor/requests/api.py'));
+
+      const result = analyzeIssueImpact(
+        graph,
+        'Harden the running audit pipeline',
+        'API change compatibility risk around a rapid rollout',
+      );
+
+      expect(result.directModules).not.toContain('vendor/dns/a.py'); // < 3 chars: never
+      expect(result.directModules).not.toContain('vendor/tasks/run.py'); // "running" is not "run"
+      // "API" appears as a standalone word → a legitimate boundary match
+      expect(result.directModules).toContain('vendor/requests/api.py');
+    });
+
+    it('still matches whole-word filenames at word boundaries (INT-2320)', () => {
+      const result = analyzeIssueImpact(graph, 'login: broken redirect', 'the login/ page 500s');
+      expect(result.directModules).toContain('src/auth/login.ts');
+    });
+
     it('estimates scope as "small" for <= 2 affected modules', () => {
       // token.ts + middleware.ts = 2 affected
       const result = analyzeIssueImpact(graph, 'Token issue');
