@@ -58,6 +58,16 @@ describe('gitTracker', () => {
       expect(f!.isNew).toBe(true);
     });
 
+    it('flags a staged newly-created file as isNew', async () => {
+      writeFileSync(join(repo, 'staged-fresh.ts'), 'export const x = 1;\n');
+      execFileSync('git', ['add', 'staged-fresh.ts'], { cwd: repo });
+      const detail = await getWorkingDiffDetail(repo);
+      const f = detail.find(d => d.file === 'staged-fresh.ts');
+      expect(f).toBeDefined();
+      expect(f!.isNew).toBe(true);
+      expect(f!.added).toBe(1);
+    });
+
     it('marks a whitespace-only change as whitespaceOnly', async () => {
       // Re-indent the existing line without changing its tokens.
       writeFileSync(join(repo, 'tracked.txt'), '  tracked\n');

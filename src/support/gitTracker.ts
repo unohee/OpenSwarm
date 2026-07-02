@@ -127,8 +127,8 @@ export async function autoCommit(
 /**
  * Per-file diff detail for the working tree vs HEAD.
  * Guards run pre-commit, so the worker's edits live in the working tree —
- * `git diff HEAD` captures every tracked change and `ls-files --others` the
- * newly-added files. Used by dead-module and reformat-noise guards. (INT-2388)
+ * `git diff HEAD` captures tracked/staged changes and `ls-files --others` the
+ * untracked files. Used by dead-module and reformat-noise guards. (INT-2388)
  */
 export interface FileDiffDetail {
   file: string;
@@ -136,7 +136,7 @@ export interface FileDiffDetail {
   added: number;
   /** Deleted lines. */
   deleted: number;
-  /** Untracked (newly created, not yet in git) file. */
+  /** Newly created file relative to HEAD, staged or untracked. */
   isNew: boolean;
   /** Change vanishes under `-w` (whitespace-ignored) — reformat-only noise. */
   whitespaceOnly: boolean;
@@ -158,20 +158,35 @@ function parseNumstat(output: string): Map<string, [number, number]> {
   return map;
 }
 
+/** Parse `git diff --name-status` output and return paths added relative to HEAD. */
+function parseAddedPaths(output: string): Set<string> {
+  const added = new Set<string>();
+  for (const line of output.split('\n')) {
+    if (!line.trim()) continue;
+    const parts = line.split('\t');
+    if (parts[0] === 'A' && parts[1]) {
+      added.add(parts[1]);
+    }
+  }
+  return added;
+}
+
 /**
  * Working-tree diff detail vs HEAD: per-file line counts, new-file flag, and a
  * reformat-only (whitespace) flag. Returns [] on any git error (advisory only).
  */
 export async function getWorkingDiffDetail(projectPath: string): Promise<FileDiffDetail[]> {
   try {
-    const [numstatRaw, wsNumstatRaw, untrackedRaw] = await Promise.all([
+    const [numstatRaw, wsNumstatRaw, nameStatusRaw, untrackedRaw] = await Promise.all([
       runGitCommand(projectPath, ['diff', '--numstat', 'HEAD']),
       runGitCommand(projectPath, ['diff', '-w', '--numstat', 'HEAD']),
+      runGitCommand(projectPath, ['diff', '--name-status', 'HEAD']),
       runGitCommand(projectPath, ['ls-files', '--others', '--exclude-standard']),
     ]);
 
     const numstat = parseNumstat(numstatRaw);
     const wsNumstat = parseNumstat(wsNumstatRaw);
+    const addedPaths = parseAddedPaths(nameStatusRaw);
     const details: FileDiffDetail[] = [];
 
     for (const [file, [added, deleted]] of numstat) {
@@ -179,7 +194,7 @@ export async function getWorkingDiffDetail(projectPath: string): Promise<FileDif
       // (missing from the -w numstat, or present with 0/0).
       const ws = wsNumstat.get(file);
       const whitespaceOnly = (added + deleted) > 0 && (!ws || ws[0] + ws[1] === 0);
-      details.push({ file, added, deleted, isNew: false, whitespaceOnly });
+      details.push({ file, added, deleted, isNew: addedPaths.has(file), whitespaceOnly });
     }
 
     for (const file of untrackedRaw.split('\n').filter(Boolean)) {
