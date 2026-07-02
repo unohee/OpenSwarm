@@ -53,6 +53,12 @@ import { checkAllMonitors, getActiveMonitors } from './longRunningMonitor.js';
 import { detectFileConflicts } from '../orchestration/conflictDetector.js';
 import type { AutonomousConfig, RunnerState } from './runnerTypes.js';
 import type { AdapterName } from '../adapters/types.js';
+import {
+  applyBacklogGrooming,
+  filterGroomableTasks,
+  runBacklogGroomingPlanner,
+  summarizeGroomingDecision,
+} from './backlogGrooming.js';
 
 // Re-export types and integration setters (used by service.ts)
 export { setNotifier, setTaskSource } from './runnerExecution.js';
@@ -163,6 +169,7 @@ export class AutonomousRunner {
   // the first resolve failure so they aren't re-picked every heartbeat (which
   // starved other actionable tasks — they were top-priority but never runnable). (INT-1875)
   private unresolvableIssueIds = new Set<string>();
+  private lastBacklogGroomingAt = 0;
 
   private get taskStateRef(): TaskState {
     return {
@@ -768,6 +775,87 @@ export class AutonomousRunner {
     for (const line of lines) this.syslog(line);
   }
 
+  private async groupTasksForGrooming(tasks: TaskItem[]): Promise<Map<string, TaskItem[]>> {
+    const byProjectId = new Map<string, string>();
+    for (const repoPath of this.config.allowedProjects) {
+      try {
+        const resolvedPath = repoPath.replace('~', process.env.HOME || '');
+        const meta = await loadRepoMetadata(resolvedPath);
+        if (meta?.linear?.projectId) byProjectId.set(meta.linear.projectId, resolvedPath);
+      } catch {
+        // Grooming is advisory; unreadable metadata should not block normal work.
+      }
+    }
+
+    const groups = new Map<string, TaskItem[]>();
+    for (const task of tasks) {
+      const projectPath = task.projectPath
+        ?? (task.linearProject?.id ? byProjectId.get(task.linearProject.id) : undefined)
+        ?? undefined;
+      if (!projectPath) continue;
+      const list = groups.get(projectPath) ?? [];
+      list.push(task);
+      groups.set(projectPath, list);
+    }
+    return groups;
+  }
+
+  private async maybeRunBacklogGrooming(tasks: TaskItem[]): Promise<TaskItem[]> {
+    const cfg = this.config.backlogGrooming;
+    if (!cfg?.enabled) return tasks;
+
+    const cadenceMs = Math.max(1, cfg.cadenceHours ?? 24) * 60 * 60 * 1000;
+    const now = Date.now();
+    if (this.lastBacklogGroomingAt && now - this.lastBacklogGroomingAt < cadenceMs) return tasks;
+
+    const source = getTaskSource();
+    if (!source) {
+      this.syslog('⚠ Backlog grooming skipped: no task source');
+      return tasks;
+    }
+
+    const groomable = filterGroomableTasks(tasks);
+    if (groomable.length === 0) return tasks;
+
+    const mode = cfg.mode ?? 'comment';
+    const moved = new Set<string>();
+    const groups = await this.groupTasksForGrooming(groomable);
+    if (groups.size === 0) {
+      this.syslog('⚠ Backlog grooming skipped: no mapped project paths');
+      return tasks;
+    }
+
+    let successfulPlannerRuns = 0;
+    for (const [projectPath, groupTasks] of groups) {
+      this.syslog(`⟳ Backlog grooming: ${groupTasks.length} issue(s) in ${projectPath.split('/').pop()}`);
+      const result = await runBacklogGroomingPlanner({
+        tasks: groupTasks,
+        projectPath,
+        projectName: groupTasks[0]?.linearProject?.name,
+        model: cfg.plannerModel ?? this.config.plannerModel,
+        timeoutMs: cfg.plannerTimeoutMs ?? this.config.plannerTimeoutMs,
+        maxIssues: cfg.maxIssues,
+        onLog: (line) => broadcastEvent({ type: 'log', data: { taskId: 'system', stage: 'groom', line } }),
+      });
+      if (!result.success) {
+        this.syslog(`⚠ Backlog grooming failed: ${result.error ?? 'unknown error'}`);
+        continue;
+      }
+      successfulPlannerRuns++;
+      const validIssueIds = new Set(groupTasks.map(task => task.issueId || task.id));
+      const applied = await applyBacklogGrooming(source, result, mode, validIssueIds);
+      for (const issueId of applied.movedIssueIds) moved.add(issueId);
+      this.syslog(`✓ Backlog grooming: ${result.decisions.length} decision(s), ${applied.commented} comment(s), ${applied.failedComments} comment failure(s), ${applied.updatedDescriptions} description update(s), ${applied.moved} moved, ${applied.skippedUnknown} unknown skipped`);
+      for (const decision of result.decisions.slice(0, 5)) {
+        this.syslog(`  ${summarizeGroomingDecision(decision)}`);
+      }
+    }
+
+    if (successfulPlannerRuns > 0) this.lastBacklogGroomingAt = now;
+    if (moved.size === 0) return tasks;
+    return tasks.filter(task => !moved.has(task.issueId || task.id));
+  }
+
   async heartbeat(): Promise<void> {
     if (this._heartbeatRunning) {
       console.log('[AutonomousRunner] Heartbeat already running, skipping');
@@ -847,7 +935,7 @@ export class AutonomousRunner {
         await reportToDiscord(`⚠️ Linear fetch failed: ${fetchResult.error}`);
         return;
       }
-      const tasks = fetchResult.tasks;
+      let tasks = fetchResult.tasks;
       if (tasks.length === 0) {
         this.syslog('— No tasks in backlog');
         return;
@@ -855,6 +943,13 @@ export class AutonomousRunner {
 
       this.lastFetchedTasks = tasks;
       this.syslog(`✓ Found ${tasks.length} tasks from Linear`);
+
+      tasks = await this.maybeRunBacklogGrooming(tasks);
+      this.lastFetchedTasks = tasks;
+      if (tasks.length === 0) {
+        this.syslog('— No executable tasks after backlog grooming');
+        return;
+      }
 
       // Filter out completed and over-retried tasks
       const filteredTasks = this.filterAlreadyProcessed(tasks);

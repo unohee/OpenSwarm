@@ -1,8 +1,12 @@
 // Purpose: enableProject must also add the repo to allowedProjects so
 // resolveProjectPath reads its openswarm.json mapping (INT-1973).
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
 import { AutonomousRunner, decisionSelectionBudget } from './autonomousRunner.js';
 import type { AutonomousConfig } from './runnerTypes.js';
+import type { TaskItem } from '../orchestration/decisionEngine.js';
 
 const cfg = (over: Partial<AutonomousConfig> = {}): AutonomousConfig => ({
   linearTeamId: 'team',
@@ -70,5 +74,52 @@ describe('AutonomousRunner project-selection gating (INT-2207)', () => {
     const r = new AutonomousRunner(cfg());
     r.disableProject('/x/a');
     expect(filtersOn(r)).toBe(true);
+  });
+});
+
+describe('AutonomousRunner backlog grooming mapping (INT-1609)', () => {
+  type Internal = { groupTasksForGrooming(tasks: TaskItem[]): Promise<Map<string, TaskItem[]>> };
+
+  it('does not map an unmapped Linear project to the only allowed repo', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'openswarm-groom-'));
+    try {
+      const r = new AutonomousRunner(cfg({ allowedProjects: [dir] }));
+      const groups = await (r as unknown as Internal).groupTasksForGrooming([{
+        id: 'task-1',
+        source: 'linear',
+        title: 'other project',
+        priority: 1,
+        createdAt: 1,
+        issueId: 'issue-1',
+        linearProject: { id: '11111111-1111-4111-8111-111111111111', name: 'Other' },
+      }]);
+      expect(groups.size).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('groups tasks only through explicit openswarm.json Linear project mapping', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'openswarm-groom-'));
+    try {
+      const projectId = '22222222-2222-4222-8222-222222222222';
+      writeFileSync(join(dir, 'openswarm.json'), JSON.stringify({
+        schemaVersion: 1,
+        linear: { projectId },
+      }));
+      const r = new AutonomousRunner(cfg({ allowedProjects: [dir] }));
+      const groups = await (r as unknown as Internal).groupTasksForGrooming([{
+        id: 'task-1',
+        source: 'linear',
+        title: 'mapped project',
+        priority: 1,
+        createdAt: 1,
+        issueId: 'issue-1',
+        linearProject: { id: projectId, name: 'Mapped' },
+      }]);
+      expect(groups.get(dir)?.map(t => t.id)).toEqual(['task-1']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

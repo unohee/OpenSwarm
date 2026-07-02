@@ -197,6 +197,22 @@ autonomous:
       model: anthropic/claude-sonnet-4
 ```
 
+Optional backlog grooming runs a read-only Planner over the fetched open queue
+states for a mapped project (`Todo`, `In Progress`, `In Review`, and `Backlog`)
+and compares them with the current repo. Keep `mode: comment` while validating
+recommendations; `mode: apply` can update drifted descriptions and move strongly
+stale issues to Done.
+
+```yaml
+autonomous:
+  backlogGrooming:
+    enabled: false
+    cadenceHours: 24
+    mode: comment
+    plannerModel: gpt-5.5
+    maxIssues: 80
+```
+
 ### Agent Roles
 
 ```yaml

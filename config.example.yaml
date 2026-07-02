@@ -57,6 +57,16 @@ autonomous:
     thresholdMinutes: 30             # Decompose if estimated time exceeds this
     plannerModel: claude-opus-4-7    # Planner model (Opus for deep decomposition)
 
+  # Backlog grooming (Planner compares fetched open queue states against the repo).
+  # Safe default: comment recommendations only. Set mode: apply to update
+  # descriptions and move strongly stale issues to Done.
+  backlogGrooming:
+    enabled: false
+    cadenceHours: 24
+    mode: comment
+    plannerModel: claude-opus-4-7
+    maxIssues: 80
+
   # Per-role settings
   # Hybrid config: Claude for complex coding, local model for review/docs ($0)
   defaultRoles:

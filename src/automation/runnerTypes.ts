@@ -4,7 +4,7 @@
 
 import type { DecisionResult, TaskItem } from '../orchestration/decisionEngine.js';
 import type { ExecutorResult } from '../orchestration/workflow.js';
-import type { DefaultRolesConfig, ProjectAgentConfig, JobProfile } from '../core/types.js';
+import type { BacklogGroomingConfig, DefaultRolesConfig, ProjectAgentConfig, JobProfile } from '../core/types.js';
 
 export interface AutonomousConfig {
   defaultAdapter?: 'codex' | 'codex-responses' | 'gpt' | 'local' | 'lmstudio' | 'openrouter' | 'claude';
@@ -33,6 +33,7 @@ export interface AutonomousConfig {
   plannerModel?: string;
   plannerTimeoutMs?: number;
   decomposition?: import('../core/types.js').DecompositionConfig;
+  backlogGrooming?: BacklogGroomingConfig;
   worktreeMode?: boolean;
   /** Allow concurrent tasks on the same repo (requires worktreeMode). Default true. (INT-1975) */
   allowSameProjectConcurrent?: boolean;

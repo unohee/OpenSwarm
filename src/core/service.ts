@@ -226,6 +226,7 @@ export async function startService(config: SwarmConfig): Promise<void> {
       decompositionThresholdMinutes: config.autonomous.decomposition?.thresholdMinutes ?? 30,
       plannerModel: config.autonomous.decomposition?.plannerModel,
       plannerTimeoutMs: config.autonomous.decomposition?.plannerTimeoutMs,
+      backlogGrooming: config.autonomous.backlogGrooming,
       // Git worktree mode
       worktreeMode: config.autonomous.worktreeMode ?? false,
       // Pipeline guards

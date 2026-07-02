@@ -44,7 +44,8 @@ export interface ITaskSource {
   fetchTasks(): Promise<TaskItem[]>;
   /** Create a top-level task/issue (used by the /plan cockpit to seed a parent). */
   createTask(title: string, description: string, projectId?: string): Promise<SubIssueResult>;
-  updateState(issueId: string, state: TaskState): Promise<void>;
+  updateState(issueId: string, state: TaskState): Promise<boolean>;
+  updateDescription?(issueId: string, description: string): Promise<void>;
   addComment(issueId: string, body: string): Promise<void>;
   createSubIssue(
     parentId: string,
@@ -78,7 +79,8 @@ export class LinearTaskSource implements ITaskSource {
     const r = await linear.createIssue(title, description, [], { projectId });
     return 'error' in r ? r : { id: r.id, identifier: r.identifier, title: r.title };
   }
-  updateState(issueId: string, state: TaskState): Promise<void> { return linear.updateIssueState(issueId, state); }
+  updateState(issueId: string, state: TaskState): Promise<boolean> { return linear.updateIssueState(issueId, state); }
+  updateDescription(issueId: string, description: string): Promise<void> { return linear.updateIssueDescription(issueId, description); }
   addComment(issueId: string, body: string): Promise<void> { return linear.addComment(issueId, body); }
   createSubIssue(parentId: string, title: string, description: string, options?: { priority?: number; projectId?: string; estimatedMinutes?: number }): Promise<SubIssueResult> {
     return linear.createSubIssue(parentId, title, description, options);
@@ -141,8 +143,12 @@ export class SqliteTaskSource implements ITaskSource {
       return { error: err instanceof Error ? err.message : String(err) };
     }
   }
-  async updateState(issueId: string, state: TaskState): Promise<void> {
+  async updateState(issueId: string, state: TaskState): Promise<boolean> {
     this.store.changeStatus(issueId, STATE_TO_STATUS[state]);
+    return true;
+  }
+  async updateDescription(issueId: string, description: string): Promise<void> {
+    this.store.updateIssue(issueId, { description });
   }
   async addComment(issueId: string, body: string): Promise<void> {
     this.store.addEvent(issueId, 'commented', { content: body });

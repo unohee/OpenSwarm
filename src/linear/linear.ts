@@ -716,8 +716,8 @@ export async function updateIssueState(
   issueId: string,
   stateName: 'In Progress' | 'In Review' | 'Done' | 'Backlog' | 'Todo',
   retries = 2
-): Promise<void> {
-  if (!isLinearInitialized()) return;
+): Promise<boolean> {
+  if (!isLinearInitialized()) return false;
   const linear = getClient();
 
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -736,7 +736,7 @@ export async function updateIssueState(
 
       if (!targetState) {
         console.error(`[Linear] State "${stateName}" not found in team workflow`);
-        return;
+        return false;
       }
 
       await linear.updateIssue(issueId, {
@@ -747,7 +747,7 @@ export async function updateIssueState(
       clearLinearCache();
 
       console.log(`[Linear] Issue ${issueId} state changed to ${stateName}`);
-      return;
+      return true;
     } catch (error) {
       console.error(`[Linear] Failed to update issue state (attempt ${attempt + 1}/${retries + 1}):`, error);
       if (attempt < retries) {
@@ -756,6 +756,15 @@ export async function updateIssueState(
     }
   }
   console.error(`[Linear] All ${retries + 1} attempts to update issue ${issueId} to "${stateName}" failed`);
+  return false;
+}
+
+export async function updateIssueDescription(issueId: string, description: string): Promise<void> {
+  if (!isLinearInitialized()) return;
+  const linear = getClient();
+  await linear.updateIssue(issueId, { description });
+  clearLinearCache();
+  console.log(`[Linear] Issue ${issueId} description updated`);
 }
 
 /**

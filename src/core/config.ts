@@ -199,6 +199,15 @@ const DecompositionConfigSchema = z.object({
   plannerTimeoutMs: z.number().min(60000).default(600000),
 }).optional();
 
+const BacklogGroomingConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  cadenceHours: z.number().min(1).max(168).default(24).optional(),
+  mode: z.enum(['comment', 'apply']).default('comment').optional(),
+  plannerModel: z.string().optional(),
+  plannerTimeoutMs: z.number().min(60000).default(600000).optional(),
+  maxIssues: z.number().min(1).max(250).default(80).optional(),
+}).optional();
+
 const PipelineStageSchema = z.enum(['worker', 'reviewer', 'tester', 'documenter', 'auditor', 'skill-documenter']);
 
 const JobProfileSchema = z.object({
@@ -256,6 +265,8 @@ const AutonomousConfigSchema = z.object({
   projectAgents: z.array(ProjectAgentConfigSchema).optional(),
   /** Task decomposition configuration (Planner Agent) */
   decomposition: DecompositionConfigSchema,
+  /** Whole-backlog grooming planner configuration */
+  backlogGrooming: BacklogGroomingConfigSchema,
   /** Git worktree mode: each task runs in isolated worktree */
   worktreeMode: z.boolean().default(false),
   /** Allow concurrent tasks on the same repo (requires worktreeMode). (INT-1975) */
@@ -560,6 +571,14 @@ function transformConfig(raw: RawConfig): SwarmConfig {
         autoBacklog: raw.autonomous.decomposition.autoBacklog ?? true,
         plannerModel: raw.autonomous.decomposition.plannerModel,
         plannerTimeoutMs: raw.autonomous.decomposition.plannerTimeoutMs,
+      } : undefined,
+      backlogGrooming: raw.autonomous.backlogGrooming ? {
+        enabled: raw.autonomous.backlogGrooming.enabled,
+        cadenceHours: raw.autonomous.backlogGrooming.cadenceHours,
+        mode: raw.autonomous.backlogGrooming.mode,
+        plannerModel: raw.autonomous.backlogGrooming.plannerModel,
+        plannerTimeoutMs: raw.autonomous.backlogGrooming.plannerTimeoutMs,
+        maxIssues: raw.autonomous.backlogGrooming.maxIssues,
       } : undefined,
       worktreeMode: raw.autonomous.worktreeMode,
       allowSameProjectConcurrent: raw.autonomous.allowSameProjectConcurrent,

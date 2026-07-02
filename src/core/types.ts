@@ -367,6 +367,15 @@ export type DecompositionConfig = {
   plannerTimeoutMs: number;
 };
 
+export type BacklogGroomingConfig = {
+  enabled: boolean;
+  cadenceHours?: number;
+  mode?: 'comment' | 'apply';
+  plannerModel?: string;
+  plannerTimeoutMs?: number;
+  maxIssues?: number;
+};
+
 /**
  * Autonomous execution mode configuration
  */
@@ -470,6 +479,8 @@ export type AutonomousStartupConfig = {
   projectAgents?: ProjectAgentConfig[];
   /** Task decomposition config (Planner Agent) */
   decomposition?: DecompositionConfig;
+  /** Whole-backlog grooming planner config */
+  backlogGrooming?: BacklogGroomingConfig;
   /** Git worktree mode: work in independent worktree per issue and auto-create PR */
   worktreeMode?: boolean;
   /**
