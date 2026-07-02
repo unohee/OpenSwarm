@@ -10,6 +10,10 @@ import type { TaskItem } from './decisionEngine.js';
 import type { PipelineResult } from '../agents/pairPipeline.js';
 
 function normalizeProjectPath(path: string): string {
+  // Guard: resolve('') returns process.cwd(), so an accidental empty-string
+  // cancellation would match every task under the daemon's cwd. Keep the
+  // pre-#192 no-op behavior ('/' matches nothing in practice) instead.
+  if (!path.trim()) return '/';
   const slashed = path.replace(/\\/g, '/');
   const expanded = slashed === '~' || slashed.startsWith('~/')
     ? `${homedir()}${slashed.slice(1)}`

@@ -76,6 +76,14 @@ describe('TaskScheduler cancellation', () => {
     expect(d.wasAborted()).toBe(true);
   });
 
+  it('cancelProjectTasks with an empty/blank path cancels nothing (not cwd)', () => {
+    const d = deferredExecutor();
+    sched.startTask(task('cwd-task'), resolve(process.cwd(), 'some-repo'), d.exec);
+    expect(sched.cancelProjectTasks('')).toBe(0);
+    expect(sched.cancelProjectTasks('   ')).toBe(0);
+    expect(d.wasAborted()).toBe(false);
+  });
+
   it("a cancelled result is not counted as failed", async () => {
     const d = deferredExecutor();
     const events: string[] = [];
