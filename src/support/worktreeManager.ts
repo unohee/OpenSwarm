@@ -18,9 +18,16 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
   return stdout;
 }
 
-/** Safe gh command execution (no shell) */
-async function gh(...args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync('gh', args);
+/**
+ * Safe gh command execution (no shell). `cwd` must be inside the target repo —
+ * gh infers the repository from the working directory, and the daemon's own
+ * cwd is typically NOT a git repo (e.g. started from $HOME), which made every
+ * `gh pr create` here die with "fatal: not a git repository" while the push
+ * (which does pass a cwd) succeeded — completed work stranded on remote
+ * branches with no PR. (INT-2321)
+ */
+async function gh(cwd: string, ...args: string[]): Promise<string> {
+  const { stdout } = await execFileAsync('gh', args, { cwd });
   return stdout;
 }
 
@@ -164,7 +171,7 @@ export async function commitAndCreatePR(
   console.log(`[Worktree] Pushed branch ${branchName}`);
 
   // If PR already exists, just return the URL
-  const existing = await gh('pr', 'list', '--head', branchName, '--state', 'open', '--json', 'url', '--jq', '.[0].url')
+  const existing = await gh(worktreePath, 'pr', 'list', '--head', branchName, '--state', 'open', '--json', 'url', '--jq', '.[0].url')
     .catch((e) => { console.warn(`[Worktree] PR list check failed for ${branchName}:`, e); return ''; });
 
   if (existing.trim()) {
@@ -184,7 +191,7 @@ export async function commitAndCreatePR(
     '🤖 Generated with [OpenSwarm](https://github.com/Intrect-io/OpenSwarm)',
   ].join('\n');
 
-  const prUrl = await gh('pr', 'create', '--head', branchName, '--base', 'main', '--title', title, '--body', prBody);
+  const prUrl = await gh(worktreePath, 'pr', 'create', '--head', branchName, '--base', 'main', '--title', title, '--body', prBody);
 
   const url = prUrl.trim();
   console.log(`[Worktree] PR created: ${url}`);
