@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   resolveChecks,
+  resolveProjectChecks,
   parseFailingFiles,
   deriveFixAreas,
   buildFixCheckTask,
@@ -8,6 +9,7 @@ import {
   type Check,
   type CheckOutcome,
   type FixArea,
+  type ProjectProbe,
 } from './fixCommand.js';
 
 describe('resolveChecks (INT-2267)', () => {
@@ -30,6 +32,65 @@ describe('resolveChecks (INT-2267)', () => {
   });
 });
 
+describe('resolveProjectChecks (INT-2303)', () => {
+  const py = { marker: true, ruff: true, mypy: true, pytest: true };
+
+  it('prefers openswarm.json checks over everything, preserving key order, via sh -c', () => {
+    const probe: ProjectProbe = {
+      configChecks: { test: 'pytest -x', lint: 'ruff check .' },
+      npmScripts: { test: 'vitest' },
+      cargo: true,
+      python: py,
+    };
+    const checks = resolveProjectChecks(probe);
+    expect(checks.map((c) => c.key)).toEqual(['test', 'lint']);
+    expect(checks[0]).toEqual({ key: 'test', program: 'sh', args: ['-c', 'pytest -x'], display: 'pytest -x' });
+  });
+
+  it('filters config checks by --checks, accepting raw keys and aliases', () => {
+    const probe: ProjectProbe = { configChecks: { typecheck: 'mypy .', test: 'pytest' } };
+    expect(resolveProjectChecks(probe, ['type']).map((c) => c.key)).toEqual(['typecheck']);
+    expect(resolveProjectChecks(probe, ['test', 'nope']).map((c) => c.key)).toEqual(['test']);
+  });
+
+  it('falls back to npm scripts when no config checks', () => {
+    const probe: ProjectProbe = { npmScripts: { test: 'vitest run' }, cargo: true };
+    expect(resolveProjectChecks(probe)).toEqual([{ key: 'test', program: 'npm', args: ['run', 'test'] }]);
+  });
+
+  it('resolves Cargo defaults (check + test, skipping clippy/build)', () => {
+    const checks = resolveProjectChecks({ cargo: true });
+    expect(checks.map((c) => c.key)).toEqual(['typecheck', 'test']);
+    expect(checks[0]).toEqual({ key: 'typecheck', program: 'cargo', args: ['check', '--all-targets'] });
+    expect(checks[1]).toEqual({ key: 'test', program: 'cargo', args: ['test'] });
+  });
+
+  it('resolves clippy/build for Cargo when explicitly requested', () => {
+    const checks = resolveProjectChecks({ cargo: true }, ['lint', 'build']);
+    expect(checks[0].args[0]).toBe('clippy');
+    expect(checks[1].args).toEqual(['build']);
+  });
+
+  it('gates Python defaults on per-tool config', () => {
+    const all = resolveProjectChecks({ python: py });
+    expect(all.map((c) => c.key)).toEqual(['lint', 'typecheck', 'test']);
+    expect(all.map((c) => c.program)).toEqual(['ruff', 'mypy', 'pytest']);
+
+    const pytestOnly = resolveProjectChecks({ python: { marker: true, ruff: false, mypy: false, pytest: true } });
+    expect(pytestOnly.map((c) => c.key)).toEqual(['test']);
+  });
+
+  it('lets --checks bypass the Python gating', () => {
+    const checks = resolveProjectChecks({ python: { marker: true, ruff: false, mypy: false, pytest: false } }, ['lint']);
+    expect(checks).toEqual([{ key: 'lint', program: 'ruff', args: ['check', '.'] }]);
+  });
+
+  it('returns [] for an empty probe', () => {
+    expect(resolveProjectChecks({})).toEqual([]);
+    expect(resolveProjectChecks({ python: { marker: false, ruff: true, mypy: true, pytest: true } })).toEqual([]);
+  });
+});
+
 describe('parseFailingFiles (INT-2267)', () => {
   it('extracts paths from tsc / vitest / eslint output and dedupes', () => {
     const out = [
@@ -45,6 +106,16 @@ describe('parseFailingFiles (INT-2267)', () => {
   it('ignores absolute paths and non-source text', () => {
     expect(parseFailingFiles('all good, no files here')).toEqual([]);
     expect(parseFailingFiles('/usr/lib/node/x.js failed')).toEqual([]);
+  });
+
+  it('extracts paths from cargo and pytest output (INT-2303)', () => {
+    const out = [
+      'error[E0308]: mismatched types',
+      ' --> src/main.rs:12:9',
+      'FAILED tests/test_auth.py::test_login - AssertionError',
+      'tests/test_auth.py:42: in test_login',
+    ].join('\n');
+    expect(parseFailingFiles(out).sort()).toEqual(['src/main.rs', 'tests/test_auth.py']);
   });
 });
 
@@ -77,6 +148,13 @@ describe('buildFixCheckTask (INT-2267)', () => {
     expect(t).toContain('TS2322');
     expect(t).toContain('npm run typecheck');
     expect(t.toLowerCase()).toContain('do not');
+  });
+
+  it('uses the display command for sh -c config checks (INT-2303)', () => {
+    const cfg: Check[] = [{ key: 'test', program: 'sh', args: ['-c', 'pytest -x'], display: 'pytest -x' }];
+    const t = buildFixCheckTask(area, cfg);
+    expect(t).toContain('Re-run `pytest -x`');
+    expect(t).not.toContain('sh -c');
   });
 });
 

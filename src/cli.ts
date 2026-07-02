@@ -308,7 +308,7 @@ program
   .command('fix')
   .description('Run the CI/test checks and fan a fix-worker out over the failures, re-running until green')
   .option('--path <path>', 'Project path (default: cwd)')
-  .option('--checks <list>', 'Comma list of checks (lint,type,build,test); default: all detected in package.json', (v) => v.split(',').map((s) => s.trim()).filter(Boolean))
+  .option('--checks <list>', 'Comma list of checks (lint,type,build,test or script/config names); default: auto-detected from openswarm.json "checks", package.json scripts, Cargo.toml, or Python config', (v) => v.split(',').map((s) => s.trim()).filter(Boolean))
   .option('--concurrency <n>', 'Max fix workers in flight (default 4)', (v) => parseInt(v, 10))
   .option('--rounds <n>', 'Max check → fix → re-check rounds (default 3)', (v) => parseInt(v, 10))
   .option('--adapter <name>', 'Adapter override for the fix workers')

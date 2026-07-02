@@ -22,11 +22,13 @@ import { startProgressHeartbeat } from './reviewProgress.js';
 import { status, c } from '../support/colors.js';
 import type { AdapterName } from '../adapters/types.js';
 
-/** A resolvable objective check (`npm run lint`, `npm test`, …). */
+/** A resolvable objective check (`npm run lint`, `cargo test`, `pytest`, …). */
 export interface Check {
   key: string;
   program: string;
   args: string[];
+  /** Human-readable command (for prompts) when program+args is a shell wrapper. */
+  display?: string;
 }
 
 /** The result of running one check, with the source files its output blamed. */
@@ -85,6 +87,134 @@ export function readScripts(cwd: string): Record<string, string> {
   }
 }
 
+// ── Multi-language check detection (INT-2303) ───────────────────────────────
+
+/** What `probeProject` found on disk; `resolveProjectChecks` turns it into checks. */
+export interface ProjectProbe {
+  /** `openswarm.json` `"checks"` map (key → shell command) — any language, highest priority. */
+  configChecks?: Record<string, string>;
+  /** `package.json` scripts. */
+  npmScripts?: Record<string, string>;
+  /** `Cargo.toml` present. */
+  cargo?: boolean;
+  /** Python project markers + which tools are configured. */
+  python?: { marker: boolean; ruff: boolean; mypy: boolean; pytest: boolean };
+}
+
+/** Cargo check table. Defaults skip clippy (optional component) and build (subsumed by test). */
+const CARGO_CHECKS: Record<string, Pick<Check, 'program' | 'args'>> = {
+  lint: { program: 'cargo', args: ['clippy', '--no-deps', '--', '-D', 'warnings'] },
+  typecheck: { program: 'cargo', args: ['check', '--all-targets'] },
+  build: { program: 'cargo', args: ['build'] },
+  test: { program: 'cargo', args: ['test'] },
+};
+const CARGO_DEFAULT_ORDER = ['typecheck', 'test'];
+
+/** Python check table. Defaults include only the tools the repo is configured for. */
+const PYTHON_CHECKS: Record<string, Pick<Check, 'program' | 'args'>> = {
+  lint: { program: 'ruff', args: ['check', '.'] },
+  typecheck: { program: 'mypy', args: ['.'] },
+  test: { program: 'pytest', args: [] },
+};
+
+/** Build checks from a canonical-key table. `requested` bypasses the default gating. */
+function resolveTableChecks(
+  table: Record<string, Pick<Check, 'program' | 'args'>>,
+  defaults: string[],
+  requested?: string[],
+): Check[] {
+  const keys = requested?.length ? requested.map((k) => KNOWN_CHECKS[k.trim()] ?? k.trim()) : defaults;
+  const seen = new Set<string>();
+  const checks: Check[] = [];
+  for (const key of keys) {
+    if (seen.has(key) || !(key in table)) continue;
+    seen.add(key);
+    checks.push({ key, ...table[key] });
+  }
+  return checks;
+}
+
+/**
+ * Read the project markers `resolveProjectChecks` needs: `openswarm.json` `checks`,
+ * package.json scripts, `Cargo.toml`, and Python config (pyproject/setup/requirements
+ * plus per-tool markers for ruff / mypy / pytest).
+ */
+export function probeProject(cwd: string): ProjectProbe {
+  const read = (f: string): string => {
+    try {
+      return readFileSync(join(cwd, f), 'utf8');
+    } catch {
+      return '';
+    }
+  };
+  const has = (f: string): boolean => existsSync(join(cwd, f));
+
+  let configChecks: Record<string, string> | undefined;
+  try {
+    const meta = JSON.parse(read('openswarm.json') || '{}');
+    if (meta.checks && typeof meta.checks === 'object' && !Array.isArray(meta.checks)) {
+      const entries = Object.entries(meta.checks).filter((e): e is [string, string] => typeof e[1] === 'string');
+      if (entries.length) configChecks = Object.fromEntries(entries);
+    }
+  } catch {
+    // tolerate a malformed openswarm.json — fall through to auto-detection
+  }
+
+  const pyproject = read('pyproject.toml');
+  const setupCfg = read('setup.cfg');
+  return {
+    configChecks,
+    npmScripts: readScripts(cwd),
+    cargo: has('Cargo.toml'),
+    python: {
+      marker: !!pyproject || has('setup.py') || !!setupCfg || has('requirements.txt'),
+      ruff: pyproject.includes('[tool.ruff') || has('ruff.toml') || has('.ruff.toml'),
+      mypy: pyproject.includes('[tool.mypy') || setupCfg.includes('[mypy]') || has('mypy.ini') || has('.mypy.ini'),
+      pytest:
+        pyproject.includes('[tool.pytest') || has('pytest.ini') || has('conftest.py') || has('tests') || has('test'),
+    },
+  };
+}
+
+/**
+ * Resolve checks across ecosystems, first non-empty source wins:
+ * openswarm.json `checks` (any language, explicit) → package.json scripts →
+ * Cargo.toml → Python markers. Mixed repos disambiguate via openswarm.json. Pure.
+ */
+export function resolveProjectChecks(probe: ProjectProbe, requested?: string[]): Check[] {
+  const cfg = probe.configChecks ?? {};
+  if (Object.keys(cfg).length) {
+    const keys = requested?.length
+      ? requested.map((k) => (k.trim() in cfg ? k.trim() : KNOWN_CHECKS[k.trim()] ?? k.trim()))
+      : Object.keys(cfg);
+    const seen = new Set<string>();
+    const checks: Check[] = [];
+    for (const key of keys) {
+      if (seen.has(key) || !(key in cfg)) continue;
+      seen.add(key);
+      checks.push({ key, program: 'sh', args: ['-c', cfg[key]], display: cfg[key] });
+    }
+    if (checks.length) return checks;
+  }
+
+  const fromNpm = probe.npmScripts ? resolveChecks(probe.npmScripts, requested) : [];
+  if (fromNpm.length) return fromNpm;
+
+  if (probe.cargo) {
+    const fromCargo = resolveTableChecks(CARGO_CHECKS, CARGO_DEFAULT_ORDER, requested);
+    if (fromCargo.length) return fromCargo;
+  }
+
+  if (probe.python?.marker) {
+    const py = probe.python;
+    const defaults = [py.ruff ? 'lint' : '', py.mypy ? 'typecheck' : '', py.pytest ? 'test' : ''].filter(Boolean);
+    const fromPython = resolveTableChecks(PYTHON_CHECKS, defaults, requested);
+    if (fromPython.length) return fromPython;
+  }
+
+  return [];
+}
+
 const SOURCE_EXT = 'tsx?|jsx?|mjs|cjs|py|rs|go|java|kt|kts|scala|rb|php|swift|c|cc|cpp|cxx|h|hpp|cs|ex|exs|lua|jl|zig|nim';
 const FILE_RE = new RegExp(String.raw`(?:^|[\s('"\`])((?:[\w.\-]+\/)*[\w.\-]+\.(?:${SOURCE_EXT}))`, 'g');
 
@@ -139,7 +269,7 @@ export function deriveFixAreas(failing: CheckOutcome[], concurrency: number, max
 
 /** Build the fix worker's task: the failing output + a hard "verify, don't cheat" rule. */
 export function buildFixCheckTask(area: FixArea, checks: Check[]): string {
-  const verify = checks.map((c) => `${c.program} ${c.args.join(' ')}`).join(' && ');
+  const verify = checks.map((c) => c.display ?? [c.program, ...c.args].join(' ')).join(' && ');
   return [
     `The project's checks are failing. Apply the MINIMAL edits needed to make them pass.`,
     area.files.length
@@ -256,7 +386,7 @@ export async function runFixCommand(opts: FixOptions = {}, deps: FixDeps = {}): 
   const exists = deps.exists ?? ((p, base) => existsSync(join(base, p)));
   const runCheck = deps.runCheck ?? defaultRunCheck;
   const runFixWorker = deps.runFixWorker ?? ((area, checks, onLog) => defaultRunFixWorker(area, checks, cwd, opts, onLog));
-  const checks = deps.checks ?? resolveChecks(readScripts(cwd), opts.checks);
+  const checks = deps.checks ?? resolveProjectChecks(probeProject(cwd), opts.checks);
   const recordOutcome =
     deps.recordOutcome ??
     (async (info) => {
@@ -269,7 +399,12 @@ export async function runFixCommand(opts: FixOptions = {}, deps: FixDeps = {}): 
     });
 
   if (!checks.length) {
-    log(status.warn('No checks resolved — add lint/typecheck/build/test scripts to package.json, or pass --checks.'));
+    log(
+      status.warn(
+        'No checks resolved — no package.json scripts, Cargo.toml, or Python tool config detected. ' +
+          'Add lint/typecheck/build/test scripts, define "checks" in openswarm.json (key → shell command), or pass --checks.',
+      ),
+    );
     return { green: false, rounds: [], reason: 'no-checks' };
   }
 

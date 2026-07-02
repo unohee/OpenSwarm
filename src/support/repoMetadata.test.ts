@@ -45,6 +45,15 @@ describe('loadRepoMetadata', () => {
     expect(meta?.linear?.teamKey).toBe('RES');
   });
 
+  it('parses the checks map (INT-2303)', async () => {
+    writeFileSync(
+      join(dir, REPO_METADATA_FILENAME),
+      JSON.stringify({ schemaVersion: 1, checks: { lint: 'ruff check .', test: 'pytest -x' } }),
+    );
+    const meta = await loadRepoMetadata(dir);
+    expect(meta?.checks).toEqual({ lint: 'ruff check .', test: 'pytest -x' });
+  });
+
   it('throws RepoMetadataError on invalid JSON', async () => {
     writeFileSync(join(dir, REPO_METADATA_FILENAME), '{ not json');
     await expect(loadRepoMetadata(dir)).rejects.toBeInstanceOf(RepoMetadataError);
