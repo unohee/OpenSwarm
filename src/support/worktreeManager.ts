@@ -126,6 +126,113 @@ export async function createWorktree(
   return { worktreePath, branchName, originalPath: repoPath, issueId };
 }
 
+// File-overlap report (INT-2388 defect #3 / INT-2392)
+//
+// Parallel swarm branches don't see each other's changes, so two efforts edit
+// the same files and diverge (self-demonstrated on INT-2388). When a PR is
+// created, surface which open PRs / active swarm/* branches touch the same
+// files — advisory only, never blocks PR creation.
+
+export interface BranchScope {
+  /** Human label, e.g. "PR #206 (feat/int-2389-…)". */
+  label: string;
+  /** Files this scope changes relative to main. */
+  files: string[];
+}
+
+export interface FileOverlap {
+  label: string;
+  files: string[];
+}
+
+/** Pure: intersect this branch's changed files with each other scope's files. */
+export function computeFileOverlaps(selfFiles: string[], others: BranchScope[]): FileOverlap[] {
+  const selfSet = new Set(selfFiles);
+  const out: FileOverlap[] = [];
+  for (const o of others) {
+    const shared = o.files.filter(f => selfSet.has(f));
+    if (shared.length > 0) out.push({ label: o.label, files: shared });
+  }
+  return out;
+}
+
+/** Pure: render overlaps as a PR-body markdown section (empty string if none). */
+export function formatOverlapReport(overlaps: FileOverlap[]): string {
+  if (overlaps.length === 0) return '';
+  const lines = [
+    '## ⚠️ File overlap with in-flight work',
+    '',
+    'This branch changes files that other open PRs / active branches also touch. Coordinate before merging to avoid divergent parallel edits (INT-2388 #3):',
+    '',
+  ];
+  for (const o of overlaps) {
+    const shown = o.files.slice(0, 8).map(f => `\`${f}\``).join(', ');
+    const more = o.files.length > 8 ? ` (+${o.files.length - 8} more)` : '';
+    lines.push(`- **${o.label}** — ${o.files.length} file(s): ${shown}${more}`);
+  }
+  return lines.join('\n');
+}
+
+/** Split git/gh newline output into a trimmed, non-empty list. */
+function toLines(out: string): string[] {
+  return out.split('\n').map(s => s.trim()).filter(Boolean);
+}
+
+/**
+ * Collect file scopes of open PRs and active swarm/* branches (excluding self).
+ * Each source is independently guarded — a gh/git hiccup drops that source, not
+ * the whole report.
+ */
+async function collectActiveScopes(worktreePath: string, selfBranch: string): Promise<BranchScope[]> {
+  const scopes: BranchScope[] = [];
+  const prBranches = new Set<string>();
+
+  // Open PRs (exclude self).
+  try {
+    const raw = await gh(worktreePath, 'pr', 'list', '--state', 'open', '--json', 'number,headRefName', '--limit', '50');
+    const prs: { number: number; headRefName: string }[] = JSON.parse(raw || '[]');
+    for (const pr of prs) {
+      prBranches.add(pr.headRefName);
+      if (pr.headRefName === selfBranch) continue;
+      try {
+        const files = toLines(await gh(worktreePath, 'pr', 'diff', String(pr.number), '--name-only'));
+        if (files.length) scopes.push({ label: `PR #${pr.number} (${pr.headRefName})`, files });
+      } catch { /* skip this PR */ }
+    }
+  } catch { /* gh unavailable — skip PR scopes */ }
+
+  // Active swarm/* branches without their own PR yet (exclude self + PR'd branches).
+  try {
+    const branches = toLines(await git(worktreePath, 'branch', '-r', '--list', 'origin/swarm/*'))
+      .map(b => b.replace(/^origin\//, ''));
+    for (const b of branches) {
+      if (b === selfBranch || prBranches.has(b)) continue;
+      try {
+        const files = toLines(await git(worktreePath, 'diff', '--name-only', `origin/main...origin/${b}`));
+        if (files.length) scopes.push({ label: `branch origin/${b}`, files });
+      } catch { /* skip this branch */ }
+    }
+  } catch { /* git unavailable — skip branch scopes */ }
+
+  return scopes;
+}
+
+/**
+ * Build the PR-body overlap section for this worktree branch. Returns '' when
+ * there is no overlap or on any error (advisory — must not block PR creation).
+ */
+async function buildFileOverlapSection(worktreePath: string, selfBranch: string): Promise<string> {
+  try {
+    const selfFiles = toLines(await git(worktreePath, 'diff', '--name-only', 'origin/main...HEAD'));
+    if (selfFiles.length === 0) return '';
+    const others = await collectActiveScopes(worktreePath, selfBranch);
+    return formatOverlapReport(computeFileOverlaps(selfFiles, others));
+  } catch (err) {
+    console.warn('[Worktree] File-overlap report skipped:', err);
+    return '';
+  }
+}
+
 /** Commit changes + push + gh pr create */
 export async function commitAndCreatePR(
   info: WorktreeInfo,
@@ -179,10 +286,14 @@ export async function commitAndCreatePR(
     return existing.trim();
   }
 
+  // Compute file overlap vs other in-flight work (advisory; never blocks). (INT-2392)
+  const overlapSection = await buildFileOverlapSection(worktreePath, branchName);
+
   // Create PR
   const prBody = [
     '## Summary',
     description || `${issueIdentifier}: ${title}`,
+    ...(overlapSection ? ['', overlapSection] : []),
     '',
     '## Linear',
     `Closes ${issueIdentifier}`,
