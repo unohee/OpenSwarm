@@ -196,6 +196,9 @@ export class AutonomousRunner {
       cooldownSeconds: config.cooldownSeconds,
       dryRun: config.dryRun,
       includeBacklog: config.includeBacklog,
+      // Same-project parallel selection only makes sense when the scheduler can
+      // actually run those tasks concurrently (worktree isolation). (INT-2318)
+      sameProjectParallel: (config.allowSameProjectConcurrent ?? true) && (config.worktreeMode ?? false),
     });
 
     // Initialize TaskScheduler

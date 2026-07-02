@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isAllowedProjectPath, isUmbrellaIssue, type TaskItem } from './decisionEngine.js';
+import { isAllowedProjectPath, isUmbrellaIssue, selectTasksRoundRobin, type TaskItem } from './decisionEngine.js';
 
 // INT-1810 R2: parent/EPIC issues are umbrellas, not executable work. INT-1702 (tracking,
 // decomposed into sub-issues) and KT-300 ([EPIC] …) were wrongly picked for the worker.
@@ -44,5 +44,62 @@ describe('isAllowedProjectPath', () => {
 
   it('rejects broader parent paths when only a child repo is allowed', () => {
     expect(isAllowedProjectPath('/tmp', ['/tmp/allowed-repo'])).toBe(false);
+  });
+});
+
+describe('selectTasksRoundRobin (INT-2318)', () => {
+  const t = (id: string, project: string): TaskItem =>
+    task({ id, linearProject: { id: project, name: project } as TaskItem['linearProject'] });
+  const ok = () => true;
+  const wf = async () => ({}) as Awaited<ReturnType<Parameters<typeof selectTasksRoundRobin>[4]>>;
+
+  const sorted = [t('a1', 'A'), t('a2', 'A'), t('a3', 'A'), t('b1', 'B'), t('b2', 'B')];
+
+  it('one task per project per cycle when sameProjectParallel is off', async () => {
+    const { selected } = await selectTasksRoundRobin(sorted, 6, false, ok, wf);
+    expect(selected.map((s) => s.task.id)).toEqual(['a1', 'b1']);
+  });
+
+  it('fills remaining slots round-robin across projects when on', async () => {
+    const { selected } = await selectTasksRoundRobin(sorted, 6, true, ok, wf);
+    // pass 1: a1, b1 · pass 2: a2, b2 · pass 3: a3 — no project monopolizes early slots
+    expect(selected.map((s) => s.task.id)).toEqual(['a1', 'b1', 'a2', 'b2', 'a3']);
+  });
+
+  it('respects maxTasks', async () => {
+    const { selected } = await selectTasksRoundRobin(sorted, 3, true, ok, wf);
+    expect(selected.map((s) => s.task.id)).toEqual(['a1', 'b1', 'a2']);
+  });
+
+  it('counts rejected tasks as skipped and moves on within the same pass', async () => {
+    const { selected, skippedCount } = await selectTasksRoundRobin(
+      sorted, 6, true, (task) => task.id !== 'a1', wf,
+    );
+    expect(selected.map((s) => s.task.id)).toEqual(['a2', 'b1', 'a3', 'b2']);
+    expect(skippedCount).toBe(1);
+  });
+
+  it('counts workflow-mapping failures as skipped and never retries them', async () => {
+    let b1Calls = 0;
+    const { selected, skippedCount } = await selectTasksRoundRobin(
+      sorted, 6, true, ok,
+      async (task) => {
+        if (task.id === 'b1') { b1Calls++; return null; }
+        return wf();
+      },
+    );
+    expect(selected.map((s) => s.task.id)).toEqual(['a1', 'b2', 'a2', 'a3']);
+    expect(skippedCount).toBe(1);
+    expect(b1Calls).toBe(1);
+  });
+
+  it('falls back to projectPath then task id as the project key', async () => {
+    const byPath = [
+      task({ id: 'p1', projectPath: '/repo/x' }),
+      task({ id: 'p2', projectPath: '/repo/x' }),
+      task({ id: 'keyless' }),
+    ];
+    const { selected } = await selectTasksRoundRobin(byPath, 6, false, ok, wf);
+    expect(selected.map((s) => s.task.id)).toEqual(['p1', 'keyless']);
   });
 });

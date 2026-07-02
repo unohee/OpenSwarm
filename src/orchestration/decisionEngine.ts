@@ -201,6 +201,18 @@ export interface DecisionEngineConfig {
    * actionable, so moving an issue to Backlog stops the daemon picking it up.
    */
   includeBacklog?: boolean;
+
+  /**
+   * Allow selecting multiple tasks from the same project in one cycle
+   * (round-robin fill: every pass adds at most one task per project, so no
+   * project can monopolize the slots). Wire this from
+   * `allowSameProjectConcurrent && worktreeMode` — the scheduler only runs
+   * same-project tasks concurrently under worktree isolation, and the
+   * heartbeat's knowledge-graph conflict detection defers file-overlapping
+   * tasks within a project. Default false (one task per project per cycle).
+   * (INT-2318)
+   */
+  sameProjectParallel?: boolean;
 }
 
 // Constants
@@ -253,6 +265,67 @@ export function isActionableLinearState(linearState: string | undefined, include
   if (!linearState) return true; // unknown state → don't gate (conservative)
   if (!NON_ACTIONABLE_LINEAR_STATES.has(linearState)) return true;
   return linearState === 'Backlog' && includeBacklog === true;
+}
+
+/**
+ * Select up to `maxTasks` from the priority-sorted list, round-robin across
+ * projects: every pass adds at most one task per project, so no project can
+ * monopolize the slots and all bots stay active. With `sameProjectParallel`
+ * (scheduler worktree isolation + KG conflict detection downstream) later
+ * passes fill the remaining slots with additional tasks from the same
+ * projects; without it, selection stops after the first pass (one task per
+ * project per cycle). Tasks failing `validate`/`toWorkflow` are counted as
+ * skipped and never retried in later passes. Pure orchestration (deps
+ * injected) — unit-tested directly. (INT-2318)
+ */
+export async function selectTasksRoundRobin(
+  sorted: TaskItem[],
+  maxTasks: number,
+  sameProjectParallel: boolean,
+  validate: (task: TaskItem) => boolean,
+  toWorkflow: (task: TaskItem) => Promise<WorkflowConfig | null>,
+): Promise<{ selected: Array<{ task: TaskItem; workflow: WorkflowConfig }>; skippedCount: number }> {
+  const selected: Array<{ task: TaskItem; workflow: WorkflowConfig }> = [];
+  const seenIds = new Set<string>();
+  let skippedCount = 0;
+
+  const maxPasses = sameProjectParallel ? Math.max(1, maxTasks) : 1;
+  for (let pass = 0; pass < maxPasses && selected.length < maxTasks; pass++) {
+    const projectsThisPass = new Set<string>();
+    let addedThisPass = 0;
+
+    for (const task of sorted) {
+      if (selected.length >= maxTasks) break;
+      if (seenIds.has(task.id)) continue;
+
+      const projectKey = task.linearProject?.id || task.projectPath || task.id;
+      if (projectsThisPass.has(projectKey)) {
+        continue; // already picked a task for this project this pass
+      }
+
+      if (!validate(task)) {
+        skippedCount++;
+        seenIds.add(task.id);
+        continue;
+      }
+
+      const workflow = await toWorkflow(task);
+      if (!workflow) {
+        skippedCount++;
+        seenIds.add(task.id);
+        continue;
+      }
+
+      selected.push({ task, workflow });
+      seenIds.add(task.id);
+      projectsThisPass.add(projectKey);
+      addedThisPass++;
+    }
+
+    if (addedThisPass === 0) break; // nothing left to pick
+  }
+
+  return { selected, skippedCount };
 }
 
 // Engine State
@@ -462,39 +535,15 @@ export class DecisionEngine {
     const downstream = computeDownstreamCounts(tasks);
     const sorted = this.prioritizeTasks(executableTasks, downstream);
 
-    // 6. Select multiple tasks. One per project per cycle: the scheduler runs at
-    // most one worker per project, so selecting several from the same project just
-    // queues them and starves other projects. Spreading across projects keeps all
-    // bots active (the deferred same-project tasks get picked next cycle).
-    const selectedTasks: Array<{ task: TaskItem; workflow: WorkflowConfig }> = [];
-    const selectedProjects = new Set<string>();
-    let skippedCount = 0;
-
-    for (const task of sorted) {
-      if (selectedTasks.length >= maxTasks) break;
-
-      const projectKey = task.linearProject?.id || task.projectPath || task.id;
-      if (selectedProjects.has(projectKey)) {
-        continue; // already picked a task for this project this cycle
-      }
-
-      // Scope validation
-      const scopeCheck = this.validateScope(task);
-      if (!scopeCheck.valid) {
-        skippedCount++;
-        continue;
-      }
-
-      // Workflow mapping
-      const workflow = await this.taskToWorkflow(task);
-      if (!workflow) {
-        skippedCount++;
-        continue;
-      }
-
-      selectedTasks.push({ task, workflow });
-      selectedProjects.add(projectKey);
-    }
+    // 6. Select multiple tasks (round-robin across projects — see
+    // selectTasksRoundRobin). (INT-2318)
+    const { selected: selectedTasks, skippedCount } = await selectTasksRoundRobin(
+      sorted,
+      maxTasks,
+      !!this.config.sameProjectParallel,
+      (task) => this.validateScope(task).valid,
+      (task) => this.taskToWorkflow(task),
+    );
 
     if (selectedTasks.length === 0) {
       return {
