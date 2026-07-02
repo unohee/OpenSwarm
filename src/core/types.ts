@@ -428,6 +428,8 @@ export interface PipelineGuardsConfig {
   bsDetector: boolean;
   /** Block dependency/import failure fixes that spoof package identity (INT-2388 #1). */
   dependencyAntiPatternCheck?: boolean;
+  /** Block self-referential contract tests without producer/consumer evidence (INT-2388 #2). */
+  contractEvidenceCheck?: boolean;
   /** Flag newly-added source modules that nothing imports/calls (INT-2388 #5). */
   deadModuleCheck?: boolean;
   /** Flag reformat-only files and oversized diffs — scope creep (INT-2388 #6). */

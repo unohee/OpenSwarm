@@ -223,6 +223,7 @@ const PipelineGuardsConfigSchema = z.object({
   registryCheck: z.boolean().optional(),
   bsDetector: z.boolean().optional(),
   dependencyAntiPatternCheck: z.boolean().optional(),
+  contractEvidenceCheck: z.boolean().optional(),
   deadModuleCheck: z.boolean().optional(),
   reformatCheck: z.boolean().optional(),
 }).optional();

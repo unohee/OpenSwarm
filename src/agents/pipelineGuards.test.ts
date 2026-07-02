@@ -87,6 +87,228 @@ describe('pipelineGuards — INT-2388 deterministic guards', () => {
     });
   });
 
+  describe('contractEvidenceCheck', () => {
+    it('blocks a self-referential contract literal introduced only in a test', async () => {
+      writeFileSync(
+        join(repo, 'contract.test.ts'),
+        "import { expect, it } from 'vitest';\nit('uses key', () => expect('foreign_summary:').toBe('foreign_summary:'));\n",
+      );
+      const res = await runGuards(
+        mockWorker(['contract.test.ts']),
+        repo,
+        { contractEvidenceCheck: true },
+      );
+      const issues = guardIssues(res, 'contractEvidence');
+      expect(issues.some(i => i.includes('foreign_summary:'))).toBe(true);
+      expect(res.allPassed).toBe(false);
+    });
+
+    it('allows a contract literal that already exists in HEAD producer code', async () => {
+      writeFileSync(join(repo, 'publisher.ts'), "export const KEY_PREFIX = 'stockapi:foreign_summary:';\n");
+      execFileSync('git', ['add', 'publisher.ts'], { cwd: repo });
+      execFileSync('git', ['commit', '-m', 'add publisher contract'], { cwd: repo });
+
+      writeFileSync(
+        join(repo, 'contract.test.ts'),
+        "import { expect, it } from 'vitest';\nit('uses real key', () => expect('stockapi:foreign_summary:').toBeTruthy());\n",
+      );
+      const res = await runGuards(
+        mockWorker(['contract.test.ts']),
+        repo,
+        { contractEvidenceCheck: true },
+      );
+      const issues = guardIssues(res, 'contractEvidence');
+      expect(issues.length).toBe(0);
+      expect(res.allPassed).toBe(true);
+    });
+
+    it('allows contract evidence from HEAD JSON schema files', async () => {
+      writeFileSync(join(repo, 'schema.json'), '{"required":["foreign_net_buy"]}\n');
+      execFileSync('git', ['add', 'schema.json'], { cwd: repo });
+      execFileSync('git', ['commit', '-m', 'add wire schema'], { cwd: repo });
+
+      writeFileSync(
+        join(repo, 'contract.test.ts'),
+        "import { expect, it } from 'vitest';\nit('uses schema field', () => expect('foreign_net_buy').toBeTruthy());\n",
+      );
+      const res = await runGuards(
+        mockWorker(['contract.test.ts']),
+        repo,
+        { contractEvidenceCheck: true },
+      );
+      const issues = guardIssues(res, 'contractEvidence');
+      expect(issues.length).toBe(0);
+      expect(res.allPassed).toBe(true);
+    });
+
+    it('allows a new contract literal when worker evidence cites a measured command sample', async () => {
+      writeFileSync(
+        join(repo, 'contract.test.ts'),
+        "import { expect, it } from 'vitest';\nit('uses measured key', () => expect('stockapi:foreign_summary:').toBeTruthy());\n",
+      );
+      const res = await runGuards(
+        {
+          ...mockWorker(['contract.test.ts']),
+          output: 'redis-cli measured output sample: stockapi:foreign_summary:005930 -> {"ok":true}',
+        },
+        repo,
+        { contractEvidenceCheck: true },
+      );
+      const issues = guardIssues(res, 'contractEvidence');
+      expect(issues.length).toBe(0);
+      expect(res.allPassed).toBe(true);
+    });
+
+    it('does not accept producer code added in the same diff as independent evidence', async () => {
+      mkdirSync(join(repo, 'src', 'cache'), { recursive: true });
+      writeFileSync(join(repo, 'src', 'cache', 'foreign.py'), "KEY_PREFIX = 'stockapi:foreign_summary:'\n");
+      writeFileSync(
+        join(repo, 'contract.test.ts'),
+        "import { expect, it } from 'vitest';\nit('uses same-diff key', () => expect('stockapi:foreign_summary:').toBeTruthy());\n",
+      );
+      const res = await runGuards(
+        {
+          ...mockWorker(['src/cache/foreign.py', 'contract.test.ts']),
+          output: 'Evidence: src/cache/foreign.py:1 contains stockapi:foreign_summary:',
+        },
+        repo,
+        { contractEvidenceCheck: true },
+      );
+      const issues = guardIssues(res, 'contractEvidence');
+      expect(issues.some(i => i.includes('stockapi:foreign_summary:'))).toBe(true);
+      expect(res.allPassed).toBe(false);
+    });
+
+    it('does not accept same-diff producer evidence with dot-relative or absolute paths', async () => {
+      mkdirSync(join(repo, 'src', 'cache'), { recursive: true });
+      writeFileSync(join(repo, 'src', 'cache', 'foreign.py'), "KEY_PREFIX = 'stockapi:foreign_summary:'\n");
+      writeFileSync(
+        join(repo, 'contract.test.ts'),
+        "import { expect, it } from 'vitest';\nit('uses same-diff key', () => expect('stockapi:foreign_summary:').toBeTruthy());\n",
+      );
+
+      for (const citedPath of ['./src/cache/foreign.py', join(repo, 'src', 'cache', 'foreign.py')]) {
+        const res = await runGuards(
+          {
+            ...mockWorker(['src/cache/foreign.py', 'contract.test.ts']),
+            output: `Evidence: ${citedPath}:1 contains stockapi:foreign_summary:`,
+          },
+          repo,
+          { contractEvidenceCheck: true },
+        );
+        const issues = guardIssues(res, 'contractEvidence');
+        expect(issues.some(i => i.includes('stockapi:foreign_summary:'))).toBe(true);
+        expect(res.allPassed).toBe(false);
+      }
+    });
+
+    it('does not accept project-external file references as contract evidence', async () => {
+      const outside = join(tmpdir(), `openswarm-outside-contract-${process.pid}-${Date.now()}.py`);
+      writeFileSync(outside, "KEY_PREFIX = 'stockapi:foreign_summary:'\n");
+      writeFileSync(
+        join(repo, 'contract.test.ts'),
+        "import { expect, it } from 'vitest';\nit('uses key', () => expect('stockapi:foreign_summary:').toBeTruthy());\n",
+      );
+      try {
+        const res = await runGuards(
+          {
+            ...mockWorker(['contract.test.ts']),
+            output: `Evidence: ${outside}:1 contains stockapi:foreign_summary:`,
+          },
+          repo,
+          { contractEvidenceCheck: true },
+        );
+        const issues = guardIssues(res, 'contractEvidence');
+        expect(issues.some(i => i.includes('stockapi:foreign_summary:'))).toBe(true);
+        expect(res.allPassed).toBe(false);
+      } finally {
+        rmSync(outside, { force: true });
+      }
+    });
+
+    it('does not accept parent-relative external file references as contract evidence', async () => {
+      const parentOutside = join(repo, '..', `outside-contract-${process.pid}-${Date.now()}.py`);
+      writeFileSync(parentOutside, "KEY_PREFIX = 'stockapi:foreign_summary:'\n");
+      writeFileSync(
+        join(repo, 'contract.test.ts'),
+        "import { expect, it } from 'vitest';\nit('uses key', () => expect('stockapi:foreign_summary:').toBeTruthy());\n",
+      );
+      try {
+        const res = await runGuards(
+          {
+            ...mockWorker(['contract.test.ts']),
+            output: `Evidence: ../${parentOutside.split('/').pop()}:1 contains stockapi:foreign_summary:`,
+          },
+          repo,
+          { contractEvidenceCheck: true },
+        );
+        const issues = guardIssues(res, 'contractEvidence');
+        expect(issues.some(i => i.includes('stockapi:foreign_summary:'))).toBe(true);
+        expect(res.allPassed).toBe(false);
+      } finally {
+        rmSync(parentOutside, { force: true });
+      }
+    });
+
+    it('does not treat HEAD test-only literals as producer evidence', async () => {
+      writeFileSync(
+        join(repo, 'old-contract.test.ts'),
+        "import { expect, it } from 'vitest';\nit('old invented key', () => expect('invented_prefix:').toBeTruthy());\n",
+      );
+      execFileSync('git', ['add', 'old-contract.test.ts'], { cwd: repo });
+      execFileSync('git', ['commit', '-m', 'add old test-only contract'], { cwd: repo });
+
+      writeFileSync(
+        join(repo, 'contract.test.ts'),
+        "import { expect, it } from 'vitest';\nit('reuses invented key', () => expect('invented_prefix:').toBeTruthy());\n",
+      );
+      const res = await runGuards(
+        mockWorker(['contract.test.ts']),
+        repo,
+        { contractEvidenceCheck: true },
+      );
+      const issues = guardIssues(res, 'contractEvidence');
+      expect(issues.some(i => i.includes('invented_prefix:'))).toBe(true);
+      expect(res.allPassed).toBe(false);
+    });
+
+    it('does not accept vague worker output as contract evidence', async () => {
+      writeFileSync(
+        join(repo, 'contract.test.ts'),
+        "import { expect, it } from 'vitest';\nit('uses key', () => expect('stockapi:foreign_summary:').toBeTruthy());\n",
+      );
+      const res = await runGuards(
+        {
+          ...mockWorker(['contract.test.ts']),
+          output: 'The producer uses stockapi:foreign_summary: and the consumer is aligned.',
+        },
+        repo,
+        { contractEvidenceCheck: true },
+      );
+      const issues = guardIssues(res, 'contractEvidence');
+      expect(issues.some(i => i.includes('stockapi:foreign_summary:'))).toBe(true);
+      expect(res.allPassed).toBe(false);
+    });
+
+    it('does not accept the changed test file itself as contract evidence', async () => {
+      writeFileSync(
+        join(repo, 'contract.test.ts'),
+        "import { expect, it } from 'vitest';\nit('uses key', () => expect('stockapi:foreign_summary:').toBeTruthy());\n",
+      );
+      const res = await runGuards(
+        {
+          ...mockWorker(['contract.test.ts']),
+          output: 'Evidence: contract.test.ts:2 contains stockapi:foreign_summary:',
+        },
+        repo,
+        { contractEvidenceCheck: true },
+      );
+      const issues = guardIssues(res, 'contractEvidence');
+      expect(issues.some(i => i.includes('stockapi:foreign_summary:'))).toBe(true);
+      expect(res.allPassed).toBe(false);
+    });
+  });
+
   describe('deadModuleCheck', () => {
     it('flags a new source module that nothing imports', async () => {
       writeFileSync(join(repo, 'orphanwidget.ts'), 'export function orphanwidget() { return 1; }\n');

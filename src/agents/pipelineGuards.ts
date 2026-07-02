@@ -5,7 +5,7 @@
 
 import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { isAbsolute, join, normalize, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import type { WorkerResult } from './agentPair.js';
 import type { PipelineGuardsConfig } from '../core/types.js';
@@ -314,6 +314,10 @@ const VERSION_SPOOF_RE =
   /(^|\n)\s*(?:export\s+const\s+)?__version__\s*[:=]/;
 const PACKAGE_SCAFFOLD_RE =
   /(^|\/)(package\.json|pyproject\.toml|setup\.py|setup\.cfg)$/;
+const EVIDENCE_FILE_REF_RE =
+  /((?:\/|\.\/)?[\w./-]+\.(?:ts|tsx|js|jsx|py|go|rs|java|yaml|yml|json)):(\d+)\b/g;
+const CONTRACT_EVIDENCE_FILE_RE =
+  /\.(ts|tsx|js|jsx|py|go|rs|java|yaml|yml|json)$/;
 
 async function getAddedLinesForFile(projectPath: string, filePath: string, isNew: boolean): Promise<string> {
   try {
@@ -338,6 +342,95 @@ async function getAddedLinesForFile(projectPath: string, filePath: string, isNew
   } catch {
     return '';
   }
+}
+
+function extractStringLiterals(text: string): string[] {
+  const literals = new Set<string>();
+  const re = /['"`]([^'"`\n]{3,120})['"`]/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text))) {
+    literals.add(match[1]);
+  }
+  return [...literals];
+}
+
+function isContractLiteral(literal: string, addedLines: string): boolean {
+  if (literal.startsWith('/api/')) return true;
+  if (/^[a-zA-Z0-9_.-]{3,}:/.test(literal)) return true;
+  if (
+    /^[a-z][a-z0-9]+(?:_[a-z0-9]+)+$/.test(literal) &&
+    /\b(expect|assert|field|schema|payload|json|contract)\b/i.test(addedLines)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+async function literalExistsInHeadSource(projectPath: string, literal: string): Promise<boolean> {
+  try {
+    const { stdout } = await execFileAsync(
+      'git',
+      ['grep', '-F', '-l', literal, 'HEAD', '--', '.'],
+      { cwd: projectPath, timeout: 10_000 },
+    );
+    return stdout
+      .split('\n')
+      .filter(Boolean)
+      .map(line => line.replace(/^HEAD:/, ''))
+      .some(file => CONTRACT_EVIDENCE_FILE_RE.test(file) && !TEST_FILE_RE.test(file));
+  } catch {
+    return false;
+  }
+}
+
+function normalizeEvidencePath(projectPath: string, filePath: string): string | null {
+  const cleaned = normalize(filePath).replace(/\\/g, '/').replace(/^\.\//, '');
+  const absolute = isAbsolute(cleaned) ? cleaned : resolve(projectPath, cleaned);
+  const rel = normalize(relative(projectPath, absolute)).replace(/\\/g, '/');
+  if (rel.startsWith('../') || rel === '..' || isAbsolute(rel)) return null;
+  return rel;
+}
+
+async function hasExternalContractEvidence(
+  workerResult: WorkerResult,
+  projectPath: string,
+  literal: string,
+  excludedFiles: Set<string>,
+): Promise<boolean> {
+  const text = `${workerResult.summary}\n${workerResult.output.slice(0, 8000)}\n${workerResult.error ?? ''}`;
+  const fileRefs = new Map<string, Set<number>>();
+  let match: RegExpExecArray | null;
+  while ((match = EVIDENCE_FILE_REF_RE.exec(text))) {
+    const normalized = normalizeEvidencePath(projectPath, match[1]);
+    if (!normalized) continue;
+    const lineNo = parseInt(match[2], 10);
+    const lines = fileRefs.get(normalized) ?? new Set<number>();
+    if (Number.isFinite(lineNo)) lines.add(lineNo);
+    fileRefs.set(normalized, lines);
+  }
+
+  for (const [file, lineNos] of fileRefs) {
+    if (excludedFiles.has(file) || !CONTRACT_EVIDENCE_FILE_RE.test(file) || TEST_FILE_RE.test(file)) continue;
+    try {
+      const content = await readFile(join(projectPath, file), 'utf8');
+      const lines = content.split('\n');
+      for (const lineNo of lineNos) {
+        const start = Math.max(0, lineNo - 3);
+        const end = Math.min(lines.length, lineNo + 2);
+        if (lines.slice(start, end).some(line => line.includes(literal))) return true;
+      }
+    } catch {
+      // Missing cited files do not count as evidence.
+    }
+  }
+
+  return text
+    .split('\n')
+    .some(line =>
+      line.includes(literal) &&
+      /\b(redis-cli|curl)\b/i.test(line) &&
+      /\b(output|sample|measured|actual|returned|observed)\b/i.test(line),
+    );
 }
 
 /**
@@ -446,6 +539,46 @@ async function runDependencyAntiPatternGuard(
 }
 
 /**
+ * Contract evidence guard (INT-2388 defect #2): a test that introduces a Redis
+ * key prefix, API route, or wire-field literal proves nothing if that literal is
+ * only invented inside the same diff. For new/changed tests, require the literal
+ * to already exist in HEAD or be backed by worker evidence (file:line, producer,
+ * consumer, redis-cli/curl/measured output).
+ */
+async function runContractEvidenceGuard(
+  workerResult: WorkerResult,
+  projectPath: string,
+): Promise<GuardResult> {
+  const guard = 'contractEvidence';
+  const issues: string[] = [];
+
+  try {
+    const details = await getWorkingDiffDetail(projectPath);
+    const changedTests = details.filter(d => TEST_FILE_RE.test(d.file));
+    const changedFiles = new Set(details.map(d => d.file));
+
+    for (const d of changedTests) {
+      const addedLines = await getAddedLinesForFile(projectPath, d.file, d.isNew);
+      const literals = extractStringLiterals(addedLines)
+        .filter(literal => isContractLiteral(literal, addedLines));
+
+      for (const literal of literals) {
+        const knownInHead = await literalExistsInHeadSource(projectPath, literal);
+        if (knownInHead || await hasExternalContractEvidence(workerResult, projectPath, literal, changedFiles)) continue;
+
+        issues.push(
+          `[${d.file}] test adds contract literal "${literal}" but it is not present in HEAD and no producer/consumer evidence was cited. Avoid self-referential contract tests.`,
+        );
+      }
+    }
+  } catch (err) {
+    console.warn('[Guard:contractEvidence] Error:', err);
+  }
+
+  return { passed: issues.length === 0, guard, issues, blocking: true };
+}
+
+/**
  * Reformat/scope guard (INT-2388 defect #6): flag reformat-only files (whose
  * diff vanishes under `git diff -w`) and unusually large diffs. Both inflate
  * cross-PR conflict surface and hide the real change. Non-blocking — advisory.
@@ -519,6 +652,10 @@ export async function runGuards(
 
   if (config.dependencyAntiPatternCheck) {
     results.push(await runDependencyAntiPatternGuard(workerResult, projectPath));
+  }
+
+  if (config.contractEvidenceCheck) {
+    results.push(await runContractEvidenceGuard(workerResult, projectPath));
   }
 
   if (config.deadModuleCheck) {
