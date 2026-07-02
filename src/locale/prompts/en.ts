@@ -176,6 +176,9 @@ ${feedbackSection}${contextSection}${completionSection}
 - No destructive commands (rm -rf, git reset --hard). No .env/.bashrc edits.
 - Before completing: verify all changed files exist, no syntax errors, confidence reflects reality.
 - Address EVERY Definition of Done item with evidence — do not stop at scaffolding or defer core work.
+- On an import/SDK/dependency failure, fix the environment or report a blocker — do NOT re-author a third-party package from scratch, and never invent or spoof a version constant (e.g. \`__version__\`) of code you don't own. Re-implementing an external package is almost never the task.
+- When implementing a cross-service/cross-repo contract (redis key prefixes, field names, wire schema, API shape), read and cite the counterparty's real producer/consumer code or measured data (file:line, command output) — don't invent field/key names, and don't write tests that only assert values you invented (self-referential tests prove nothing).
+- Don't delete an existing "verified"/"confirmed"/"measured" statement from docs without citing the counter-evidence that disproves it. For any change to scoring/gating/metric logic, include a before/after distribution (how many items move, by how much) — a silent score-logic change is a blast-radius risk.
 
 ## Tools available
 Use search_files (ripgrep) + read_file as your primary navigation. They're always available and cheapest.
@@ -296,7 +299,10 @@ ${promptDataBlock(workerReport)}
 2. Is the code quality adequate? (readability, maintainability)
 3. Are there any missing parts or deferred core work?
 4. Are there risks or side effects?
-5. Are tests needed or missing?
+5. Are tests needed or missing? Are the tests self-referential (asserting only values the code under test defines)? — reject those as proving nothing.
+6. Contract integrity: if the change implements a cross-service/cross-repo contract (redis keys, field names, wire schema, API shape), are the names verified against the counterparty's REAL producer/consumer code, or invented? An invented contract is dead code in production.
+7. Evidence & wiring: does it delete an existing "verified"/"confirmed" statement without citing counter-evidence? Do scoring/gating/metric changes include a before/after distribution? Is every newly-added module actually wired (grep for a caller) rather than dead scaffolding?
+8. Scope: is the diff scoped to the task, or does it carry unrelated reformatting / scope creep that inflates cross-PR conflict surface?
 
 ## Decision Options
 - **approve**: Work complete, approved. EVERY Definition of Done item is met with verified evidence, quality adequate

@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { getChangedFiles, getChangedFilesSinceSnapshot, takeSnapshot } from './gitTracker.js';
+import { getChangedFiles, getChangedFilesSinceSnapshot, getWorkingDiffDetail, takeSnapshot } from './gitTracker.js';
 
 describe('gitTracker', () => {
   let repo: string;
@@ -36,5 +36,52 @@ describe('gitTracker', () => {
     writeFileSync(join(repo, 'new-current.txt'), 'new\n');
 
     await expect(getChangedFiles(repo)).resolves.toContain('new-current.txt');
+  });
+
+  describe('getWorkingDiffDetail', () => {
+    it('reports per-file added/deleted for a tracked modification', async () => {
+      writeFileSync(join(repo, 'tracked.txt'), 'tracked\nline2\nline3\n');
+      const detail = await getWorkingDiffDetail(repo);
+      const t = detail.find(d => d.file === 'tracked.txt');
+      expect(t).toBeDefined();
+      expect(t!.added).toBe(2);
+      expect(t!.deleted).toBe(0);
+      expect(t!.isNew).toBe(false);
+      expect(t!.whitespaceOnly).toBe(false);
+    });
+
+    it('flags a newly-created file as isNew', async () => {
+      writeFileSync(join(repo, 'fresh.ts'), 'export const x = 1;\n');
+      const detail = await getWorkingDiffDetail(repo);
+      const f = detail.find(d => d.file === 'fresh.ts');
+      expect(f).toBeDefined();
+      expect(f!.isNew).toBe(true);
+    });
+
+    it('marks a whitespace-only change as whitespaceOnly', async () => {
+      // Re-indent the existing line without changing its tokens.
+      writeFileSync(join(repo, 'tracked.txt'), '  tracked\n');
+      const detail = await getWorkingDiffDetail(repo);
+      const t = detail.find(d => d.file === 'tracked.txt');
+      expect(t).toBeDefined();
+      expect(t!.whitespaceOnly).toBe(true);
+    });
+
+    it('does NOT mark a semantic change as whitespaceOnly', async () => {
+      writeFileSync(join(repo, 'tracked.txt'), 'tracked-changed\n');
+      const detail = await getWorkingDiffDetail(repo);
+      const t = detail.find(d => d.file === 'tracked.txt');
+      expect(t!.whitespaceOnly).toBe(false);
+    });
+
+    it('returns [] for a non-git directory', async () => {
+      const notGit = join(tmpdir(), `openswarm-notgit-${process.pid}-${Date.now()}`);
+      mkdirSync(notGit, { recursive: true });
+      try {
+        await expect(getWorkingDiffDetail(notGit)).resolves.toEqual([]);
+      } finally {
+        rmSync(notGit, { recursive: true, force: true });
+      }
+    });
   });
 });

@@ -101,6 +101,8 @@ autonomous:
     uncertaintyDetection: true
     registryCheck: true
     bsDetector: true        # blocks on critical code-smell patterns
+    deadModuleCheck: true   # warn on new modules nothing imports/calls (INT-2388 #5)
+    reformatCheck: true     # warn on reformat-only files / oversized diffs (INT-2388 #6)
 
   # Self-repair reflection budget: max objective (lint/bs/test) failures tolerated
   # before the loop gives up on bad edits. Lower it to cap token burn when
