@@ -29,6 +29,12 @@ export interface ReviewerOptions {
   /** Execution-grounded definition of done to hard-gate on (INT-1914). */
   completionCriteria?: string[];
   /**
+   * Non-blocking deterministic guard warnings (dead-module, reformat/scope, …)
+   * surfaced to the reviewer so it verifies each instead of them dying in a log
+   * line. (INT-2388)
+   */
+  guardWarnings?: string[];
+  /**
    * 'change' (default): review a worker's diff. 'audit': evaluate existing files
    * with no diff/worker (the `review --max` codebase audit). (INT-2006)
    */
@@ -116,13 +122,17 @@ function buildReviewerPrompt(options: ReviewerOptions): string {
     ? (cmds.join(', ') || '(none)')
     : `${cmds.slice(0, 10).join(', ')} (+${cmds.length - 10} more)`;
 
+  const guardSection = options.guardWarnings && options.guardWarnings.length > 0
+    ? `- **Automated guard warnings (deterministic pre-checks — verify each, don't dismiss):**\n${options.guardWarnings.map(w => `  - ${w}`).join('\n')}\n`
+    : '';
+
   const workerReport = `
 - **Success:** ${options.workerResult.success}
 - **Summary:** ${options.workerResult.summary}
 - **Files Changed (${files.length}):** ${filesSummary}
 - **Commands:** ${cmdsSummary}
 ${options.workerResult.error ? `- **Error:** ${options.workerResult.error}` : ''}
-`;
+${guardSection}`;
 
   return getPrompts().buildReviewerPrompt({
     taskTitle: options.taskTitle,

@@ -426,6 +426,10 @@ export interface PipelineGuardsConfig {
   haltToLinear: boolean;
   registryCheck: boolean;
   bsDetector: boolean;
+  /** Flag newly-added source modules that nothing imports/calls (INT-2388 #5). */
+  deadModuleCheck?: boolean;
+  /** Flag reformat-only files and oversized diffs — scope creep (INT-2388 #6). */
+  reformatCheck?: boolean;
   /**
    * When the reviewer approves, file its recommendedActions as follow-up
    * sub-issues (INT-1611 / INT-1704). Optional, default OFF. (INT-1704)

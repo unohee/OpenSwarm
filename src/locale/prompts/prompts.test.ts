@@ -57,6 +57,23 @@ describe('buildWorkerPrompt', () => {
     expect(result).toContain('## Rules');
   });
 
+  it('contains INT-2388 anti-pattern rules (no re-impl, cite contracts, keep verified evidence)', () => {
+    const result = enPrompts.buildWorkerPrompt(base);
+    // #1 no re-implementation / version spoofing on import failure
+    expect(result).toContain('re-author a third-party package');
+    expect(result).toContain('__version__');
+    // #2 cite the counterparty's real code for a contract; no self-referential tests
+    expect(result).toContain('self-referential');
+    // #4 don't delete verified statements; before/after distribution for score changes
+    expect(result).toContain('before/after distribution');
+  });
+
+  it('ko worker prompt mirrors the INT-2388 rules', () => {
+    const result = koPrompts.buildWorkerPrompt(base);
+    expect(result).toContain('__version__');
+    expect(result).toContain('before/after');
+  });
+
   it('with previousFeedback: includes feedback section', () => {
     const result = enPrompts.buildWorkerPrompt({
       ...base,
@@ -211,6 +228,16 @@ describe('buildReviewerPrompt', () => {
     expect(result).toContain('"feedback"');
     expect(result).toContain('"issues"');
     expect(result).toContain('"suggestions"');
+  });
+
+  it('contains INT-2388 review criteria (contract integrity, wiring, scope)', () => {
+    const result = enPrompts.buildReviewerPrompt(opts);
+    expect(result).toContain('Contract integrity');
+    expect(result).toContain('dead scaffolding');
+    expect(result).toContain('scope creep');
+    // ko mirror
+    const ko = koPrompts.buildReviewerPrompt(opts);
+    expect(ko).toContain('dead scaffolding');
   });
 
   // Audit mode reframes the reviewer for diff-less, existing-file review. (INT-2006)

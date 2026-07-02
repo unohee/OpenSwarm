@@ -9,6 +9,7 @@ import type { WorkerResult } from './agentPair.js';
 import type { PipelineGuardsConfig } from '../core/types.js';
 import { getRegistryStore } from '../registry/sqliteStore.js';
 import { scanFile as scanFileForBs } from '../registry/bsDetector.js';
+import { getWorkingDiffDetail } from '../support/gitTracker.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -303,6 +304,105 @@ async function runBsDetectorGuard(
   return { passed: issues.length === 0, guard, issues, blocking: hasCritical };
 }
 
+const SOURCE_FILE_RE = /\.(ts|tsx|js|jsx|py)$/;
+const TEST_FILE_RE = /\.(test|spec)\.[jt]sx?$|(^|\/)test_[^/]+\.py$|_test\.py$/;
+
+/**
+ * Dead-module guard (INT-2388 defect #5): a newly-added source module that
+ * nothing imports/calls is dead scaffolding — it merges but never runs. For
+ * each new source file, git-grep the codebase (working tree + untracked) for
+ * its module basename; if only the file itself (or its own test) references it,
+ * flag it. Non-blocking — an entry point wired via a dynamic/string import is a
+ * legitimate exception the reviewer can clear.
+ */
+async function runDeadModuleGuard(projectPath: string): Promise<GuardResult> {
+  const guard = 'deadModule';
+  const issues: string[] = [];
+
+  try {
+    const details = await getWorkingDiffDetail(projectPath);
+    const newSources = details.filter(
+      d => d.isNew && SOURCE_FILE_RE.test(d.file) && !TEST_FILE_RE.test(d.file) && !d.file.endsWith('.d.ts'),
+    );
+
+    for (const d of newSources) {
+      const base = (d.file.split('/').pop() ?? '').replace(SOURCE_FILE_RE, '');
+      // Skip too-short/too-generic names (index, app, types…) — grep noise makes
+      // the "no importer" signal meaningless, and a false "wired" is the safe side.
+      if (base.length < 3 || ['index', 'main', 'types', 'utils', 'config', 'app'].includes(base)) continue;
+
+      let referenced = false;
+      try {
+        const { stdout } = await execFileAsync(
+          'git',
+          ['grep', '-l', '-F', '--untracked', '-e', base, '--', '*.ts', '*.tsx', '*.js', '*.jsx', '*.py'],
+          { cwd: projectPath, timeout: 15_000 },
+        );
+        referenced = stdout
+          .split('\n')
+          .filter(Boolean)
+          .some(f => {
+            if (f === d.file) return false; // the file referencing itself doesn't count
+            const fb = f.split('/').pop() ?? '';
+            // its own test (base.test.ts / test_base.py) doesn't count as wiring
+            if (fb.startsWith(`${base}.test`) || fb.startsWith(`${base}.spec`)) return false;
+            if (fb === `test_${base}.py` || fb === `${base}_test.py`) return false;
+            return true;
+          });
+      } catch {
+        // git grep exits non-zero when there are zero matches → not referenced
+        referenced = false;
+      }
+
+      if (!referenced) {
+        issues.push(
+          `[${d.file}] new module has no importer/caller — dead scaffolding? Wire it into the system or confirm it's an entry point.`,
+        );
+      }
+    }
+  } catch (err) {
+    console.warn('[Guard:deadModule] Error:', err);
+  }
+
+  return { passed: issues.length === 0, guard, issues, blocking: false };
+}
+
+/**
+ * Reformat/scope guard (INT-2388 defect #6): flag reformat-only files (whose
+ * diff vanishes under `git diff -w`) and unusually large diffs. Both inflate
+ * cross-PR conflict surface and hide the real change. Non-blocking — advisory.
+ */
+async function runReformatScopeGuard(projectPath: string): Promise<GuardResult> {
+  const guard = 'reformatScope';
+  const issues: string[] = [];
+  const LARGE_DIFF_LINES = 1200;
+
+  try {
+    const details = await getWorkingDiffDetail(projectPath);
+
+    for (const d of details.filter(d => d.whitespaceOnly)) {
+      issues.push(
+        `[${d.file}] reformat-only change (no semantic diff under -w) — move formatting to a separate commit to keep the PR scoped.`,
+      );
+    }
+
+    // Sum of tracked-change lines. Brand-new files register as 0 added here
+    // (numstat only counts tracked diffs) and are covered by the dead-module
+    // guard instead — so this measures churn on existing code, where scope
+    // creep and reformat noise actually hide.
+    const totalChanged = details.reduce((sum, d) => sum + d.added + d.deleted, 0);
+    if (totalChanged > LARGE_DIFF_LINES) {
+      issues.push(
+        `Large diff: ${totalChanged} changed lines across ${details.length} files — verify every change is task-scoped (watch for scope creep).`,
+      );
+    }
+  } catch (err) {
+    console.warn('[Guard:reformatScope] Error:', err);
+  }
+
+  return { passed: issues.length === 0, guard, issues, blocking: false };
+}
+
 // Guard Runner
 
 /**
@@ -337,6 +437,14 @@ export async function runGuards(
 
   if (config.bsDetector) {
     results.push(await runBsDetectorGuard(workerResult, projectPath));
+  }
+
+  if (config.deadModuleCheck) {
+    results.push(await runDeadModuleGuard(projectPath));
+  }
+
+  if (config.reformatCheck) {
+    results.push(await runReformatScopeGuard(projectPath));
   }
 
   // conventionalCommits is checked separately (needs commit message)

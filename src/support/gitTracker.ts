@@ -125,6 +125,75 @@ export async function autoCommit(
 }
 
 /**
+ * Per-file diff detail for the working tree vs HEAD.
+ * Guards run pre-commit, so the worker's edits live in the working tree —
+ * `git diff HEAD` captures every tracked change and `ls-files --others` the
+ * newly-added files. Used by dead-module and reformat-noise guards. (INT-2388)
+ */
+export interface FileDiffDetail {
+  file: string;
+  /** Added lines (0 for binary or brand-new untracked files). */
+  added: number;
+  /** Deleted lines. */
+  deleted: number;
+  /** Untracked (newly created, not yet in git) file. */
+  isNew: boolean;
+  /** Change vanishes under `-w` (whitespace-ignored) — reformat-only noise. */
+  whitespaceOnly: boolean;
+}
+
+/** Parse `git diff --numstat` output into a path -> [added, deleted] map. Binary rows (`-`) map to [0,0]. */
+function parseNumstat(output: string): Map<string, [number, number]> {
+  const map = new Map<string, [number, number]>();
+  for (const line of output.split('\n')) {
+    if (!line.trim()) continue;
+    const parts = line.split('\t');
+    if (parts.length < 3) continue;
+    const added = parts[0] === '-' ? 0 : parseInt(parts[0], 10) || 0;
+    const deleted = parts[1] === '-' ? 0 : parseInt(parts[1], 10) || 0;
+    // Rename rows look like `a\td\told => new`; take the last path token.
+    const path = parts.slice(2).join('\t');
+    map.set(path, [added, deleted]);
+  }
+  return map;
+}
+
+/**
+ * Working-tree diff detail vs HEAD: per-file line counts, new-file flag, and a
+ * reformat-only (whitespace) flag. Returns [] on any git error (advisory only).
+ */
+export async function getWorkingDiffDetail(projectPath: string): Promise<FileDiffDetail[]> {
+  try {
+    const [numstatRaw, wsNumstatRaw, untrackedRaw] = await Promise.all([
+      runGitCommand(projectPath, ['diff', '--numstat', 'HEAD']),
+      runGitCommand(projectPath, ['diff', '-w', '--numstat', 'HEAD']),
+      runGitCommand(projectPath, ['ls-files', '--others', '--exclude-standard']),
+    ]);
+
+    const numstat = parseNumstat(numstatRaw);
+    const wsNumstat = parseNumstat(wsNumstatRaw);
+    const details: FileDiffDetail[] = [];
+
+    for (const [file, [added, deleted]] of numstat) {
+      // Whitespace-only: the file has a real change but it disappears under -w
+      // (missing from the -w numstat, or present with 0/0).
+      const ws = wsNumstat.get(file);
+      const whitespaceOnly = (added + deleted) > 0 && (!ws || ws[0] + ws[1] === 0);
+      details.push({ file, added, deleted, isNew: false, whitespaceOnly });
+    }
+
+    for (const file of untrackedRaw.split('\n').filter(Boolean)) {
+      details.push({ file, added: 0, deleted: 0, isNew: true, whitespaceOnly: false });
+    }
+
+    return details;
+  } catch (error) {
+    console.error('[GitTracker] getWorkingDiffDetail error:', error);
+    return [];
+  }
+}
+
+/**
  * Git command execution utility
  */
 function runGitCommand(cwd: string, args: string[]): Promise<string> {
