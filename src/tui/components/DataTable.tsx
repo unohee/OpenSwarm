@@ -1,26 +1,45 @@
 // DataTable — minimal column-aligned table for the monitor tabs (S6).
 // Hand-rolled (no ink-table) to avoid peer-version risk on ink 7 / react 19.
 import { Box, Text } from 'ink';
-import { displayWidth } from '../../cli/reviewProgress.js';
+import { displayWidth, truncateLine } from '../../cli/reviewProgress.js';
 import type { Table } from '../monitorRows.js';
 
 export interface DataTableProps extends Table {
   empty?: string;
+  maxCellWidth?: number;
+  terminalWidth?: number;
 }
 
-export function DataTable({ columns, rows, empty }: DataTableProps) {
+export function DataTable({ columns, rows, empty, maxCellWidth = 28, terminalWidth }: DataTableProps) {
   if (rows.length === 0) {
     return <Text dimColor>{empty ?? '(no data)'}</Text>;
   }
-  const widths = columns.map((c, i) =>
-    Math.max(displayWidth(c), ...rows.map((r) => displayWidth(r[i] ?? ''))),
+  const visibleColumnCount = terminalWidth
+    ? Math.max(1, Math.min(columns.length, terminalWidth))
+    : columns.length;
+  const rawColumns = columns.slice(0, visibleColumnCount);
+  const separatorWidth = terminalWidth && visibleColumnCount > 1
+    ? Math.max(0, Math.min(2, Math.floor((terminalWidth - visibleColumnCount) / (visibleColumnCount - 1))))
+    : 2;
+  const separator = ' '.repeat(separatorWidth);
+  const gapWidth = Math.max(0, visibleColumnCount - 1) * separatorWidth;
+  const availableCellWidth = terminalWidth ? Math.max(1, terminalWidth - gapWidth) : undefined;
+  const columnCount = Math.max(1, visibleColumnCount);
+  const cellWidth = availableCellWidth
+    ? Math.max(1, Math.min(maxCellWidth, Math.floor(availableCellWidth / columnCount)))
+    : maxCellWidth;
+  const clip = (value: string) => truncateLine(value, cellWidth);
+  const clippedColumns = rawColumns.map(clip);
+  const clippedRows = rows.map((row) => rawColumns.map((_, i) => clip(row[i] ?? '')));
+  const widths = clippedColumns.map((c, i) =>
+    Math.max(displayWidth(c), ...clippedRows.map((r) => displayWidth(r[i] ?? ''))),
   );
   const fmt = (cells: string[]) =>
-    cells.map((cell, i) => `${cell ?? ''}${' '.repeat(Math.max(0, widths[i] - displayWidth(cell ?? '')))}`).join('  ');
+    cells.map((cell, i) => `${cell ?? ''}${' '.repeat(Math.max(0, widths[i] - displayWidth(cell ?? '')))}`).join(separator);
   return (
     <Box flexDirection="column">
-      <Text bold>{fmt(columns)}</Text>
-      {rows.map((r, i) => (
+      <Text bold>{fmt(clippedColumns)}</Text>
+      {clippedRows.map((r, i) => (
         <Text key={i}>{fmt(r)}</Text>
       ))}
     </Box>

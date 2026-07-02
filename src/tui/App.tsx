@@ -77,7 +77,7 @@ export function App({ version, provider, model, port, cwd, branch, initialTab = 
         ) : activeTab.id === 'logs' ? (
           <LogsPanel port={port} />
         ) : activeTab.id in MONITOR_FETCHERS ? (
-          <MonitorPanel port={port} fetcher={MONITOR_FETCHERS[activeTab.id as keyof typeof MONITOR_FETCHERS]} />
+          <MonitorPanel port={port} fetcher={MONITOR_FETCHERS[activeTab.id as keyof typeof MONITOR_FETCHERS]} terminalWidth={columns} />
         ) : (
           <Text>{`${activeTab.label} — not yet implemented.`}</Text>
         )}

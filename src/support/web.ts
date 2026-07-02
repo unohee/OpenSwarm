@@ -537,6 +537,7 @@ export async function startWebServer(port: number = 3847): Promise<void> {
           return {
             path: p,
             name: dirName,
+            linearProject: info?.name,
             enabled: enabledPaths.has(p),
             pinned: pinnedProjects.has(p),
             running: info?.running ?? [],
