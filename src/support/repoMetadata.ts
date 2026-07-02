@@ -29,6 +29,12 @@ const RepoMetadataSchema = z.object({
   description: z.string().optional(),
   linear: LinearMappingSchema.optional(),
   github: GithubMappingSchema.optional(),
+  /**
+   * Objective check commands for `openswarm fix` (key → shell command), e.g.
+   * `{"lint": "ruff check .", "test": "pytest -x"}`. Overrides auto-detection —
+   * the escape hatch for any language/toolchain. (INT-2303)
+   */
+  checks: z.record(z.string(), z.string()).optional(),
   /** Free-form notes the swarm should keep in mind. */
   notes: z.string().optional(),
 });
