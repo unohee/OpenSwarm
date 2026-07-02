@@ -84,10 +84,12 @@ openswarm review --max --concurrency 8   # widen the fan-out — areas auto-spli
                                  #   (legacy spray) · --issues <id> (set parent) · --fallback
                                  #   <adapter> · --out <file> · --dry-run (print the plan)
 
-# CI / test gate auto-fix
-openswarm fix                    # Run the checks (lint/typecheck/build/test from package.json),
-                                 #   fan a fix-worker out over the failures, re-run until green
+# CI / test gate auto-fix (npm / Cargo / Python auto-detected)
+openswarm fix                    # Run the checks (package.json scripts, or cargo check+test,
+                                 #   or ruff/mypy/pytest), fan a fix-worker out over the
+                                 #   failures, re-run until green
 openswarm fix --checks lint,test # only these checks · --concurrency <n> · --rounds <n> (default 3)
+                                 # any language: put {"checks": {"test": "pytest -x"}} in openswarm.json
 
 # Code Registry & BS Detector
 openswarm check --scan           # Scan repo → register all entities
@@ -282,7 +284,7 @@ openswarm dash                # open the web dashboard (:3847)
 - **Autonomous Pipeline** — Cron-driven heartbeat fetches Linear issues, runs Worker/Reviewer pair loops, and updates issue state automatically
 - **Worker/Reviewer Pairs** — Multi-iteration code generation with automated review, testing, and documentation stages
 - **Codebase Audit (`review --max`)** — fans reviewer subagents out over directory-shaped areas (auto-split to fill `--concurrency`), aggregates a deduped verdict into a markdown report, and synthesizes ≤10 cohesive Linear issues via a PM agent. `--fix` sends a worker per flagged area to apply the fixes in the working tree. Language-agnostic; codex usage-limit aware with automatic `claude` fallback
-- **CI / test gate auto-fix (`openswarm fix`)** — runs the project's objective checks (lint / typecheck / build / test), groups the failures by file into areas, fans a fix-worker out over each, then **re-runs the checks and repeats until green** (or the round budget). Deterministic convergence — unlike the review fix pass, it verifies its own work
+- **CI / test gate auto-fix (`openswarm fix`)** — runs the project's objective checks (lint / typecheck / build / test), groups the failures by file into areas, fans a fix-worker out over each, then **re-runs the checks and repeats until green** (or the round budget). Deterministic convergence — unlike the review fix pass, it verifies its own work. Multi-language: auto-detects npm scripts, `Cargo.toml` (`cargo check`/`test`, clippy on request), and Python tooling (`ruff`/`mypy`/`pytest`, gated on the repo's config); any other toolchain via a `"checks"` map in `openswarm.json`
 - **Decision Engine** — Scope validation, rate limiting, priority-based task selection, and workflow mapping
 - **Cognitive Memory** — LanceDB vector store with Xenova/multilingual-e5-base embeddings for long-term recall across sessions
 - **Repo Knowledge Loop** — workers learn each repository over time: task outcomes (success patterns, review-rejection pitfalls) are stored per-repo and recalled into the next worker prompt
