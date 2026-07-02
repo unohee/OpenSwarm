@@ -2,9 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WorkerOptions } from './worker.js';
 import type { ReviewerOptions } from './reviewer.js';
 import type { TaskItem } from '../orchestration/decisionEngine.js';
+import { RateLimitError } from '../adapters/rateLimitError.js';
 
 const runWorker = vi.fn();
 const runReviewer = vi.fn();
+const broadcastEvent = vi.fn();
 
 vi.mock('./worker.js', () => ({
   runWorker,
@@ -26,6 +28,10 @@ vi.mock('../knowledge/index.js', () => ({
 
 vi.mock('../memory/repoKnowledge.js', () => ({
   recallRepoKnowledge: vi.fn().mockResolvedValue([]),
+}));
+
+vi.mock('../core/eventHub.js', () => ({
+  broadcastEvent,
 }));
 
 describe('PairPipeline model selection', () => {
@@ -123,6 +129,29 @@ describe('PairPipeline model selection', () => {
     }));
     expect(runReviewer).toHaveBeenCalledWith(expect.objectContaining<Partial<ReviewerOptions>>({
       model: 'fallback-reviewer',
+    }));
+  });
+
+  it('emits rate-limit reset timestamps on failed stage events', async () => {
+    runWorker.mockRejectedValueOnce(new RateLimitError(1770000000, 'rate limited'));
+    const { PairPipeline } = await import('./pairPipeline.js');
+    const pipeline = new PairPipeline({
+      stages: ['worker'],
+      maxIterations: 1,
+      roles: {
+        worker: { enabled: true, model: 'fallback-worker', timeoutMs: 0 },
+      },
+    });
+
+    await pipeline.run(task(), process.cwd());
+
+    expect(broadcastEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'pipeline:stage',
+      data: expect.objectContaining({
+        stage: 'worker',
+        status: 'fail',
+        rateLimitResetsAt: 1770000000000,
+      }),
     }));
   });
 });

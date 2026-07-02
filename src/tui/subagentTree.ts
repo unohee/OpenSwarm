@@ -14,6 +14,8 @@ export interface RoleNode {
   durationMs?: number;
   decision?: 'approve' | 'revise' | 'reject';
   summary?: string;
+  activity?: string;
+  rateLimitResetsAt?: number;
 }
 
 export interface WorktreeNode {
@@ -65,6 +67,8 @@ export function buildSubagentTree(stages: StageEntry[]): RepositoryNode[] {
         durationMs: stage.durationMs,
         decision: stage.decision,
         summary: stage.summary,
+        activity: stage.activity,
+        rateLimitResetsAt: stage.rateLimitResetsAt,
       }));
       const withMetadata = [...latestStages].reverse();
       return {

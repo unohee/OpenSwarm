@@ -21,6 +21,8 @@ export interface StageEntry {
   costUsd?: number;
   decision?: 'approve' | 'revise' | 'reject';
   summary?: string;
+  activity?: string;
+  rateLimitResetsAt?: number;
 }
 
 export interface PipelineState {
@@ -52,11 +54,75 @@ export function reducePipelineEvent(state: PipelineState, ev: HubEvent): Pipelin
       costUsd: d.costUsd,
       decision: d.decision,
       summary: d.summary,
+      activity: d.status === 'start' ? 'waiting' : activityFromStage(d.error),
+      rateLimitResetsAt: d.rateLimitResetsAt,
     };
     return { ...state, stages: [...state.stages, entry].slice(-MAX_STAGES) };
   }
   if (ev.type === 'log') {
-    return { ...state, logs: [...state.logs, `[${ev.data.stage}] ${ev.data.line}`].slice(-MAX_LOGS) };
+    const activity = classifyActivity(ev.data.line);
+    return {
+      ...state,
+      stages: activity
+        ? updateLatestActivity(state.stages, ev.data.taskId, ev.data.stage, activity)
+        : state.stages,
+      logs: [...state.logs, `[${ev.data.stage}] ${ev.data.line}`].slice(-MAX_LOGS),
+    };
+  }
+  if (ev.type === 'process:spawn') {
+    return {
+      ...state,
+      stages: updateLatestActivity(state.stages, ev.data.taskId, ev.data.stage, 'waiting', ev.data.model),
+    };
+  }
+  if (ev.type === 'process:exit') {
+    if (!ev.data.taskId || !ev.data.stage) return state;
+    return {
+      ...state,
+      stages: state.stages.map((stage) => stage.taskId === ev.data.taskId && stage.stage === ev.data.stage && stage.activity === 'waiting'
+        ? { ...stage, activity: undefined }
+        : stage),
+    };
   }
   return state;
+}
+
+export function classifyActivity(line: string): string | undefined {
+  const text = line.trim();
+  const lower = text.toLowerCase();
+  if (/\b(rate[-\s]?limit|quota|429)\b/.test(lower)) return 'rate-limited';
+  const tool = text.match(/(?:tool[:\s]+|🔧\s*)([a-zA-Z_][\w-]*)/);
+  if (tool) return `tool: ${tool[1]}`;
+  if (/\b(apply_patch|read_file|write_file|edit_file|bash|shell|rg|grep)\b/.test(lower)) {
+    const matched = lower.match(/\b(apply_patch|read_file|write_file|edit_file|bash|shell|rg|grep)\b/);
+    return matched ? `tool: ${matched[1]}` : 'tool';
+  }
+  if (/\b(reasoning|thinking|analyzing|checking|planning)\b/.test(lower) || text.startsWith('💭')) return 'thinking';
+  if (/\b(waiting|pending|queued)\b/.test(lower)) return 'waiting';
+  return undefined;
+}
+
+function activityFromStage(error: string | undefined): string | undefined {
+  return error ? classifyActivity(error) : undefined;
+}
+
+function updateLatestActivity(
+  stages: StageEntry[],
+  taskId: string,
+  stageName: string,
+  activity: string,
+  model?: string,
+): StageEntry[] {
+  for (let i = stages.length - 1; i >= 0; i--) {
+    const stage = stages[i];
+    if (stage.taskId !== taskId || stage.stage !== stageName || stage.status !== 'start') continue;
+    const next = stages.slice();
+    next[i] = {
+      ...stage,
+      activity,
+      model: stage.model ?? model,
+    };
+    return next;
+  }
+  return stages;
 }

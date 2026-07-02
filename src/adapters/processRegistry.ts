@@ -75,6 +75,10 @@ export function registerProcess(info: ProcessInfo, proc: ChildProcess): void {
       type: 'process:exit',
       data: {
         pid: info.pid,
+        taskId: info.taskId,
+        stage: info.stage,
+        model: info.model,
+        projectPath: info.projectPath,
         exitCode: code,
         signal: signal,
         durationMs,
@@ -147,6 +151,10 @@ export function startHealthChecker(intervalMs = 30000): void {
           type: 'process:exit',
           data: {
             pid,
+            taskId: info.taskId,
+            stage: info.stage,
+            model: info.model,
+            projectPath: info.projectPath,
             exitCode: null,
             signal: null,
             durationMs,

@@ -63,6 +63,7 @@ export type HubEvent =
       // Worker confidence-gate
       confidencePercent?: number;
       haltReason?: string;
+      rateLimitResetsAt?: number;
       // Errors
       error?: string;
     } }
@@ -77,7 +78,16 @@ export type HubEvent =
   | { type: 'monitor:checked'; data: { id: string; name: string; state: MonitorState; output?: string; checkCount: number } }
   | { type: 'monitor:stateChange'; data: { id: string; name: string; from: MonitorState; to: MonitorState; issueId?: string } }
   | { type: 'process:spawn'; data: { pid: number; taskId: string; stage: string; model?: string; projectPath: string } }
-  | { type: 'process:exit'; data: { pid: number; exitCode: number | null; signal: string | null; durationMs: number } }
+  | { type: 'process:exit'; data: {
+      pid: number;
+      taskId?: string;
+      stage?: string;
+      model?: string;
+      projectPath?: string;
+      exitCode: number | null;
+      signal: string | null;
+      durationMs: number;
+    } }
   | { type: 'conflict:detected'; data: { repo: string; prNumber: number; branch: string } }
   | { type: 'conflict:resolving'; data: { repo: string; prNumber: number; branch: string; attempt: number } }
   | { type: 'conflict:resolved'; data: { repo: string; prNumber: number; branch: string; filesResolved: number } }

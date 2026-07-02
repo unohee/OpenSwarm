@@ -1,9 +1,11 @@
 // SubagentTree — concurrent tasks as a per-worktree agent tree (S7).
 // Presentational: takes nodes built by buildSubagentTree.
 import { Box, Text } from 'ink';
+import { useEffect, useState } from 'react';
 import { STATUS } from '../theme.js';
 import type { StatusKind } from '../../support/glyphs.js';
 import type { RepositoryNode, TaskStatus } from '../subagentTree.js';
+import { spinnerFrame } from '../loadingMessages.js';
 
 // Single-sourced glyphs + colors (INT-2260): running → ◐, complete → ✓, fail → ✗.
 const KIND: Record<TaskStatus, StatusKind> = { start: 'running', complete: 'ok', fail: 'err' };
@@ -53,6 +55,14 @@ function worktreeLabel(task: RepositoryNode['worktrees'][number]): string {
 export function SubagentTree({ repositories, max = 6, maxRoles = 5 }: SubagentTreeProps) {
   const worktreeLimit = clampLimit(max);
   const roleLimit = clampLimit(maxRoles);
+  const [tick, setTick] = useState(0);
+
+  useEffect(() => {
+    if (!repositories.some((repo) => repo.worktrees.some((task) => task.roles.some((role) => role.status === 'start')))) return;
+    const timer = setInterval(() => setTick((value) => value + 1), 120);
+    return () => clearInterval(timer);
+  }, [repositories]);
+
   return (
     <Box flexDirection="column">
       <Text bold>Agents by repository</Text>
@@ -67,7 +77,7 @@ export function SubagentTree({ repositories, max = 6, maxRoles = 5 }: SubagentTr
                 <Text dimColor>{`  └ ${worktreeLabel(task)} — ${task.status}`}</Text>
                 {(roleLimit === 0 ? [] : task.roles.slice(-roleLimit)).map((role, i) => (
                   <Text key={i} dimColor>
-                    {`     └ ${sanitizeTerminalLabel(role.role, STAGE_LABEL_MAX_CHARS)}${role.model ? ` (${sanitizeTerminalLabel(role.model, MODEL_LABEL_MAX_CHARS)})` : ''} — ${role.status}${role.decision ? `/${role.decision}` : ''}`}
+                    {`     └ ${role.status === 'start' ? spinnerFrame(tick) : ''} ${sanitizeTerminalLabel(role.role, STAGE_LABEL_MAX_CHARS)}${role.model ? ` (${sanitizeTerminalLabel(role.model, MODEL_LABEL_MAX_CHARS)})` : ''} — ${role.status}${role.activity ? ` · ${sanitizeTerminalLabel(role.activity, STAGE_LABEL_MAX_CHARS)}` : ''}${role.rateLimitResetsAt ? ` · reset ${new Date(role.rateLimitResetsAt).toISOString()}` : ''}${role.decision ? `/${role.decision}` : ''}`}
                   </Text>
                 ))}
               </Box>

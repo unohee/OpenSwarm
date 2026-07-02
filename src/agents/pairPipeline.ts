@@ -835,6 +835,7 @@ export class PairPipeline extends EventEmitter {
         taskId: context.task.id, stage, status: 'fail',
         ...metadata,
         durationMs: stageResult.duration,
+        rateLimitResetsAt: error instanceof RateLimitError && error.resetsAt ? error.resetsAt * 1000 : undefined,
         error: error instanceof Error ? error.message : String(error),
       } });
       return stageResult;

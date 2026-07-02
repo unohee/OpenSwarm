@@ -33,6 +33,34 @@ describe('SubagentTree component (EPIC INT-1813 S7)', () => {
     expect(f).toContain('Reviewer');
   });
 
+  it('renders compact running activity and real rate-limit reset data', () => {
+    const stages: StageEntry[] = [
+      {
+        taskId: 'INT-2368-x',
+        stage: 'worker',
+        status: 'start',
+        repository: 'OpenSwarm',
+        issueIdentifier: 'INT-2368',
+        activity: 'tool: apply_patch',
+        model: 'codex',
+      },
+      {
+        taskId: 'INT-2368-x',
+        stage: 'reviewer',
+        status: 'fail',
+        repository: 'OpenSwarm',
+        issueIdentifier: 'INT-2368',
+        activity: 'rate-limited',
+        rateLimitResetsAt: 1770000000000,
+      },
+    ];
+
+    const f = render(<SubagentTree repositories={buildSubagentTree(stages)} />).lastFrame()!;
+    expect(f).toContain('tool: apply_patch');
+    expect(f).toContain('rate-limited');
+    expect(f).toContain('reset 2026-');
+  });
+
   it('honors zero display limits', () => {
     const stages: StageEntry[] = [
       { taskId: 'INT-1940-x', stage: 'worker', status: 'complete', model: 'gpt-5.2-codex' },
