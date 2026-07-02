@@ -4,6 +4,8 @@
 // ============================================
 
 import { execFile } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
 import type { WorkerResult } from './agentPair.js';
 import type { PipelineGuardsConfig } from '../core/types.js';
@@ -306,6 +308,37 @@ async function runBsDetectorGuard(
 
 const SOURCE_FILE_RE = /\.(ts|tsx|js|jsx|py)$/;
 const TEST_FILE_RE = /\.(test|spec)\.[jt]sx?$|(^|\/)test_[^/]+\.py$|_test\.py$/;
+const DEPENDENCY_FAILURE_RE =
+  /\b(ModuleNotFoundError|ImportError|Cannot find module|ERR_MODULE_NOT_FOUND|No module named|PackageNotFoundError|missing dependency|not installed)\b/i;
+const VERSION_SPOOF_RE =
+  /(^|\n)\s*(?:export\s+const\s+)?__version__\s*[:=]/;
+const PACKAGE_SCAFFOLD_RE =
+  /(^|\/)(package\.json|pyproject\.toml|setup\.py|setup\.cfg)$/;
+
+async function getAddedLinesForFile(projectPath: string, filePath: string, isNew: boolean): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync(
+      'git',
+      ['diff', '--unified=0', 'HEAD', '--', filePath],
+      { cwd: projectPath, timeout: 10_000 },
+    );
+    const added = stdout
+      .split('\n')
+      .filter(line => line.startsWith('+') && !line.startsWith('+++'))
+      .map(line => line.slice(1))
+      .join('\n');
+    if (added) return added;
+  } catch {
+    // Fall through to untracked-new handling below.
+  }
+
+  if (!isNew) return '';
+  try {
+    return await readFile(join(projectPath, filePath), 'utf8');
+  } catch {
+    return '';
+  }
+}
 
 /**
  * Dead-module guard (INT-2388 defect #5): a newly-added source module that
@@ -365,6 +398,51 @@ async function runDeadModuleGuard(projectPath: string): Promise<GuardResult> {
   }
 
   return { passed: issues.length === 0, guard, issues, blocking: false };
+}
+
+/**
+ * Dependency anti-pattern guard (INT-2388 defect #1): if the worker reports an
+ * import/package failure, don't allow the fix to become "recreate the missing
+ * package" or "spoof its version". This is intentionally narrow and blocking:
+ * it fires only when a dependency-failure signal is paired with package-identity
+ * code or a new package scaffold in the diff.
+ */
+async function runDependencyAntiPatternGuard(
+  workerResult: WorkerResult,
+  projectPath: string,
+): Promise<GuardResult> {
+  const guard = 'dependencyAntiPattern';
+  const issues: string[] = [];
+  const reportText = `${workerResult.summary}\n${workerResult.output.slice(0, 8000)}\n${workerResult.error ?? ''}`;
+
+  if (!DEPENDENCY_FAILURE_RE.test(reportText)) {
+    return { passed: true, guard, issues, blocking: true };
+  }
+
+  try {
+    const details = await getWorkingDiffDetail(projectPath);
+
+    for (const d of details) {
+      if (d.isNew && PACKAGE_SCAFFOLD_RE.test(d.file)) {
+        issues.push(
+          `[${d.file}] dependency/import failure was reported, but the diff adds package scaffold. Fix the environment or document the blocker instead of recreating a third-party package.`,
+        );
+      }
+
+      if (!SOURCE_FILE_RE.test(d.file) || TEST_FILE_RE.test(d.file)) continue;
+
+      const addedLines = await getAddedLinesForFile(projectPath, d.file, d.isNew);
+      if (VERSION_SPOOF_RE.test(addedLines)) {
+        issues.push(
+          `[${d.file}] dependency/import failure was reported, but the diff defines __version__. Do not spoof package identity/version constants for code you do not own.`,
+        );
+      }
+    }
+  } catch (err) {
+    console.warn('[Guard:dependencyAntiPattern] Error:', err);
+  }
+
+  return { passed: issues.length === 0, guard, issues, blocking: true };
 }
 
 /**
@@ -437,6 +515,10 @@ export async function runGuards(
 
   if (config.bsDetector) {
     results.push(await runBsDetectorGuard(workerResult, projectPath));
+  }
+
+  if (config.dependencyAntiPatternCheck) {
+    results.push(await runDependencyAntiPatternGuard(workerResult, projectPath));
   }
 
   if (config.deadModuleCheck) {

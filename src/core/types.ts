@@ -426,6 +426,8 @@ export interface PipelineGuardsConfig {
   haltToLinear: boolean;
   registryCheck: boolean;
   bsDetector: boolean;
+  /** Block dependency/import failure fixes that spoof package identity (INT-2388 #1). */
+  dependencyAntiPatternCheck?: boolean;
   /** Flag newly-added source modules that nothing imports/calls (INT-2388 #5). */
   deadModuleCheck?: boolean;
   /** Flag reformat-only files and oversized diffs — scope creep (INT-2388 #6). */

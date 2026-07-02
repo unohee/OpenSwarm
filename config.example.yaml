@@ -101,6 +101,7 @@ autonomous:
     uncertaintyDetection: true
     registryCheck: true
     bsDetector: true        # blocks on critical code-smell patterns
+    dependencyAntiPatternCheck: true  # block package recreation/version spoofing after import failures (INT-2388 #1)
     deadModuleCheck: true   # warn on new modules nothing imports/calls (INT-2388 #5)
     reformatCheck: true     # warn on reformat-only files / oversized diffs (INT-2388 #6)
 

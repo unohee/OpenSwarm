@@ -32,6 +32,61 @@ describe('pipelineGuards — INT-2388 deterministic guards', () => {
     if (existsSync(repo)) rmSync(repo, { recursive: true, force: true });
   });
 
+  describe('dependencyAntiPatternCheck', () => {
+    it('blocks __version__ spoofing after an import failure', async () => {
+      writeFileSync(join(repo, 'thirdpartyshim.py'), '__version__ = "9.6.0"\n');
+      const res = await runGuards(
+        { ...mockWorker(['thirdpartyshim.py']), output: 'ModuleNotFoundError: No module named stonks' },
+        repo,
+        { dependencyAntiPatternCheck: true },
+      );
+      const issues = guardIssues(res, 'dependencyAntiPattern');
+      expect(issues.some(i => i.includes('thirdpartyshim.py') && i.includes('__version__'))).toBe(true);
+      expect(res.allPassed).toBe(false);
+    });
+
+    it('blocks new package scaffold after a module-not-found failure', async () => {
+      mkdirSync(join(repo, 'packages', 'missing-sdk'), { recursive: true });
+      writeFileSync(join(repo, 'packages', 'missing-sdk', 'package.json'), '{"name":"missing-sdk","version":"1.0.0"}\n');
+      const res = await runGuards(
+        { ...mockWorker(['packages/missing-sdk/package.json']), output: 'Cannot find module missing-sdk' },
+        repo,
+        { dependencyAntiPatternCheck: true },
+      );
+      const issues = guardIssues(res, 'dependencyAntiPattern');
+      expect(issues.some(i => i.includes('packages/missing-sdk/package.json'))).toBe(true);
+      expect(res.allPassed).toBe(false);
+    });
+
+    it('does not flag __version__ without a dependency failure signal', async () => {
+      writeFileSync(join(repo, 'ownedpkg.py'), '__version__ = "1.0.0"\n');
+      const res = await runGuards(
+        { ...mockWorker(['ownedpkg.py']), output: 'normal feature work' },
+        repo,
+        { dependencyAntiPatternCheck: true },
+      );
+      const issues = guardIssues(res, 'dependencyAntiPattern');
+      expect(issues.length).toBe(0);
+      expect(res.allPassed).toBe(true);
+    });
+
+    it('does not flag an existing __version__ when the diff only changes another line', async () => {
+      writeFileSync(join(repo, 'ownedpkg.py'), '__version__ = "1.0.0"\nexport const value = 1\n');
+      execFileSync('git', ['add', 'ownedpkg.py'], { cwd: repo });
+      execFileSync('git', ['commit', '-m', 'add owned package'], { cwd: repo });
+
+      writeFileSync(join(repo, 'ownedpkg.py'), '__version__ = "1.0.0"\nexport const value = 2\n');
+      const res = await runGuards(
+        { ...mockWorker(['ownedpkg.py']), output: 'ModuleNotFoundError: No module named stonks' },
+        repo,
+        { dependencyAntiPatternCheck: true },
+      );
+      const issues = guardIssues(res, 'dependencyAntiPattern');
+      expect(issues.length).toBe(0);
+      expect(res.allPassed).toBe(true);
+    });
+  });
+
   describe('deadModuleCheck', () => {
     it('flags a new source module that nothing imports', async () => {
       writeFileSync(join(repo, 'orphanwidget.ts'), 'export function orphanwidget() { return 1; }\n');
