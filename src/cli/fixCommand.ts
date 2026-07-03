@@ -16,11 +16,12 @@
 import { execFile } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { balanceAreasToConcurrency } from './reviewAudit.js';
+import { balanceAreasToConcurrency, type AuditArea } from './reviewAudit.js';
 import { runPool } from '../support/concurrencyPool.js';
 import { startProgressHeartbeat } from './reviewProgress.js';
 import { status, c } from '../support/colors.js';
 import type { AdapterName } from '../adapters/types.js';
+import type { FixBoardHandle } from './fixBoard.js';
 
 /** A resolvable objective check (`npm run lint`, `cargo test`, `pytest`, …). */
 export interface Check {
@@ -309,6 +310,12 @@ export interface FixDeps {
   exists?: (relPath: string, cwd: string) => boolean;
   /** Record a green fix into repo knowledge. Default writes via recordTaskOutcome; tests pass a noop. */
   recordOutcome?: (info: { taskTitle: string; filesChanged: string[]; summary: string }) => Promise<void>;
+  /**
+   * Mount the live fix board over the round's areas → handle, or null to fall back
+   * to plain line output. Default lazily renders the Ink board on a TTY only; tests
+   * (non-TTY) get null and keep the injectable-log path. (INT-2446)
+   */
+  renderBoard?: (areas: AuditArea[], concurrency: number) => Promise<FixBoardHandle | null> | FixBoardHandle | null;
   log?: (line: string) => void;
 }
 
@@ -386,6 +393,14 @@ export async function runFixCommand(opts: FixOptions = {}, deps: FixDeps = {}): 
   const exists = deps.exists ?? ((p, base) => existsSync(join(base, p)));
   const runCheck = deps.runCheck ?? defaultRunCheck;
   const runFixWorker = deps.runFixWorker ?? ((area, checks, onLog) => defaultRunFixWorker(area, checks, cwd, opts, onLog));
+  // TTY-guard the import so scripted/piped runs (and tests) never load Ink. (INT-2446)
+  const renderBoard =
+    deps.renderBoard ??
+    (async (areas: AuditArea[], conc: number): Promise<FixBoardHandle | null> => {
+      if (!(process.stderr as NodeJS.WriteStream).isTTY) return null;
+      const { renderFixBoard } = await import('./fixBoard.js');
+      return renderFixBoard(areas, conc);
+    });
   const checks = deps.checks ?? resolveProjectChecks(probeProject(cwd), opts.checks);
   const recordOutcome =
     deps.recordOutcome ??
@@ -441,16 +456,43 @@ export async function runFixCommand(opts: FixOptions = {}, deps: FixDeps = {}): 
 
     const areas = deriveFixAreas(failing, concurrency, opts.maxFilesPerArea);
     log(`\nFixing ${failing.length} failing check(s) across ${areas.length} area(s)...`);
-    const settled = await runPool(areas, concurrency, async (area) => {
-      const r = await runFixWorker(area, checks, () => {});
-      log(r.filesChanged.length ? `  ${status.ok(`${area.label} — ${r.filesChanged.length} file(s)`)}` : `  ${status.warn(`${area.label} — no edit`)}`);
-      return r;
-    });
+    // Live board on a TTY; null (scripted/piped) falls back to per-area line logs.
+    // Board writes to stderr, so we suppress the stdout line logs while it's up to
+    // avoid clobbering it. (INT-2446)
+    const board = await renderBoard(areas, concurrency);
+    const total = areas.length;
+    let done = 0;
+    const settled = await runPool(
+      areas,
+      concurrency,
+      async (area) => {
+        board?.emit({ type: 'start', label: area.label, done, total });
+        return runFixWorker(area, checks, (line) => board?.emit({ type: 'log', label: area.label, line }));
+      },
+      (s) => {
+        done++;
+        const area = areas[s.index];
+        if (s.error) {
+          const message = s.error instanceof Error ? s.error.message : String(s.error);
+          if (board) board.emit({ type: 'error', label: area?.label ?? `area:${s.index}`, error: message, done, total });
+          else log(`  ${status.err(`${area?.label ?? `area:${s.index}`} — worker error: ${message}`)}`);
+        } else {
+          const n = s.value?.filesChanged.length ?? 0;
+          if (board) board.emit({ type: 'done', label: area.label, filesChanged: n, done, total });
+          else log(n ? `  ${status.ok(`${area.label} — ${n} file(s)`)}` : `  ${status.warn(`${area.label} — no edit`)}`);
+        }
+      },
+    );
+    board?.unmount();
     const workerErrors = settled.filter((s) => s.error !== undefined);
-    for (const s of workerErrors) {
-      const area = areas[s.index];
-      const message = s.error instanceof Error ? s.error.message : String(s.error);
-      log(`  ${status.err(`${area?.label ?? `area:${s.index}`} — worker error: ${message}`)}`);
+    // The board only renders running rows, so an errored area's message never
+    // showed — surface the details now that the board is torn down. (INT-2446)
+    if (board) {
+      for (const s of workerErrors) {
+        const area = areas[s.index];
+        const message = s.error instanceof Error ? s.error.message : String(s.error);
+        log(`  ${status.err(`${area?.label ?? `area:${s.index}`} — worker error: ${message}`)}`);
+      }
     }
     const filesChanged = [...new Set(settled.flatMap((s) => s.value?.filesChanged ?? []))];
     rounds.push({ round, outcomes, filesChanged });

@@ -219,6 +219,27 @@ describe('runFixCommand loop (INT-2267)', () => {
     expect(report.reason).toBe('no-checks');
   });
 
+  it('emits start/done/error to the live board during the fan-out (INT-2446)', async () => {
+    const events: Array<{ type: string; label: string }> = [];
+    const board = { emit: (e: { type: string; label: string }) => events.push({ type: e.type, label: e.label }), unmount: () => {} };
+    await runFixCommand(
+      { rounds: 2, concurrency: 2 },
+      {
+        ...silent,
+        // two files in two dirs → two areas; one worker succeeds, one throws
+        runCheck: async () => ({ passed: false, output: 'src/a/x.ts:1 fail\nsrc/b/y.ts:2 fail' }),
+        runFixWorker: async (area) => {
+          if (area.label === 'src/b') throw new Error('worker died');
+          return { success: true, filesChanged: ['src/a/x.ts'] };
+        },
+        renderBoard: () => board,
+      },
+    );
+    expect(events.filter((e) => e.type === 'start').map((e) => e.label).sort()).toEqual(['src/a', 'src/b']);
+    expect(events.filter((e) => e.type === 'done').map((e) => e.label)).toEqual(['src/a']);
+    expect(events.filter((e) => e.type === 'error').map((e) => e.label)).toEqual(['src/b']);
+  });
+
   it('records the outcome into repo knowledge on green after edits (INT-2268)', async () => {
     let pass = false;
     const recordOutcome = vi.fn(async () => {});
