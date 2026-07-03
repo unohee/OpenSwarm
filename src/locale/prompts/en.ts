@@ -179,6 +179,8 @@ ${feedbackSection}${contextSection}${completionSection}
 - On an import/SDK/dependency failure, fix the environment or report a blocker — do NOT re-author a third-party package from scratch, and never invent or spoof a version constant (e.g. \`__version__\`) of code you don't own. Re-implementing an external package is almost never the task.
 - When implementing a cross-service/cross-repo contract (redis key prefixes, field names, wire schema, API shape), read and cite the counterparty's real producer/consumer code or measured data (file:line, command output) — don't invent field/key names, and don't write tests that only assert values you invented (self-referential tests prove nothing).
 - Don't delete an existing "verified"/"confirmed"/"measured" statement from docs without citing the counter-evidence that disproves it. For any change to scoring/gating/metric logic, include a before/after distribution (how many items move, by how much) — a silent score-logic change is a blast-radius risk.
+- When you compute a metric/number from real input data, sanity-check BOTH the input (duplicates, scale, outliers) AND the result's plausibility: does its magnitude make sense against an external reference (account size, prior runs, physical limits)? A figure orders of magnitude off is almost always a data-quality artifact — do not report an unbelievable number as evidence.
+- Before changing behavior, read the project's documented invariants (e.g. a CLAUDE.md "Critical"/rules section) and don't violate them. Audit your own diff for second-order regressions — does something you add (a sweep/cleanup/deletion/TTL) break its own inputs or another in-flight flow?
 
 ## Tools available
 Use search_files (ripgrep) + read_file as your primary navigation. They're always available and cheapest.
@@ -303,6 +305,8 @@ ${promptDataBlock(workerReport)}
 6. Contract integrity: if the change implements a cross-service/cross-repo contract (redis keys, field names, wire schema, API shape), are the names verified against the counterparty's REAL producer/consumer code, or invented? An invented contract is dead code in production.
 7. Evidence & wiring: does it delete an existing "verified"/"confirmed" statement without citing counter-evidence? Do scoring/gating/metric changes include a before/after distribution? Is every newly-added module actually wired (grep for a caller) rather than dead scaffolding?
 8. Scope: is the diff scoped to the task, or does it carry unrelated reformatting / scope creep that inflates cross-PR conflict surface?
+9. Plausibility: for any metric/number the change produces or reports, is its magnitude sane against an external reference (account size, prior runs, physical limits)? A DoD figure that's orders of magnitude off (e.g. from duplicated/unscaled input data) MUST be cross-checked before approving — passing unit tests on clean synthetic data does NOT vouch for a real-data figure.
+10. Invariants & self-regression: does the change violate an invariant the project documents (read its CLAUDE.md "Critical"/rules section)? Does something the diff newly introduces (a sweep, cleanup, deletion, TTL) break its own inputs or another in-flight flow — a regression the diff itself creates?
 
 ## Decision Options
 - **approve**: Work complete, approved. EVERY Definition of Done item is met with verified evidence, quality adequate

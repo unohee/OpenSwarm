@@ -74,6 +74,18 @@ describe('buildWorkerPrompt', () => {
     expect(result).toContain('before/after');
   });
 
+  it('contains INT-2395/2399 rules (data plausibility, invariants & self-regression)', () => {
+    const result = enPrompts.buildWorkerPrompt(base);
+    // #2395 plausibility of computed numbers vs external reference
+    expect(result).toContain('orders of magnitude');
+    // #2399 documented invariants + second-order self-regression audit
+    expect(result).toContain('second-order regressions');
+    // ko mirror
+    const ko = koPrompts.buildWorkerPrompt(base);
+    expect(ko).toContain('plausibility');
+    expect(ko).toContain('invariant');
+  });
+
   it('with previousFeedback: includes feedback section', () => {
     const result = enPrompts.buildWorkerPrompt({
       ...base,
@@ -238,6 +250,16 @@ describe('buildReviewerPrompt', () => {
     // ko mirror
     const ko = koPrompts.buildReviewerPrompt(opts);
     expect(ko).toContain('dead scaffolding');
+  });
+
+  it('contains INT-2395/2399 review criteria (plausibility, invariants & self-regression)', () => {
+    const result = enPrompts.buildReviewerPrompt(opts);
+    expect(result).toContain('Plausibility');
+    expect(result).toContain('Invariants & self-regression');
+    // ko mirror
+    const ko = koPrompts.buildReviewerPrompt(opts);
+    expect(ko).toContain('plausibility');
+    expect(ko).toContain('자기회귀');
   });
 
   // Audit mode reframes the reviewer for diff-less, existing-file review. (INT-2006)
