@@ -11,7 +11,7 @@ import { runCli } from './runners/cliRunner.js';
 import { loadConfig, validateConfig, generateSampleConfig } from './core/config.js';
 import { loadEnvFile } from './core/envFile.js';
 import { initTelemetry, track } from './telemetry/telemetry.js';
-import { maybeNotifyUpdate } from './support/updateNotifier.js';
+import { maybeAutoUpdate } from './support/updateNotifier.js';
 
 // Load .env so CLI commands (e.g. `auth login --provider linear` reading
 // LINEAR_OAUTH_CLIENT_ID) see the same env the daemon does. Idempotent; never
@@ -717,7 +717,9 @@ program.action(launchChatTui);
 
 // Parse & Execute
 
-// Surface an "update available" notice (cached, TTY-only, never blocking on the
-// network for more than a moment) before dispatching the command. (INT-2270)
-await maybeNotifyUpdate(VERSION);
+// Auto-update from npm before dispatching: if a newer version is published,
+// `npm i -g` it and re-exec on the new binary (default ON; opt out with
+// OPENSWARM_NO_AUTO_UPDATE → passive notice). Cached 24h, skips CI/non-TTY/meta,
+// never blocks the CLI. (INT-2394, extends INT-2270)
+await maybeAutoUpdate(VERSION);
 program.parse();

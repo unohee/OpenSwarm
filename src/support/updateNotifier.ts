@@ -9,6 +9,7 @@
 // break the CLI. The network/fs/clock are injectable for tests.
 
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { c } from './colors.js';
@@ -131,5 +132,81 @@ export async function maybeNotifyUpdate(current: string, deps: NotifierDeps = {}
     if (latest && isNewer(latest, current)) out(formatUpdateNotice(current, latest));
   } catch {
     // A notifier must never break the CLI.
+  }
+}
+
+/** `npm install -g <pkg>@latest`. Returns true on success. (INT-2394) */
+function defaultInstall(pkg: string): boolean {
+  try {
+    execFileSync('npm', ['install', '-g', `${pkg}@latest`], { stdio: 'inherit', timeout: 180_000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Re-run the current command with the freshly-installed binary. Marks the child
+ * with OPENSWARM_UPDATED=1 so it won't try to update again (loop guard), waits
+ * for it, and exits with its code. Does not return on success. (INT-2394)
+ */
+function defaultReexec(): void {
+  const child = spawnSync(process.execPath, process.argv.slice(1), {
+    stdio: 'inherit',
+    env: { ...process.env, OPENSWARM_UPDATED: '1' },
+  });
+  process.exit(child.status ?? 0);
+}
+
+export interface AutoUpdateDeps extends NotifierDeps {
+  install?: (pkg: string) => boolean;
+  reexec?: () => void;
+}
+
+/**
+ * Auto-update: if a newer version is on npm, `npm i -g` it and re-exec the
+ * current command on the new binary. Default ON; falls back to a passive notice
+ * when opted out (OPENSWARM_NO_AUTO_UPDATE). Skips CI/non-TTY/meta invocations
+ * (never installs unattended) and no-ops once re-executed (OPENSWARM_UPDATED).
+ * Uses the same 24h cache as the notice. Never throws. (INT-2394)
+ */
+export async function maybeAutoUpdate(current: string, deps: AutoUpdateDeps = {}): Promise<void> {
+  try {
+    const argv = deps.argv ?? process.argv;
+    const env = deps.env ?? process.env;
+    const isTTY = deps.isTTY ?? !!process.stdout.isTTY;
+
+    if (env.OPENSWARM_UPDATED) return;                       // already the re-exec'd child
+    if (env.OPENSWARM_NO_AUTO_UPDATE) return maybeNotifyUpdate(current, deps); // opted out → notice only
+    if (shouldSkip(argv, env, isTTY)) return;                // CI / non-TTY / --version etc.
+
+    const now = deps.now ?? (() => Date.now());
+    const read = deps.readCache ?? readCache;
+    const write = deps.writeCache ?? writeCache;
+    const fetchFn = deps.fetchLatest ?? fetchLatest;
+    const out = deps.write ?? ((s: string) => process.stderr.write(s));
+    const install = deps.install ?? defaultInstall;
+    const reexec = deps.reexec ?? defaultReexec;
+
+    const cache = read();
+    let latest = cache?.latest ?? null;
+    const fresh = cache != null && now() - cache.checkedAt < DAY_MS;
+    if (!fresh) {
+      const fetched = await fetchFn();
+      write({ latest: fetched ?? latest ?? current, checkedAt: now() });
+      if (fetched) latest = fetched;
+    }
+
+    if (!latest || !isNewer(latest, current)) return;
+
+    out(`\n  ${c.dim('Updating')} ${c.dim(current)} ${c.dim('→')} ${c.green(latest)}…\n`);
+    if (!install(PKG)) {
+      out(`  ${c.dim(`Auto-update failed; continuing on ${current}. Run npm i -g ${PKG} manually.`)}\n`);
+      return;
+    }
+    out(`  ${c.green('Updated')} ${c.dim('→')} ${c.green(latest)}. ${c.dim('Restarting…')}\n`);
+    reexec(); // replaces/exits the process on success
+  } catch {
+    // Auto-update must never break the CLI.
   }
 }
