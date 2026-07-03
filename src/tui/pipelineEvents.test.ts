@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyActivity, reducePipelineEvent, initialPipelineState, MAX_STAGES, MAX_LOGS } from './pipelineEvents.js';
+import { classifyActivity, reducePipelineEvent, reducePipelineEvents, initialPipelineState, MAX_STAGES, MAX_LOGS } from './pipelineEvents.js';
 import type { HubEvent } from '../core/eventHub.js';
 
 const stage = (over: Record<string, unknown> = {}): HubEvent => ({
@@ -101,5 +101,23 @@ describe('reducePipelineEvent (EPIC INT-1813 S5)', () => {
     for (let i = 0; i < MAX_LOGS + 10; i++) t = reducePipelineEvent(t, log(`l${i}`));
     expect(t.logs).toHaveLength(MAX_LOGS);
     expect(t.logs[t.logs.length - 1]).toBe(`[worker] l${MAX_LOGS + 9}`);
+  });
+});
+
+describe('reducePipelineEvents batch fold (INT-2407)', () => {
+  it('folds a batch into the same state as applying events one by one', () => {
+    const events: HubEvent[] = [
+      stage({ status: 'start' }),
+      log('🔧 read_file src/app.ts'),
+      stage({ status: 'complete', model: 'gpt', durationMs: 3000 }),
+      log('done'),
+    ];
+    const sequential = events.reduce(reducePipelineEvent, initialPipelineState);
+    const batched = reducePipelineEvents(initialPipelineState, events);
+    expect(batched).toEqual(sequential);
+  });
+
+  it('returns the same state reference for an empty batch', () => {
+    expect(reducePipelineEvents(initialPipelineState, [])).toBe(initialPipelineState);
   });
 });

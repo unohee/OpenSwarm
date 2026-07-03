@@ -1,7 +1,7 @@
 // SubagentTree — concurrent tasks as a per-worktree agent tree (S7).
 // Presentational: takes nodes built by buildSubagentTree.
 import { Box, Text } from 'ink';
-import { useEffect, useState } from 'react';
+import { memo, useEffect, useState } from 'react';
 import { STATUS } from '../theme.js';
 import type { StatusKind } from '../../support/glyphs.js';
 import type { RepositoryNode, TaskStatus } from '../subagentTree.js';
@@ -52,7 +52,10 @@ function worktreeLabel(task: RepositoryNode['worktrees'][number]): string {
   return sanitizeTerminalLabel(`${id}${branch}${stage}${duration ? ` ${duration}` : ''}${decision}${title}`, NODE_LABEL_MAX_CHARS);
 }
 
-export function SubagentTree({ repositories, max = 6, maxRoles = 5 }: SubagentTreeProps) {
+// Memoized so log-only pipeline updates (stable `repositories` identity from the
+// panel's useMemo) skip re-rendering the tree — only stage changes rebuild it,
+// which also keeps the spinner interval from re-subscribing each render. (INT-2407)
+export const SubagentTree = memo(function SubagentTree({ repositories, max = 6, maxRoles = 5 }: SubagentTreeProps) {
   const worktreeLimit = clampLimit(max);
   const roleLimit = clampLimit(maxRoles);
   const [tick, setTick] = useState(0);
@@ -87,4 +90,4 @@ export function SubagentTree({ repositories, max = 6, maxRoles = 5 }: SubagentTr
       )}
     </Box>
   );
-}
+});

@@ -2,6 +2,7 @@
 // Presentational: takes already-reduced stage entries (parity with the
 // dashboard's renderStages).
 import { Box, Text } from 'ink';
+import { memo } from 'react';
 import { STATUS } from '../theme.js';
 import type { StatusKind } from '../../support/glyphs.js';
 import type { StageEntry } from '../pipelineEvents.js';
@@ -14,7 +15,9 @@ export interface StageTimelineProps {
   max?: number;
 }
 
-export function StageTimeline({ stages, max = 12 }: StageTimelineProps) {
+// Memoized so a log-only pipeline update (unchanged `stages` identity) skips
+// re-rendering the timeline, cutting per-commit work during SSE bursts. (INT-2407)
+export const StageTimeline = memo(function StageTimeline({ stages, max = 12 }: StageTimelineProps) {
   const shown = max > 0 ? stages.slice(-max) : [];
   return (
     <Box flexDirection="column">
@@ -36,4 +39,4 @@ export function StageTimeline({ stages, max = 12 }: StageTimelineProps) {
       )}
     </Box>
   );
-}
+});

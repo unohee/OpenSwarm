@@ -87,6 +87,14 @@ export function reducePipelineEvent(state: PipelineState, ev: HubEvent): Pipelin
   return state;
 }
 
+/**
+ * Fold a batch of events into state in a single step so a coalesced burst of
+ * SSE events produces one new state (one commit → one repaint). (INT-2407)
+ */
+export function reducePipelineEvents(state: PipelineState, events: HubEvent[]): PipelineState {
+  return events.reduce(reducePipelineEvent, state);
+}
+
 export function classifyActivity(line: string): string | undefined {
   const text = line.trim();
   const lower = text.toLowerCase();
