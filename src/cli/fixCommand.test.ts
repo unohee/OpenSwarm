@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   resolveChecks,
   resolveProjectChecks,
@@ -11,6 +11,12 @@ import {
   type FixArea,
   type ProjectProbe,
 } from './fixCommand.js';
+
+// defaultRunFixWorker dynamically imports runWorker; mock it so the default fix
+// path is exercised without spawning a real agent. Only the timeout test drives
+// this path (every other test injects runFixWorker). (INT-2447)
+const runWorkerMock = vi.hoisted(() => vi.fn());
+vi.mock('../agents/worker.js', () => ({ runWorker: runWorkerMock }));
 
 describe('resolveChecks (INT-2267)', () => {
   const scripts = { lint: 'oxlint src/', typecheck: 'tsc --noEmit', build: 'tsc', test: 'vitest run', dev: 'x' };
@@ -217,6 +223,32 @@ describe('runFixCommand loop (INT-2267)', () => {
   it('reports no-checks when nothing resolves', async () => {
     const report = await runFixCommand({}, { log: () => {}, checks: [] });
     expect(report.reason).toBe('no-checks');
+  });
+
+  describe('fix worker timeout (INT-2447)', () => {
+    // No injected runFixWorker → the default path runs → defaultRunFixWorker →
+    // the mocked runWorker, whose options we inspect.
+    const base = {
+      log: () => {},
+      exists: () => true,
+      checks,
+      recordOutcome: async () => {},
+      runCheck: async () => ({ passed: false, output: 'src/a/x.ts:1 fail' }),
+    };
+    beforeEach(() => {
+      runWorkerMock.mockReset().mockResolvedValue({ success: true, filesChanged: [] });
+    });
+
+    it('defaults the fix worker timeout to 15 minutes, not the 5-min adapter default', async () => {
+      await runFixCommand({ rounds: 2 }, base);
+      expect(runWorkerMock).toHaveBeenCalled();
+      expect(runWorkerMock.mock.calls[0][0].timeoutMs).toBe(900_000);
+    });
+
+    it('honors an explicit --timeout override', async () => {
+      await runFixCommand({ rounds: 2, timeoutMs: 123_456 }, base);
+      expect(runWorkerMock.mock.calls[0][0].timeoutMs).toBe(123_456);
+    });
   });
 
   it('emits start/done/error to the live board during the fan-out (INT-2446)', async () => {

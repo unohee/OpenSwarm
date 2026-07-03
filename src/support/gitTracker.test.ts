@@ -32,6 +32,32 @@ describe('gitTracker', () => {
     await expect(getChangedFilesSinceSnapshot(repo, snapshot)).resolves.toContain('new-file.txt');
   });
 
+  it('excludes pre-existing dirty files, reporting only changes after the snapshot (INT-2447)', async () => {
+    // Repo is ALREADY dirty before the snapshot: an untracked file + a modified
+    // tracked file. Previously the HEAD-only snapshot blamed the worker for both.
+    writeFileSync(join(repo, 'preexisting-untracked.txt'), 'junk\n');
+    writeFileSync(join(repo, 'tracked.txt'), 'tracked\ndirty-before\n');
+    const snapshot = await takeSnapshot(repo);
+
+    // Now the "worker" makes ITS edit.
+    writeFileSync(join(repo, 'worker-edit.txt'), 'fix\n');
+
+    const changed = await getChangedFilesSinceSnapshot(repo, snapshot);
+    expect(changed).toContain('worker-edit.txt');              // the worker's edit is reported
+    expect(changed).not.toContain('preexisting-untracked.txt'); // pre-existing dirt is NOT attributed
+    expect(changed).not.toContain('tracked.txt');              // pre-existing modification is NOT attributed
+  });
+
+  it('reports a worker edit to an already-dirty tracked file (no false negative) (INT-2447)', async () => {
+    // A file dirty before the snapshot that the worker ALSO edits must still be
+    // reported — the snapshot captures content, so a further change is detected.
+    writeFileSync(join(repo, 'tracked.txt'), 'tracked\ndirty-before\n');
+    const snapshot = await takeSnapshot(repo);
+    writeFileSync(join(repo, 'tracked.txt'), 'tracked\ndirty-before\nworker-added\n');
+
+    await expect(getChangedFilesSinceSnapshot(repo, snapshot)).resolves.toContain('tracked.txt');
+  });
+
   it('includes untracked files in current change detection', async () => {
     writeFileSync(join(repo, 'new-current.txt'), 'new\n');
 

@@ -4,6 +4,9 @@
 // ============================================
 
 import { spawn } from 'node:child_process';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 /**
  * Extract changed file list via git diff
@@ -38,13 +41,38 @@ export async function getChangedFiles(
 }
 
 /**
- * Save pre-work snapshot (stash or commit hash)
+ * Capture the CURRENT worktree state (tracked + untracked-non-ignored) as a git
+ * tree object, without touching the real index or worktree. A throwaway index
+ * (via GIT_INDEX_FILE) lets `git add -A` stage everything there, then `write-tree`
+ * turns it into a tree SHA we can diff against later.
+ *
+ * This is what makes change detection correct on an already-dirty repo: the
+ * pre-existing dirty files live in the snapshot tree, so only edits made AFTER
+ * the snapshot show up as changes. (Before this, the "snapshot" was just HEAD, so
+ * every worker was blamed for the repo's entire pre-existing dirty tree.)
+ */
+async function writeWorktreeTree(projectPath: string): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), 'osw-idx-'));
+  const indexFile = join(dir, 'index');
+  try {
+    const env: NodeJS.ProcessEnv = { GIT_INDEX_FILE: indexFile };
+    // Fresh temp index → `add -A` stages the full current worktree (new/modified,
+    // honoring .gitignore); write-tree records it. Works even in an empty repo.
+    await runGitCommand(projectPath, ['add', '-A'], env);
+    return (await runGitCommand(projectPath, ['write-tree'], env)).trim();
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+/**
+ * Save a pre-work snapshot of the worktree as a git tree SHA (opaque token —
+ * pass it back to getChangedFilesSinceSnapshot). Captures the dirty state so
+ * pre-existing changes are NOT later attributed to the worker. (INT-2447)
  */
 export async function takeSnapshot(projectPath: string): Promise<string> {
   try {
-    // Return current HEAD commit hash
-    const output = await runGitCommand(projectPath, ['rev-parse', 'HEAD']);
-    return output.trim();
+    return await writeWorktreeTree(projectPath);
   } catch (error) {
     console.error('[GitTracker] takeSnapshot error:', error);
     return '';
@@ -52,39 +80,22 @@ export async function takeSnapshot(projectPath: string): Promise<string> {
 }
 
 /**
- * Get files changed since snapshot
+ * Files changed since the snapshot: build the current worktree tree the same way
+ * and diff it against the snapshot tree. Reports ONLY what changed after the
+ * snapshot (added/modified/deleted, untracked included) — pre-existing dirty
+ * files identical in both trees don't appear. (INT-2447)
  */
 export async function getChangedFilesSinceSnapshot(
   projectPath: string,
-  snapshotHash: string
+  snapshotTree: string
 ): Promise<string[]> {
-  if (!snapshotHash) return [];
+  if (!snapshotTree) return [];
 
   try {
-    // Committed changes
-    const committedOutput = await runGitCommand(projectPath, [
-      'diff', '--name-only', snapshotHash, 'HEAD'
-    ]);
-
-    // Uncommitted changes (staged + unstaged)
-    const uncommittedOutput = await runGitCommand(projectPath, [
-      'diff', '--name-only'
-    ]);
-    const stagedOutput = await runGitCommand(projectPath, [
-      'diff', '--name-only', '--cached'
-    ]);
-    const untrackedOutput = await runGitCommand(projectPath, [
-      'ls-files', '--others', '--exclude-standard'
-    ]);
-
-    const files = new Set<string>();
-
-    committedOutput.split('\n').filter(Boolean).forEach(f => files.add(f));
-    uncommittedOutput.split('\n').filter(Boolean).forEach(f => files.add(f));
-    stagedOutput.split('\n').filter(Boolean).forEach(f => files.add(f));
-    untrackedOutput.split('\n').filter(Boolean).forEach(f => files.add(f));
-
-    return Array.from(files);
+    const currentTree = await writeWorktreeTree(projectPath);
+    if (currentTree === snapshotTree) return [];
+    const diff = await runGitCommand(projectPath, ['diff', '--name-only', snapshotTree, currentTree]);
+    return diff.split('\n').filter(Boolean);
   } catch (error) {
     console.error('[GitTracker] getChangedFilesSinceSnapshot error:', error);
     return [];
@@ -211,9 +222,9 @@ export async function getWorkingDiffDetail(projectPath: string): Promise<FileDif
 /**
  * Git command execution utility
  */
-function runGitCommand(cwd: string, args: string[]): Promise<string> {
+function runGitCommand(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<string> {
   return new Promise((resolve, reject) => {
-    const proc = spawn('git', args, { cwd });
+    const proc = spawn('git', args, { cwd, env: env ? { ...process.env, ...env } : process.env });
 
     let stdout = '';
     let stderr = '';

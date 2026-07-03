@@ -357,8 +357,9 @@ program
   .option('--concurrency <n>', 'Max fix workers in flight (default 4)', (v) => parseInt(v, 10))
   .option('--rounds <n>', 'Max check → fix → re-check rounds (default 3)', (v) => parseInt(v, 10))
   .option('--adapter <name>', 'Adapter override for the fix workers')
+  .option('--timeout <ms>', 'Per-area fix worker timeout in ms (default 900000 = 15 min)', parsePositiveIntegerOption)
   .option('--no-learn', 'Do not record a successful fix into the repo knowledge memory')
-  .action(async (opts: { path?: string; checks?: string[]; concurrency?: number; rounds?: number; adapter?: string; learn?: boolean }) => {
+  .action(async (opts: { path?: string; checks?: string[]; concurrency?: number; rounds?: number; adapter?: string; timeout?: number; learn?: boolean }) => {
     try {
       const { runFixCommand } = await import('./cli/fixCommand.js');
       const report = await runFixCommand({
@@ -367,6 +368,7 @@ program
         concurrency: opts.concurrency,
         rounds: opts.rounds,
         adapter: opts.adapter as import('./adapters/types.js').AdapterName | undefined,
+        timeoutMs: opts.timeout,
         learn: opts.learn,
       });
       if (!report.green) process.exitCode = 1;

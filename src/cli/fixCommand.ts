@@ -392,7 +392,12 @@ export async function runFixCommand(opts: FixOptions = {}, deps: FixDeps = {}): 
   const log = deps.log ?? ((l: string) => console.log(l));
   const exists = deps.exists ?? ((p, base) => existsSync(join(base, p)));
   const runCheck = deps.runCheck ?? defaultRunCheck;
-  const runFixWorker = deps.runFixWorker ?? ((area, checks, onLog) => defaultRunFixWorker(area, checks, cwd, opts, onLog));
+  // 15 min per area by default: codex on a real area routinely exceeds the 5-min
+  // adapter default and gets SIGKILLed ("codex timeout after 300000ms"). Mirrors
+  // review --max --fix. `--timeout` overrides. (INT-2447)
+  const workerTimeoutMs = opts.timeoutMs ?? 900_000;
+  const runFixWorker =
+    deps.runFixWorker ?? ((area, checks, onLog) => defaultRunFixWorker(area, checks, cwd, { ...opts, timeoutMs: workerTimeoutMs }, onLog));
   // TTY-guard the import so scripted/piped runs (and tests) never load Ink. (INT-2446)
   const renderBoard =
     deps.renderBoard ??
