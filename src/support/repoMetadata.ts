@@ -35,6 +35,23 @@ const RepoMetadataSchema = z.object({
    * the escape hatch for any language/toolchain. (INT-2303)
    */
   checks: z.record(z.string(), z.string()).optional(),
+  /**
+   * Sandbox / worktree execution knobs (INT-2415). Autonomous workers run in a
+   * fresh git worktree checked out from origin/main — it has no installed deps
+   * (node_modules/.venv) and none of the repo's gitignored real data (e.g.
+   * db/*.db), so a worker physically cannot run pytest/playwright/real-data
+   * verification. These knobs let a repo (a) opt gitignored paths into the
+   * worktree (symlinked from the original repo, which is the installed sandbox)
+   * and (b) raise the worker bash timeout for slow E2E/backtests/retraining.
+   */
+  sandbox: z
+    .object({
+      /** Gitignored dep/data paths to symlink from the original repo into the worktree. */
+      sharedPaths: z.array(z.string()).optional(),
+      /** Worker bash tool timeout in ms — E2E/backtests need minutes, not 30s. */
+      bashTimeoutMs: z.number().int().positive().optional(),
+    })
+    .optional(),
   /** Free-form notes the swarm should keep in mind. */
   notes: z.string().optional(),
 });
@@ -101,6 +118,20 @@ export async function saveRepoMetadata(repoPath: string, meta: RepoMetadata): Pr
   const filePath = join(repoPath, REPO_METADATA_FILENAME);
   await writeFile(filePath, `${JSON.stringify(validated, null, 2)}\n`, 'utf-8');
   return filePath;
+}
+
+/**
+ * Read `openswarm.json` `sandbox.bashTimeoutMs` from `repoPath`. Best-effort —
+ * a missing/malformed file yields `undefined` (the caller then falls back to an
+ * effort-derived or default timeout). Never throws. (INT-2415)
+ */
+export async function loadSandboxBashTimeoutMs(repoPath: string): Promise<number | undefined> {
+  try {
+    const meta = await loadRepoMetadata(repoPath);
+    return meta?.sandbox?.bashTimeoutMs;
+  } catch {
+    return undefined;
+  }
 }
 
 export class RepoMetadataError extends Error {

@@ -5,10 +5,11 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { existsSync, rmSync } from 'node:fs';
-import { isAbsolute, join, relative, resolve } from 'node:path';
+import { existsSync, mkdirSync, rmSync, symlinkSync } from 'node:fs';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { registerOwnedPR } from '../automation/prOwnership.js';
 import { runConventionalCommitGuard } from '../agents/pipelineGuards.js';
+import { loadRepoMetadata } from './repoMetadata.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -85,6 +86,80 @@ function assertManagedWorktreePath(repoPath: string, worktreePath: string): stri
   return path;
 }
 
+// Shared deps/data linking (INT-2415)
+//
+// A worktree is created fresh from origin/main, so it has NO node_modules / .venv
+// and none of the repo's gitignored real data (db/*.db etc.) — a worker there
+// physically cannot run npm/pytest/playwright or real-data verification. We keep
+// the worktree isolating CODE, but SHARE the original repo's gitignored deps/data
+// into it via symlink. The original repo is itself the installed sandbox, and
+// deps/DBs are read-mostly, so parallel workers sharing them is safe.
+
+/** Always-gitignored dependency dirs safe to auto-link without a config. */
+const AUTO_SHARED_CANDIDATES = ['node_modules', '.venv', 'venv'];
+
+interface SandboxConfig {
+  sandbox?: { sharedPaths?: string[] } | null;
+}
+
+/**
+ * Pure decision: which repo-relative paths should be symlinked into a worktree.
+ *
+ * - If openswarm.json declares `sandbox.sharedPaths`, trust that list verbatim
+ *   (the repo owner opted in — no gitignore check).
+ * - Otherwise auto-detect only the always-gitignored dependency dirs
+ *   (node_modules/.venv/venv); never a tracked dir.
+ *
+ * Returns only candidates that actually EXIST at `<repoPath>/<P>` (read-only
+ * check). Absolute or parent-escaping (`..`) entries are dropped for safety.
+ * The symlink creation itself is the caller's side effect. (INT-2415)
+ */
+export function resolveSharedPaths(repoPath: string, openswarmJson?: SandboxConfig | null): string[] {
+  const configured = openswarmJson?.sandbox?.sharedPaths;
+  const candidates = configured && configured.length > 0 ? configured : AUTO_SHARED_CANDIDATES;
+
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of candidates) {
+    const p = (raw ?? '').trim();
+    if (!p) continue;
+    if (isAbsolute(p) || p.split(/[\\/]/).includes('..')) continue; // never escape the repo
+    if (seen.has(p)) continue;
+    seen.add(p);
+    if (existsSync(join(repoPath, p))) out.push(p);
+  }
+  return out;
+}
+
+/**
+ * Symlink the original repo's shared gitignored deps/data into a fresh worktree.
+ * Best-effort and idempotent: skips paths already present in the worktree (never
+ * clobbers a checked-out tracked dir) and swallows per-link failures (a failed
+ * symlink degrades to today's no-deps behavior, never breaks worktree creation).
+ */
+async function linkSharedPaths(repoPath: string, worktreePath: string): Promise<void> {
+  let meta: SandboxConfig | null = null;
+  try {
+    meta = await loadRepoMetadata(repoPath);
+  } catch (err) {
+    // Malformed openswarm.json must not break worktree creation. (INT-2415)
+    console.warn(`[Worktree] openswarm.json unreadable; skipping sharedPaths config:`, err);
+  }
+
+  for (const rel of resolveSharedPaths(repoPath, meta)) {
+    const target = join(repoPath, rel); // absolute source so the link survives any cwd
+    const linkPath = join(worktreePath, rel);
+    try {
+      if (existsSync(linkPath)) continue; // tracked dir already checked out — do not clobber
+      mkdirSync(dirname(linkPath), { recursive: true }); // support nested sharedPaths (e.g. db/x.db)
+      symlinkSync(target, linkPath);
+      console.log(`[Worktree] Linked shared path: ${rel} -> ${target}`);
+    } catch (err) {
+      console.warn(`[Worktree] Failed to link shared path ${rel}:`, err);
+    }
+  }
+}
+
 // Worktree Lifecycle
 
 /** Create git worktree + checkout branch */
@@ -122,6 +197,10 @@ export async function createWorktree(
   // Create fresh worktree from origin/main
   await git(repoPath, 'worktree', 'add', '-b', branchName, worktreePath, 'origin/main');
   console.log(`[Worktree] Created: ${worktreePath} (branch: ${branchName})`);
+
+  // Share the original repo's gitignored deps/data into the fresh worktree so the
+  // worker can actually install / run tests / verify against real data. (INT-2415)
+  await linkSharedPaths(repoPath, worktreePath);
 
   return { worktreePath, branchName, originalPath: repoPath, issueId };
 }

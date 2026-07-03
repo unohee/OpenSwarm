@@ -1,8 +1,9 @@
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, lstatSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { createWorktree, removeWorktree, computeFileOverlaps, formatOverlapReport, type WorktreeInfo } from './worktreeManager.js';
+import { createWorktree, removeWorktree, resolveSharedPaths, computeFileOverlaps, formatOverlapReport, type WorktreeInfo } from './worktreeManager.js';
 
 describe('worktreeManager path safety', () => {
   let root: string;
@@ -52,6 +53,106 @@ describe('worktreeManager path safety', () => {
 
     await removeWorktree(info);
     expect(existsSync(managedPath)).toBe(false);
+  });
+});
+
+describe('resolveSharedPaths (INT-2415)', () => {
+  let root: string;
+  let repo: string;
+
+  beforeEach(() => {
+    root = join(tmpdir(), `openswarm-shared-paths-${process.pid}-${Date.now()}`);
+    repo = join(root, 'repo');
+    mkdirSync(repo, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('auto-detects node_modules/.venv/venv that exist at the repo root', () => {
+    mkdirSync(join(repo, 'node_modules'), { recursive: true });
+    mkdirSync(join(repo, '.venv'), { recursive: true });
+    // venv is absent → excluded; only existing candidates are returned.
+    expect(resolveSharedPaths(repo, null).sort()).toEqual(['.venv', 'node_modules']);
+  });
+
+  it('returns [] when no auto-detect candidates exist', () => {
+    expect(resolveSharedPaths(repo)).toEqual([]);
+  });
+
+  it('uses sandbox.sharedPaths verbatim (existing only) and overrides auto-detect', () => {
+    mkdirSync(join(repo, 'db'), { recursive: true });
+    writeFileSync(join(repo, 'db', 'prod.db'), 'x');
+    mkdirSync(join(repo, 'node_modules'), { recursive: true }); // present but NOT in config
+    const result = resolveSharedPaths(repo, { sandbox: { sharedPaths: ['db', 'missing-dir'] } });
+    // Only existing configured paths; node_modules is dropped because config takes over.
+    expect(result).toEqual(['db']);
+  });
+
+  it('falls back to auto-detect when sharedPaths is an empty array', () => {
+    mkdirSync(join(repo, 'venv'), { recursive: true });
+    expect(resolveSharedPaths(repo, { sandbox: { sharedPaths: [] } })).toEqual(['venv']);
+  });
+
+  it('drops absolute and parent-escaping entries', () => {
+    expect(resolveSharedPaths(repo, { sandbox: { sharedPaths: ['/etc', '../secrets', ''] } })).toEqual([]);
+  });
+});
+
+describe('createWorktree shared-path symlinks (INT-2415)', () => {
+  let root: string;
+  let repo: string;
+
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync('git', ['-C', cwd, ...args], { stdio: 'pipe' });
+
+  beforeEach(() => {
+    root = join(tmpdir(), `openswarm-worktree-link-${process.pid}-${Date.now()}`);
+    repo = join(root, 'repo');
+    mkdirSync(repo, { recursive: true });
+  });
+
+  afterEach(() => {
+    // Best-effort worktree teardown before removing the tree.
+    try { git(repo, 'worktree', 'remove', '--force', join(repo, 'worktree', 'INT-1')); } catch { /* ignore */ }
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('symlinks the repo node_modules into the worktree without clobbering tracked dirs', async () => {
+    const originBare = join(root, 'origin.git');
+    execFileSync('git', ['init', '--bare', '-b', 'main', originBare], { stdio: 'pipe' });
+    execFileSync('git', ['init', '-b', 'main', repo], { stdio: 'pipe' });
+    git(repo, 'config', 'user.email', 'test@example.com');
+    git(repo, 'config', 'user.name', 'Test');
+    git(repo, 'config', 'commit.gpgsign', 'false');
+
+    // A tracked source dir (checked out into the worktree from origin/main).
+    mkdirSync(join(repo, 'src'), { recursive: true });
+    writeFileSync(join(repo, 'src', 'index.ts'), 'export const x = 1;\n');
+    writeFileSync(join(repo, '.gitignore'), 'node_modules/\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-m', 'init');
+    git(repo, 'remote', 'add', 'origin', originBare);
+    git(repo, 'push', 'origin', 'main');
+
+    // Gitignored dep present only in the original working tree (untracked).
+    mkdirSync(join(repo, 'node_modules', 'leftpad'), { recursive: true });
+    writeFileSync(join(repo, 'node_modules', 'leftpad', 'index.js'), 'module.exports = 1;\n');
+
+    const info = await createWorktree(repo, 'INT-1', 'swarm/INT-1-test');
+
+    // node_modules is a symlink pointing at the original repo's node_modules.
+    const wtNodeModules = join(info.worktreePath, 'node_modules');
+    expect(lstatSync(wtNodeModules).isSymbolicLink()).toBe(true);
+    expect(realpathSync(wtNodeModules)).toBe(realpathSync(join(repo, 'node_modules')));
+    // The shared dep is reachable through the link.
+    expect(existsSync(join(wtNodeModules, 'leftpad', 'index.js'))).toBe(true);
+
+    // The tracked dir is a real checked-out dir, never replaced by a symlink.
+    const wtSrc = join(info.worktreePath, 'src');
+    expect(existsSync(join(wtSrc, 'index.ts'))).toBe(true);
+    expect(lstatSync(wtSrc).isSymbolicLink()).toBe(false);
   });
 });
 

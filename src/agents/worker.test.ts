@@ -4,7 +4,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { WorkerResult } from './agentPair.js';
-import { formatWorkReport, formatWorkerGitChangeStatus, type WorkerOptions } from './worker.js';
+import { formatWorkReport, formatWorkerGitChangeStatus, resolveWorkerBashTimeoutMs, WORKER_BASH_TIMEOUT_DEFAULT_MS, type WorkerOptions } from './worker.js';
 
 describe('worker', () => {
   beforeEach(() => {
@@ -27,6 +27,29 @@ describe('worker', () => {
 
     it('formats the no-change status', () => {
       expect(formatWorkerGitChangeStatus([])).toBe('[Worker] No file changes detected by Git or LLM');
+    });
+  });
+
+  describe('resolveWorkerBashTimeoutMs (INT-2415)', () => {
+    it('maps jobProfile effort to a timeout, ignoring any repo override', () => {
+      expect(resolveWorkerBashTimeoutMs({ effort: 'low' })).toBe(120_000);
+      expect(resolveWorkerBashTimeoutMs({ effort: 'medium' })).toBe(300_000);
+      expect(resolveWorkerBashTimeoutMs({ effort: 'high' })).toBe(900_000);
+      // Effort takes precedence over a repo override.
+      expect(resolveWorkerBashTimeoutMs({ effort: 'high', repoOverrideMs: 5_000 })).toBe(900_000);
+    });
+
+    it('falls back to the repo override when no effort is set', () => {
+      expect(resolveWorkerBashTimeoutMs({ repoOverrideMs: 600_000 })).toBe(600_000);
+    });
+
+    it('falls back to the 5min default when neither effort nor a valid override is present', () => {
+      expect(resolveWorkerBashTimeoutMs({})).toBe(WORKER_BASH_TIMEOUT_DEFAULT_MS);
+      expect(WORKER_BASH_TIMEOUT_DEFAULT_MS).toBe(300_000);
+      // Non-positive / NaN overrides are ignored.
+      expect(resolveWorkerBashTimeoutMs({ repoOverrideMs: 0 })).toBe(WORKER_BASH_TIMEOUT_DEFAULT_MS);
+      expect(resolveWorkerBashTimeoutMs({ repoOverrideMs: -1 })).toBe(WORKER_BASH_TIMEOUT_DEFAULT_MS);
+      expect(resolveWorkerBashTimeoutMs({ repoOverrideMs: Number.NaN })).toBe(WORKER_BASH_TIMEOUT_DEFAULT_MS);
     });
   });
 

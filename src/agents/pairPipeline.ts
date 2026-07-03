@@ -615,6 +615,7 @@ export class PairPipeline extends EventEmitter {
             maxTurns: this.config.roles?.worker?.maxTurns,
             adapterName: this.config.roles?.worker?.adapter,
             reasoningEffort: this.getEffortForTask(context.task),
+            bashTimeoutMs: await workerAgent.resolveWorkerBashTimeout(context.projectPath, this.getEffortForTask(context.task)), // INT-2415
             // No-edit guard (re-applied from stranded feat/v0.7.0 commit 2eea3bc):
             // reasoning workers frequently end with analysis only and never call
             // edit_file. Without this the guard defaults to 0 (disabled) — measured:

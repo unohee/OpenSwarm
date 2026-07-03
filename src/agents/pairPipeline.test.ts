@@ -9,9 +9,12 @@ const runReviewer = vi.fn();
 const broadcastEvent = vi.fn();
 const getDefaultModel = vi.fn();
 
-vi.mock('./worker.js', () => ({
-  runWorker,
-}));
+// Override runWorker only; keep the real pure helpers (e.g. resolveWorkerBashTimeoutMs
+// the worker stage now calls to set bashTimeoutMs — INT-2415).
+vi.mock('./worker.js', async () => {
+  const actual = await vi.importActual<typeof import('./worker.js')>('./worker.js');
+  return { ...actual, runWorker };
+});
 
 vi.mock('./reviewer.js', async () => {
   const actual = await vi.importActual<typeof import('./reviewer.js')>('./reviewer.js');
@@ -103,6 +106,8 @@ describe('PairPipeline model selection', () => {
     expect(result.success).toBe(true);
     expect(runWorker).toHaveBeenCalledWith(expect.objectContaining<Partial<WorkerOptions>>({
       model: 'profile-worker',
+      // No effort/repo override on this profile → 5min default reaches the worker. (INT-2415)
+      bashTimeoutMs: 300_000,
     }));
     expect(runReviewer).toHaveBeenCalledWith(expect.objectContaining<Partial<ReviewerOptions>>({
       model: 'profile-reviewer',

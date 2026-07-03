@@ -14,6 +14,7 @@ import { expandPath } from '../core/config.js';
 import { RateLimitError } from '../adapters/rateLimitError.js';
 import { isInfraError } from '../adapters/errorClassification.js';
 import { resolveEditFormat, SEARCH_REPLACE_PROMPT, WHOLE_FILE_PROMPT, type EditFormat } from '../support/editParser.js';
+import { loadSandboxBashTimeoutMs } from '../support/repoMetadata.js';
 
 // Types
 
@@ -55,6 +56,57 @@ export interface WorkerOptions {
    * Set explicitly to pin a format (e.g. roll back a regressing model to 'json').
    */
   editFormat?: EditFormat;
+}
+
+// Bash timeout policy (INT-2415)
+
+/**
+ * Default worker bash timeout (5min). The tools.ts DEFAULT_BASH_TIMEOUT_MS (30s)
+ * is the floor for non-worker callers, but the autonomous worker runs real
+ * verification (pytest / playwright / backtests / retraining) that needs minutes,
+ * not seconds — a 30s cap made every such command time out, so reviewers demanded
+ * "live/E2E verification" the worker could never physically complete.
+ */
+export const WORKER_BASH_TIMEOUT_DEFAULT_MS = 300_000;
+
+/** jobProfile effort → bash timeout. Heavier tasks get longer verification budgets. */
+const EFFORT_BASH_TIMEOUT_MS: Record<'low' | 'medium' | 'high', number> = {
+  low: 120_000, // 2min
+  medium: 300_000, // 5min
+  high: 900_000, // 15min
+};
+
+/**
+ * Resolve the worker's bash tool timeout (ms). Pure + total.
+ *
+ * Precedence (INT-2415):
+ *   1. matched jobProfile `effort` (low/medium/high) — task-shaped budget
+ *   2. repo override — openswarm.json `sandbox.bashTimeoutMs`
+ *   3. a 5min default (WORKER_BASH_TIMEOUT_DEFAULT_MS)
+ *
+ * A non-positive/NaN repo override is ignored (falls through to the default).
+ */
+export function resolveWorkerBashTimeoutMs(input: {
+  effort?: 'low' | 'medium' | 'high';
+  repoOverrideMs?: number;
+}): number {
+  if (input.effort) return EFFORT_BASH_TIMEOUT_MS[input.effort];
+  if (typeof input.repoOverrideMs === 'number' && input.repoOverrideMs > 0) {
+    return input.repoOverrideMs;
+  }
+  return WORKER_BASH_TIMEOUT_DEFAULT_MS;
+}
+
+/**
+ * Async convenience over resolveWorkerBashTimeoutMs: reads the repo override
+ * (openswarm.json `sandbox.bashTimeoutMs`) from `projectPath` itself, so callers
+ * pass only the matched jobProfile effort. Best-effort I/O. (INT-2415)
+ */
+export async function resolveWorkerBashTimeout(
+  projectPath: string,
+  effort?: 'low' | 'medium' | 'high',
+): Promise<number> {
+  return resolveWorkerBashTimeoutMs({ effort, repoOverrideMs: await loadSandboxBashTimeoutMs(projectPath) });
 }
 
 // Prompts
