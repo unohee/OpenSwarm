@@ -51,6 +51,7 @@ import { STUCK_LABEL } from '../linear/index.js';
 import { refreshGraph, toProjectSlug } from '../knowledge/index.js';
 import { checkAllMonitors, getActiveMonitors } from './longRunningMonitor.js';
 import { detectFileConflicts } from '../orchestration/conflictDetector.js';
+import { resolveAdapterDefaultModel } from '../agents/stageModelResolver.js';
 import type { AutonomousConfig, RunnerState } from './runnerTypes.js';
 import type { AdapterName } from '../adapters/types.js';
 import {
@@ -81,6 +82,8 @@ export class AutonomousRunner {
   private config: AutonomousConfig;
   private engine: DecisionEngine;
   private scheduler: TaskScheduler;
+  /** Adapter default-model cache for the dashboard PAIR bar (INT-2393). */
+  private defaultModelCache = new Map<string, Promise<string | undefined>>();
   private cronJob: Cron | null = null;
   private state: RunnerState = {
     isRunning: false,
@@ -1467,20 +1470,26 @@ export class AutonomousRunner {
     }
   }
 
-  getAdapterSummary() {
+  async getAdapterSummary() {
     const defaultAdapter = this.config.defaultAdapter ?? 'codex';
     const defaultRoles = this.config.defaultRoles;
+    const workerAdapter = defaultRoles?.worker?.adapter ?? defaultAdapter;
+    const reviewerAdapter = defaultRoles?.reviewer?.adapter ?? defaultAdapter;
 
     return {
       defaultAdapter,
       worker: {
-        adapter: defaultRoles?.worker?.adapter ?? defaultAdapter,
-        model: defaultRoles?.worker?.model ?? this.config.workerModel,
+        adapter: workerAdapter,
+        // Resolve the adapter's real default when config omits the model, so the
+        // dashboard's PAIR bar shows what's running instead of "-". (INT-2393)
+        model: defaultRoles?.worker?.model ?? this.config.workerModel
+          ?? await resolveAdapterDefaultModel(workerAdapter, this.defaultModelCache),
         enabled: defaultRoles?.worker?.enabled !== false,
       },
       reviewer: {
-        adapter: defaultRoles?.reviewer?.adapter ?? defaultAdapter,
-        model: defaultRoles?.reviewer?.model ?? this.config.reviewerModel,
+        adapter: reviewerAdapter,
+        model: defaultRoles?.reviewer?.model ?? this.config.reviewerModel
+          ?? await resolveAdapterDefaultModel(reviewerAdapter, this.defaultModelCache),
         enabled: defaultRoles?.reviewer?.enabled !== false,
       },
       tester: defaultRoles?.tester ? {

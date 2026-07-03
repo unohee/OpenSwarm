@@ -478,7 +478,7 @@ export async function startWebServer(port: number = 3847): Promise<void> {
       } else if (url === '/api/stats') {
         const stats = runnerRef?.getStats();
         const state = runnerRef?.getState();
-        const adapters = runnerRef?.getAdapterSummary();
+        const adapters = await runnerRef?.getAdapterSummary();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           runningTasks: stats?.schedulerStats?.running ?? 0,
@@ -845,8 +845,9 @@ export async function startWebServer(port: number = 3847): Promise<void> {
           ? '## Relevant Past Discussions\n' + memories.map(m => `- ${m.content.replace(/^Q: |^A: /g, '')}`).join('\n')
           : '';
 
-        const provider = runnerRef?.getAdapterSummary().defaultAdapter ?? 'codex';
-        const model = runnerRef?.getAdapterSummary().worker?.model ?? getDefaultChatModel(provider);
+        const adapterSummary = await runnerRef?.getAdapterSummary();
+        const provider = adapterSummary?.defaultAdapter ?? 'codex';
+        const model = adapterSummary?.worker?.model ?? getDefaultChatModel(provider);
 
         const contextPrompt = [
           'You are OpenSwarm, an autonomous code development supervisor.',
