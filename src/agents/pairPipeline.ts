@@ -39,6 +39,7 @@ import * as skillDocumenterAgent from './skillDocumenter.js';
 import { StuckDetector, createStuckDetector } from '../support/stuckDetector.js';
 import { RateLimitError } from '../adapters/rateLimitError.js';
 import { isInfraError } from '../adapters/errorClassification.js';
+import { resolveAdapterDefaultModel } from './stageModelResolver.js';
 
 // Types
 
@@ -219,6 +220,8 @@ export class PairPipeline extends EventEmitter {
   private jobProfiles: JobProfile[];
   /** Set per run() — aborts the pipeline + in-flight adapter call on cancel/disable. */
   private abortSignal?: AbortSignal;
+  /** Cache of adapter default models (heavy: OAuth + live catalog) keyed by adapter name. (INT-2393) */
+  private defaultModelCache = new Map<string, Promise<string | undefined>>();
 
   /** Throw if this run has been cancelled. Called at iteration/stage boundaries. */
   private throwIfAborted(): void {
@@ -259,6 +262,7 @@ export class PairPipeline extends EventEmitter {
     const profile = this.getProfileForTask(task);
     return profile?.roles?.[stage] || this.config.roles?.[stage]?.model;
   }
+
 
   /** Reasoning effort from the matched jobProfile (heavy tasks reason harder). */
   private getEffortForTask(task: TaskItem): 'low' | 'medium' | 'high' | undefined {
@@ -538,7 +542,11 @@ export class PairPipeline extends EventEmitter {
     overrides?: { model?: string }
   ): Promise<StageResult> {
     const startTime = Date.now();
-    const stageModel = overrides?.model ?? this.getModelForRole(stage, context.task);
+    // Display model: explicit override → configured (jobProfile/role) → adapter
+    // default (so the TUI/dashboard aren't blank when config omits it). (INT-2393)
+    const stageModel = overrides?.model
+      ?? this.getModelForRole(stage, context.task)
+      ?? await resolveAdapterDefaultModel(this.config.roles?.[stage]?.adapter, this.defaultModelCache);
     const prefix = context.taskPrefix;
     const metadata = this.stageMetadata(context);
     console.log(`[${prefix}] Stage starting: ${stage}`);
@@ -806,7 +814,7 @@ export class PairPipeline extends EventEmitter {
       broadcastEvent({ type: 'pipeline:stage', data: {
         taskId: context.task.id, stage, status: 'complete',
         ...metadata,
-        model: costInfo?.model,
+        model: costInfo?.model ?? stageModel,
         inputTokens: costInfo?.inputTokens,
         outputTokens: costInfo?.outputTokens,
         costUsd: costInfo?.costUsd,
@@ -834,6 +842,7 @@ export class PairPipeline extends EventEmitter {
       broadcastEvent({ type: 'pipeline:stage', data: {
         taskId: context.task.id, stage, status: 'fail',
         ...metadata,
+        model: stageModel,
         durationMs: stageResult.duration,
         rateLimitResetsAt: error instanceof RateLimitError && error.resetsAt ? error.resetsAt * 1000 : undefined,
         error: error instanceof Error ? error.message : String(error),
