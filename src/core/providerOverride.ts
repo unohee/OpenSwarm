@@ -27,6 +27,24 @@ export function readProviderOverride(): AdapterName | undefined {
   }
 }
 
+/**
+ * Build the loud startup warning shown when provider-override.json disagrees with
+ * config.yaml's `adapter`. The override still wins (that is the documented toggle
+ * behaviour) — this only makes the otherwise-silent divergence visible so an operator
+ * does not waste time wondering why the daemon runs a different provider than
+ * config.yaml declares (e.g. a stale `codex` pin masking `codex-responses`). Pure —
+ * safe to unit-test. (INT-2408)
+ */
+export function formatProviderOverrideMismatchWarning(
+  override: AdapterName,
+  configAdapter: AdapterName,
+): string {
+  return (
+    `⚠️ [Service] provider-override.json forces "${override}" — overriding config.yaml ` +
+    `adapter "${configAdapter}". Delete ${OVERRIDE_PATH} to use the config value.`
+  );
+}
+
 /** Record the user's provider choice so it survives a restart. Best-effort — never blocks the toggle. */
 export function writeProviderOverride(provider: AdapterName): void {
   try {

@@ -10,6 +10,7 @@ import { parseCliStreamChunk } from '../agents/cliStreamParser.js';
 import { registerProcess } from './processRegistry.js';
 import { buildWorkerEnv } from './envPath.js';
 import { detectRateLimit } from './rateLimitError.js';
+import { codexMcpAuthHint } from './errorClassification.js';
 
 /**
  * Spawn a CLI process using the given adapter and options.
@@ -106,6 +107,15 @@ export async function spawnCli(
           console.error(`[${adapter.name}] stderr: ${stderrSnippet || '(empty)'}`);
           console.error(`[${adapter.name}] stdout (first 300): ${stdoutSnippet || '(empty)'}`);
           console.error(`[${adapter.name}] Duration: ${durationMs}ms, CWD: ${options.cwd}`);
+
+          // Non-blocking diagnostic: an OAuth-protected `url=` MCP server in
+          // ~/.codex/config.toml makes codex quit with an opaque rmcp AuthRequired
+          // error. Surface the real cause here instead of leaving it to be
+          // investigated by hand. Additive only — does not affect control flow. (INT-2408)
+          const mcpAuthHint = codexMcpAuthHint(`${stderr}\n${stdout}`);
+          if (mcpAuthHint) {
+            console.warn(`[${adapter.name}] ${mcpAuthHint}`);
+          }
 
           const rateLimitErr = detectRateLimit(stdout, stderr);
           if (rateLimitErr) {

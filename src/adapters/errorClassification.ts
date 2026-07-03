@@ -53,3 +53,25 @@ export function isInfraError(error: unknown): boolean {
   if (!msg) return false;
   return INFRA_ERROR_PATTERNS.some((p) => msg.includes(p));
 }
+
+/**
+ * Diagnostic hint for the opaque failure where codex CLI dies because an MCP server
+ * declared in ~/.codex/config.toml is OAuth-protected. A direct `url=` MCP server that
+ * returns 401 makes codex's rmcp transport quit with a fatal line like:
+ *   rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired
+ * That message names neither the config file nor the real cause, so the failure looks
+ * like a generic `codex CLI failed with code 1`. This returns a one-line pointer at the
+ * actual fix; returns null for unrelated errors. Pure and additive — it does NOT change
+ * error classification (isInfraError still owns that) or any control flow. (INT-2408)
+ */
+export function codexMcpAuthHint(error: unknown): string | null {
+  const msg = (error instanceof Error ? error.message : String(error ?? '')).toLowerCase();
+  if (!msg) return null;
+  const authRequired = msg.includes('authrequired');
+  const rmcpTransport = msg.includes('rmcp') || msg.includes('transport channel closed');
+  if (!authRequired || !rmcpTransport) return null;
+  return (
+    "codex CLI: an MCP server in ~/.codex/config.toml returned 401 (OAuth). " +
+    "Replace a direct 'url=' server with an mcp-remote (stdio) entry, or remove it."
+  );
+}

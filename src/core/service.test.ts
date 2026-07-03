@@ -73,6 +73,7 @@ vi.mock('../adapters/index.js', () => ({
 
 vi.mock('./providerOverride.js', () => ({
   readProviderOverride: vi.fn(),
+  formatProviderOverrideMismatchWarning: vi.fn(() => 'provider-override mismatch (test)'),
 }));
 
 vi.mock('../automation/prProcessor.js', () => {

@@ -24,7 +24,7 @@ import { initRateLimiters, destroyRateLimiters } from '../support/rateLimiter.js
 import { compactMemoryTable, shouldCompact, cleanupBackupFiles } from '../memory/compaction.js';
 import { Cron } from 'croner';
 import { setDefaultAdapter } from '../adapters/index.js';
-import { readProviderOverride } from './providerOverride.js';
+import { readProviderOverride, formatProviderOverrideMismatchWarning } from './providerOverride.js';
 import { enrichTaskFromState, hydrateTaskStateFromComments, updateTaskLinearState } from '../taskState/store.js';
 
 let state: ServiceState = {
@@ -244,7 +244,10 @@ export async function startService(config: SwarmConfig): Promise<void> {
     if (providerOverride && providerOverride !== (config.adapter ?? 'codex')) {
       setDefaultAdapter(providerOverride);
       runnerInstance.switchProvider(providerOverride);
-      console.log(`[Service] Restored persisted provider: ${providerOverride}`);
+      // The override silently wins over config.yaml — make that divergence loud so the
+      // operator isn't left wondering why the daemon runs a different provider than
+      // config.yaml declares. Behaviour is unchanged; only visibility. (INT-2408)
+      console.warn(formatProviderOverrideMismatchWarning(providerOverride, config.adapter ?? 'codex'));
     }
     const modelInfo = config.autonomous.models
       ? `, Worker: ${config.autonomous.models.worker || 'default'}, Reviewer: ${config.autonomous.models.reviewer || 'default'}`

@@ -60,4 +60,17 @@ describe('providerOverride', () => {
     const { readProviderOverride } = await import('./providerOverride.js');
     expect(readProviderOverride()).toBeUndefined();
   });
+
+  it('formats a loud mismatch warning naming both providers and the override file (INT-2408)', async () => {
+    const { formatProviderOverrideMismatchWarning } = await import('./providerOverride.js');
+    const msg = formatProviderOverrideMismatchWarning('codex', 'codex-responses');
+
+    // Both values must appear so the divergence is obvious.
+    expect(msg).toContain('"codex"');
+    expect(msg).toContain('"codex-responses"');
+    // Points at the actual file to delete, and reads as a warning.
+    expect(msg).toContain('provider-override.json');
+    expect(msg).toContain('overriding config.yaml');
+    expect(msg).toContain('⚠️');
+  });
 });
