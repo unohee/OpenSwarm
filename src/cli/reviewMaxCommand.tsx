@@ -17,13 +17,14 @@ import {
   listSourceFiles,
   balanceAreasToConcurrency,
   runMaxReview,
-  runAreaFixes,
+  runFixVerifyLoop,
   fixTargets,
   formatAuditSummary,
   formatAuditReport,
   mergeFallback,
   type AuditArea,
-  type FixAreaResult,
+  type FixVerifyRound,
+  type FixVerifyStop,
   type AuditRun,
   type AuditSummary,
 } from './reviewAudit.js';
@@ -60,6 +61,8 @@ export interface ReviewMaxOptions {
   noFallback?: boolean;
   /** Apply the reviewer's fixes to each non-approve area (working tree only). (INT-2249) */
   fix?: boolean;
+  /** For --fix: max fix → re-review rounds before giving up (default 3). (INT-2443) */
+  fixRounds?: number;
   /** Record the audit findings into repo knowledge (default true; --no-learn opts out). (INT-2268) */
   learn?: boolean;
 }
@@ -231,7 +234,69 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
     console.warn(`  Retry after ${when}${resolveFallbackAdapter(opts) ? ' (fallback adapter also exhausted)' : ', or set `--fallback <adapter>`'}.`);
   }
 
-  // (3) Persist a markdown report so the result isn't lost to the scrollback. (INT-2022)
+  // (3.5) --fix: iterate fix → re-review until every flagged area approves or the
+  //       round budget (--fix-rounds, default 3) runs out. Each round fixes the
+  //       currently-flagged areas, then re-reviews only the ones actually edited
+  //       for a fresh verdict. Edits accumulate in the working tree — no commit —
+  //       so the user reviews the diff first. (INT-2249 / INT-2443)
+  if (opts.fix) {
+    const targets = fixTargets(run);
+    if (!targets.length) {
+      console.log('\n--fix: nothing to apply (every area approved).');
+    } else {
+      const maxRounds = positiveIntegerOption(opts.fixRounds, 3, '--fix-rounds');
+      console.log(
+        `\n${status.running('Fix → verify loop')} up to ${c.yellow(String(maxRounds))} round(s), ` +
+          `${c.yellow(String(targets.length))} area(s) flagged, ${concurrency} concurrent worker(s).`,
+      );
+      const loop = await runFixVerifyLoop(
+        run,
+        cwd,
+        // 15 min per area: the adapter default (5 min) SIGKILLs fix workers on
+        // issue-heavy areas mid-edit.
+        { concurrency, adapter: opts.adapter as AdapterName | undefined, fixTimeoutMs: 900_000, maxRounds },
+        {
+          onRoundStart: (round, flagged) =>
+            console.log(`\n${c.bold(`Round ${round}/${maxRounds}`)} — fixing ${flagged} area(s)...`),
+          onFixProgress: (e) => {
+            if (e.type === 'done') console.log(`  ${status.ok(`${e.label} — ${e.filesChanged} file(s) changed`)}`);
+            else if (e.type === 'error') console.log(`  ${status.err(`${e.label} — ${e.error}`)}`);
+          },
+          onReviewProgress: (e) => {
+            if (e.type === 'done') console.log(`  ${status.info(`re-review ${e.label} — ${e.decision}`)}`);
+            else if (e.type === 'error') console.log(`  ${status.err(`re-review ${e.label} — failed`)}`);
+          },
+          onRoundEnd: (r: FixVerifyRound) =>
+            console.log(
+              `  ${c.dim(`Round ${r.round}: ${r.edited} area(s) edited, ${r.resolved} resolved, ${r.remaining} still flagged.`)}`,
+            ),
+        },
+      );
+      // The loop's re-review carries the fresh verdicts — report/persist on those,
+      // not the stale first-pass run.
+      run = loop.finalRun;
+      const stopLabel: Record<FixVerifyStop, string> = {
+        'all-approved': 'all findings cleared',
+        'max-rounds': 'round budget spent',
+        'no-progress': 'workers made no edits',
+        'rate-limit': 'usage limit hit',
+      };
+      // Count "not approved" (includes errored/rate-limited areas), matching
+      // loop.resolved — fixTargets would undercount an errored area.
+      const still = run.results.filter((r) => r.review?.decision !== 'approve').length;
+      const headline = loop.resolved
+        ? status.ok(`--fix: resolved every flagged area in ${loop.rounds.length} round(s)`)
+        : status.warn(
+            `--fix: ${still} area(s) still flagged after ${loop.rounds.length} round(s) (${stopLabel[loop.stopReason]})`,
+          );
+      console.log(`\n${headline} · ${c.yellow(`${loop.filesChanged.length} file(s) touched`)}`);
+      console.log(c.dim('Changes are in the working tree — review the diff before committing.'));
+    }
+  }
+
+  // (3.6) Persist a markdown report so the result isn't lost to the scrollback.
+  //       Built here (after --fix) so it reflects the verified post-fix verdicts —
+  //       and so the Linear master issue below embeds the same final state. (INT-2022 / INT-2443)
   const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   const report = formatAuditReport(run.summary, basename(cwd) || cwd, ts);
   const outPath = opts.out ?? join(cwd, '.openswarm', 'audit', `audit-${ts}.md`);
@@ -241,60 +306,6 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
     console.log(`\nReport saved: ${outPath}`);
   } catch (e) {
     console.warn(`Could not save report: ${e instanceof Error ? e.message : String(e)}`);
-  }
-
-  // (3.5) --fix: apply the reviewer's findings for every non-approve area,
-  //       fanned out with the same concurrency. Edits land in the working tree —
-  //       no commit, no re-review — so the user reviews the diff first. (INT-2249)
-  if (opts.fix) {
-    const targets = fixTargets(run);
-    if (!targets.length) {
-      console.log('\n--fix: nothing to apply (every area approved).');
-    } else {
-      console.log(`\nApplying fixes across ${targets.length} area(s) with ${concurrency} concurrent worker(s)...`);
-      const fixEvents = new EventEmitter();
-      fixEvents.setMaxListeners(0);
-      const showFixBoard = Boolean((process.stderr as NodeJS.WriteStream).isTTY);
-      const fixBoard = showFixBoard
-        ? render(
-            <AuditBoard
-              areas={targets.map((t) => t.area)}
-              concurrency={concurrency}
-              events={fixEvents}
-              mode="fix"
-            />,
-            { stdout: process.stderr as unknown as NodeJS.WriteStream },
-          )
-        : undefined;
-      let fixes: FixAreaResult[];
-      try {
-        fixes = await runAreaFixes(
-          run,
-          cwd,
-          // 15 min per area: without an explicit timeoutMs the adapter default (5 min)
-          // SIGKILLed fix workers on issue-heavy areas mid-edit.
-          { concurrency, adapter: opts.adapter as AdapterName | undefined, timeoutMs: 900_000 },
-          {
-            onProgress: (e) => {
-              if (showFixBoard) fixEvents.emit('progress', e);
-              else if (e.type === 'done') console.log(`  ${status.ok(`${e.label} — ${e.filesChanged} file(s) changed`)}`);
-              else if (e.type === 'error') console.log(`  ${status.err(`${e.label} — ${e.error}`)}`);
-            },
-          },
-        );
-      } finally {
-        fixBoard?.unmount();
-      }
-      const edited = fixes.filter((f) => f.applied && f.filesChanged.length);
-      const failed = fixes.filter((f) => !f.applied);
-      const touched = [...new Set(edited.flatMap((f) => f.filesChanged))];
-      console.log(
-        `\n${status.ok(`--fix: ${edited.length}/${targets.length} area(s) edited`)}` +
-          ` ${c.yellow(`${touched.length} file(s) touched`)}` +
-          `${failed.length ? ` ${status.err(`${failed.length} failed`)}` : ''}`,
-      );
-      console.log(c.dim('Changes are in the working tree — review the diff before committing.'));
-    }
   }
 
   // (4) Linear: PM synthesis is the DEFAULT — a master parent + ≤10 cohesive

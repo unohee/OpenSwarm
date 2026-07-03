@@ -9,9 +9,11 @@ import {
   formatAuditSummary,
   runMaxReview,
   runAreaFixes,
+  runFixVerifyLoop,
   fixTargets,
   buildFixTaskDescription,
   mergeFallback,
+  mergeReReview,
   type AuditArea,
   type AuditAreaResult,
   type AuditProgress,
@@ -429,5 +431,112 @@ describe('fixTargets + runAreaFixes (INT-2249)', () => {
     const c = fixes.find((f) => f.label === 'src/c');
     expect(c?.applied).toBe(false);
     expect(c?.error).toContain('worker died');
+  });
+});
+
+describe('runFixVerifyLoop (INT-2443)', () => {
+  const area = (label: string): AuditArea => ({ label, dir: label, files: [`${label}/f.ts`] });
+  // src/a already approves; src/b is flagged and needs fixing.
+  const initial = (): AuditRun => ({
+    results: [
+      { area: area('src/a'), review: { decision: 'approve', feedback: '' } },
+      { area: area('src/b'), review: { decision: 'revise', feedback: '', issues: ['bug'] } },
+    ],
+    summary: aggregateAuditResults([]),
+  });
+
+  it('mergeReReview overlays fresh verdicts, flipping reject→approve', () => {
+    const base: AuditRun = {
+      results: [
+        { area: area('src/a'), review: { decision: 'approve', feedback: '' } },
+        { area: area('src/b'), review: { decision: 'reject', feedback: '' } },
+      ],
+      summary: aggregateAuditResults([]),
+    };
+    const reReview: AuditRun = {
+      results: [{ area: area('src/b'), review: { decision: 'approve', feedback: '' } }],
+      summary: aggregateAuditResults([]),
+    };
+    const merged = mergeReReview(base, reReview);
+    expect(merged.results.find((r) => r.area.label === 'src/b')?.review?.decision).toBe('approve');
+    expect(merged.summary.decision).toBe('approve'); // both areas now approve
+  });
+
+  it('loops fix → re-review and converges once the re-review approves', async () => {
+    let reviews = 0;
+    const fixed: string[] = [];
+    const result = await runFixVerifyLoop(initial(), '/repo', { concurrency: 2, maxRounds: 3 }, {
+      fix: async (a) => { fixed.push(a.label); return { success: true, filesChanged: a.files }; },
+      // round 1 re-review still revises, round 2 approves
+      review: async () => ({ decision: ++reviews >= 2 ? 'approve' : 'revise', feedback: '' }),
+    });
+    expect(result.rounds).toHaveLength(2);
+    expect(result.resolved).toBe(true);
+    expect(result.stopReason).toBe('all-approved');
+    expect(result.filesChanged).toEqual(['src/b/f.ts']); // only the flagged area, deduped
+    expect(fixed).toEqual(['src/b', 'src/b']);            // fixed twice, never touched src/a
+  });
+
+  it('stops at the round budget and reports the still-flagged area', async () => {
+    const result = await runFixVerifyLoop(initial(), '/repo', { concurrency: 1, maxRounds: 2 }, {
+      fix: async (a) => ({ success: true, filesChanged: a.files }),
+      review: async () => ({ decision: 'reject', feedback: '' }), // never clears
+    });
+    expect(result.rounds).toHaveLength(2);
+    expect(result.stopReason).toBe('max-rounds');
+    expect(result.resolved).toBe(false);
+    expect(fixTargets(result.finalRun).map((t) => t.area.label)).toEqual(['src/b']);
+  });
+
+  it('bails out with no-progress when a round edits nothing, and never re-reviews', async () => {
+    let reviewed = 0;
+    const result = await runFixVerifyLoop(initial(), '/repo', { concurrency: 1, maxRounds: 3 }, {
+      fix: async () => ({ success: true, filesChanged: [] }), // worker touched nothing
+      review: async () => { reviewed++; return { decision: 'approve', feedback: '' }; },
+    });
+    expect(result.rounds).toHaveLength(1);
+    expect(result.stopReason).toBe('no-progress');
+    expect(result.resolved).toBe(false);
+    expect(reviewed).toBe(0); // re-review skipped — no edits to verify
+  });
+
+  it('stops when a re-review hits a usage limit, and stays unresolved', async () => {
+    const result = await runFixVerifyLoop(initial(), '/repo', { concurrency: 1, maxRounds: 3 }, {
+      fix: async (a) => ({ success: true, filesChanged: a.files }),
+      review: async () => { throw new RateLimitError(1770000000, 'usage limit'); },
+    });
+    expect(result.stopReason).toBe('rate-limit');
+    // The errored (rate-limited) area is NOT resolved — fixTargets would miss it
+    // because it lost its review, but resolved counts it as not-approved.
+    expect(result.resolved).toBe(false);
+  });
+
+  it('a rate-limited/errored re-review preserves the original findings (does not erase follow-ups)', async () => {
+    // src/b carries an actionable follow-up; the fix edits it but the re-review
+    // rate-limits before it can re-verdict. The prior findings must survive into
+    // the final summary — otherwise the report and Linear filing lose them.
+    const flagged = (): AuditRun => ({
+      results: [
+        {
+          area: area('src/b'),
+          review: {
+            decision: 'revise',
+            feedback: '',
+            issues: ['bug in f'],
+            recommendedActions: [{ type: 'fix', title: 'patch the bug', location: 'src/b/f.ts:1' }],
+          },
+        },
+      ],
+      summary: aggregateAuditResults([]),
+    });
+    const result = await runFixVerifyLoop(flagged(), '/repo', { concurrency: 1, maxRounds: 3 }, {
+      fix: async (a) => ({ success: true, filesChanged: a.files }),
+      review: async () => { throw new RateLimitError(1770000000, 'usage limit'); },
+    });
+    const b = result.finalRun.results.find((r) => r.area.label === 'src/b');
+    expect(b?.review?.decision).toBe('revise');          // original verdict kept, not turned into an error row
+    expect(b?.review?.issues).toEqual(['bug in f']);
+    // The actionable follow-up still reaches the aggregated summary for report/Linear filing.
+    expect(result.finalRun.summary.recommendedActions.map((a) => a.title)).toContain('patch the bug');
   });
 });

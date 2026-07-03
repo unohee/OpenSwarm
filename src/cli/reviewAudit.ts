@@ -619,3 +619,151 @@ export async function runAreaFixes(
     return { label, applied: s.value.success, filesChanged: s.value.filesChanged };
   });
 }
+
+// ── Fix → verify loop (--fix-rounds) ─────────────────────────────────────────
+
+/** What one fix → re-review round did. */
+export interface FixVerifyRound {
+  round: number;
+  /** Areas flagged (non-approve) at the start of the round. */
+  flagged: number;
+  /** Areas the fix workers actually edited. */
+  edited: number;
+  filesChanged: string[];
+  /** Edited areas that flipped to approve after the re-review. */
+  resolved: number;
+  /** Areas still flagged across the whole run after the re-review. */
+  remaining: number;
+}
+
+/** Why the loop stopped. */
+export type FixVerifyStop = 'all-approved' | 'max-rounds' | 'no-progress' | 'rate-limit';
+
+export interface FixVerifyResult {
+  rounds: FixVerifyRound[];
+  /** The run carrying the latest per-area verdicts. */
+  finalRun: AuditRun;
+  /** True when no area is flagged at the end. */
+  resolved: boolean;
+  stopReason: FixVerifyStop;
+  /** Union of every file touched across all rounds. */
+  filesChanged: string[];
+}
+
+export interface RunFixVerifyLoopOptions {
+  concurrency: number;
+  adapter?: AdapterName;
+  /** Per-area fix-worker timeout (caller sets the long default). */
+  fixTimeoutMs?: number;
+  /** Hard cap on fix → re-review rounds (default 3). */
+  maxRounds?: number;
+  signal?: AbortSignal;
+}
+
+export interface RunFixVerifyLoopDeps {
+  review?: RunMaxReviewDeps['review'];
+  fix?: RunAreaFixesDeps['fix'];
+  /** Start of each round: (round, flaggedCount). */
+  onRoundStart?: (round: number, flagged: number) => void;
+  /** Fix-phase progress. */
+  onFixProgress?: (e: FixProgress) => void;
+  /** Re-review-phase progress. */
+  onReviewProgress?: (e: AuditProgress) => void;
+  /** End of each round: its record. */
+  onRoundEnd?: (r: FixVerifyRound) => void;
+}
+
+/**
+ * Overlay fresh re-review verdicts onto a base run: any area the re-review
+ * actually re-verdicted takes the new result, the rest keep theirs. (mergeFallback
+ * only fills *errored* base areas, so it can't downgrade an already-reviewed area
+ * from reject→approve — this can.)
+ *
+ * Only areas with a real verdict (`r.review`) overlay. A fresh result that errored
+ * (subagent crash / rate limit) carries no verdict — keep the prior findings, so a
+ * failed re-review can't silently erase a still-unresolved area's issues and
+ * follow-ups (which then vanish from the report and Linear filing). (INT-2443)
+ */
+export function mergeReReview(base: AuditRun, reReview: AuditRun): AuditRun {
+  const fresh = new Map(reReview.results.filter((r) => r.review).map((r) => [r.area.label, r]));
+  const results = base.results.map((r) => fresh.get(r.area.label) ?? r);
+  return { summary: aggregateAuditResults(results), results, rateLimit: reReview.rateLimit ?? base.rateLimit };
+}
+
+/**
+ * Iterate fix → re-review until every area approves or the round budget runs
+ * out. Each round applies the reviewer's fixes to the currently-flagged areas,
+ * then re-reviews ONLY the areas actually edited (an untouched flagged area
+ * keeps its prior verdict — re-reviewing it would waste a subagent). Stops early
+ * when a round edits nothing (workers can't progress) or a re-review hits a
+ * usage limit, so it never spins. Edits accumulate in the working tree — no
+ * commit — so the user reviews the diff before committing. (INT-2443)
+ */
+export async function runFixVerifyLoop(
+  initial: AuditRun,
+  cwd: string,
+  opts: RunFixVerifyLoopOptions,
+  deps: RunFixVerifyLoopDeps = {},
+): Promise<FixVerifyResult> {
+  const maxRounds = opts.maxRounds && opts.maxRounds > 0 ? opts.maxRounds : 3;
+  const reviewOpts: RunMaxReviewOptions = { concurrency: opts.concurrency, adapter: opts.adapter, signal: opts.signal };
+  const fixOpts: RunAreaFixesOptions = { concurrency: opts.concurrency, adapter: opts.adapter, timeoutMs: opts.fixTimeoutMs, signal: opts.signal };
+  const reviewDeps: RunMaxReviewDeps = { review: deps.review, onProgress: deps.onReviewProgress };
+  const fixDeps: RunAreaFixesDeps = { fix: deps.fix, onProgress: deps.onFixProgress };
+
+  let run = initial;
+  const rounds: FixVerifyRound[] = [];
+  const allFiles = new Set<string>();
+  let stopReason: FixVerifyStop = 'all-approved';
+  // "Unresolved" = not approved, which includes errored areas (a re-review that
+  // crashed is NOT resolved) — unlike fixTargets, which only counts non-approve
+  // areas that still carry review findings worth another fix pass.
+  const unresolved = (r: AuditRun): number => r.results.filter((x) => x.review?.decision !== 'approve').length;
+
+  for (let round = 1; round <= maxRounds; round++) {
+    const targets = fixTargets(run);
+    if (!targets.length) {
+      // Nothing left to fix. Clean if every area approves; otherwise the leftover
+      // is an errored/unfixable area, not a success.
+      stopReason = unresolved(run) === 0 ? 'all-approved' : 'no-progress';
+      break;
+    }
+    deps.onRoundStart?.(round, targets.length);
+
+    const fixes = await runAreaFixes(run, cwd, fixOpts, fixDeps);
+    const edited = fixes.filter((f) => f.applied && f.filesChanged.length);
+    for (const f of edited) for (const p of f.filesChanged) allFiles.add(p);
+
+    if (!edited.length) {
+      const rec: FixVerifyRound = { round, flagged: targets.length, edited: 0, filesChanged: [], resolved: 0, remaining: unresolved(run) };
+      rounds.push(rec);
+      deps.onRoundEnd?.(rec);
+      stopReason = 'no-progress';
+      break;
+    }
+
+    // Re-review only the edited areas; merge their fresh verdicts back in.
+    const editedLabels = new Set(edited.map((f) => f.label));
+    const editedAreas = targets.filter((t) => editedLabels.has(t.area.label)).map((t) => t.area);
+    const reReview = await runMaxReview(editedAreas, cwd, reviewOpts, reviewDeps);
+    run = mergeReReview(run, reReview);
+
+    const remaining = unresolved(run);
+    const rec: FixVerifyRound = {
+      round,
+      flagged: targets.length,
+      edited: edited.length,
+      filesChanged: edited.flatMap((f) => f.filesChanged),
+      resolved: reReview.results.filter((r) => r.review?.decision === 'approve').length,
+      remaining,
+    };
+    rounds.push(rec);
+    deps.onRoundEnd?.(rec);
+
+    if (reReview.rateLimit) { stopReason = 'rate-limit'; break; }
+    if (!remaining) { stopReason = 'all-approved'; break; }
+    if (round === maxRounds) { stopReason = 'max-rounds'; break; }
+  }
+
+  return { rounds, finalRun: run, resolved: unresolved(run) === 0, stopReason, filesChanged: [...allFiles] };
+}
