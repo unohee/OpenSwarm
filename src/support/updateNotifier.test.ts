@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { isNewer, shouldSkip, maybeNotifyUpdate } from './updateNotifier.js';
+import { isNewer, shouldSkip, maybeNotifyUpdate, maybeAutoUpdate } from './updateNotifier.js';
 
 describe('isNewer (INT-2270)', () => {
   it('compares semver numerically', () => {
@@ -94,5 +94,88 @@ describe('maybeNotifyUpdate (INT-2270)', () => {
     await maybeNotifyUpdate('0.12.0', { ...base, isTTY: false, fetchLatest, write });
     expect(fetchLatest).not.toHaveBeenCalled();
     expect(write).not.toHaveBeenCalled();
+  });
+});
+
+describe('maybeAutoUpdate (INT-2394)', () => {
+  const base = { argv: ['n', 'c', 'start'], env: {} as NodeJS.ProcessEnv, isTTY: true };
+
+  it('installs and re-execs when a newer version exists', async () => {
+    const install = vi.fn(() => true);
+    const reexec = vi.fn();
+    const write = vi.fn();
+    await maybeAutoUpdate('0.12.0', {
+      ...base,
+      readCache: () => ({ latest: '0.13.0', checkedAt: 1000 }),
+      now: () => 1001,
+      write, install, reexec,
+    });
+    expect(install).toHaveBeenCalledWith('@intrect/openswarm');
+    expect(reexec).toHaveBeenCalledOnce();
+  });
+
+  it('does nothing when already on the latest', async () => {
+    const install = vi.fn(() => true);
+    const reexec = vi.fn();
+    await maybeAutoUpdate('0.13.0', {
+      ...base,
+      readCache: () => ({ latest: '0.13.0', checkedAt: 1000 }),
+      now: () => 1001,
+      install, reexec,
+    });
+    expect(install).not.toHaveBeenCalled();
+    expect(reexec).not.toHaveBeenCalled();
+  });
+
+  it('does NOT re-exec when install fails (stays on current)', async () => {
+    const install = vi.fn(() => false);
+    const reexec = vi.fn();
+    const write = vi.fn();
+    await maybeAutoUpdate('0.12.0', {
+      ...base,
+      readCache: () => ({ latest: '0.13.0', checkedAt: 1000 }),
+      now: () => 1001,
+      write, install, reexec,
+    });
+    expect(install).toHaveBeenCalledOnce();
+    expect(reexec).not.toHaveBeenCalled();
+  });
+
+  it('falls back to a passive notice when opted out', async () => {
+    const install = vi.fn(() => true);
+    const reexec = vi.fn();
+    const write = vi.fn();
+    await maybeAutoUpdate('0.12.0', {
+      ...base,
+      env: { OPENSWARM_NO_AUTO_UPDATE: '1' } as NodeJS.ProcessEnv,
+      readCache: () => ({ latest: '0.13.0', checkedAt: 1000 }),
+      now: () => 1001,
+      write, install, reexec,
+    });
+    expect(install).not.toHaveBeenCalled();
+    expect(reexec).not.toHaveBeenCalled();
+    expect(write).toHaveBeenCalledOnce(); // the passive notice
+  });
+
+  it('no-ops once re-executed (OPENSWARM_UPDATED loop guard)', async () => {
+    const install = vi.fn(() => true);
+    const reexec = vi.fn();
+    const fetchLatest = vi.fn();
+    await maybeAutoUpdate('0.12.0', {
+      ...base,
+      env: { OPENSWARM_UPDATED: '1' } as NodeJS.ProcessEnv,
+      fetchLatest, install, reexec,
+    });
+    expect(fetchLatest).not.toHaveBeenCalled();
+    expect(install).not.toHaveBeenCalled();
+    expect(reexec).not.toHaveBeenCalled();
+  });
+
+  it('skips install in CI / non-TTY', async () => {
+    const install = vi.fn(() => true);
+    const reexec = vi.fn();
+    await maybeAutoUpdate('0.12.0', { ...base, isTTY: false, install, reexec });
+    expect(install).not.toHaveBeenCalled();
+    expect(reexec).not.toHaveBeenCalled();
   });
 });
