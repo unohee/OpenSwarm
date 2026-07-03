@@ -155,7 +155,7 @@ describe('PairPipeline model selection', () => {
       },
     });
 
-    await pipeline.run(task(), process.cwd());
+    const result = await pipeline.run(task(), process.cwd());
 
     expect(broadcastEvent).toHaveBeenCalledWith(expect.objectContaining({
       type: 'pipeline:stage',
@@ -165,6 +165,59 @@ describe('PairPipeline model selection', () => {
         rateLimitResetsAt: 1770000000000,
       }),
     }));
+    // A 429 must be classified 'rate_limited' at the pipeline level, not a
+    // plain 'failed' — the runner keeps rate-limited attempts out of the
+    // STUCK failure count (INT-1906).
+    expect(result.finalStatus).toBe('rate_limited');
+    // The rethrow that carries the classification to run() must not drop the
+    // failed stage from the reported result (INT-2424) — formatters render
+    // "No stages" otherwise, even though the worker stage genuinely ran.
+    expect(result.stages).toHaveLength(1);
+    expect(result.stages[0]).toMatchObject({ stage: 'worker', success: false });
+  });
+
+  // INT-2424: runStage()'s catch used to swallow a CLI/infra failure into an
+  // ordinary StageResult and just retry, so a codex usage-limit or non-zero
+  // exit never reached run()'s isInfraError() classification — it silently
+  // counted toward the STUCK failure budget like a genuine bad edit.
+  it('classifies a worker CLI/infra failure as infra_error, not a plain failure', async () => {
+    runWorker.mockRejectedValueOnce(new Error('codex CLI failed with code 1: Reading prompt from stdin...'));
+    const { PairPipeline } = await import('./pairPipeline.js');
+    const pipeline = new PairPipeline({
+      stages: ['worker'],
+      maxIterations: 1,
+      roles: {
+        worker: { enabled: true, model: 'fallback-worker', timeoutMs: 0 },
+      },
+    });
+
+    const result = await pipeline.run(task(), process.cwd());
+
+    expect(result.finalStatus).toBe('infra_error');
+    expect(result.success).toBe(false);
+    // Same result-contract guarantee as the rate-limit case above (INT-2424).
+    expect(result.stages).toHaveLength(1);
+    expect(result.stages[0]).toMatchObject({ stage: 'worker', success: false });
+  });
+
+  // isInfraError() also classifies a raw (non-Error) rejection — rethrowClassified
+  // must not throw a TypeError trying to attach stageResult to a primitive. (INT-2424)
+  it('classifies a raw string infra rejection as infra_error, not a plain failure', async () => {
+    runWorker.mockRejectedValueOnce('getaddrinfo ENOTFOUND api.openai.com');
+    const { PairPipeline } = await import('./pairPipeline.js');
+    const pipeline = new PairPipeline({
+      stages: ['worker'],
+      maxIterations: 1,
+      roles: {
+        worker: { enabled: true, model: 'fallback-worker', timeoutMs: 0 },
+      },
+    });
+
+    const result = await pipeline.run(task(), process.cwd());
+
+    expect(result.finalStatus).toBe('infra_error');
+    expect(result.stages).toHaveLength(1);
+    expect(result.stages[0]).toMatchObject({ stage: 'worker', success: false });
   });
 
   // INT-2393: when role model is omitted, the pipeline:stage events must carry

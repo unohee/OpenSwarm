@@ -40,6 +40,9 @@ import { StuckDetector, createStuckDetector } from '../support/stuckDetector.js'
 import { RateLimitError } from '../adapters/rateLimitError.js';
 import { isInfraError } from '../adapters/errorClassification.js';
 import { resolveAdapterDefaultModel } from './stageModelResolver.js';
+import { isClassifiedStageError, rethrowClassified, extractClassifiedStageResult, PipelineCancelledError } from './stageErrorClassification.js';
+
+export { PipelineCancelledError };
 
 // Types
 
@@ -205,14 +208,6 @@ export type PipelineEventType =
   | 'halt';
 
 // Pair Pipeline
-
-/** Thrown when the pipeline is cancelled mid-run (project disable / manual stop). */
-export class PipelineCancelledError extends Error {
-  constructor() {
-    super('Pipeline cancelled');
-    this.name = 'PipelineCancelledError';
-  }
-}
 
 export class PairPipeline extends EventEmitter {
   private config: PipelineConfig;
@@ -381,6 +376,8 @@ export class PairPipeline extends EventEmitter {
       // spawn, timeout) is not a task failure — surface it distinctly so the
       // runner does a backoff retry instead of counting it toward STUCK. (INT-2010)
       const infra = !cancelled && !rateLimited && isInfraError(error);
+      const classifiedStage = extractClassifiedStageResult(error); // INT-2424
+      if (classifiedStage) stages.push(classifiedStage);
       if (cancelled) {
         console.log(`[${context.taskPrefix}] Pipeline cancelled`);
       } else if (rateLimited) {
@@ -848,6 +845,7 @@ export class PairPipeline extends EventEmitter {
         rateLimitResetsAt: error instanceof RateLimitError && error.resetsAt ? error.resetsAt * 1000 : undefined,
         error: error instanceof Error ? error.message : String(error),
       } });
+      if (isClassifiedStageError(error)) rethrowClassified(error, stageResult); // INT-2424
       return stageResult;
     }
   }
