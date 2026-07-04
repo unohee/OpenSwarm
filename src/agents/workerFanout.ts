@@ -87,7 +87,7 @@ async function cloneSandbox(
   sharedPathMode: 'copy' | 'link' | 'off',
 ): Promise<string> {
   const sandbox = join(root, id);
-  await git(projectPath, ['clone', '--quiet', '--no-hardlinks', projectPath, sandbox]);
+  await git(projectPath, ['clone', '--quiet', '--no-hardlinks', '--', projectPath, sandbox]);
   if (sharedPathMode === 'link') await linkSharedPaths(projectPath, sandbox);
   if (sharedPathMode === 'copy') await copySharedPaths(projectPath, sandbox);
   return sandbox;
