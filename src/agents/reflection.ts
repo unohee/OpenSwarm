@@ -30,7 +30,7 @@
  * Subjective sources (review) are opinion and are handled by the existing
  * reviewer-feedback channel, not this trail.
  */
-export type ReflectionSource = 'lint' | 'bs' | 'test' | 'review';
+export type ReflectionSource = 'lint' | 'bs' | 'test' | 'validation' | 'review';
 
 export interface ReflectionEntry {
   /** 1-based pipeline iteration this failure was observed in */
@@ -58,7 +58,7 @@ export const MAX_TRAIL_ENTRIES = 3;
 /** Cap error lines per entry so a chatty compiler cannot blow up the prompt. */
 const MAX_ERRORS_PER_ENTRY = 5;
 
-const OBJECTIVE_SOURCES: readonly ReflectionSource[] = ['lint', 'bs', 'test'];
+const OBJECTIVE_SOURCES: readonly ReflectionSource[] = ['lint', 'bs', 'test', 'validation'];
 
 // State
 
@@ -164,6 +164,8 @@ function labelForSource(source: ReflectionSource): string {
       return 'code-smell guard failed';
     case 'test':
       return 'tests failed';
+    case 'validation':
+      return 'validation evidence missing';
     case 'review':
       return 'reviewer feedback';
   }

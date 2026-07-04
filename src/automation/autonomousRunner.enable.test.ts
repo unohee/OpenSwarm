@@ -3,7 +3,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { AutonomousRunner, decisionSelectionBudget } from './autonomousRunner.js';
 import type { AutonomousConfig } from './runnerTypes.js';
 import type { TaskItem } from '../orchestration/decisionEngine.js';
@@ -74,6 +74,62 @@ describe('AutonomousRunner project-selection gating (INT-2207)', () => {
     const r = new AutonomousRunner(cfg());
     r.disableProject('/x/a');
     expect(filtersOn(r)).toBe(true);
+  });
+});
+
+describe('AutonomousRunner per-project candidate cap', () => {
+  const makeTask = (id: string, projectPath: string): TaskItem => ({
+    id,
+    source: 'linear',
+    title: `Task ${id}`,
+    priority: 3,
+    projectPath,
+    issueId: id,
+    issueIdentifier: id.toUpperCase(),
+    linearState: 'Todo',
+    createdAt: Date.now(),
+  });
+
+  it('does not enqueue same-project heartbeat candidates past maxConcurrentPerProject', async () => {
+    const repo = '/x/a';
+    const other = '/x/b';
+    const tasks = [
+      makeTask('repo-1', repo),
+      makeTask('repo-2', repo),
+      makeTask('repo-3', repo),
+      makeTask('other-1', other),
+    ];
+    const r = new AutonomousRunner(cfg({
+      allowedProjects: [repo, other],
+      autoExecute: true,
+      maxConcurrentTasks: 3,
+      allowSameProjectConcurrent: true,
+      worktreeMode: true,
+      maxConcurrentPerProject: 2,
+    }));
+    const internal = r as unknown as {
+      engine: {
+        heartbeatMultiple: ReturnType<typeof vi.fn>;
+      };
+      heartbeatParallel(tasks: TaskItem[]): Promise<void>;
+      resolveProjectPath(task: TaskItem): Promise<string | null>;
+      detectSafeCandidateIds(candidates: Array<{ task: TaskItem }>): Promise<Set<string>>;
+      runAvailableTasks(): Promise<void>;
+    };
+    internal.engine.heartbeatMultiple = vi.fn(async () => ({
+      action: 'execute',
+      tasks: tasks.map(task => ({ task, workflow: {} })),
+      reason: 'test',
+      skippedCount: 0,
+    }));
+    internal.resolveProjectPath = vi.fn(async task => task.projectPath ?? null);
+    internal.detectSafeCandidateIds = vi.fn(async candidates => new Set(candidates.map(c => c.task.id)));
+    internal.runAvailableTasks = vi.fn(async () => {});
+
+    await internal.heartbeatParallel(tasks);
+
+    expect(r.getQueuedTasks().map(q => q.task.id)).toEqual(['repo-1', 'repo-2', 'other-1']);
+    expect(r.getQueuedTasks().filter(q => q.projectPath === repo)).toHaveLength(2);
   });
 });
 

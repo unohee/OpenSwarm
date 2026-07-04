@@ -32,7 +32,7 @@ import {
 import { checkWorkAllowed } from '../support/timeWindow.js';
 import { recordTaskOutcome } from '../memory/repoKnowledge.js';
 import { updateProjectAfterTask } from '../linear/projectUpdater.js';
-import { TaskScheduler, initScheduler } from '../orchestration/taskScheduler.js';
+import { TaskScheduler, initScheduler, normalizeProjectPath } from '../orchestration/taskScheduler.js';
 import {
   PipelineResult,
   formatPipelineResultEmbed,
@@ -140,6 +140,31 @@ export class AutonomousRunner {
     return this.projectSelectionTouched || this.enabledProjects.size > 0;
   }
 
+  private sameProjectCandidateCap(): number | null {
+    const sameProjectParallel = (this.config.allowSameProjectConcurrent ?? true) && (this.config.worktreeMode ?? false);
+    if (!sameProjectParallel || this.config.maxConcurrentPerProject == null) return null;
+    const cap = Math.floor(this.config.maxConcurrentPerProject);
+    const maxConcurrent = this.config.maxConcurrentTasks ?? 1;
+    return Math.max(1, Math.min(cap, maxConcurrent));
+  }
+
+  private currentProjectLoad(projectPath: string): number {
+    const target = normalizeProjectPath(projectPath);
+    const queued = this.scheduler.getQueuedTasks()
+      .filter(task => normalizeProjectPath(task.projectPath) === target)
+      .length;
+    const running = this.scheduler.getRunningTasks()
+      .filter(task => normalizeProjectPath(task.projectPath) === target)
+      .length;
+    return queued + running;
+  }
+
+  private canQueueProjectCandidate(projectPath: string): boolean {
+    const cap = this.sameProjectCandidateCap();
+    if (cap == null) return true;
+    return this.currentProjectLoad(projectPath) < cap;
+  }
+
   /** Persist the project selection so it survives a restart. No-op under dryRun
    * (tests) to avoid touching the real ~/.openswarm. (INT-2208) */
   private persistSelection(): void {
@@ -227,6 +252,7 @@ export class AutonomousRunner {
     this.scheduler = initScheduler({
       maxConcurrent: config.maxConcurrentTasks ?? 1,
       allowSameProjectConcurrent: config.allowSameProjectConcurrent ?? true,
+      maxConcurrentPerProject: config.maxConcurrentPerProject,
       worktreeMode: config.worktreeMode ?? false,
     });
 
@@ -1108,6 +1134,10 @@ export class AutonomousRunner {
       for (const { task, projectPath } of candidates) {
         if (enqueuedCount >= maxSlots) break;
         if (!safeTasks.has(task.id)) continue;
+        if (!this.canQueueProjectCandidate(projectPath)) {
+          this.syslog(`  Project cap reached: ${projectPath}`);
+          continue;
+        }
 
         this.enqueueCandidate(task, projectPath);
         enqueuedCount++;

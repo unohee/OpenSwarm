@@ -47,6 +47,31 @@ describe('TaskScheduler same-project concurrency (INT-1975)', () => {
     expect(s.getNextExecutable()?.task.id).toBe('b');
   });
 
+  it('caps same-repo parallelism when maxConcurrentPerProject is set', () => {
+    const s = new TaskScheduler({
+      maxConcurrent: 4,
+      worktreeMode: true,
+      allowSameProjectConcurrent: true,
+      maxConcurrentPerProject: 2,
+    });
+    s.enqueue(task('a'), '/repo');
+    s.enqueue(task('b'), '/repo');
+    s.enqueue(task('c'), '/repo');
+    s.enqueue(task('d'), '/other');
+
+    const first = s.getNextExecutable();
+    s.startTask(first!.task, first!.projectPath, pendingExecutor());
+    expect(s.isProjectBusy('/repo')).toBe(false);
+
+    const second = s.getNextExecutable();
+    s.startTask(second!.task, second!.projectPath, pendingExecutor());
+    expect(s.isProjectBusy('/repo')).toBe(true);
+    expect(s.getBusyProjects()).toEqual(['/repo']);
+
+    // Third same-repo task is held back, but another project can still use slots.
+    expect(s.getNextExecutable()?.task.id).toBe('d');
+  });
+
   it('reapplies the same-project worktree guard when config is updated', () => {
     const s = new TaskScheduler({ maxConcurrent: 4, worktreeMode: true, allowSameProjectConcurrent: true });
     s.updateConfig({ worktreeMode: false, allowSameProjectConcurrent: true });

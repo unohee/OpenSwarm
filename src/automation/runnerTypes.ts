@@ -26,6 +26,7 @@ export interface AutonomousConfig {
   reviewerTimeoutMs?: number;
   triggerNow?: boolean;
   maxConcurrentTasks?: number;
+  maxConcurrentPerProject?: number;
   defaultRoles?: DefaultRolesConfig;
   projectAgents?: ProjectAgentConfig[];
   enableDecomposition?: boolean;

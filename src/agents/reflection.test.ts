@@ -24,10 +24,11 @@ describe('reflection', () => {
   });
 
   describe('isObjective', () => {
-    it('treats lint/bs/test as objective', () => {
+    it('treats lint/bs/test/validation as objective', () => {
       expect(isObjective('lint')).toBe(true);
       expect(isObjective('bs')).toBe(true);
       expect(isObjective('test')).toBe(true);
+      expect(isObjective('validation')).toBe(true);
     });
 
     it('treats review as subjective', () => {
@@ -44,6 +45,8 @@ describe('reflection', () => {
       expect(s.reflectionCount).toBe(1); // review does not count
       recordReflection(s, { iteration: 3, source: 'test', errors: ['t1'] });
       expect(s.reflectionCount).toBe(2);
+      recordReflection(s, { iteration: 4, source: 'validation', errors: ['missing command'] });
+      expect(s.reflectionCount).toBe(3);
     });
 
     it('reports progress on the first objective failure', () => {

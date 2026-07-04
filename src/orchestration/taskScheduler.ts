@@ -9,7 +9,7 @@ import { resolve } from 'node:path';
 import type { TaskItem } from './decisionEngine.js';
 import type { PipelineResult } from '../agents/pairPipeline.js';
 
-function normalizeProjectPath(path: string): string {
+export function normalizeProjectPath(path: string): string {
   // Guard: resolve('') returns process.cwd(), so an accidental empty-string
   // cancellation would match every task under the daemon's cwd. Keep the
   // pre-#192 no-op behavior ('/' matches nothing in practice) instead.
@@ -53,6 +53,8 @@ export interface SchedulerConfig {
   maxConcurrent: number;
   /** Allow concurrent execution on same project */
   allowSameProjectConcurrent?: boolean;
+  /** Maximum concurrent tasks per project when same-project parallelism is enabled. */
+  maxConcurrentPerProject?: number;
   /** Git worktree mode: each task runs in its own isolated worktree (bypasses project busy check) */
   worktreeMode?: boolean;
 }
@@ -82,6 +84,11 @@ function normalizeSchedulerConfig(config: SchedulerConfig): SchedulerConfig {
         'Set worktreeMode:true to enable same-project parallelism.'
     );
     normalized.allowSameProjectConcurrent = false;
+  }
+
+  if (normalized.maxConcurrentPerProject != null) {
+    const cap = Math.floor(normalized.maxConcurrentPerProject);
+    normalized.maxConcurrentPerProject = Math.max(1, Math.min(cap, normalized.maxConcurrent));
   }
 
   return normalized;
@@ -196,17 +203,38 @@ export class TaskScheduler extends EventEmitter {
    * but no longer implies same-project parallelism.
    */
   isProjectBusy(projectPath: string): boolean {
-    if (this.config.allowSameProjectConcurrent) {
-      return false;
-    }
-
     const normalizedProject = normalizeProjectPath(projectPath);
+    let runningCount = 0;
     for (const running of this.runningTasks.values()) {
       if (normalizeProjectPath(running.projectPath) === normalizedProject) {
-        return true;
+        runningCount++;
       }
     }
-    return false;
+
+    if (this.config.allowSameProjectConcurrent) {
+      const cap = this.config.maxConcurrentPerProject;
+      return cap != null ? runningCount >= cap : false;
+    }
+
+    return runningCount > 0;
+  }
+
+  private runningCountByProject(): Map<string, number> {
+    const counts = new Map<string, number>();
+    for (const running of this.runningTasks.values()) {
+      const key = normalizeProjectPath(running.projectPath);
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return counts;
+  }
+
+  private displayPathForNormalizedProject(normalizedProject: string): string {
+    for (const running of this.runningTasks.values()) {
+      if (normalizeProjectPath(running.projectPath) === normalizedProject) {
+        return running.projectPath;
+      }
+    }
+    return normalizedProject;
   }
 
   /**
@@ -214,14 +242,15 @@ export class TaskScheduler extends EventEmitter {
    */
   getBusyProjects(): string[] {
     if (this.config.allowSameProjectConcurrent) {
-      return [];
+      const cap = this.config.maxConcurrentPerProject;
+      if (cap == null) return [];
+      return Array.from(this.runningCountByProject().entries())
+        .filter(([, count]) => count >= cap)
+        .map(([project]) => this.displayPathForNormalizedProject(project));
     }
 
-    const projects = new Set<string>();
-    for (const running of this.runningTasks.values()) {
-      projects.add(running.projectPath);
-    }
-    return Array.from(projects);
+    return Array.from(this.runningCountByProject().keys())
+      .map(project => this.displayPathForNormalizedProject(project));
   }
 
   // ============================================
@@ -350,7 +379,7 @@ export class TaskScheduler extends EventEmitter {
   ): Promise<number> {
     let started = 0;
 
-    console.log(`[Scheduler] runAvailable: paused=${this.paused}, running=${this.runningTasks.size}/${this.config.maxConcurrent}, queue=${this.taskQueue.length}, worktreeMode=${this.config.worktreeMode}`);
+    console.log(`[Scheduler] runAvailable: paused=${this.paused}, running=${this.runningTasks.size}/${this.config.maxConcurrent}, queue=${this.taskQueue.length}, worktreeMode=${this.config.worktreeMode}, perProject=${this.config.maxConcurrentPerProject ?? 'unlimited'}`);
 
     while (this.hasAvailableSlot()) {
       const next = this.getNextExecutable();

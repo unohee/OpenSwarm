@@ -5,20 +5,19 @@
 
 import { EventEmitter } from 'node:events';
 import type { TaskItem } from '../orchestration/decisionEngine.js';
-import type { WorkerResult, ReviewResult, PairSession } from './agentPair.js';
+import type { WorkerResult, ReviewResult } from './agentPair.js';
 import type { TesterResult } from './tester.js';
 import type { DocumenterResult } from './documenter.js';
 import type { AuditorResult } from './auditor.js';
 import type { SkillDocumenterResult } from './skillDocumenter.js';
-import type { PipelineStage, RoleConfig, PipelineGuardsConfig, JobProfile } from '../core/types.js';
+import type { PipelineStage, PipelineGuardsConfig, JobProfile } from '../core/types.js';
 import { type CostInfo, aggregateCosts, formatCost } from '../support/costTracker.js';
 
 import { broadcastEvent } from '../core/eventHub.js';
 import { CONFIDENCE_THRESHOLDS } from './agentPair.js';
 import * as agentPair from './agentPair.js';
-import { runGuards, type GuardsRunResult } from './pipelineGuards.js';
+import { runGuards } from './pipelineGuards.js';
 import {
-  type ReflectionState,
   type ReflectionSource,
   createReflectionState,
   recordReflection,
@@ -33,7 +32,14 @@ import type { WorkerContext } from '../locale/types.js';
 import * as workerAgent from './worker.js';
 import type { WorkerOptions } from './worker.js';
 import { buildTaskPrefix } from './pipelineTaskPrefix.js';
-import { emitWorkerFanoutGateDecision, evaluateWorkerFanoutGate, runWorkerWithOptionalFanout, type WorkerFanoutGateDecision } from './workerFanoutGate.js';
+import { emitWorkerFanoutGateDecision, evaluateWorkerFanoutGate, runWorkerWithOptionalFanout } from './workerFanoutGate.js';
+import type {
+  PipelineConfig,
+  PipelineContext,
+  PipelineResult,
+  PipelineRunMetadata,
+  StageResult,
+} from './pairPipelineTypes.js';
 import * as reviewerAgent from './reviewer.js';
 import * as testerAgent from './tester.js';
 import * as documenterAgent from './documenter.js';
@@ -44,138 +50,23 @@ import { RateLimitError } from '../adapters/rateLimitError.js';
 import { isInfraError } from '../adapters/errorClassification.js';
 import { resolveAdapterDefaultModel } from './stageModelResolver.js';
 import { isClassifiedStageError, rethrowClassified, extractClassifiedStageResult, PipelineCancelledError } from './stageErrorClassification.js';
+import {
+  isTesterCodeFile,
+  missingWorkerValidationIssues,
+  testerWouldRunForWorkerResult,
+} from './workerValidationEvidence.js';
 
 export { PipelineCancelledError };
-
-// Types
-
-export interface PipelineConfig {
-  /** List of active stages (executed in order) */
-  stages: PipelineStage[];
-  /** Whether to continue on test failure */
-  continueOnTestFail?: boolean;
-  /** Skip Documenter if no changes */
-  skipDocumenterIfNoChange?: boolean;
-  /** Max total iterations (one cycle = Worker → Reviewer → Tester) */
-  maxIterations?: number;
-  /**
-   * Max objective self-repair attempts (lint/bs/test failures) before the loop
-   * gives up on bad edits. Independent of maxIterations so an operator can cap
-   * token burn on reflection without shrinking the reviewer-revise budget.
-   * Default: DEFAULT_MAX_REFLECTIONS (3).
-   */
-  maxReflections?: number;
-  /** Per-role configuration */
-  roles?: {
-    worker?: RoleConfig;
-    reviewer?: RoleConfig;
-    tester?: RoleConfig;
-    documenter?: RoleConfig;
-    auditor?: RoleConfig;
-    'skill-documenter'?: RoleConfig;
-  };
-  /** Pipeline guards configuration */
-  guards?: Partial<PipelineGuardsConfig>;
-  /** Optional job profiles for model selection */
-  jobProfiles?: JobProfile[];
-  /** Runtime metadata used by observers such as the TUI pipeline tree. */
-  runMetadata?: PipelineRunMetadata;
-  /** Skip tester if no code files (.ts/.js/.py etc.) changed (default: true) */
-  skipTesterIfNoCodeChange?: boolean;
-  /** Skip auditor if fewer than N files changed (default: 3) */
-  skipAuditorUnderFileCount?: number;
-  /** Enable verbose logging (detailed stage info, agent decisions, timing) */
-  verbose?: boolean;
-  /** Draft Analyzer 사전 분석 결과 (Haiku) — Worker/Planner에 주입 */
-  draftAnalysis?: {
-    taskType: string;
-    intentSummary: string;
-    relevantFiles: string[];
-    suggestedApproach: string;
-    projectStats?: string;
-    completionCriteria?: string[];
-    sufficient?: boolean;
-    impactAnalysis?: import('../knowledge/types.js').ImpactAnalysis;
-    registrySnapshot?: Array<{ filePath: string; summary: string; highlights: string[] }>;
-  };
-}
+export type {
+  PipelineConfig,
+  PipelineContext,
+  PipelineEventType,
+  PipelineResult,
+  PipelineRunMetadata,
+  StageResult,
+} from './pairPipelineTypes.js';
 
 export { buildTaskPrefix } from './pipelineTaskPrefix.js';
-
-export interface PipelineRunMetadata { repository?: string; projectPath?: string; worktree?: string; branch?: string; issueIdentifier?: string; title?: string; }
-
-export interface StageResult {
-  stage: PipelineStage;
-  success: boolean;
-  result: WorkerResult | ReviewResult | TesterResult | DocumenterResult | AuditorResult | SkillDocumenterResult | { success: false; error: string };
-  duration: number;
-  /** Stage start time (epoch ms) */
-  startedAt: number;
-  /** Stage completion time (epoch ms) */
-  completedAt: number;
-}
-
-export interface PipelineResult {
-  success: boolean;
-  sessionId: string;
-  stages: StageResult[];
-  finalStatus: 'approved' | 'rejected' | 'failed' | 'cancelled' | 'decomposed' | 'rate_limited' | 'infra_error';
-  /** Unix timestamp (ms) when the rate-limit quota resets — set when finalStatus is 'rate_limited'. */
-  rateLimitResetsAt?: number;
-  totalDuration: number;
-  /** Total number of completed iterations */
-  iterations: number;
-  workerResult?: WorkerResult;
-  reviewResult?: ReviewResult;
-  testerResult?: TesterResult;
-  documenterResult?: DocumenterResult;
-  auditorResult?: AuditorResult;
-  skillDocumenterResult?: SkillDocumenterResult;
-  /** Task context (for reporting) */
-  taskContext?: {
-    issueIdentifier?: string;
-    projectName?: string;
-    projectPath?: string;
-    taskTitle?: string;
-  };
-  /** PR URL (auto-created PR in worktree mode) */
-  prUrl?: string;
-  /** Total cost across all stages */
-  totalCost?: CostInfo;
-}
-
-export interface PipelineContext {
-  task: TaskItem;
-  projectPath: string;
-  session: PairSession;
-  config: PipelineConfig;
-  /** Current iteration number (1-based) */
-  currentIteration: number;
-  /** Formatted task prefix for consistent logging (e.g., "OpenSwarm | INT-1171 | worktree/abc123") */
-  taskPrefix: string;
-  workerResult?: WorkerResult;
-  reviewResult?: ReviewResult;
-  testerResult?: TesterResult;
-  documenterResult?: DocumenterResult;
-  auditorResult?: AuditorResult;
-  skillDocumenterResult?: SkillDocumenterResult;
-  guardsResult?: GuardsRunResult;
-  /** Accumulated objective (lint/bs/test) errors for self-repair reflection */
-  reflection: ReflectionState;
-  /**
-   * Source of the latest revise feedback. 'objective' failures (lint/bs/test)
-   * flow through the reflection trail and are preserved across fresh-context
-   * resets; 'review' feedback (reviewer/halt) is subjective and dropped on a
-   * fresh-context retry.
-   */
-  feedbackSource?: 'objective' | 'review';
-  /** Last adaptive fan-out gate decision for the worker stage. */
-  workerFanoutDecision?: WorkerFanoutGateDecision;
-}
-
-// Pipeline Events
-
-export type PipelineEventType = 'stage:start' | 'stage:complete' | 'stage:fail' | 'iteration:start' | 'iteration:complete' | 'iteration:fail' | 'pipeline:complete' | 'pipeline:fail' | 'fanout:gate' | 'halt';
 
 // Pair Pipeline
 
@@ -1074,6 +965,47 @@ export class PairPipeline extends EventEmitter {
         }
       }
 
+      // A code-changing worker that reports no commands is usually a low-accuracy
+      // partial implementation: the reviewer then spends a full pass rediscovering
+      // that nothing was built, tested, or smoke-checked. When there is no tester
+      // stage to provide objective evidence, bounce it back immediately with a
+      // ground-truth validation reflection.
+      if (hasReviewer && context.workerResult && !testerWouldRunForWorkerResult(
+        context.workerResult,
+        hasTester,
+        this.config.skipTesterIfNoCodeChange ?? true
+      )) {
+        const validationIssues = missingWorkerValidationIssues(context.workerResult);
+        if (validationIssues.length > 0) {
+          console.log(`[${context.taskPrefix}] Missing worker validation evidence: ${validationIssues.join('; ')}`);
+          const { progressed } = recordReflection(context.reflection, {
+            iteration: context.currentIteration,
+            source: 'validation',
+            errors: validationIssues,
+          });
+
+          context.reviewResult = {
+            decision: 'revise',
+            feedback: `Worker validation evidence missing: ${validationIssues.join('; ')}`,
+            issues: validationIssues,
+            suggestions: ['Run a relevant validation command before asking for review'],
+          };
+          context.feedbackSource = 'objective';
+          agentPair.trackFailure(context.session.id);
+          this.emit('iteration:fail', {
+            iteration: context.currentIteration,
+            stage: 'worker',
+            context,
+          });
+          agentPair.updateSessionStatus(context.session.id, 'revising');
+
+          if (this.shouldAbortSelfRepair(context, progressed, 'validation')) {
+            return { success: false };
+          }
+          continue;
+        }
+      }
+
       // ========== HALT CHECK (confidence too low) ==========
       if (context.workerResult) {
         const confidence = agentPair.calculateConfidence(context.workerResult);
@@ -1117,9 +1049,8 @@ export class PairPipeline extends EventEmitter {
       if (hasTester) {
         // Skip tester if no code files changed (configurable, default true)
         const skipIfNoCode = this.config.skipTesterIfNoCodeChange ?? true;
-        const codeExtensions = /\.(ts|tsx|js|jsx|py|rs|go|java|rb|c|cpp|h|hpp)$/;
         const changedFiles = context.workerResult?.filesChanged || [];
-        const hasCodeChange = changedFiles.some(f => codeExtensions.test(f));
+        const hasCodeChange = changedFiles.some(isTesterCodeFile);
         if (skipIfNoCode && !hasCodeChange) {
           console.log(`[${context.taskPrefix}] Skipping tester: no code files changed (${changedFiles.length} files: ${changedFiles.join(', ') || 'none'})`);
         } else {

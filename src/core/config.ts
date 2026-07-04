@@ -278,6 +278,8 @@ const AutonomousConfigSchema = z.object({
   reviewerTimeoutMs: z.number().min(0).default(0),
   /** Max concurrent tasks */
   maxConcurrentTasks: z.number().min(1).max(10).default(1),
+  /** Max concurrent tasks from the same project when same-project parallelism is enabled. */
+  maxConcurrentPerProject: z.number().int().min(1).max(10).optional(),
   /** Default role configuration */
   defaultRoles: DefaultRolesConfigSchema,
   /** Per-project agent configuration */
@@ -576,6 +578,7 @@ function transformConfig(raw: RawConfig): SwarmConfig {
       workerTimeoutMs: raw.autonomous.workerTimeoutMs,
       reviewerTimeoutMs: raw.autonomous.reviewerTimeoutMs,
       maxConcurrentTasks: raw.autonomous.maxConcurrentTasks,
+      maxConcurrentPerProject: raw.autonomous.maxConcurrentPerProject,
       defaultRoles: raw.autonomous.defaultRoles,
       projectAgents: raw.autonomous.projectAgents?.map(pa => ({
         ...pa,

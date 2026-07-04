@@ -47,6 +47,9 @@ autonomous:
   schedule: "*/15 * * * *"  # Every 15 minutes
   maxAttempts: 3
   maxConcurrentTasks: 4  # Number of concurrent tasks
+  worktreeMode: true  # Required for same-project parallel tasks
+  allowSameProjectConcurrent: true
+  maxConcurrentPerProject: 2  # Optional cap for same-project worktree parallelism
 
   allowedProjects:
     - ~/dev/your-project

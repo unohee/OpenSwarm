@@ -513,6 +513,8 @@ export type AutonomousStartupConfig = {
   reviewerTimeoutMs?: number;
   /** Max concurrent tasks */
   maxConcurrentTasks?: number;
+  /** Max concurrent tasks from the same project when same-project parallelism is enabled. */
+  maxConcurrentPerProject?: number;
   /** Default role configuration */
   defaultRoles?: DefaultRolesConfig;
   /** Per-project agent configuration */

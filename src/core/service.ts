@@ -219,6 +219,8 @@ export async function startService(config: SwarmConfig): Promise<void> {
       reviewerTimeoutMs: config.autonomous.reviewerTimeoutMs || 0, // 0 = unlimited
       triggerNow: true,  // Execute immediately on start
       maxConcurrentTasks: config.autonomous.maxConcurrentTasks,
+      maxConcurrentPerProject: config.autonomous.maxConcurrentPerProject,
+      allowSameProjectConcurrent: config.autonomous.allowSameProjectConcurrent,
       defaultRoles: config.autonomous.defaultRoles,
       projectAgents: config.autonomous.projectAgents,
       // Task decomposition (Planner) configuration
