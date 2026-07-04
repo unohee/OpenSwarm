@@ -23,6 +23,19 @@ describe('CodexCliAdapter', () => {
     expect(command).toContain("-c 'mcp_servers.openswarm_memory.args=[");
   });
 
+  it('omits the memory MCP flags when memoryTools=false', () => {
+    const { command } = adapter.buildCommand({
+      prompt: '/tmp/prompt.txt',
+      cwd: '/tmp/project',
+      model: 'gpt-5-codex',
+      memoryTools: false,
+    });
+
+    expect(command).toContain('codex exec');
+    expect(command).not.toContain('openswarm_memory');
+    expect(command).not.toContain("mcp_servers.openswarm_memory");
+  });
+
   it('substitutes a claude model with the codex default and warns', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {

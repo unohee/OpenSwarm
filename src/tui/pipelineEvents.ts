@@ -59,6 +59,20 @@ export function reducePipelineEvent(state: PipelineState, ev: HubEvent): Pipelin
     };
     return { ...state, stages: [...state.stages, entry].slice(-MAX_STAGES) };
   }
+  if (ev.type === 'pipeline:fanout') {
+    const d = ev.data;
+    const summary = d.enabled
+      ? `${d.shouldFanOut ? 'fan-out recommended' : 'single-worker path'} (score ${d.score}/${d.threshold})`
+      : 'fan-out disabled';
+    const entry: StageEntry = {
+      taskId: d.taskId,
+      stage: 'fanout',
+      status: 'complete',
+      summary: d.reasons.length > 0 ? `${summary}: ${d.reasons.join(', ')}` : summary,
+      activity: d.shouldFanOut ? 'fan-out' : 'single-worker',
+    };
+    return { ...state, stages: [...state.stages, entry].slice(-MAX_STAGES) };
+  }
   if (ev.type === 'log') {
     const activity = classifyActivity(ev.data.line);
     return {

@@ -24,17 +24,7 @@ import { getCodexModelIds } from './codexModels.js';
 const CODEX_RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses';
 const DEFAULT_MODEL = 'gpt-5.5';
 const PROFILE_KEY = 'openai-gpt:default';
-
-// gpt-5.3-codex-spark read-paralyzes in our agentic worker harness — 0 edits at 458k
-// tokens across edit_file AND apply_patch AND nudge AND guidance (verified 2026-06-25),
-// while every other codex model from gpt-5.4-mini up edits fine. It must NEVER run as a
-// worker here, whether picked by default or requested explicitly — substitute the
-// cheapest capable model.
 const SPARK_MODEL = 'gpt-5.3-codex-spark';
-const SAFE_CHEAP_MODEL = 'gpt-5.4-mini';
-export function substituteSpark(model: string): string {
-  return model === SPARK_MODEL ? SAFE_CHEAP_MODEL : model;
-}
 
 // ---- Responses API wire types (the subset we send/receive) ----
 
@@ -43,6 +33,7 @@ interface ResponsesTool {
   name: string;
   description?: string;
   parameters: Record<string, unknown>;
+  strict: false;
 }
 
 type ResponsesInputItem =
@@ -60,6 +51,14 @@ export function resolveReasoningEffort(
   disableReasoning?: boolean,
 ): 'low' | 'medium' | 'high' {
   return reasoningEffort ?? (disableReasoning ? 'low' : 'medium');
+}
+
+export function selectDefaultCodexResponseModel(modelIds: string[]): string {
+  return (
+    modelIds.find((m) => m === DEFAULT_MODEL) ??
+    modelIds.find((m) => m !== SPARK_MODEL) ??
+    DEFAULT_MODEL
+  );
 }
 
 /** The agenticLoop callApi return shape (structurally equals its ChatCompletionResponse). */
@@ -112,6 +111,9 @@ export function toolsToResponsesTools(tools: ToolDefinition[]): ResponsesTool[] 
     name: t.function.name,
     description: t.function.description,
     parameters: t.function.parameters,
+    // OpenSwarm tools use permissive JSON schemas. Keep Responses in best-effort
+    // mode instead of asking it to normalize these into strict Structured Outputs.
+    strict: false,
   }));
 }
 
@@ -137,6 +139,7 @@ export function reduceResponsesEvents(events: SseEvent[]): ChatLikeResponse {
   // round-trips back as `function_call_output.call_id` on the next turn.
   const calls = new Map<string, { callId: string; name: string; args: string }>();
   let usage: ChatLikeResponse['usage'];
+  const getOnlyCall = () => calls.size === 1 ? calls.values().next().value : undefined;
 
   for (const ev of events) {
     switch (ev.type) {
@@ -144,21 +147,26 @@ export function reduceResponsesEvents(events: SseEvent[]): ChatLikeResponse {
         if (ev.delta) text += ev.delta;
         break;
       case 'response.output_item.added':
+      case 'response.output_item.done':
         if (ev.item?.type === 'function_call' && ev.item.id) {
+          const existing = calls.get(ev.item.id);
+          const itemArgs = ev.item.arguments;
           calls.set(ev.item.id, {
-            callId: ev.item.call_id || ev.item.id,
-            name: ev.item.name ?? '',
-            args: ev.item.arguments ?? '',
+            callId: ev.item.call_id || existing?.callId || ev.item.id,
+            name: ev.item.name ?? existing?.name ?? '',
+            args: typeof itemArgs === 'string' && (itemArgs || !existing?.args)
+              ? itemArgs
+              : existing?.args ?? '',
           });
         }
         break;
       case 'response.function_call_arguments.delta': {
-        const c = ev.item_id ? calls.get(ev.item_id) : undefined;
+        const c = ev.item_id ? calls.get(ev.item_id) : getOnlyCall();
         if (c && ev.delta) c.args += ev.delta;
         break;
       }
       case 'response.function_call_arguments.done': {
-        const c = ev.item_id ? calls.get(ev.item_id) : undefined;
+        const c = ev.item_id ? calls.get(ev.item_id) : getOnlyCall();
         if (c && typeof ev.arguments === 'string') c.args = ev.arguments;
         break;
       }
@@ -295,13 +303,6 @@ export class CodexResponsesAdapter implements CliAdapter {
 
   /** Default = top model from the Codex OAuth catalog (live/local), else constant. */
   async getDefaultModel(): Promise<string> {
-    // gpt-5.3-codex-spark read-paralyzes in our agentic worker harness — 0 edits at
-    // 458k tokens (verified 2026-06-25), while every other codex model from
-    // gpt-5.4-mini up edits fine (mini: 182k, 2 apply_patch). It's the live list's
-    // first entry, so a no-model fallthrough (e.g. a task with no estimate that
-    // matches no jobProfile) would silently pick the one broken model. Exclude it and
-    // prefer the cheapest capable model. Roles/profiles that pass an explicit model
-    // are unaffected.
     // Resolve the LIVE catalog with the account's OAuth token (INT-1872): the
     // curated offline list is account-stale (e.g. gpt-5-codex 400s
     // "model is not supported … with a ChatGPT account"). With a token,
@@ -312,8 +313,8 @@ export class CodexResponsesAdapter implements CliAdapter {
     } catch {
       // no/expired auth → getCodexModelIds falls back to the offline curated list
     }
-    const ids = (await getCodexModelIds(token)).filter((m) => m !== SPARK_MODEL);
-    return ids.find((m) => m === SAFE_CHEAP_MODEL) ?? ids[0] ?? DEFAULT_MODEL;
+    const ids = await getCodexModelIds(token);
+    return selectDefaultCodexResponseModel(ids);
   }
 
   async run(options: CliRunOptions): Promise<CliRunResult> {
@@ -339,11 +340,12 @@ export class CodexResponsesAdapter implements CliAdapter {
       };
     }
 
-    const requestedModel = options.model ?? await this.getDefaultModel();
-    const model = substituteSpark(requestedModel);
-    if (model !== requestedModel) {
-      options.onLog?.(`[codex-responses] ${requestedModel} read-paralyzes in the agentic harness — using ${model} instead.`);
-    }
+    // Honor explicit model requests. In particular, gpt-5.3-codex-spark must
+    // exercise the same PKCE/tool loop as every other Codex Responses model.
+    // Counter-evidence for the old read-paralysis guard is codified in
+    // codexResponses.test.ts: a non-live Spark-shaped SSE loop executes
+    // apply_patch, and the opt-in live smoke verifies PKCE + Spark edit tools.
+    const model = options.model ?? await this.getDefaultModel();
     // Stream the model's reasoning summary to the live log as 💭 thoughts.
     const onReasoning = options.onLog ? (line: string) => options.onLog!(`💭 ${line}`) : undefined;
     // Stable prompt_cache_key so every turn of THIS run routes to the same cache
@@ -369,6 +371,7 @@ export class CodexResponsesAdapter implements CliAdapter {
       protectedFiles: options.protectedFiles,
       bashTimeoutMs: options.bashTimeoutMs,
       webTools: options.webTools,
+      memoryTools: options.memoryTools,
       mcpTools: options.mcpTools,
       readOnly: options.readOnly,
       // codex models are RLHF-trained on the V4A apply_patch format — expose it as
@@ -414,11 +417,12 @@ export class CodexResponsesAdapter implements CliAdapter {
     let token = initialToken;
     let retried = false;
     let modelRetried = false;
+    let effectiveModel = model;
 
     return async (messages: ChatMessage[], tools: ToolDefinition[]): Promise<ChatLikeResponse> => {
       const { instructions, input } = chatToResponsesInput(messages);
       const body: Record<string, unknown> = {
-        model,
+        model: effectiveModel,
         input,
         store: false,
         stream: true,
@@ -468,9 +472,13 @@ export class CodexResponsesAdapter implements CliAdapter {
           // model availability varies, so adapt instead of failing the task.
           if (res.status === 400 && /not supported/i.test(errText) && !modelRetried) {
             modelRetried = true;
-            const alt = (await getCodexModelIds(token)).find((m) => m !== SPARK_MODEL && m !== body.model);
+            const candidates = (await getCodexModelIds(token)).filter((m) => m !== body.model);
+            const alt =
+              candidates.find((m) => m === DEFAULT_MODEL) ??
+              candidates.find((m) => m !== SPARK_MODEL);
             if (alt) {
               onReasoning?.(`model ${String(body.model)} not supported on this account — retrying with ${alt}`);
+              effectiveModel = alt;
               body.model = alt;
               return doCall(token);
             }

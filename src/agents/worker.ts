@@ -45,6 +45,8 @@ export interface WorkerOptions {
   bashTimeoutMs?: number;
   /** Expose web_fetch + web_search tools (default true). Set false for SWE-bench integrity. */
   webTools?: boolean;
+  /** Expose repository memory search (default true). Set false for isolated/temp repo benchmarks. */
+  memoryTools?: boolean;
   /** MCP tools to expose to the agentic loop (server__tool). When unset the adapter
    * self-sources from the registry (INT-1951); set to pin a specific set. (INT-1950) */
   mcpTools?: ToolDefinition[];
@@ -239,6 +241,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       protectedFiles: options.protectedFiles,
       bashTimeoutMs: options.bashTimeoutMs,
       webTools: options.webTools,
+      memoryTools: options.memoryTools,
       mcpTools: options.mcpTools,
       signal: options.signal,
     });

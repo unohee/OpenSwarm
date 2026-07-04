@@ -123,6 +123,25 @@ const RoleConfigSchema = z.object({
   escalateAfterIteration: z.number().min(1).optional(),
   /** Max agentic turns per CLI invocation */
   maxTurns: z.number().min(1).optional(),
+  /** Adaptive worker fan-out gate and candidate execution. */
+  fanout: z.object({
+    enabled: z.boolean().optional(),
+    mode: z.enum(['report', 'execute']).optional(),
+    minScore: z.number().min(1).max(10).optional(),
+    concurrency: z.number().int().min(1).max(3).optional(),
+    keepSandboxes: z.boolean().optional(),
+    linkSharedPaths: z.boolean().optional(),
+    candidates: z.array(z.object({
+      id: z.string().min(1),
+      adapter: AdapterNameSchema.optional(),
+      model: z.string().optional(),
+      reasoningEffort: z.enum(['low', 'medium', 'high']).optional(),
+      maxTurns: z.number().min(1).optional(),
+      nudgeMaxOnNoEdit: z.number().min(0).optional(),
+      webTools: z.boolean().optional(),
+      memoryTools: z.boolean().optional(),
+    })).optional(),
+  }).optional(),
 });
 
 /** Default roles configuration schema */

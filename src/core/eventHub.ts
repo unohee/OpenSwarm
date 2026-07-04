@@ -69,6 +69,15 @@ export type HubEvent =
     } }
   | { type: 'pipeline:iteration'; data: { taskId: string; iteration: number } }
   | { type: 'pipeline:escalation'; data: { taskId: string; iteration: number; fromModel?: string; toModel: string } }
+  | { type: 'pipeline:fanout'; data: {
+      taskId: string;
+      iteration: number;
+      enabled: boolean;
+      shouldFanOut: boolean;
+      score: number;
+      threshold: number;
+      reasons: string[];
+    } }
   | { type: 'log'; data: { taskId: string; stage: string; line: string } }
   | { type: 'project:toggled'; data: { projectPath: string; enabled: boolean } }
   | { type: 'task:cost'; data: { taskId: string; cost: CostInfo } }
@@ -154,6 +163,7 @@ export function broadcastEvent(event: HubEvent): void {
     case 'pipeline:stage':
     case 'pipeline:iteration':
     case 'pipeline:escalation':
+    case 'pipeline:fanout':
     case 'task:queued':
     case 'task:started':
     case 'task:completed':

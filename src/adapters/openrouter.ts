@@ -114,6 +114,7 @@ export class OpenRouterCliAdapter implements CliAdapter {
       protectedFiles: options.protectedFiles,
       bashTimeoutMs: options.bashTimeoutMs,
       webTools: options.webTools,
+      memoryTools: options.memoryTools,
       readOnly: options.readOnly,
       mcpTools,
       signal: options.signal,

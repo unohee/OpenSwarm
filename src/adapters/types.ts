@@ -69,6 +69,8 @@ export interface CliRunOptions {
   bashTimeoutMs?: number;
   /** Expose web_fetch + web_search tools (default true). Set false for SWE-bench integrity. */
   webTools?: boolean;
+  /** Expose repository memory search (default true). Set false for isolated/temp repo benchmarks. */
+  memoryTools?: boolean;
   /** Enforce read-only tool exposure/execution where the adapter supports OpenSwarm's tool layer. */
   readOnly?: boolean;
   /**

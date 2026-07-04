@@ -340,9 +340,23 @@ describe('eventHub', () => {
         },
       });
 
+      broadcastEvent({
+        type: 'pipeline:fanout',
+        data: {
+          taskId: 'task-1',
+          iteration: 1,
+          enabled: true,
+          shouldFanOut: true,
+          score: 3,
+          threshold: 2,
+          reasons: ['core-orchestration-scope'],
+        },
+      });
+
       const buffer = getStageBuffer();
       expect(buffer.length).toBeGreaterThan(0);
       expect(buffer.some(e => e.type === 'pipeline:stage')).toBe(true);
+      expect(buffer.some(e => e.type === 'pipeline:fanout')).toBe(true);
     });
 
     it('should store chat events in chatBuffer', () => {
@@ -495,6 +509,21 @@ describe('eventHub', () => {
             iteration: 3,
             fromModel: 'model-1',
             toModel: 'model-2',
+          },
+        },
+      ],
+      [
+        'pipeline:fanout',
+        {
+          type: 'pipeline:fanout',
+          data: {
+            taskId: 'task-1',
+            iteration: 1,
+            enabled: true,
+            shouldFanOut: true,
+            score: 3,
+            threshold: 2,
+            reasons: ['core-orchestration-scope'],
           },
         },
       ],

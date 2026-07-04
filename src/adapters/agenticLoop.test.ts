@@ -220,6 +220,29 @@ describe('runAgenticLoop timeout contract', () => {
   });
 });
 
+describe('runAgenticLoop tool exposure options', () => {
+  it('hides search_memory when memoryTools=false without disabling file tools', async () => {
+    let toolNames: string[] = [];
+
+    await runAgenticLoop({
+      prompt: 'x',
+      cwd: process.cwd(),
+      model: 'test',
+      webTools: false,
+      memoryTools: false,
+      maxTurns: 1,
+      callApi: async (_messages, tools) => {
+        toolNames = tools.map((tool) => tool.function.name);
+        return finalResp('done');
+      },
+    });
+
+    expect(toolNames).toContain('read_file');
+    expect(toolNames).toContain('bash');
+    expect(toolNames).not.toContain('search_memory');
+  });
+});
+
 describe('runAgenticLoop read cache vs compaction (INT-1929)', () => {
   let tmp: string;
   beforeEach(async () => { tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'aloop-')); });

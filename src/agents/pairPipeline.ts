@@ -31,6 +31,9 @@ import { getRegistryStore } from '../registry/sqliteStore.js';
 import { recallRepoKnowledge } from '../memory/repoKnowledge.js';
 import type { WorkerContext } from '../locale/types.js';
 import * as workerAgent from './worker.js';
+import type { WorkerOptions } from './worker.js';
+import { buildTaskPrefix } from './pipelineTaskPrefix.js';
+import { emitWorkerFanoutGateDecision, evaluateWorkerFanoutGate, runWorkerWithOptionalFanout, type WorkerFanoutGateDecision } from './workerFanoutGate.js';
 import * as reviewerAgent from './reviewer.js';
 import * as testerAgent from './tester.js';
 import * as documenterAgent from './documenter.js';
@@ -97,14 +100,9 @@ export interface PipelineConfig {
   };
 }
 
-export interface PipelineRunMetadata {
-  repository?: string;
-  projectPath?: string;
-  worktree?: string;
-  branch?: string;
-  issueIdentifier?: string;
-  title?: string;
-}
+export { buildTaskPrefix } from './pipelineTaskPrefix.js';
+
+export interface PipelineRunMetadata { repository?: string; projectPath?: string; worktree?: string; branch?: string; issueIdentifier?: string; title?: string; }
 
 export interface StageResult {
   stage: PipelineStage;
@@ -171,41 +169,13 @@ export interface PipelineContext {
    * fresh-context retry.
    */
   feedbackSource?: 'objective' | 'review';
-}
-
-/**
- * Build a consistent task prefix for logging across all pipeline stages.
- * Format: "ProjectName | INT-XXX | worktree/abc123" or "ProjectName | INT-XXX"
- */
-export function buildTaskPrefix(task: TaskItem, projectPath: string): string {
-  const parts: string[] = [];
-  const projectName = task.linearProject?.name || projectPath.split('/').pop() || 'unknown';
-  parts.push(projectName);
-  if (task.issueIdentifier) {
-    parts.push(task.issueIdentifier);
-  } else if (task.issueId) {
-    parts.push(task.issueId.slice(0, 8));
-  }
-  // Detect worktree path
-  const worktreeMatch = projectPath.match(/worktree\/([a-f0-9-]+)/);
-  if (worktreeMatch) {
-    parts.push(`worktree/${worktreeMatch[1].slice(0, 8)}`);
-  }
-  return parts.join(' | ');
+  /** Last adaptive fan-out gate decision for the worker stage. */
+  workerFanoutDecision?: WorkerFanoutGateDecision;
 }
 
 // Pipeline Events
 
-export type PipelineEventType =
-  | 'stage:start'
-  | 'stage:complete'
-  | 'stage:fail'
-  | 'iteration:start'
-  | 'iteration:complete'
-  | 'iteration:fail'
-  | 'pipeline:complete'
-  | 'pipeline:fail'
-  | 'halt';
+export type PipelineEventType = 'stage:start' | 'stage:complete' | 'stage:fail' | 'iteration:start' | 'iteration:complete' | 'iteration:fail' | 'pipeline:complete' | 'pipeline:fail' | 'fanout:gate' | 'halt';
 
 // Pair Pipeline
 
@@ -598,7 +568,7 @@ export class PairPipeline extends EventEmitter {
           const combinedFeedback =
             [reflectionPart, reviewPart].filter(Boolean).join('\n\n') || undefined;
 
-          result = await workerAgent.runWorker({
+          const workerOptions: WorkerOptions = {
             taskTitle: context.task.title,
             taskDescription: context.task.description || '',
             projectPath: context.projectPath,
@@ -625,6 +595,16 @@ export class PairPipeline extends EventEmitter {
             processContext: { taskId: context.task.id, stage: 'worker' },
             workerContext,
             signal: this.abortSignal,
+          };
+
+          result = await runWorkerWithOptionalFanout({
+            projectPath: context.projectPath,
+            workerOptions,
+            fanoutDecision: context.workerFanoutDecision,
+            fanoutConfig: this.config.roles?.worker?.fanout,
+            guards: this.config.guards,
+            onLog,
+            runWorker: workerAgent.runWorker,
           });
           agentPair.saveWorkerResult(context.session.id, result as WorkerResult);
           context.workerResult = result as WorkerResult;
@@ -997,6 +977,22 @@ export class PairPipeline extends EventEmitter {
           toModel: escalateModel,
         } });
       }
+
+      const fanoutDecision = evaluateWorkerFanoutGate({
+        task: context.task,
+        draftAnalysis: this.config.draftAnalysis,
+        iteration: context.currentIteration,
+        feedbackSource: context.feedbackSource,
+        effort: this.getEffortForTask(context.task),
+        config: this.config.roles?.worker?.fanout,
+      });
+      context.workerFanoutDecision = fanoutDecision;
+      emitWorkerFanoutGateDecision({
+        context,
+        decision: fanoutDecision,
+        verbose: this.config.verbose,
+        emit: (event, payload) => this.emit(event, payload),
+      });
 
       agentPair.updateSessionStatus(context.session.id, 'working');
       const workerResult = await this.runStage('worker', context, workerOverrides);

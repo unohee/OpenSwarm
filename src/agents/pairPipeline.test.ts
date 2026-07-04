@@ -1,4 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import type { WorkerOptions } from './worker.js';
 import type { ReviewerOptions } from './reviewer.js';
 import type { TaskItem } from '../orchestration/decisionEngine.js';
@@ -80,6 +85,14 @@ describe('PairPipeline model selection', () => {
       estimatedMinutes: 60,
       ...overrides,
     };
+  }
+
+  function initRepo(dir: string): void {
+    execFileSync('git', ['init', '-q'], { cwd: dir });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
+    execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: dir });
+    execFileSync('git', ['add', '-A'], { cwd: dir });
+    execFileSync('git', ['commit', '-qm', 'init'], { cwd: dir });
   }
 
   it('passes matched jobProfile models to worker and reviewer calls', async () => {
@@ -275,5 +288,331 @@ describe('PairPipeline model selection', () => {
     await pipeline.run(task(), process.cwd());
 
     expect(stageModels().every(m => m === undefined)).toBe(true);
+  });
+
+  it('scores core orchestration work as a fan-out candidate without running extra workers', async () => {
+    const { PairPipeline } = await import('./pairPipeline.js');
+    const { evaluateWorkerFanoutGate } = await import('./workerFanoutGate.js');
+    const draftAnalysis = {
+      taskType: 'feature',
+      intentSummary: 'Add an adaptive fan-out gate to the worker pipeline.',
+      relevantFiles: ['src/agents/pairPipeline.ts', 'src/support/worktreeManager.ts'],
+      suggestedApproach: 'Evaluate risk signals before the worker stage and report the decision.',
+      completionCriteria: ['A fan-out gate decision is emitted before the worker starts.'],
+      sufficient: true,
+    };
+
+    const decision = evaluateWorkerFanoutGate({
+      task: task({
+        title: 'Add adaptive fan-out gate to PairPipeline',
+        estimatedMinutes: 45,
+      }),
+      draftAnalysis,
+      iteration: 1,
+      config: { minScore: 2 },
+    });
+
+    expect(decision.shouldFanOut).toBe(true);
+    expect(decision.signals.map((s) => s.code)).toContain('core-orchestration-scope');
+
+    const pipeline = new PairPipeline({
+      stages: ['worker'],
+      maxIterations: 1,
+      roles: {
+        worker: {
+          enabled: true,
+          model: 'mini-worker',
+          timeoutMs: 0,
+          fanout: { mode: 'report', minScore: 2 },
+        },
+      },
+      draftAnalysis,
+    });
+
+    const result = await pipeline.run(task({
+      title: 'Add adaptive fan-out gate to PairPipeline',
+      estimatedMinutes: 45,
+    }), process.cwd());
+
+    expect(result.success).toBe(true);
+    expect(runWorker).toHaveBeenCalledTimes(1);
+    const fanoutEvent = broadcastEvent.mock.calls
+      .map(c => c[0])
+      .find(e => e.type === 'pipeline:fanout');
+    expect(fanoutEvent).toEqual(expect.objectContaining({
+      type: 'pipeline:fanout',
+      data: expect.objectContaining({
+        shouldFanOut: true,
+        score: expect.any(Number),
+        threshold: 2,
+      }),
+    }));
+  });
+
+  it('executes adaptive fan-out in sandboxes and promotes only the winning diff', async () => {
+    const repo = await mkdtemp(path.join(tmpdir(), 'osw-pipeline-fanout-'));
+    try {
+      await writeFile(path.join(repo, 'README.md'), 'base\n', 'utf8');
+      initRepo(repo);
+
+      runWorker.mockImplementation(async (opts: WorkerOptions) => {
+        const isSpark = opts.model === 'gpt-5.3-codex-spark';
+        const file = isSpark ? 'spark.txt' : 'primary.txt';
+        await writeFile(path.join(opts.projectPath, file), isSpark ? 'spark\n' : 'primary\n', 'utf8');
+        return {
+          success: true,
+          summary: isSpark ? 'spark patch' : 'primary patch',
+          filesChanged: [file],
+          commands: [],
+          output: '',
+          confidencePercent: isSpark ? 95 : 70,
+        };
+      });
+
+      const { PairPipeline } = await import('./pairPipeline.js');
+      const pipeline = new PairPipeline({
+        stages: ['worker'],
+        maxIterations: 1,
+        roles: {
+          worker: {
+            enabled: true,
+            adapter: 'codex-responses',
+            model: 'gpt-5.4-mini',
+            timeoutMs: 0,
+            fanout: { mode: 'execute', minScore: 1, concurrency: 2 },
+          },
+        },
+      });
+
+      const result = await pipeline.run(task({
+        title: 'Touch PairPipeline worker fan-out',
+        estimatedMinutes: 45,
+      }), repo);
+      expect(result.success).toBe(true);
+      expect(runWorker).toHaveBeenCalledTimes(2);
+      expect(await readFile(path.join(repo, 'spark.txt'), 'utf8')).toBe('spark\n');
+      expect(existsSync(path.join(repo, 'primary.txt'))).toBe(false);
+      expect(result.workerResult?.summary).toContain('[fanout:spark-diversity]');
+      expect(result.workerResult?.filesChanged).toEqual(['spark.txt']);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('excludes fan-out candidates whose sandbox diff fails a blocking guard', async () => {
+    const repo = await mkdtemp(path.join(tmpdir(), 'osw-pipeline-fanout-guards-'));
+    try {
+      await writeFile(path.join(repo, 'README.md'), 'base\n', 'utf8');
+      initRepo(repo);
+
+      runWorker.mockImplementation(async (opts: WorkerOptions) => {
+        const isSpark = opts.model === 'gpt-5.3-codex-spark';
+        if (isSpark) {
+          await writeFile(path.join(opts.projectPath, 'package.json'), '{"name":"spoofed-dep"}\n', 'utf8');
+          return {
+            success: true,
+            summary: 'spark patch',
+            filesChanged: ['package.json'],
+            commands: [],
+            output: 'Cannot find module left-pad',
+            confidencePercent: 99,
+          };
+        }
+
+        await writeFile(path.join(opts.projectPath, 'primary.txt'), 'primary\n', 'utf8');
+        return {
+          success: true,
+          summary: 'primary patch',
+          filesChanged: ['primary.txt'],
+          commands: [],
+          output: '',
+          confidencePercent: 90,
+        };
+      });
+
+      const { PairPipeline } = await import('./pairPipeline.js');
+      const pipeline = new PairPipeline({
+        stages: ['worker'],
+        maxIterations: 1,
+        guards: { dependencyAntiPatternCheck: true },
+        roles: {
+          worker: {
+            enabled: true,
+            adapter: 'codex-responses',
+            model: 'gpt-5.4-mini',
+            timeoutMs: 0,
+            fanout: { mode: 'execute', minScore: 1, concurrency: 2 },
+          },
+        },
+      });
+
+      const result = await pipeline.run(task({
+        title: 'Touch PairPipeline worker fan-out',
+        estimatedMinutes: 45,
+      }), repo);
+      expect(result.success).toBe(true);
+      expect(runWorker).toHaveBeenCalledTimes(2);
+      expect(await readFile(path.join(repo, 'primary.txt'), 'utf8')).toBe('primary\n');
+      expect(existsSync(path.join(repo, 'package.json'))).toBe(false);
+      expect(result.workerResult?.summary).toContain('[fanout:primary]');
+      expect(result.workerResult?.filesChanged).toEqual(['primary.txt']);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('copies shared dependency paths into fan-out sandboxes by default', async () => {
+    const repo = await mkdtemp(path.join(tmpdir(), 'osw-pipeline-fanout-deps-'));
+    try {
+      await writeFile(path.join(repo, '.gitignore'), 'node_modules/\n', 'utf8');
+      await writeFile(path.join(repo, 'README.md'), 'base\n', 'utf8');
+      await mkdir(path.join(repo, 'node_modules', '.bin'), { recursive: true });
+      const localCheck = path.join(repo, 'node_modules', '.bin', 'local-check');
+      await writeFile(localCheck, '#!/usr/bin/env node\nconsole.log("ok")\n', 'utf8');
+      await chmod(localCheck, 0o755);
+      initRepo(repo);
+
+      runWorker.mockImplementation(async (opts: WorkerOptions) => {
+        execFileSync(path.join(opts.projectPath, 'node_modules', '.bin', 'local-check'), [], {
+          cwd: opts.projectPath,
+        });
+        const isSpark = opts.model === 'gpt-5.3-codex-spark';
+        const file = isSpark ? 'spark.txt' : 'primary.txt';
+        await writeFile(path.join(opts.projectPath, file), isSpark ? 'spark\n' : 'primary\n', 'utf8');
+        return {
+          success: true,
+          summary: isSpark ? 'spark patch' : 'primary patch',
+          filesChanged: [file],
+          commands: ['node_modules/.bin/local-check'],
+          output: 'ok',
+          confidencePercent: isSpark ? 95 : 70,
+        };
+      });
+
+      const { PairPipeline } = await import('./pairPipeline.js');
+      const pipeline = new PairPipeline({
+        stages: ['worker'],
+        maxIterations: 1,
+        roles: {
+          worker: {
+            enabled: true,
+            adapter: 'codex-responses',
+            model: 'gpt-5.4-mini',
+            timeoutMs: 0,
+            fanout: { mode: 'execute', minScore: 1, concurrency: 2 },
+          },
+        },
+      });
+
+      const result = await pipeline.run(task({
+        title: 'Touch PairPipeline worker fan-out',
+        estimatedMinutes: 45,
+      }), repo);
+
+      expect(result.success).toBe(true);
+      expect(runWorker).toHaveBeenCalledTimes(2);
+      expect(result.workerResult?.summary).toContain('[fanout:spark-diversity]');
+      expect(await readFile(path.join(repo, 'spark.txt'), 'utf8')).toBe('spark\n');
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('does not let losing fan-out candidates mutate original shared paths by default', async () => {
+    const repo = await mkdtemp(path.join(tmpdir(), 'osw-pipeline-fanout-shared-'));
+    try {
+      await writeFile(path.join(repo, '.gitignore'), 'node_modules/\n', 'utf8');
+      await writeFile(path.join(repo, 'README.md'), 'base\n', 'utf8');
+      await mkdir(path.join(repo, 'node_modules'), { recursive: true });
+      await writeFile(path.join(repo, 'node_modules', 'original.txt'), 'original\n', 'utf8');
+      initRepo(repo);
+
+      runWorker.mockImplementation(async (opts: WorkerOptions) => {
+        const isSpark = opts.model === 'gpt-5.3-codex-spark';
+        if (!isSpark) {
+          await mkdir(path.join(opts.projectPath, 'node_modules'), { recursive: true });
+          await writeFile(path.join(opts.projectPath, 'node_modules', 'loser-leak.txt'), 'leak\n', 'utf8');
+          await writeFile(path.join(opts.projectPath, 'primary.txt'), 'primary\n', 'utf8');
+        } else {
+          await writeFile(path.join(opts.projectPath, 'spark.txt'), 'spark\n', 'utf8');
+        }
+        return {
+          success: true,
+          summary: isSpark ? 'spark patch' : 'primary patch',
+          filesChanged: [isSpark ? 'spark.txt' : 'primary.txt'],
+          commands: [],
+          output: '',
+          confidencePercent: isSpark ? 95 : 70,
+        };
+      });
+
+      const { PairPipeline } = await import('./pairPipeline.js');
+      const pipeline = new PairPipeline({
+        stages: ['worker'],
+        maxIterations: 1,
+        roles: {
+          worker: {
+            enabled: true,
+            adapter: 'codex-responses',
+            model: 'gpt-5.4-mini',
+            timeoutMs: 0,
+            fanout: { mode: 'execute', minScore: 1, concurrency: 2 },
+          },
+        },
+      });
+
+      const result = await pipeline.run(task({
+        title: 'Touch PairPipeline worker fan-out',
+        estimatedMinutes: 45,
+      }), repo);
+
+      expect(result.success).toBe(true);
+      expect(await readFile(path.join(repo, 'spark.txt'), 'utf8')).toBe('spark\n');
+      expect(existsSync(path.join(repo, 'node_modules', 'loser-leak.txt'))).toBe(false);
+      expect(await readFile(path.join(repo, 'node_modules', 'original.txt'), 'utf8')).toBe('original\n');
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the adaptive fan-out gate disabled when configured off', async () => {
+    const { PairPipeline } = await import('./pairPipeline.js');
+    const pipeline = new PairPipeline({
+      stages: ['worker'],
+      maxIterations: 1,
+      roles: {
+        worker: {
+          enabled: true,
+          model: 'mini-worker',
+          timeoutMs: 0,
+          fanout: { enabled: false },
+        },
+      },
+      draftAnalysis: {
+        taskType: 'feature',
+        intentSummary: 'Add a risky change to the worker pipeline.',
+        relevantFiles: ['src/agents/pairPipeline.ts'],
+        suggestedApproach: 'Change the pipeline loop.',
+        completionCriteria: ['Pipeline still runs.'],
+        sufficient: true,
+      },
+    });
+
+    await pipeline.run(task({
+      title: 'Add adaptive fan-out gate to PairPipeline',
+      estimatedMinutes: 45,
+    }), process.cwd());
+
+    const fanoutEvent = broadcastEvent.mock.calls
+      .map(c => c[0])
+      .find(e => e.type === 'pipeline:fanout');
+    expect(fanoutEvent).toEqual(expect.objectContaining({
+      type: 'pipeline:fanout',
+      data: expect.objectContaining({
+        enabled: false,
+        shouldFanOut: false,
+        score: 0,
+      }),
+    }));
   });
 });

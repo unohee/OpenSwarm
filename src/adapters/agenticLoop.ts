@@ -122,6 +122,8 @@ export interface AgenticLoopOptions {
   bashTimeoutMs?: number;
   /** Expose web_fetch + web_search tools (default true). Disabled e.g. for SWE-bench integrity. */
   webTools?: boolean;
+  /** Expose search_memory (default true). Disabled for isolated/temp repo benchmarks. */
+  memoryTools?: boolean;
   /** Read-only mode: hide mutation/shell tools and refuse response-text edits. */
   readOnly?: boolean;
   /** Expose the apply_patch (V4A) tool — codex adapters only (codex models are
@@ -187,6 +189,7 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
     protectedFiles,
     bashTimeoutMs,
     webTools = true,
+    memoryTools = true,
     readOnly = false,
     applyPatch = false,
     mcpTools,
@@ -218,9 +221,12 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
   const baseTools = editFormat === 'json'
     ? TOOL_DEFINITIONS
     : TOOL_DEFINITIONS.filter(t => t.function.name !== 'edit_file');
+  const memoryFilteredTools = memoryTools
+    ? baseTools
+    : baseTools.filter((t) => t.function.name !== 'search_memory');
   const visibleBaseTools = readOnly
-    ? baseTools.filter((t) => !['write_file', 'edit_file', 'bash'].includes(t.function.name))
-    : baseTools;
+    ? memoryFilteredTools.filter((t) => !['write_file', 'edit_file', 'bash'].includes(t.function.name))
+    : memoryFilteredTools;
   const tools = enableTools
     ? [
         ...visibleBaseTools,

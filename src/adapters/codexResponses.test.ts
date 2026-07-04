@@ -1,16 +1,76 @@
-import { describe, it, expect } from 'vitest';
-import { chatToResponsesInput, toolsToResponsesTools, reduceResponsesEvents, resolveReasoningEffort, substituteSpark } from './codexResponses.js';
-import type { ChatMessage } from './agenticLoop.js';
+import { afterEach, describe, it, expect, vi } from 'vitest';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  CodexResponsesAdapter,
+  chatToResponsesInput,
+  toolsToResponsesTools,
+  reduceResponsesEvents,
+  resolveReasoningEffort,
+  selectDefaultCodexResponseModel,
+} from './codexResponses.js';
+import { runAgenticLoop, type ChatMessage } from './agenticLoop.js';
 import type { ToolDefinition } from './tools.js';
 
-describe('substituteSpark', () => {
-  it('replaces gpt-5.3-codex-spark with the safe cheap model', () => {
-    expect(substituteSpark('gpt-5.3-codex-spark')).toBe('gpt-5.4-mini');
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe('selectDefaultCodexResponseModel', () => {
+  it('prefers the stable default when the live catalog includes it', () => {
+    expect(selectDefaultCodexResponseModel(['gpt-5.3-codex-spark', 'gpt-5.4-mini', 'gpt-5.5'])).toBe('gpt-5.5');
   });
-  it('leaves every other model untouched', () => {
-    for (const m of ['gpt-5.4-mini', 'gpt-5.4', 'gpt-5.5', 'gpt-5-codex']) {
-      expect(substituteSpark(m)).toBe(m);
-    }
+
+  it('does not pick Spark implicitly when another model is available', () => {
+    expect(selectDefaultCodexResponseModel(['gpt-5.3-codex-spark', 'gpt-5.4-mini'])).toBe('gpt-5.4-mini');
+  });
+
+  it('does not choose Spark implicitly even if it is the only discovered model', () => {
+    expect(selectDefaultCodexResponseModel(['gpt-5.3-codex-spark'])).toBe('gpt-5.5');
+  });
+});
+
+describe('unsupported-model fallback', () => {
+  it('persists the fallback model across subsequent tool-loop API turns', async () => {
+    const requestedModels: string[] = [];
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      if (target.includes('/backend-api/codex/models')) {
+        return new Response(JSON.stringify({ models: [{ slug: 'gpt-5.5', priority: 1 }] }), { status: 200 });
+      }
+
+      const body = JSON.parse(String(init?.body ?? '{}')) as { model?: string };
+      requestedModels.push(String(body.model));
+      if (body.model === 'unsupported-model') {
+        return new Response('model is not supported for this account', { status: 400 });
+      }
+
+      return new Response(
+        [
+          'data: {"type":"response.output_text.delta","delta":"ok"}',
+          'data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}',
+          'data: [DONE]',
+          '',
+        ].join('\n'),
+        { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    type CreateApiCaller = (
+      initialToken: string,
+      accountId: string,
+      store: unknown,
+      model: string,
+    ) => (messages: ChatMessage[], tools: ToolDefinition[]) => Promise<unknown>;
+    const adapter = new CodexResponsesAdapter() as unknown as { createApiCaller: CreateApiCaller };
+    const callApi = adapter.createApiCaller('token', 'account', {}, 'unsupported-model');
+
+    await callApi([{ role: 'user', content: 'first' }], []);
+    await callApi([{ role: 'user', content: 'second' }], []);
+
+    expect(requestedModels).toEqual(['unsupported-model', 'gpt-5.5', 'gpt-5.5']);
   });
 });
 
@@ -62,7 +122,7 @@ describe('toolsToResponsesTools', () => {
       { type: 'function', function: { name: 'bash', description: 'run', parameters: { type: 'object' } } },
     ];
     expect(toolsToResponsesTools(tools)).toEqual([
-      { type: 'function', name: 'bash', description: 'run', parameters: { type: 'object' } },
+      { type: 'function', name: 'bash', description: 'run', parameters: { type: 'object' }, strict: false },
     ]);
   });
 });
@@ -109,6 +169,113 @@ describe('reduceResponsesEvents', () => {
     ]);
     expect(res.choices[0].message.tool_calls![0].function.arguments).toBe('{"cmd":"ls"}');
   });
+
+  it('accepts final function-call details from response.output_item.done', () => {
+    const res = reduceResponsesEvents([
+      { type: 'response.output_item.added', item: { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'emit_marker', arguments: '' } },
+      { type: 'response.output_item.done', item: { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'emit_marker', arguments: '{"marker":"SPARK_TOOL_OK"}' } },
+    ]);
+    expect(res.choices[0].message.tool_calls![0]).toEqual({
+      id: 'call_1',
+      type: 'function',
+      function: { name: 'emit_marker', arguments: '{"marker":"SPARK_TOOL_OK"}' },
+    });
+  });
+
+  it('maps Spark-style argument done events even when item_id is omitted for a single call', () => {
+    const res = reduceResponsesEvents([
+      { type: 'response.output_item.added', item: { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'emit_marker' } },
+      { type: 'response.function_call_arguments.done', arguments: '{"marker":"SPARK_TOOL_OK"}' },
+    ]);
+    expect(res.choices[0].message.tool_calls![0].function.arguments).toBe('{"marker":"SPARK_TOOL_OK"}');
+  });
+
+  it('reduces the live-observed Spark function-call event sequence', () => {
+    const res = reduceResponsesEvents([
+      { type: 'response.created' },
+      { type: 'response.in_progress' },
+      { type: 'response.output_item.added', item: { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'emit_marker', arguments: '' } },
+      { type: 'response.output_item.done', item: { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'emit_marker', arguments: '{"marker":"SPARK_TOOL_OK"}' } },
+      { type: 'response.function_call_arguments.done', item_id: 'fc_1', arguments: '{"marker":"SPARK_TOOL_OK"}' },
+      { type: 'response.completed', response: { usage: { input_tokens: 42, output_tokens: 7 } } },
+    ]);
+
+    expect(res.choices[0]).toEqual({
+      finish_reason: 'tool_calls',
+      message: {
+        role: 'assistant',
+        content: null,
+        tool_calls: [
+          {
+            id: 'call_1',
+            type: 'function',
+            function: { name: 'emit_marker', arguments: '{"marker":"SPARK_TOOL_OK"}' },
+          },
+        ],
+      },
+    });
+    expect(res.usage).toEqual({ prompt_tokens: 42, completion_tokens: 7, total_tokens: 49, cached_tokens: 0 });
+  });
+});
+
+describe('Spark-shaped Responses events through the OpenSwarm loop', () => {
+  it('executes an apply_patch tool call and feeds the result into the next turn', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'openswarm-spark-loop-'));
+    const filePath = join(cwd, 'note.txt');
+    writeFileSync(filePath, 'status=ALPHA', 'utf8');
+    const patch = [
+      '*** Begin Patch',
+      '*** Update File: note.txt',
+      '@@',
+      '-status=ALPHA',
+      '+status=SPARK_TOOL_OK',
+      '*** End Patch',
+    ].join('\n');
+    let apiCalls = 0;
+
+    try {
+      const result = await runAgenticLoop({
+        cwd,
+        model: 'gpt-5.3-codex-spark',
+        prompt: 'Change note.txt to SPARK_TOOL_OK.',
+        webTools: false,
+        applyPatch: true,
+        maxTurns: 4,
+        callApi: async (messages, tools) => {
+          apiCalls++;
+          if (apiCalls === 1) {
+            expect(tools.some((t) => t.function.name === 'apply_patch')).toBe(true);
+            return reduceResponsesEvents([
+              { type: 'response.output_item.added', item: { type: 'function_call', id: 'fc_patch', call_id: 'call_patch', name: 'apply_patch', arguments: '' } },
+              {
+                type: 'response.output_item.done',
+                item: {
+                  type: 'function_call',
+                  id: 'fc_patch',
+                  call_id: 'call_patch',
+                  name: 'apply_patch',
+                  arguments: JSON.stringify({ input: patch }),
+                },
+              },
+              { type: 'response.function_call_arguments.done', item_id: 'fc_patch', arguments: JSON.stringify({ input: patch }) },
+            ]);
+          }
+
+          expect(messages.some((m) => m.role === 'tool' && m.content.includes('Patched: note.txt'))).toBe(true);
+          return {
+            choices: [{ message: { role: 'assistant', content: 'status=SPARK_TOOL_OK' }, finish_reason: 'stop' }],
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          };
+        },
+      });
+
+      expect(result.toolCallCount).toBe(1);
+      expect(result.text).toBe('status=SPARK_TOOL_OK');
+      expect(readFileSync(filePath, 'utf8')).toBe('status=SPARK_TOOL_OK');
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('resolveReasoningEffort — jobProfile effort wiring', () => {
@@ -127,3 +294,42 @@ describe('resolveReasoningEffort — jobProfile effort wiring', () => {
     expect(resolveReasoningEffort(undefined, undefined)).toBe('medium');
   });
 })
+
+const liveSparkIt = process.env.OPEN_SWARM_LIVE_CODEX_SPARK ? it : it.skip;
+
+describe('codex-responses live Spark smoke', () => {
+  // Opt-in because this hits the ChatGPT OAuth backend. Manual evidence captured
+  // while adding explicit Spark support: this test passed with Spark calling
+  // read_file → apply_patch → read_file and changing note.txt to SPARK_TOOL_OK.
+  liveSparkIt('uses PKCE auth and Spark to edit through the OpenSwarm tool loop', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'openswarm-spark-edit-'));
+    const filePath = join(cwd, 'note.txt');
+    writeFileSync(filePath, 'status=ALPHA\n', 'utf8');
+    const logs: string[] = [];
+
+    try {
+      const result = await new CodexResponsesAdapter().run({
+        cwd,
+        model: 'gpt-5.3-codex-spark',
+        prompt:
+          'Use tools to edit note.txt. Change the exact text "status=ALPHA" to "status=SPARK_TOOL_OK". ' +
+          'After editing, verify by reading the file and answer with the final file content only.',
+        systemPrompt:
+          'You are an edit-tool smoke test. You must inspect and modify the file using tools; do not answer without editing.',
+        enableTools: true,
+        webTools: false,
+        maxTurns: 8,
+        nudgeMaxOnNoEdit: 2,
+        timeoutMs: 180000,
+        onLog: (line) => logs.push(line),
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(logs.some((line) => /edit_file|apply_patch|write_file/.test(line))).toBe(true);
+      expect(readFileSync(filePath, 'utf8').trim()).toBe('status=SPARK_TOOL_OK');
+      expect(result.stdout).toContain('SPARK_TOOL_OK');
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  }, 180000);
+});

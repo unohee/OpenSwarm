@@ -1,0 +1,420 @@
+{
+  "createdAt": "2026-07-04T13:59:01.145Z",
+  "cases": [
+    {
+      "id": "small-doc",
+      "expected": "single",
+      "title": "Update README wording"
+    },
+    {
+      "id": "small-leaf-bug",
+      "expected": "single",
+      "title": "Fix typo in locale formatter"
+    },
+    {
+      "id": "broad-ui",
+      "expected": "single",
+      "title": "Polish dashboard empty states"
+    },
+    {
+      "id": "pipeline-core",
+      "expected": "fanout",
+      "title": "Add adaptive fan-out gate to PairPipeline"
+    },
+    {
+      "id": "worktree-core",
+      "expected": "fanout",
+      "title": "Harden worktree cleanup and PR publishing"
+    },
+    {
+      "id": "insufficient-draft-large",
+      "expected": "fanout",
+      "title": "Implement provider routing fallback"
+    },
+    {
+      "id": "review-retry",
+      "expected": "fanout",
+      "title": "Revise reviewer-requested worker fix"
+    },
+    {
+      "id": "objective-retry",
+      "expected": "fanout",
+      "title": "Fix test failure from previous worker attempt"
+    },
+    {
+      "id": "high-effort-small",
+      "expected": "single",
+      "title": "Check a tricky but tiny config parser edge case"
+    },
+    {
+      "id": "urgent-nontrivial",
+      "expected": "fanout",
+      "title": "Urgently fix scheduler stuck loop"
+    }
+  ],
+  "byThreshold": [
+    {
+      "threshold": 1,
+      "pass": 8,
+      "total": 10,
+      "fanoutCount": 8,
+      "rows": [
+        {
+          "id": "small-doc",
+          "expected": "single",
+          "actual": "single",
+          "passed": true,
+          "score": 0,
+          "threshold": 1,
+          "signals": []
+        },
+        {
+          "id": "small-leaf-bug",
+          "expected": "single",
+          "actual": "single",
+          "passed": true,
+          "score": 0,
+          "threshold": 1,
+          "signals": []
+        },
+        {
+          "id": "broad-ui",
+          "expected": "single",
+          "actual": "fanout",
+          "passed": false,
+          "score": 1,
+          "threshold": 1,
+          "signals": [
+            "broad-file-scope"
+          ]
+        },
+        {
+          "id": "pipeline-core",
+          "expected": "fanout",
+          "actual": "fanout",
+          "passed": true,
+          "score": 2,
+          "threshold": 1,
+          "signals": [
+            "core-orchestration-scope",
+            "large-estimate"
+          ]
+        },
+        {
+          "id": "worktree-core",
+          "expected": "fanout",
+          "actual": "fanout",
+          "passed": true,
+          "score": 2,
+          "threshold": 1,
+          "signals": [
+            "core-orchestration-scope",
+            "large-estimate"
+          ]
+        },
+        {
+          "id": "insufficient-draft-large",
+          "expected": "fanout",
+          "actual": "fanout",
+          "passed": true,
+          "score": 3,
+          "threshold": 1,
+          "signals": [
+            "insufficient-draft",
+            "core-orchestration-scope",
+            "large-estimate"
+          ]
+        },
+        {
+          "id": "review-retry",
+          "expected": "fanout",
+          "actual": "fanout",
+          "passed": true,
+          "score": 3,
+          "threshold": 1,
+          "signals": [
+            "review-retry",
+            "core-orchestration-scope"
+          ]
+        },
+        {
+          "id": "objective-retry",
+          "expected": "fanout",
+          "actual": "fanout",
+          "passed": true,
+          "score": 3,
+          "threshold": 1,
+          "signals": [
+            "objective-retry",
+            "core-orchestration-scope"
+          ]
+        },
+        {
+          "id": "high-effort-small",
+          "expected": "single",
+          "actual": "fanout",
+          "passed": false,
+          "score": 1,
+          "threshold": 1,
+          "signals": [
+            "high-effort-profile"
+          ]
+        },
+        {
+          "id": "urgent-nontrivial",
+          "expected": "fanout",
+          "actual": "fanout",
+          "passed": true,
+          "score": 2,
+          "threshold": 1,
+          "signals": [
+            "core-orchestration-scope",
+            "urgent-nontrivial"
+          ]
+        }
+      ]
+    },
+    {
+      "threshold": 2,
+      "pass": 10,
+      "total": 10,
+      "fanoutCount": 6,
+      "rows": [
+        {
+          "id": "small-doc",
+          "expected": "single",
+          "actual": "single",
+          "passed": true,
+          "score": 0,
+          "threshold": 2,
+          "signals": []
+        },
+        {
+          "id": "small-leaf-bug",
+          "expected": "single",
+          "actual": "single",
+          "passed": true,
+          "score": 0,
+          "threshold": 2,
+          "signals": []
+        },
+        {
+          "id": "broad-ui",
+          "expected": "single",
+          "actual": "single",
+          "passed": true,
+          "score": 1,
+          "threshold": 2,
+          "signals": [
+            "broad-file-scope"
+          ]
+        },
+        {
+          "id": "pipeline-core",
+          "expected": "fanout",
+          "actual": "fanout",
+          "passed": true,
+          "score": 2,
+          "threshold": 2,
+          "signals": [
+            "core-orchestration-scope",
+            "large-estimate"
+          ]
+        },
+        {
+          "id": "worktree-core",
+          "expected": "fanout",
+          "actual": "fanout",
+          "passed": true,
+          "score": 2,
+          "threshold": 2,
+          "signals": [
+            "core-orchestration-scope",
+            "large-estimate"
+          ]
+        },
+        {
+          "id": "insufficient-draft-large",
+          "expected": "fanout",
+          "actual": "fanout",
+          "passed": true,
+          "score": 3,
+          "threshold": 2,
+          "signals": [
+            "insufficient-draft",
+            "core-orchestration-scope",
+            "large-estimate"
+          ]
+        },
+        {
+          "id": "review-retry",
+          "expected": "fanout",
+          "actual": "fanout",
+          "passed": true,
+          "score": 3,
+          "threshold": 2,
+          "signals": [
+            "review-retry",
+            "core-orchestration-scope"
+          ]
+        },
+        {
+          "id": "objective-retry",
+          "expected": "fanout",
+          "actual": "fanout",
+          "passed": true,
+          "score": 3,
+          "threshold": 2,
+          "signals": [
+            "objective-retry",
+            "core-orchestration-scope"
+          ]
+        },
+        {
+          "id": "high-effort-small",
+          "expected": "single",
+          "actual": "single",
+          "passed": true,
+          "score": 1,
+          "threshold": 2,
+          "signals": [
+            "high-effort-profile"
+          ]
+        },
+        {
+          "id": "urgent-nontrivial",
+          "expected": "fanout",
+          "actual": "fanout",
+          "passed": true,
+          "score": 2,
+          "threshold": 2,
+          "signals": [
+            "core-orchestration-scope",
+            "urgent-nontrivial"
+          ]
+        }
+      ]
+    },
+    {
+      "threshold": 3,
+      "pass": 7,
+      "total": 10,
+      "fanoutCount": 3,
+      "rows": [
+        {
+          "id": "small-doc",
+          "expected": "single",
+          "actual": "single",
+          "passed": true,
+          "score": 0,
+          "threshold": 3,
+          "signals": []
+        },
+        {
+          "id": "small-leaf-bug",
+          "expected": "single",
+          "actual": "single",
+          "passed": true,
+          "score": 0,
+          "threshold": 3,
+          "signals": []
+        },
+        {
+          "id": "broad-ui",
+          "expected": "single",
+          "actual": "single",
+          "passed": true,
+          "score": 1,
+          "threshold": 3,
+          "signals": [
+            "broad-file-scope"
+          ]
+        },
+        {
+          "id": "pipeline-core",
+          "expected": "fanout",
+          "actual": "single",
+          "passed": false,
+          "score": 2,
+          "threshold": 3,
+          "signals": [
+            "core-orchestration-scope",
+            "large-estimate"
+          ]
+        },
+        {
+          "id": "worktree-core",
+          "expected": "fanout",
+          "actual": "single",
+          "passed": false,
+          "score": 2,
+          "threshold": 3,
+          "signals": [
+            "core-orchestration-scope",
+            "large-estimate"
+          ]
+        },
+        {
+          "id": "insufficient-draft-large",
+          "expected": "fanout",
+          "actual": "fanout",
+          "passed": true,
+          "score": 3,
+          "threshold": 3,
+          "signals": [
+            "insufficient-draft",
+            "core-orchestration-scope",
+            "large-estimate"
+          ]
+        },
+        {
+          "id": "review-retry",
+          "expected": "fanout",
+          "actual": "fanout",
+          "passed": true,
+          "score": 3,
+          "threshold": 3,
+          "signals": [
+            "review-retry",
+            "core-orchestration-scope"
+          ]
+        },
+        {
+          "id": "objective-retry",
+          "expected": "fanout",
+          "actual": "fanout",
+          "passed": true,
+          "score": 3,
+          "threshold": 3,
+          "signals": [
+            "objective-retry",
+            "core-orchestration-scope"
+          ]
+        },
+        {
+          "id": "high-effort-small",
+          "expected": "single",
+          "actual": "single",
+          "passed": true,
+          "score": 1,
+          "threshold": 3,
+          "signals": [
+            "high-effort-profile"
+          ]
+        },
+        {
+          "id": "urgent-nontrivial",
+          "expected": "fanout",
+          "actual": "single",
+          "passed": false,
+          "score": 2,
+          "threshold": 3,
+          "signals": [
+            "core-orchestration-scope",
+            "urgent-nontrivial"
+          ]
+        }
+      ]
+    }
+  ]
+}

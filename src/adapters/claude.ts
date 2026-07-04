@@ -48,9 +48,12 @@ export class ClaudeCliAdapter implements CliAdapter {
     const promptFile = options.prompt;
     const modelFlag = options.model ? ` --model ${options.model}` : '';
     const maxTurnsFlag = options.maxTurns ? ` --max-turns ${options.maxTurns}` : '';
-    // Register OpenSwarm's memory MCP server; bypassPermissions auto-allows its tool.
-    const mcpConfig = writeClaudeMcpConfig();
-    const cmd = `echo "" | claude -p "$(cat ${promptFile})" --output-format stream-json --verbose --permission-mode bypassPermissions --mcp-config ${mcpConfig}${modelFlag}${maxTurnsFlag}`;
+    // Register OpenSwarm's memory MCP server unless the caller needs an isolated run.
+    // bypassPermissions auto-allows its tool when present.
+    const mcpConfigFlag = options.memoryTools === false
+      ? ''
+      : ` --mcp-config ${writeClaudeMcpConfig()}`;
+    const cmd = `echo "" | claude -p "$(cat ${promptFile})" --output-format stream-json --verbose --permission-mode bypassPermissions${mcpConfigFlag}${modelFlag}${maxTurnsFlag}`;
     return { command: cmd, args: [] };
   }
 

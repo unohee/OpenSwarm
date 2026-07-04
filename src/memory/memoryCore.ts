@@ -860,7 +860,10 @@ export async function searchMemorySafe(
       predicates.push(`repo IN (${[repo, 'system', 'cognitive'].map(sqlString).join(', ')})`);
     }
     if (!includeExpired) {
-      predicates.push(`(expiresAt IS NULL OR expiresAt >= ${now} OR expiresAt >= ${PERMANENT_EXPIRY})`);
+      // Lance/DataFusion normalizes unquoted identifiers to lowercase. This
+      // column is camelCase in the Arrow schema, so quote it or vector search
+      // fails with "No field named expiresat".
+      predicates.push(`("expiresAt" IS NULL OR "expiresAt" >= ${now} OR "expiresAt" >= ${PERMANENT_EXPIRY})`);
     }
     if (minTrust > 0) {
       predicates.push(`(confidence >= ${minTrust} OR (confidence IS NULL AND trust >= ${minTrust}))`);

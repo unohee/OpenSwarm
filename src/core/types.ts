@@ -282,11 +282,32 @@ export type ModelConfig = {
 /**
  * Per-role configuration
  */
+export type AgentAdapterName = 'codex' | 'codex-responses' | 'gpt' | 'local' | 'lmstudio' | 'openrouter' | 'claude';
+
+export type WorkerFanoutCandidateConfig = {
+  /** Stable display/id for logs and scoring. */
+  id: string;
+  /** Candidate adapter override. Omit to inherit the worker role adapter. */
+  adapter?: AgentAdapterName;
+  /** Candidate model override. Omit to inherit the resolved worker model. */
+  model?: string;
+  /** Candidate reasoning effort override. */
+  reasoningEffort?: 'low' | 'medium' | 'high';
+  /** Candidate max agentic turns override. */
+  maxTurns?: number;
+  /** Candidate no-edit guard override. */
+  nudgeMaxOnNoEdit?: number;
+  /** Candidate web tool exposure override. */
+  webTools?: boolean;
+  /** Candidate memory tool exposure override. */
+  memoryTools?: boolean;
+};
+
 export type RoleConfig = {
   /** Whether role is enabled */
   enabled: boolean;
   /** CLI adapter name */
-  adapter?: 'codex' | 'codex-responses' | 'gpt' | 'local' | 'lmstudio' | 'openrouter' | 'claude';
+  adapter?: AgentAdapterName;
   /** Model ID. Omit → resolved dynamically from the role's adapter (getDefaultModel). */
   model?: string;
   /** Timeout (ms), 0 = unlimited */
@@ -297,6 +318,25 @@ export type RoleConfig = {
   escalateAfterIteration?: number;
   /** Max agentic turns per CLI invocation */
   maxTurns?: number;
+  /**
+   * Adaptive worker fan-out gate and optional candidate execution.
+   */
+  fanout?: {
+    /** Enable gate evaluation (default true when omitted). */
+    enabled?: boolean;
+    /** Report only or execute candidate workers (default report). */
+    mode?: 'report' | 'execute';
+    /** Minimum signal score required to recommend fan-out (default 2). */
+    minScore?: number;
+    /** Max candidate workers in flight (default candidates length, capped at 3). */
+    concurrency?: number;
+    /** Keep temporary candidate repos for debugging. */
+    keepSandboxes?: boolean;
+    /** Shared paths default to sandbox-local copies; true symlinks them, false disables them. */
+    linkSharedPaths?: boolean;
+    /** Candidate lanes. Omit for primary + Spark diversity defaults. */
+    candidates?: WorkerFanoutCandidateConfig[];
+  };
 };
 
 /**

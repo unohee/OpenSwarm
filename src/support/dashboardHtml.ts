@@ -859,6 +859,18 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           break;
         }
         case "pipeline:stage": addStageRow(ev.data); break;
+        case "pipeline:fanout":
+          addStageRow({
+            taskId: ev.data.taskId,
+            stage: "fanout",
+            status: "complete",
+            summary: ev.data.enabled
+              ? ((ev.data.shouldFanOut ? "fan-out recommended" : "single-worker path") + " (score " + ev.data.score + "/" + ev.data.threshold + ")")
+              : "fan-out disabled",
+            issues: ev.data.reasons || [],
+            issuesCount: (ev.data.reasons || []).length,
+          });
+          break;
         case "pipeline:iteration":
           addStageRow({ taskId: ev.data.taskId, stage: "iter #" + ev.data.iteration, status: "start" });
           break;

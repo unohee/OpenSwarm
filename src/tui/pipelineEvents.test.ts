@@ -15,6 +15,19 @@ const processExit = (over: Record<string, unknown> = {}): HubEvent => ({
   type: 'process:exit',
   data: { pid: 1, taskId: 't1', stage: 'worker', exitCode: 0, signal: null, durationMs: 1000, ...over },
 }) as HubEvent;
+const fanout = (over: Record<string, unknown> = {}): HubEvent => ({
+  type: 'pipeline:fanout',
+  data: {
+    taskId: 't1',
+    iteration: 1,
+    enabled: true,
+    shouldFanOut: true,
+    score: 3,
+    threshold: 2,
+    reasons: ['core-orchestration-scope'],
+    ...over,
+  },
+}) as HubEvent;
 
 describe('reducePipelineEvent (EPIC INT-1813 S5)', () => {
   it('appends pipeline:stage entries with their fields', () => {
@@ -57,6 +70,18 @@ describe('reducePipelineEvent (EPIC INT-1813 S5)', () => {
 
     s = reducePipelineEvent(s, log('reasoning about next patch'));
     expect(s.stages[0]).toMatchObject({ activity: 'thinking' });
+  });
+
+  it('records fan-out gate decisions as compact stage entries', () => {
+    const s = reducePipelineEvent(initialPipelineState, fanout());
+
+    expect(s.stages[0]).toMatchObject({
+      taskId: 't1',
+      stage: 'fanout',
+      status: 'complete',
+      activity: 'fan-out',
+      summary: 'fan-out recommended (score 3/2): core-orchestration-scope',
+    });
   });
 
   it('clears process waiting activity only for the matching task and stage', () => {
