@@ -9,6 +9,7 @@ import {
   getPipelineHistory,
   incrementRejection,
   clearRejection,
+  getRejectionCount,
   isRejectionLimitReached,
   canRetryNow,
   setRetryTime,
@@ -33,6 +34,7 @@ import {
 } from '../orchestration/decisionEngine.js';
 // ExecutorResult used via execution.reportExecutionResult
 import { checkWorkAllowed } from '../support/timeWindow.js';
+import { shouldEarlyStuckForInfeasibility } from '../support/feasibilityDetector.js';
 import { recordTaskOutcome } from '../memory/repoKnowledge.js';
 import { updateProjectAfterTask } from '../linear/projectUpdater.js';
 import { TaskScheduler, initScheduler, normalizeProjectPath } from '../orchestration/taskScheduler.js';
@@ -414,6 +416,58 @@ export class AutonomousRunner {
       broadcastEvent({ type: 'task:completed', data: { taskId: task.id, success: false, duration: result.totalDuration } });
       this.recordPipelineHistory(task, result);
       await reportToDiscord(formatPipelineResultEmbed(result));
+
+      // Structural infeasibility (⑦, INT-2521): the failure text says the DoD can't
+      // be met in this sandbox — it needs a human, a manual step, or an absent
+      // environment resource (real DB / live network / production access). The
+      // pipeline ran fine and the reviewer *correctly* rejected, so this IS a real
+      // task_failure; but re-running against an environmental wall only burns the
+      // remaining rejection/failure budget (3–4 full attempts) before the same STUCK.
+      // When the task has hit an infeasibility wall on two consecutive attempts, mark
+      // it STUCK now — labelled needs-human, blocker surfaced — instead of exhausting
+      // the budget. The guard (current AND the previously-recorded failure both carry a
+      // high-precision infeasibility marker; the two markers need not be identical) is
+      // what keeps a merely-hard task — which keeps making progress and won't stably
+      // emit the marker — or a one-off false-positive after an UNRELATED prior failure
+      // from being cut early. No new
+      // external state: this is the existing STUCK, reached sooner. NOTE: this path
+      // intentionally SKIPS the rejection-count / repo-pitfall accounting below — it is
+      // a terminal needs-human transition, not a retry, so a rejection tally is moot;
+      // it still persists the deciding failure detail. (INT-2521 ⑦)
+      if (task.issueId) {
+        const infeasDetail = pickFailureDetail([
+          result.lastReviewFeedback,
+          result.reviewResult?.feedback,
+          result.workerResult?.error,
+        ]) ?? '';
+        const priorDetail = this.lastFailureDetails.get(task.issueId)?.detail ?? '';
+        const infeasible = shouldEarlyStuckForInfeasibility(infeasDetail, priorDetail);
+        if (infeasible.earlyStuck) {
+          const attempts = getRejectionCount(task.issueId) + (this.failedTaskCounts.get(task.issueId) ?? 0) + 1;
+          this.completedTaskIds.add(task.issueId); // no retry can move an environmental wall
+          clearRetryTime(task.issueId, this.failedTaskRetryTimes);
+          clearRejection(task.issueId);
+          recordLastFailureDetail(this.taskStateRef, task.issueId, infeasDetail);
+          this.saveTaskState();
+          if (result.taskContext?.projectPath) {
+            await removePreservedWorktreeAt(result.taskContext.projectPath)
+              .catch((err) => console.warn('[Worktree] STUCK cleanup failed:', err));
+          }
+          try {
+            await execution.syncFailureState(task,
+              `Needs human — DoD appears unsatisfiable in the sandbox (marker: "${infeasible.marker}") after ${attempts} attempts`);
+            await getTaskSource()?.logStuck(task.issueId, 'autonomous-runner',
+              `**Needs human — the DoD appears unsatisfiable in this sandbox.**\n\n` +
+              `Detected blocker phrase: "${infeasible.marker}". Re-running can't fix an environmental ` +
+              `impossibility (missing DB / network / credentials, or a manual/human step), so automatic ` +
+              `retries were stopped early after ${attempts} attempts.\n\n**Latest failure:**\n${infeasDetail}`);
+            console.log(`[Scheduler] Issue ${task.issueId} marked STUCK (needs-human: infeasible in sandbox) — ${attempts} attempts`);
+          } catch (err) {
+            console.error(`[Scheduler] Failed to update issue state:`, err);
+          }
+          return;
+        }
+      }
 
       // If rejected, track rejection count and block after max attempts
       if (task.issueId && result.finalStatus === 'rejected') {
