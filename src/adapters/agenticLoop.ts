@@ -153,6 +153,10 @@ export interface AgenticLoopResult {
   apiCallCount: number;
   /** 총 토큰 사용량 (추적 가능한 경우) */
   totalTokens: number;
+  /** 입력(prompt) 토큰 누적 — costInfo/로그의 in/out 분리 표기용 (INT-2508) */
+  inputTokens: number;
+  /** 출력(completion) 토큰 누적 */
+  outputTokens: number;
   /** 캐시 적중 입력 토큰 누적 (totalTokens의 부분집합) — prompt-cache 효율 측정용 */
   cachedTokens: number;
   /** 소요 시간 (ms) */
@@ -261,6 +265,8 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
   const SR_FAILED_LIMIT = 2;
   let apiCallCount = 0;
   let totalTokens = 0;
+  let inputTokens = 0;
+  let outputTokens = 0;
   let cachedTokens = 0;
   let finalText = '';
 
@@ -329,6 +335,8 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
 
     if (response.usage) {
       totalTokens += response.usage.prompt_tokens + response.usage.completion_tokens;
+      inputTokens += response.usage.prompt_tokens;
+      outputTokens += response.usage.completion_tokens;
       cachedTokens += response.usage.cached_tokens ?? 0;
     }
 
@@ -527,6 +535,9 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
       const response = await callApi(messages, []);
       if (response.usage) {
         totalTokens += response.usage.prompt_tokens + response.usage.completion_tokens;
+        inputTokens += response.usage.prompt_tokens;
+        outputTokens += response.usage.completion_tokens;
+        cachedTokens += response.usage.cached_tokens ?? 0;
       }
       apiCallCount++;
       finalText = response.choices?.[0]?.message?.content ?? '';
@@ -540,6 +551,8 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
     toolCallCount,
     apiCallCount,
     totalTokens,
+    inputTokens,
+    outputTokens,
     cachedTokens,
     durationMs: Date.now() - startTime,
     executedCommands,
@@ -548,6 +561,11 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
 
 /**
  * AgenticLoopResult → CliRunResult 변환
+ *
+ * costUsd is 0 by design: the loop cannot price tokens itself — codex-responses
+ * bills through a ChatGPT subscription (no per-token marginal cost) and a
+ * hardcoded price table would go stale. Adapters with real metering (openrouter)
+ * can overwrite costUsd downstream. Tokens and duration are real measurements. (INT-2508)
  */
 export function loopResultToCliResult(result: AgenticLoopResult): CliRunResult {
   return {
@@ -556,6 +574,14 @@ export function loopResultToCliResult(result: AgenticLoopResult): CliRunResult {
     stderr: '',
     durationMs: result.durationMs,
     executedCommands: result.executedCommands,
+    costInfo: {
+      costUsd: 0,
+      inputTokens: result.inputTokens,
+      outputTokens: result.outputTokens,
+      cacheReadTokens: result.cachedTokens,
+      cacheCreationTokens: 0,
+      durationMs: result.durationMs,
+    },
   };
 }
 

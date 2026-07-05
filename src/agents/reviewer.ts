@@ -248,7 +248,12 @@ export async function runReviewer(options: ReviewerOptions): Promise<ReviewResul
     });
 
     // Parse result via adapter
-    return adapter.parseReviewerOutput(raw);
+    const parsedResult = adapter.parseReviewerOutput(raw);
+    // Backfill loop-measured usage for adapters that don't extract their own. (INT-2508)
+    if (raw.costInfo && !parsedResult.costInfo) {
+      parsedResult.costInfo = raw.costInfo;
+    }
+    return parsedResult;
   } catch (error) {
     // Rate limit errors must propagate so the scheduler can pause.
     if (error instanceof RateLimitError) throw error;

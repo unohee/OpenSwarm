@@ -694,7 +694,8 @@ export class PairPipeline extends EventEmitter {
       const costInfo = (result as { costInfo?: CostInfo }).costInfo;
 
       if (this.config.verbose) {
-        this.emit('log', { line: `[verbose] Stage ${stage} completed in ${(stageResult.duration / 1000).toFixed(1)}s${costInfo ? ` | cost: $${costInfo.costUsd.toFixed(4)} (${costInfo.inputTokens}in/${costInfo.outputTokens}out)` : ''}` });
+        // formatCost omits the misleading "$0.0000" for zero-cost (subscription) providers (INT-2508)
+        this.emit('log', { line: `[verbose] Stage ${stage} completed in ${(stageResult.duration / 1000).toFixed(1)}s${costInfo ? ` | cost: ${formatCost(costInfo)}` : ''}` });
       }
       broadcastEvent({ type: 'pipeline:stage', data: {
         taskId: context.task.id, stage, status: 'complete',

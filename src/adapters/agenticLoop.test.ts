@@ -10,7 +10,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { compactPriorTurns, toolCallKey, allToolCallsSeen, shouldNudgeReadLoop, READ_LOOP_NUDGE_AT, runAgenticLoop, type ChatMessage } from './agenticLoop.js';
+import { compactPriorTurns, toolCallKey, allToolCallsSeen, shouldNudgeReadLoop, READ_LOOP_NUDGE_AT, runAgenticLoop, loopResultToCliResult, type ChatMessage, type AgenticLoopResult } from './agenticLoop.js';
 import type { ToolCall } from './tools.js';
 
 /** Scripted API response carrying a single tool call. */
@@ -279,5 +279,32 @@ describe('runAgenticLoop read cache vs compaction (INT-1929)', () => {
     const seen = await runTwoReads({ compactAfterMessages: 2, compactTokenThreshold: 1, keepRecentMessages: 999 });
     expect(seen.filter((c) => c.includes('ALPHA_CONTENT')).length).toBeGreaterThanOrEqual(2);
     expect(seen.some((c) => c.includes('already read'))).toBe(false);
+  });
+});
+
+describe('loopResultToCliResult costInfo (INT-2508)', () => {
+  it('carries loop-measured tokens/duration as costInfo with zero (subscription) cost', () => {
+    const loop: AgenticLoopResult = {
+      text: 'done',
+      toolCallCount: 3,
+      apiCallCount: 4,
+      totalTokens: 12000,
+      inputTokens: 10000,
+      outputTokens: 2000,
+      cachedTokens: 8000,
+      durationMs: 45200,
+      executedCommands: ['npm test'],
+    };
+    const cli = loopResultToCliResult(loop);
+    expect(cli.costInfo).toEqual({
+      costUsd: 0,
+      inputTokens: 10000,
+      outputTokens: 2000,
+      cacheReadTokens: 8000,
+      cacheCreationTokens: 0,
+      durationMs: 45200,
+    });
+    expect(cli.stdout).toBe('done');
+    expect(cli.executedCommands).toEqual(['npm test']);
   });
 });

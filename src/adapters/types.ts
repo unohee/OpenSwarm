@@ -5,6 +5,7 @@
 
 import type { WorkerResult, ReviewResult } from '../agents/agentPair.js';
 import type { ToolDefinition } from './tools.js';
+import type { CostInfo } from '../support/costTracker.js';
 
 // Re-export for convenience
 export type { WorkerResult, ReviewResult };
@@ -27,6 +28,13 @@ export interface CliRunResult {
    * validation-evidence gate and reviewers see the real checks. (INT-2485)
    */
   executedCommands?: string[];
+  /**
+   * Token/duration usage measured by the adapter's own loop (codex-responses,
+   * gpt, …). parseWorkerOutput/parseReviewerOutput attach it to the stage result
+   * so the pipeline's per-stage cost logs and totals work on every provider,
+   * not just the claude CLI. costUsd stays 0 for subscription-billed providers. (INT-2508)
+   */
+  costInfo?: CostInfo;
 }
 
 /**

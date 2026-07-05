@@ -119,11 +119,14 @@ function formatTokens(n: number): string {
 
 /**
  * Format CostInfo as a human-readable log string
- * Example: "$0.0432 | 1.2k in / 0.8k out | 12.3s"
+ * Example: "$0.0432 | 1.2k in / 0.8k out (15.1k cached) | 12.3s"
+ * Subscription-billed providers (codex-responses) report costUsd 0 — the
+ * misleading "$0.0000" is omitted and only real measurements remain. (INT-2508)
  */
 export function formatCost(cost: CostInfo): string {
-  const usd = `$${cost.costUsd.toFixed(4)}`;
+  const usd = cost.costUsd > 0 ? `$${cost.costUsd.toFixed(4)} | ` : '';
   const tokens = `${formatTokens(cost.inputTokens)} in / ${formatTokens(cost.outputTokens)} out`;
+  const cached = cost.cacheReadTokens > 0 ? ` (${formatTokens(cost.cacheReadTokens)} cached)` : '';
   const duration = `${(cost.durationMs / 1000).toFixed(1)}s`;
-  return `${usd} | ${tokens} | ${duration}`;
+  return `${usd}${tokens}${cached} | ${duration}`;
 }

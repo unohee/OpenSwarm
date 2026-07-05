@@ -249,6 +249,13 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
     // Parse result via adapter
     const parsedResult = adapter.parseWorkerOutput(raw);
 
+    // Backfill usage measured by the adapter's own loop (codex-responses/gpt/
+    // openrouter/local) so per-stage cost logs work on every provider; adapters
+    // that extract their own costInfo (claude) keep theirs. (INT-2508)
+    if (raw.costInfo && !parsedResult.costInfo) {
+      parsedResult.costInfo = raw.costInfo;
+    }
+
     // Git diff is the source of truth for "did real work happen" — independent of
     // whether the model emitted a well-formed JSON success block. LLMs are weak at
     // structured output, so we never let a missing/malformed JSON block alone mark

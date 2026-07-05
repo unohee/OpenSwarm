@@ -16,6 +16,7 @@ import type {
 import { AuthProfileStore, ensureValidToken } from '../auth/index.js';
 import { runAgenticLoop, loopResultToCliResult, type ChatMessage, type AgenticLoopOptions } from './agenticLoop.js';
 import { parseWorkerResult, parseReviewerResult } from './resultParsing.js';
+import { formatCost } from '../support/costTracker.js';
 import type { ToolDefinition } from './tools.js';
 import { RateLimitError, rateLimitFromCodexHeaders } from './rateLimitError.js';
 
@@ -388,7 +389,9 @@ export class CodexResponsesAdapter implements CliAdapter {
         const pct = result.totalTokens > 0 ? Math.round((result.cachedTokens / result.totalTokens) * 100) : 0;
         options.onLog(`[Codex ${model}] ${result.apiCallCount} API calls, ${result.toolCallCount} tool uses, ${result.totalTokens} tokens (${result.cachedTokens} cached, ${pct}%)`);
       }
-      return loopResultToCliResult(result);
+      const cli = loopResultToCliResult(result);
+      if (cli.costInfo) cli.costInfo.model = model;
+      return cli;
     } catch (err) {
       // Rate-limit must propagate so the scheduler pauses (INT-1906).
       if (err instanceof RateLimitError) throw err;
@@ -501,11 +504,21 @@ export class CodexResponsesAdapter implements CliAdapter {
     if (raw.executedCommands && raw.executedCommands.length > 0) {
       result.commands = [...new Set([...result.commands, ...raw.executedCommands])].slice(0, 20);
     }
+    // Same tokens/duration visibility as the claude adapter (INT-2508).
+    if (raw.costInfo) {
+      console.log(`[Worker] Cost: ${formatCost(raw.costInfo)}`);
+      result.costInfo = raw.costInfo;
+    }
     return result;
   }
 
   parseReviewerOutput(raw: CliRunResult): ReviewResult {
-    return parseReviewerResult(raw.stdout);
+    const result = parseReviewerResult(raw.stdout);
+    if (raw.costInfo) {
+      console.log(`[Reviewer] Cost: ${formatCost(raw.costInfo)}`);
+      result.costInfo = raw.costInfo;
+    }
+    return result;
   }
 }
 
