@@ -18,7 +18,8 @@ import { resolveMcpTools } from '../mcp/mcpClient.js';
 import { parseWorkerResult, parseReviewerResult } from './resultParsing.js';
 import { consumeChatCompletionsStream } from './chatStream.js';
 import type { ToolDefinition } from './tools.js';
-import { RateLimitError } from './rateLimitError.js';
+import { RateLimitError, rateLimitFromHttpResponse } from './rateLimitError.js';
+import { isInfraError } from './errorClassification.js';
 
 const OPENAI_API_BASE = 'https://api.openai.com/v1';
 const DEFAULT_MODEL = 'gpt-4o';
@@ -109,9 +110,11 @@ export class GptCliAdapter implements CliAdapter {
       }
       return loopResultToCliResult(result);
     } catch (err) {
-      // Rate-limit must propagate so the scheduler pauses (INT-1906) — don't bury
-      // it in a failed CliRunResult.
+      // Rate-limit AND infra/capacity errors must propagate so the pipeline
+      // classifies them (pause / infra_error backoff) instead of burying them in a
+      // fake failed CliRunResult that the worker reads as an empty success → STUCK. (INT-1906, INT-2520)
       if (err instanceof RateLimitError) throw err;
+      if (isInfraError(err)) throw err;
       return {
         exitCode: 1,
         stdout: '',
@@ -168,6 +171,12 @@ export class GptCliAdapter implements CliAdapter {
             token = await refreshAndRetry(store);
             return doCall(token);
           }
+
+          // Usage/rate limit → TYPED RateLimitError at the source so the scheduler
+          // pauses instead of the loop swallowing a 429 into a fake empty success.
+          // Covers 429 rate_limit_exceeded AND 429 insufficient_quota. (INT-2520)
+          const rl = rateLimitFromHttpResponse(res.status, res.headers, errText);
+          if (rl) throw rl;
 
           throw new Error(`OpenAI API error (${res.status}): ${errText.slice(0, 500)}`);
         }
