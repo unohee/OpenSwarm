@@ -167,7 +167,13 @@ async function diffBinary(projectPath: string): Promise<string> {
 async function applyDiff(projectPath: string, patchRoot: string, diff: string): Promise<void> {
   const patchPath = join(patchRoot, 'winner.patch');
   await writeFile(patchPath, diff, 'utf8');
-  await git(projectPath, ['apply', '--3way', '--whitespace=nowarn', patchPath]);
+  // Plain worktree apply — NOT --3way. --3way validates the preimage against
+  // the INDEX, but on a dirty project (self-repair retry) the index still holds
+  // HEAD while the patch preimage is the seeded dirty state → "does not match
+  // index" even though the WORKTREE matches the preimage exactly (the sandbox
+  // base was cloned+seeded from it). A 3-way fallback couldn't work anyway: the
+  // sandbox's baseline blobs don't exist in the project's object database.
+  await git(projectPath, ['apply', '--whitespace=nowarn', patchPath]);
 }
 
 function scoreCandidate(input: {
@@ -323,7 +329,15 @@ export async function runWorkerFanout(options: RunWorkerFanoutOptions): Promise<
       return { candidates, fallbackReason: 'selected fan-out candidate had no diff to promote' };
     }
 
-    await applyDiff(options.projectPath, root, diff);
+    // A promotion failure (e.g. the project drifted while candidates ran) must
+    // not sink the whole worker stage — fall back to a single in-place worker,
+    // which is what would have run without fan-out.
+    try {
+      await applyDiff(options.projectPath, root, diff);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { candidates, fallbackReason: `winner diff did not apply cleanly: ${msg}` };
+    }
     const promotedFiles = await changedFiles(options.projectPath);
     winner.result = {
       ...winner.result,

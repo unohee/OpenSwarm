@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -28,6 +28,59 @@ const baseWorkerOptions = {
 } as unknown as WorkerOptions;
 
 describe('runWorkerFanout on a dirty worktree', () => {
+  beforeEach(() => {
+    runWorker.mockReset();
+  });
+
+  it('promotes a winner that modifies a file which is itself dirty in the project', async () => {
+    // Production failure (kyte-portal): the winner patched files that were part
+    // of the pre-existing dirty state. `git apply --3way` validates the preimage
+    // against the INDEX (= HEAD), not the worktree, so the promote died with
+    // "does not match index" even though the worktree matched exactly.
+    const repo = await mkdtemp(path.join(tmpdir(), 'osw-fanout-dirty-overlap-'));
+    try {
+      await writeFile(path.join(repo, 'README.md'), 'base\n', 'utf8');
+      initRepo(repo);
+      await writeFile(path.join(repo, 'README.md'), 'base\npreexisting-edit\n', 'utf8');
+
+      runWorker.mockImplementation(async (opts: WorkerOptions) => {
+        const isSpark = opts.model === 'gpt-5.3-codex-spark';
+        if (isSpark) {
+          // Winner edits the SAME file that is dirty in the project.
+          const current = await readFile(path.join(opts.projectPath, 'README.md'), 'utf8');
+          await writeFile(path.join(opts.projectPath, 'README.md'), `${current}winner-edit\n`, 'utf8');
+          return {
+            success: true, summary: 'spark patch', filesChanged: ['README.md'],
+            commands: [], output: '', confidencePercent: 95,
+          };
+        }
+        await writeFile(path.join(opts.projectPath, 'primary.txt'), 'primary\n', 'utf8');
+        return {
+          success: true, summary: 'primary patch', filesChanged: ['primary.txt'],
+          commands: [], output: '', confidencePercent: 70,
+        };
+      });
+
+      const { runWorkerFanout } = await import('./workerFanout.js');
+      const result = await runWorkerFanout({
+        projectPath: repo,
+        baseWorkerOptions: { ...baseWorkerOptions, projectPath: repo },
+        candidates: [
+          { id: 'primary', adapter: 'codex-responses', model: 'gpt-5.4-mini' },
+          { id: 'spark-diversity', adapter: 'codex-responses', model: 'gpt-5.3-codex-spark' },
+        ],
+        concurrency: 2,
+      });
+
+      expect(result.fallbackReason).toBeUndefined();
+      expect(result.winner?.id).toBe('spark-diversity');
+      expect(await readFile(path.join(repo, 'README.md'), 'utf8')).toBe('base\npreexisting-edit\nwinner-edit\n');
+      expect(existsSync(path.join(repo, 'primary.txt'))).toBe(false);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
   it('seeds pre-existing uncommitted changes and promotes only the incremental winner diff', async () => {
     const repo = await mkdtemp(path.join(tmpdir(), 'osw-fanout-dirty-'));
     try {
