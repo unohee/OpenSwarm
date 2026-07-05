@@ -74,7 +74,10 @@ export async function takeSnapshot(projectPath: string): Promise<string> {
   try {
     return await writeWorktreeTree(projectPath);
   } catch (error) {
-    console.error('[GitTracker] takeSnapshot error:', error);
+    // Best-effort: proceed without the snapshot (the reviewer still judges the real
+    // diff, so an empty run can't silently pass). Warn LOUDLY so the disabled
+    // "did real work" guard is visible rather than looking like a clean run. (INT-2521)
+    console.warn('[GitTracker] takeSnapshot FAILED — "did real work" guard disabled for this run:', error);
     return '';
   }
 }
@@ -97,8 +100,13 @@ export async function getChangedFilesSinceSnapshot(
     const diff = await runGitCommand(projectPath, ['diff', '--name-only', snapshotTree, currentTree]);
     return diff.split('\n').filter(Boolean);
   } catch (error) {
+    // Do NOT return [] on a git failure — indistinguishable from "no changes", it
+    // would drop the worker's real edits (uncredited → false STUCK) or mask them.
+    // Throw with the 'git-tracker' marker so isInfraError routes it → infra_error
+    // (backoff retry), preserving the work for the next attempt. (INT-2521)
+    const msg = error instanceof Error ? error.message : String(error);
     console.error('[GitTracker] getChangedFilesSinceSnapshot error:', error);
-    return [];
+    throw new Error(`git-tracker: diff since snapshot failed: ${msg}`);
   }
 }
 
@@ -236,6 +244,7 @@ function runGitCommand(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Pr
     let settled = false;
     const timer = setTimeout(() => {
       if (settled) return;
+      settled = true; // claim settlement before the late close/error handlers run
       proc.kill('SIGKILL');
       reject(new Error(`git ${args.join(' ')} timed out after ${GIT_CMD_TIMEOUT_MS}ms`));
     }, GIT_CMD_TIMEOUT_MS);
