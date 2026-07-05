@@ -68,7 +68,7 @@ export type HubEvent =
       error?: string;
     } }
   | { type: 'pipeline:iteration'; data: { taskId: string; iteration: number } }
-  | { type: 'pipeline:escalation'; data: { taskId: string; iteration: number; fromModel?: string; toModel: string } }
+  | { type: 'pipeline:escalation'; data: { taskId: string; iteration: number; fromModel?: string; toModel?: string; toEffort?: string; reason?: string } }
   | { type: 'pipeline:fanout'; data: {
       taskId: string;
       iteration: number;
