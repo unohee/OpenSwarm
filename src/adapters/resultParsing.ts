@@ -100,12 +100,21 @@ function parseRecommendedActions(raw: unknown): ReviewResult['recommendedActions
 
 /** Text fallback when no JSON reviewer result is present. */
 function extractReviewerFromText(text: string): ReviewResult {
-  const lower = text.toLowerCase();
-  const decision = lower.includes('approve')
-    ? 'approve'
-    : lower.includes('reject')
-      ? 'reject'
-      : 'revise';
+  // Prefer the reviewer's EXPLICIT verdict ("Decision: revise") over scattered
+  // keyword matching. A task whose domain is about "reject"/"approve" (e.g. a
+  // financial hard-reject bug, an approval-flow feature) makes prose keyword
+  // matching classify a revise as a reject and kill the task prematurely
+  // (STO-1451 was rejected on feedback that literally started "Decision: revise").
+  // With no explicit verdict, default to the SAFE, retryable 'revise' rather than
+  // the terminal 'reject' or an unearned 'approve'. (INT-2485)
+  const explicit = text.match(
+    /\bdecision\b\s*[:=-]?\s*["'`]?\s*(approve[d]?|reject(?:ed)?|revis(?:e|ion)|request[- ]?changes)/i,
+  );
+  let decision: ReviewResult['decision'] = 'revise';
+  if (explicit) {
+    const verdict = explicit[1].toLowerCase();
+    decision = verdict.startsWith('approv') ? 'approve' : verdict.startsWith('reject') ? 'reject' : 'revise';
+  }
   return {
     decision,
     feedback: extractSummary(text),

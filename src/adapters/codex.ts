@@ -479,12 +479,17 @@ function extractReviewerResultJson(text: string): ReviewResult | null {
 }
 
 function extractReviewerFromText(text: string): ReviewResult {
-  const lower = text.toLowerCase();
-  const decision = lower.includes('approve')
-    ? 'approve'
-    : lower.includes('reject')
-      ? 'reject'
-      : 'revise';
+  // Prefer the reviewer's EXPLICIT verdict over scattered keyword matching — a
+  // task about "reject"/"approve" makes prose matching misclassify a revise as a
+  // reject and kill it. Default to the safe, retryable 'revise'. (INT-2485)
+  const explicit = text.match(
+    /\bdecision\b\s*[:=-]?\s*["'`]?\s*(approve[d]?|reject(?:ed)?|revis(?:e|ion)|request[- ]?changes)/i,
+  );
+  let decision: ReviewResult['decision'] = 'revise';
+  if (explicit) {
+    const verdict = explicit[1].toLowerCase();
+    decision = verdict.startsWith('approv') ? 'approve' : verdict.startsWith('reject') ? 'reject' : 'revise';
+  }
 
   return {
     decision,
