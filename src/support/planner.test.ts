@@ -9,6 +9,7 @@ vi.mock('../adapters/index.js', () => ({
 
 import { runPlanner } from './planner.js';
 import * as adapters from '../adapters/index.js';
+import { RateLimitError } from '../adapters/rateLimitError.js';
 
 const mockedSpawnCli = vi.mocked(adapters.spawnCli);
 
@@ -74,5 +75,14 @@ describe('runPlanner — agentic loop migration', () => {
     mockedSpawnCli.mockResolvedValue(cliResult(PLAN_JSON) as never);
     await runPlanner({ taskTitle: 't', taskDescription: 'd', projectPath: '/tmp/x', model: 'sonnet' });
     expect(mockedSpawnCli.mock.calls[0][1].model).toBe('sonnet');
+  });
+
+  it('re-throws a RateLimitError instead of flattening it to {success:false} (INT-2521)', async () => {
+    // A swallowed rate limit made decomposeTask fall back to direct execution,
+    // which hammered the exhausted provider. It must propagate so the pipeline pauses.
+    mockedSpawnCli.mockRejectedValue(new RateLimitError(1782824950, 'Codex usage limit reached') as never);
+    await expect(
+      runPlanner({ taskTitle: 't', taskDescription: 'd', projectPath: '/tmp/x' }),
+    ).rejects.toBeInstanceOf(RateLimitError);
   });
 });

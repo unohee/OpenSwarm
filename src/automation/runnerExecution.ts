@@ -34,6 +34,7 @@ import {
 } from '../support/worktreeManager.js';
 import type { WorktreeInfo } from '../support/worktreeManager.js';
 import { loadRepoMetadata } from '../support/repoMetadata.js';
+import { RateLimitError } from '../adapters/rateLimitError.js';
 import {
   getDecompositionDepth,
   getChildrenCount,
@@ -639,6 +640,23 @@ export async function decomposeTask(
 
 // Pipeline Execution
 
+/**
+ * The 'rate_limited' PipelineResult the scheduler reads to pause: finalStatus +
+ * rateLimitResetsAt (ms) so the runner backs off until the reset without counting
+ * toward STUCK. Built here for a pre-pipeline (draft/planner) rate limit. (INT-2521)
+ */
+export function rateLimitedPipelineResult(err: RateLimitError): PipelineResult {
+  return {
+    success: false,
+    sessionId: `rate-limited-${Date.now()}`,
+    iterations: 0,
+    totalDuration: 0,
+    finalStatus: 'rate_limited',
+    rateLimitResetsAt: err.resetsAt ? err.resetsAt * 1000 : undefined,
+    stages: [],
+  };
+}
+
 export async function executePipeline(
   ctx: ExecutionContext,
   task: TaskItem,
@@ -652,6 +670,11 @@ export async function executePipeline(
   // Planner + Worker에 enriched context 제공
   // ============================================
   let draftResult: DraftAnalysis | undefined;
+  // A rate limit during the pre-pipeline phase (draft analysis or the decomposition
+  // planner) must PAUSE the scheduler immediately — not be swallowed into a
+  // best-effort draft or a silent direct-execution fallback that keeps hammering the
+  // exhausted provider until the worker finally re-hits it. (INT-2521)
+  try {
   if (ctx.enableDraftAnalysis !== false) {
     try {
       const taskId = task.issueIdentifier || task.issueId || task.id;
@@ -679,6 +702,7 @@ export async function executePipeline(
       broadcastEvent({ type: 'pipeline:stage', data: { taskId, stage: 'draft', status: 'complete', durationMs: draftResult.durationMs, ...metadata } });
       console.log(`[AutonomousRunner] Draft: type=${draftResult.taskType}, files=${draftResult.relevantFiles.length}, ${draftResult.durationMs}ms`);
     } catch (err) {
+      if (err instanceof RateLimitError) throw err; // → outer catch → rate_limited (INT-2521)
       console.warn('[AutonomousRunner] Draft analysis failed (non-blocking):', err);
     }
   }
@@ -712,6 +736,15 @@ export async function executePipeline(
         console.log('[AutonomousRunner] Decomposition failed, falling back to direct execution');
       }
     }
+  }
+  } catch (err) {
+    // Pre-pipeline rate limit → pause the scheduler (finalStatus 'rate_limited'
+    // carries the reset so the runner backs off until then, no STUCK). (INT-2521)
+    if (err instanceof RateLimitError) {
+      console.warn(`[AutonomousRunner] Rate limit during pre-pipeline phase — pausing: ${err.message}`);
+      return rateLimitedPipelineResult(err);
+    }
+    throw err;
   }
 
   // ============================================

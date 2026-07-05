@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
-import { fileReviewerFollowups } from './runnerExecution.js';
+import { fileReviewerFollowups, rateLimitedPipelineResult } from './runnerExecution.js';
 import type { ReviewResult } from '../agents/agentPair.js';
 import type { ITaskSource } from './taskSource.js';
+import { RateLimitError } from '../adapters/rateLimitError.js';
 
 const mockSource = (createSubIssue = vi.fn(async () => ({}))) =>
   ({ createSubIssue } as unknown as ITaskSource);
@@ -78,5 +79,23 @@ describe('fileReviewerFollowups (INT-1704)', () => {
 
   it('handles a null task source gracefully', async () => {
     expect(await fileReviewerFollowups(null, 'INT-1', review(), { autoFile: true })).toBe(0);
+  });
+});
+
+// The scheduler contract for a pre-pipeline (draft/planner) rate limit: a
+// RateLimitError becomes a rate_limited PipelineResult carrying the reset (ms) so
+// the runner pauses without counting toward STUCK. (INT-2521)
+describe('rateLimitedPipelineResult (INT-2521)', () => {
+  it('maps a RateLimitError to a rate_limited result with resetsAt in ms', () => {
+    const r = rateLimitedPipelineResult(new RateLimitError(1782824950, 'Codex usage limit reached'));
+    expect(r.finalStatus).toBe('rate_limited');
+    expect(r.success).toBe(false);
+    expect(r.rateLimitResetsAt).toBe(1782824950 * 1000);
+  });
+
+  it('leaves resetsAt undefined when the error has none', () => {
+    const r = rateLimitedPipelineResult(new RateLimitError(undefined, 'Rate limit reached'));
+    expect(r.finalStatus).toBe('rate_limited');
+    expect(r.rateLimitResetsAt).toBeUndefined();
   });
 });

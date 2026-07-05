@@ -10,6 +10,7 @@ import { promisify } from 'node:util';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getAdapter, getDefaultAdapterName, spawnCli } from '../adapters/index.js';
+import { RateLimitError } from '../adapters/rateLimitError.js';
 import { analyzeIssue } from '../knowledge/index.js';
 import { getRegistryStore } from '../registry/sqliteStore.js';
 import type { ImpactAnalysis } from '../knowledge/types.js';
@@ -615,6 +616,10 @@ export async function runDraftAnalysis(options: DraftAnalyzerOptions): Promise<D
           onLog?.('[Draft] Brief insufficient — retrying with a stricter prompt');
         }
       } catch (err) {
+        // A typed rate limit must NOT be swallowed into a best-effort draft — it
+        // has to reach the pipeline so the scheduler pauses instead of the planner
+        // + worker continuing to hammer the exhausted provider. (INT-2521)
+        if (err instanceof RateLimitError) throw err;
         lastError = err;
         const errMsg = err instanceof Error ? err.message : String(err);
         onLog?.(`[Draft] analysis failed (${adapterName}): ${errMsg}`);
