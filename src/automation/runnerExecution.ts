@@ -737,7 +737,23 @@ export async function executePipeline(
         },
       });
     } catch (err) {
-      console.warn('[Worktree] Failed to create worktree, falling back to main repo:', err);
+      // Do NOT fall back to the shared main repo. A non-isolated run leaves the
+      // edits uncommitted on main with NO branch/PR (stranded work) while the issue
+      // may still be marked done — a fake success — and it breaks parallel isolation
+      // (two tasks mutating one tree). A `git worktree add` failure (disk full,
+      // .git lock, corrupt repo) is infra: return an infra_error result so the
+      // runner applies backoff and does NOT count it toward STUCK (the proper
+      // finalStatus path — a bare throw would only hit the log-only 'error'
+      // handler with no backoff). The pipeline never runs. (INT-2521)
+      console.error(`[Worktree] Creation failed for ${task.issueIdentifier} — infra_error, NOT falling back to the shared repo:`, err);
+      return {
+        success: false,
+        sessionId: `worktree-fail-${Date.now()}`,
+        iterations: 0,
+        totalDuration: 0,
+        finalStatus: 'infra_error',
+        stages: [],
+      };
     }
   }
 
