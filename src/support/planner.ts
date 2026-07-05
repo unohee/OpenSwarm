@@ -9,6 +9,7 @@ import { t, getPrompts } from '../locale/index.js';
 import type { ImpactAnalysis } from '../knowledge/types.js';
 import type { AdapterName } from '../adapters/types.js';
 import { getAdapter, spawnCli } from '../adapters/index.js';
+import { mapModelForProvider } from '../adapters/modelCompat.js';
 import { expandPath } from '../core/config.js';
 
 // Types
@@ -94,10 +95,12 @@ export async function runPlanner(options: PlannerOptions): Promise<PlannerResult
   try {
     const adapter = getAdapter(options.adapterName);
     const cwd = expandPath(options.projectPath);
-    // Drop Claude-CLI-style model ids (e.g. `claude-opus-4-7`) — they are not
-    // valid on the openrouter/local adapters; fall back to the adapter default.
-    // OpenRouter Claude ids carry an org prefix (`anthropic/claude-...`) and pass.
-    const model = options.model && !options.model.startsWith('claude-') ? options.model : undefined;
+    // Keep the requested model only if it belongs to the EFFECTIVE adapter.
+    // The old guard only dropped claude-* ids (an openrouter/local concern) and
+    // let a provider-pinned config id sail through — decomposition.plannerModel
+    // 'gpt-5.5' reached `claude -p --model gpt-5.5` and 404'd every
+    // decomposition. Incompatible → undefined → adapter default. (INT-2510)
+    const model = mapModelForProvider(adapter.name as AdapterName, options.model);
 
     const raw = await spawnCli(adapter, {
       prompt,

@@ -59,4 +59,20 @@ describe('runPlanner — agentic loop migration', () => {
     expect(res.success).toBe(false);
     expect(res.error).toBeTruthy();
   });
+
+  // INT-2510: a provider-pinned config id (decomposition.plannerModel 'gpt-5.5')
+  // reached `claude -p --model gpt-5.5` and 404'd every decomposition.
+  it('drops a foreign provider id for the effective adapter (gpt-5.5 on claude)', async () => {
+    vi.mocked(adapters.getAdapter).mockReturnValueOnce({ name: 'claude' } as never);
+    mockedSpawnCli.mockResolvedValue(cliResult(PLAN_JSON) as never);
+    await runPlanner({ taskTitle: 't', taskDescription: 'd', projectPath: '/tmp/x', model: 'gpt-5.5' });
+    expect(mockedSpawnCli.mock.calls[0][1].model).toBeUndefined();
+  });
+
+  it('keeps a claude alias on the claude adapter', async () => {
+    vi.mocked(adapters.getAdapter).mockReturnValueOnce({ name: 'claude' } as never);
+    mockedSpawnCli.mockResolvedValue(cliResult(PLAN_JSON) as never);
+    await runPlanner({ taskTitle: 't', taskDescription: 'd', projectPath: '/tmp/x', model: 'sonnet' });
+    expect(mockedSpawnCli.mock.calls[0][1].model).toBe('sonnet');
+  });
 });
