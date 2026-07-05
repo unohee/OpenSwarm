@@ -101,7 +101,18 @@ export class CodexCliAdapter implements CliAdapter {
 
   parseWorkerOutput(raw: CliRunResult): WorkerResult {
     const resultText = extractCodexMessageText(raw.stdout);
-    return extractWorkerResultJson(resultText) || extractWorkerFromText(resultText);
+    const result = extractWorkerResultJson(resultText) || extractWorkerFromText(resultText);
+    // Ground-truth commands: codex emits an `item.completed`/`command_execution`
+    // event for every shell it actually ran. Self-reported `commands` in the
+    // model's JSON block are frequently empty (the model skips the report), which
+    // made the validation-evidence gate bounce and reviewers reject on
+    // "report the verification command" criteria even though the worker DID run
+    // checks. Merge the real executions so `commands` reflects what happened.
+    const executed = extractCodexExecutedCommands(raw.stdout);
+    if (executed.length > 0) {
+      result.commands = [...new Set([...result.commands, ...executed])].slice(0, 20);
+    }
+    return result;
   }
 
   parseReviewerOutput(raw: CliRunResult): ReviewResult {
@@ -142,6 +153,36 @@ export function coerceCodexModel(requested: string): string {
 
 function isClaudeModel(name: string): boolean {
   return /^claude[-_]/i.test(name);
+}
+
+/**
+ * Extract the shell commands codex actually executed from its `--json` event
+ * stream. Each run emits `item.completed` with `item.type === 'command_execution'`
+ * and `item.command` (codex wraps it as `/bin/zsh -lc '<cmd>'` — unwrap to the
+ * inner command). Ground truth, independent of the model's self-report.
+ */
+function extractCodexExecutedCommands(output: string): string[] {
+  const commands: string[] = [];
+  for (const line of output.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      const event = JSON.parse(trimmed);
+      if (
+        event.type === 'item.completed' &&
+        event.item?.type === 'command_execution' &&
+        typeof event.item.command === 'string'
+      ) {
+        const rawCmd: string = event.item.command;
+        const unwrapped = rawCmd.match(/^\/(?:usr\/)?bin\/(?:zsh|bash|sh)\s+-l?c\s+'([\s\S]*)'\s*$/);
+        const cmd = (unwrapped ? unwrapped[1] : rawCmd).trim();
+        if (cmd && !commands.includes(cmd)) commands.push(cmd);
+      }
+    } catch {
+      // Ignore non-JSON lines.
+    }
+  }
+  return commands;
 }
 
 function extractCodexMessageText(output: string): string {

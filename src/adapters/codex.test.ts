@@ -85,6 +85,29 @@ describe('CodexCliAdapter', () => {
     expect(result.commands).toEqual(['npm test']);
   });
 
+  it('captures actually-executed commands even when the model self-reports none', () => {
+    // The common failure mode: worker edits code and runs checks, but its JSON
+    // report has commands:[] — the validation gate then bounces it and reviewers
+    // reject on "report the verification command". Ground-truth command_execution
+    // events must backfill commands. (unwraps codex's /bin/zsh -lc '<cmd>' wrapper)
+    const raw = {
+      exitCode: 0,
+      stdout: [
+        '{"type":"item.started","item":{"type":"command_execution","command":"/bin/zsh -lc \'pytest tests/test_x.py\'"}}',
+        '{"type":"item.completed","item":{"type":"command_execution","command":"/bin/zsh -lc \'pytest tests/test_x.py\'","exit_code":0,"status":"completed"}}',
+        '{"type":"item.completed","item":{"type":"command_execution","command":"/bin/zsh -lc \'ruff check .\'","exit_code":0,"status":"completed"}}',
+        '{"type":"item.completed","item":{"type":"agent_message","text":"```json\\n{\\"success\\":true,\\"summary\\":\\"Fixed\\",\\"filesChanged\\":[\\"db/x.py\\"],\\"commands\\":[]}\\n```"}}',
+      ].join('\n'),
+      stderr: '',
+      durationMs: 1,
+    };
+
+    const result = adapter.parseWorkerOutput(raw);
+    expect(result.success).toBe(true);
+    // Deduped, unwrapped, from the real executions — not the empty self-report.
+    expect(result.commands).toEqual(['pytest tests/test_x.py', 'ruff check .']);
+  });
+
   it('parses reviewer output from codex json events', () => {
     const raw = {
       exitCode: 0,
