@@ -7,7 +7,7 @@
 
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { cp, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { copyFile, cp, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -159,21 +159,62 @@ async function changedFiles(projectPath: string): Promise<string[]> {
     .filter(Boolean);
 }
 
-async function diffBinary(projectPath: string): Promise<string> {
-  await git(projectPath, ['add', '-A']);
-  return git(projectPath, ['diff', '--cached', '--binary', 'HEAD']);
+/**
+ * The winner's changes relative to the seeded base (sandbox HEAD): tracked
+ * add/modify/delete/rename plus untracked new files. NUL-delimited so paths with
+ * spaces/newlines survive. Returns { write } (paths whose content to copy from
+ * the sandbox) and { remove } (paths to delete from the project).
+ */
+async function winnerChangeSet(sandbox: string): Promise<{ write: string[]; remove: string[] }> {
+  const write = new Set<string>();
+  const remove = new Set<string>();
+
+  const nameStatus = await git(sandbox, ['diff', '--name-status', '-z', 'HEAD']);
+  const tokens = nameStatus.split('\0').filter(Boolean);
+  for (let i = 0; i < tokens.length; ) {
+    const status = tokens[i];
+    if (status.startsWith('R') || status.startsWith('C')) {
+      // rename/copy: <status>\t?<src>\0<dst>\0 → src removed, dst written
+      const src = tokens[i + 1];
+      const dst = tokens[i + 2];
+      if (status.startsWith('R') && src) remove.add(src);
+      if (dst) write.add(dst);
+      i += 3;
+    } else {
+      const path = tokens[i + 1];
+      if (path) (status === 'D' ? remove : write).add(path);
+      i += 2;
+    }
+  }
+
+  const untracked = await git(sandbox, ['ls-files', '--others', '--exclude-standard', '-z']);
+  for (const p of untracked.split('\0').filter(Boolean)) write.add(p);
+
+  return { write: [...write], remove: [...remove] };
 }
 
-async function applyDiff(projectPath: string, patchRoot: string, diff: string): Promise<void> {
-  const patchPath = join(patchRoot, 'winner.patch');
-  await writeFile(patchPath, diff, 'utf8');
-  // Plain worktree apply — NOT --3way. --3way validates the preimage against
-  // the INDEX, but on a dirty project (self-repair retry) the index still holds
-  // HEAD while the patch preimage is the seeded dirty state → "does not match
-  // index" even though the WORKTREE matches the preimage exactly (the sandbox
-  // base was cloned+seeded from it). A 3-way fallback couldn't work anyway: the
-  // sandbox's baseline blobs don't exist in the project's object database.
-  await git(projectPath, ['apply', '--whitespace=nowarn', patchPath]);
+/**
+ * Promote the winner by COPYING its changed files into the project, rather than
+ * reconstructing a patch and `git apply`-ing it. The patch route is inherently
+ * fragile — context/whitespace/binary strictness made it fail ~79% of the time
+ * in production on dirty (self-repair-retry) worktrees. A direct copy of the
+ * exact file set the winner touched cannot fail on context mismatch: the
+ * sandbox file is `seeded-base + winner-edits`, and the project sits at the same
+ * seeded base, so the copy yields `base + winner-edits`, untouched files keep
+ * their project content. Returns the promoted path list.
+ */
+async function promoteWinnerFiles(projectPath: string, sandbox: string): Promise<string[]> {
+  const { write, remove } = await winnerChangeSet(sandbox);
+  for (const rel of remove) {
+    await rm(join(projectPath, rel), { force: true });
+  }
+  for (const rel of write) {
+    const src = join(sandbox, rel);
+    const dst = join(projectPath, rel);
+    await mkdir(dirname(dst), { recursive: true });
+    await copyFile(src, dst);
+  }
+  return [...write, ...remove];
 }
 
 function scoreCandidate(input: {
@@ -324,20 +365,22 @@ export async function runWorkerFanout(options: RunWorkerFanoutOptions): Promise<
       return { candidates, fallbackReason: 'no eligible fan-out candidate produced a guarded diff' };
     }
 
-    const diff = await diffBinary(winner.projectPath);
-    if (!diff.trim()) {
-      return { candidates, fallbackReason: 'selected fan-out candidate had no diff to promote' };
-    }
-
     // A promotion failure (e.g. the project drifted while candidates ran) must
     // not sink the whole worker stage — fall back to a single in-place worker,
     // which is what would have run without fan-out.
+    let copied: string[];
     try {
-      await applyDiff(options.projectPath, root, diff);
+      copied = await promoteWinnerFiles(options.projectPath, winner.projectPath);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      return { candidates, fallbackReason: `winner diff did not apply cleanly: ${msg}` };
+      return { candidates, fallbackReason: `winner promotion failed: ${msg}` };
     }
+    if (copied.length === 0) {
+      return { candidates, fallbackReason: 'selected fan-out candidate had no changes to promote' };
+    }
+    // Report the full accumulated worktree change set (base dirty state + the
+    // winner's increment) so the reviewer/tester see everything the PR carries,
+    // not just this iteration's delta.
     const promotedFiles = await changedFiles(options.projectPath);
     winner.result = {
       ...winner.result,

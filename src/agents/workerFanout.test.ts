@@ -140,4 +140,54 @@ describe('runWorkerFanout on a dirty worktree', () => {
       await rm(repo, { recursive: true, force: true });
     }
   });
+
+  it('promotes the winner when it deletes a tracked file and adds a new one', async () => {
+    // File-copy promote (not `git apply`) so add/delete/modify all survive
+    // regardless of context — the mode that made the patch route fail in prod.
+    const repo = await mkdtemp(path.join(tmpdir(), 'osw-fanout-adddel-'));
+    try {
+      await writeFile(path.join(repo, 'keep.py'), 'keep\n', 'utf8');
+      await writeFile(path.join(repo, 'obsolete.py'), 'delete me\n', 'utf8');
+      initRepo(repo);
+
+      runWorker.mockImplementation(async (opts: WorkerOptions) => {
+        const isSpark = opts.model === 'gpt-5.3-codex-spark';
+        if (isSpark) {
+          await rm(path.join(opts.projectPath, 'obsolete.py'), { force: true });
+          await writeFile(path.join(opts.projectPath, 'brand_new.py'), 'new\n', 'utf8');
+          await writeFile(path.join(opts.projectPath, 'keep.py'), 'keep\nedited\n', 'utf8');
+          return {
+            success: true, summary: 'spark patch',
+            filesChanged: ['obsolete.py', 'brand_new.py', 'keep.py'],
+            commands: [], output: '', confidencePercent: 95,
+          };
+        }
+        await writeFile(path.join(opts.projectPath, 'primary.txt'), 'primary\n', 'utf8');
+        return {
+          success: true, summary: 'primary patch', filesChanged: ['primary.txt'],
+          commands: [], output: '', confidencePercent: 70,
+        };
+      });
+
+      const { runWorkerFanout } = await import('./workerFanout.js');
+      const result = await runWorkerFanout({
+        projectPath: repo,
+        baseWorkerOptions: { ...baseWorkerOptions, projectPath: repo },
+        candidates: [
+          { id: 'primary', adapter: 'codex-responses', model: 'gpt-5.4-mini' },
+          { id: 'spark-diversity', adapter: 'codex-responses', model: 'gpt-5.3-codex-spark' },
+        ],
+        concurrency: 2,
+      });
+
+      expect(result.fallbackReason).toBeUndefined();
+      expect(result.winner?.id).toBe('spark-diversity');
+      expect(existsSync(path.join(repo, 'obsolete.py'))).toBe(false); // deleted
+      expect(await readFile(path.join(repo, 'brand_new.py'), 'utf8')).toBe('new\n'); // added
+      expect(await readFile(path.join(repo, 'keep.py'), 'utf8')).toBe('keep\nedited\n'); // modified
+      expect(existsSync(path.join(repo, 'primary.txt'))).toBe(false); // loser not promoted
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
 });
