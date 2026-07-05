@@ -8,6 +8,8 @@ import { writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runCli } from './runners/cliRunner.js';
+import { setDefaultAdapter } from './adapters/index.js';
+import { readProviderOverride } from './core/providerOverride.js';
 import { loadConfig, validateConfig, generateSampleConfig } from './core/config.js';
 import { loadEnvFile } from './core/envFile.js';
 import { initTelemetry, track } from './telemetry/telemetry.js';
@@ -62,6 +64,16 @@ program.hook('preAction', (_thisCommand, actionCommand) => {
     initTelemetry({ version: VERSION, enabled: loadTelemetryEnabledQuietly(quietConfigLoad) });
   } catch {
     /* no/invalid config — leave the opt-out default */
+  }
+  // Align EVERY command's adapter with config + provider-override, so review/fix/run
+  // don't fall back to the hardcoded 'codex' CLI default (only the daemon service &
+  // dashboard called setDefaultAdapter). Without this, `review --max` spawned codex
+  // CLI subprocesses even while the daemon ran codex-responses. Best-effort: a
+  // command with no config (init) keeps the built-in default. (INT-2485)
+  try {
+    setDefaultAdapter(readProviderOverride() ?? loadConfig().adapter ?? 'codex');
+  } catch {
+    /* no/invalid config — keep the built-in default */
   }
   void track({ command: actionCommand.name() });
 });
