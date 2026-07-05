@@ -977,32 +977,43 @@ export class PairPipeline extends EventEmitter {
       )) {
         const validationIssues = missingWorkerValidationIssues(context.workerResult);
         if (validationIssues.length > 0) {
-          console.log(`[${context.taskPrefix}] Missing worker validation evidence: ${validationIssues.join('; ')}`);
           const { progressed } = recordReflection(context.reflection, {
             iteration: context.currentIteration,
             source: 'validation',
             errors: validationIssues,
           });
 
-          context.reviewResult = {
-            decision: 'revise',
-            feedback: `Worker validation evidence missing: ${validationIssues.join('; ')}`,
-            issues: validationIssues,
-            suggestions: ['Run a relevant validation command before asking for review'],
-          };
-          context.feedbackSource = 'objective';
-          agentPair.trackFailure(context.session.id);
-          this.emit('iteration:fail', {
-            iteration: context.currentIteration,
-            stage: 'worker',
-            context,
-          });
-          agentPair.updateSessionStatus(context.session.id, 'revising');
-
-          if (this.shouldAbortSelfRepair(context, progressed, 'validation')) {
-            return { success: false };
+          // Missing validation evidence is a nudge, not a verdict: the worker may
+          // simply be unable to self-report its commands (e.g. git-detected
+          // changes with no JSON block — worker.ts promotes those to success with
+          // commands=[]). Bounce it back to re-run with validation while that can
+          // still make progress; once it stagnates or the reflection budget is
+          // spent, DEFER to the reviewer (pre-gate behavior) rather than
+          // hard-failing the whole task. This is a pure predicate — do NOT reuse
+          // shouldAbortSelfRepair here: it marks the session 'failed' as a side
+          // effect (see ~L795), which would sink an otherwise-approvable task.
+          const reflectionBudget = this.config.maxReflections ?? DEFAULT_MAX_REFLECTIONS;
+          const canRetryForValidation = progressed && !shouldStopReflecting(context.reflection, reflectionBudget);
+          if (canRetryForValidation) {
+            console.log(`[${context.taskPrefix}] Missing worker validation evidence: ${validationIssues.join('; ')}`);
+            context.reviewResult = {
+              decision: 'revise',
+              feedback: `Worker validation evidence missing: ${validationIssues.join('; ')}`,
+              issues: validationIssues,
+              suggestions: ['Run a relevant validation command before asking for review'],
+            };
+            context.feedbackSource = 'objective';
+            agentPair.trackFailure(context.session.id);
+            this.emit('iteration:fail', {
+              iteration: context.currentIteration,
+              stage: 'worker',
+              context,
+            });
+            agentPair.updateSessionStatus(context.session.id, 'revising');
+            continue;
           }
-          continue;
+          console.log(`[${context.taskPrefix}] Validation evidence still missing after retries — deferring to reviewer`);
+          this.emit('log', { line: '⚠️ Validation evidence missing; deferring to reviewer' });
         }
       }
 

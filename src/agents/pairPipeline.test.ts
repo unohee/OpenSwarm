@@ -315,6 +315,36 @@ describe('PairPipeline model selection', () => {
     }));
   });
 
+  it('defers to the reviewer instead of hard-failing when validation evidence stays missing', async () => {
+    // A worker whose git changes were promoted to success with commands=[]
+    // (no JSON block) must not be killed after a couple of retries — the gate is
+    // a nudge, so once self-repair stagnates the reviewer gets the final say.
+    runWorker.mockResolvedValue({
+      success: true,
+      summary: 'changed code, never self-reported commands',
+      filesChanged: ['src/example.ts'],
+      commands: [],
+      output: '',
+      confidencePercent: 95,
+    });
+
+    const { PairPipeline } = await import('./pairPipeline.js');
+    const pipeline = new PairPipeline({
+      stages: ['worker', 'reviewer'],
+      maxIterations: 4,
+      roles: {
+        worker: { enabled: true, model: 'worker', timeoutMs: 0 },
+        reviewer: { enabled: true, model: 'reviewer', timeoutMs: 0 },
+      },
+    });
+
+    const result = await pipeline.run(task(), process.cwd());
+
+    // Reviewer approves → task succeeds despite never getting validation evidence.
+    expect(result.success).toBe(true);
+    expect(runReviewer).toHaveBeenCalledTimes(1);
+  });
+
   it('does not treat inspection-only commands as validation evidence', async () => {
     runWorker
       .mockResolvedValueOnce({
