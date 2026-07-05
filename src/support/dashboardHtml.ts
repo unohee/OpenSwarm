@@ -618,7 +618,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           <button class="provider-btn" id="provider-codex" onclick="switchProvider('codex')">Codex</button>
         </div>
         <span class="svc-sep">│</span>
-        <button class="btn" id="turbo-btn" onclick="toggleTurbo()" title="Turbo: 5min heartbeat, 20 daily cap, 4h auto-expire">TURBO</button>
+        <button class="btn" id="turbo-btn" onclick="toggleTurbo()" title="Max pace: full concurrency + heartbeat, persistent (on by default)">MAX PACE</button>
         <span class="svc-sep">│</span>
         <button class="btn btn-danger" id="svc-stop-btn" onclick="svcAction('stop')">⏸ STOP</button>
         <button class="btn" id="svc-restart-btn" onclick="svcAction('restart')">↻ RESTART</button>
@@ -939,22 +939,16 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         document.getElementById("stat-uptime").textContent =
           (h ? h + "h " : "") + (m ? m + "m " : "") + ss + "s";
       }
-      // Turbo mode
+      // Max pace (persistent — no countdown)
       const turboBtn = document.getElementById("turbo-btn");
       if (turboBtn) {
         turboBtn.classList.toggle("turbo-active", !!data.turboMode);
-        if (data.turboMode && data.turboExpiresAt) {
-          const remainMin = Math.max(0, Math.round((data.turboExpiresAt - Date.now()) / 60000));
-          turboBtn.textContent = "TURBO " + remainMin + "m";
-        } else {
-          turboBtn.textContent = "TURBO";
-        }
+        turboBtn.textContent = data.turboMode ? "MAX PACE" : "TURBO";
       }
-      // Daily pace
+      // Daily pace (informational count of tasks completed today; not an enforced cap)
       const paceEl = document.getElementById("stat-pace");
       if (paceEl && data.dailyPace) {
-        const cap = data.turboMode ? 20 : 6;
-        paceEl.textContent = data.dailyPace.completedToday + "/" + cap;
+        paceEl.textContent = data.dailyPace.completedToday + " today";
         paceEl.className = "stat-val" + (data.turboMode ? " amber" : "");
       }
     }

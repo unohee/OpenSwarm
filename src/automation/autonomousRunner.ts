@@ -182,10 +182,14 @@ export class AutonomousRunner {
   // Cache: linearProjectName → resolvedLocalPath (populated during task execution)
   private projectPathCache = new Map<string, string>();
 
-  // Turbo mode: faster heartbeat, higher daily cap, no stage skipping
-  private turboMode = false;
+  // Max pace: the daemon always runs at full throughput (concurrency +
+  // heartbeat come from config). This flag is now ON by default and never
+  // expires — it used to default false and auto-expire after 4h, so every
+  // restart silently dropped the dashboard back to "TURBO off" even though real
+  // throughput (maxConcurrentTasks + heartbeat) was unchanged. Kept as a manual
+  // escape hatch (Discord/dashboard can still toggle it off).
+  private turboMode = true;
   private turboExpiresAt: number | null = null;
-  private static readonly TURBO_DURATION_MS = 4 * 60 * 60 * 1000; // 4 hours auto-expire
 
   // Track completed/failed task IDs to prevent re-selection (persisted to disk)
   private completedTaskIds = new Set<string>();
@@ -1524,28 +1528,24 @@ export class AutonomousRunner {
   }
 
   // ============================================
-  // Turbo Mode
+  // Max Pace (formerly "Turbo")
   // ============================================
 
   getTurboMode(): boolean {
-    // Auto-expire turbo
-    if (this.turboMode && this.turboExpiresAt && Date.now() >= this.turboExpiresAt) {
-      this.setTurboMode(false);
-    }
+    // Max pace no longer auto-expires; it stays on until explicitly toggled off.
     return this.turboMode;
   }
 
   setTurboMode(enabled: boolean): void {
     this.turboMode = enabled;
+    // No auto-expiry: max pace is a persistent state, not a 4h burst. (always-max)
+    this.turboExpiresAt = null;
     if (enabled) {
-      this.turboExpiresAt = Date.now() + AutonomousRunner.TURBO_DURATION_MS;
-      const expiresIn = Math.round(AutonomousRunner.TURBO_DURATION_MS / 3_600_000);
-      console.log(`[AutonomousRunner] TURBO MODE ON (auto-expires in ${expiresIn}h)`);
-      broadcastEvent({ type: 'log', data: { taskId: 'system', stage: 'turbo', line: `TURBO ON — expires in ${expiresIn}h` } });
+      console.log('[AutonomousRunner] MAX PACE ON (persistent)');
+      broadcastEvent({ type: 'log', data: { taskId: 'system', stage: 'turbo', line: 'MAX PACE ON — persistent' } });
     } else {
-      this.turboExpiresAt = null;
-      console.log('[AutonomousRunner] TURBO MODE OFF');
-      broadcastEvent({ type: 'log', data: { taskId: 'system', stage: 'turbo', line: 'TURBO OFF — normal pace resumed' } });
+      console.log('[AutonomousRunner] MAX PACE OFF');
+      broadcastEvent({ type: 'log', data: { taskId: 'system', stage: 'turbo', line: 'MAX PACE OFF — normal pace resumed' } });
     }
   }
 

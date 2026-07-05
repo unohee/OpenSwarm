@@ -969,12 +969,10 @@ export async function handleTurbo(msg: Message, arg?: string): Promise<void> {
 
     if (!arg || arg === 'status') {
       const stats = runner.getStats();
-      const isTurbo = stats.turboMode;
-      if (isTurbo && stats.turboExpiresAt) {
-        const remainMin = Math.max(0, Math.round((stats.turboExpiresAt - Date.now()) / 60000));
-        await replyWithEmbed(msg, `TURBO ON (${remainMin}min remaining)`, 0xff8800);
+      if (stats.turboMode) {
+        await replyWithEmbed(msg, 'MAX PACE ON (persistent)', 0xff8800);
       } else {
-        await replyWithEmbed(msg, 'TURBO OFF (normal pace)', 0x00ff41);
+        await replyWithEmbed(msg, 'MAX PACE OFF (normal pace)', 0x00ff41);
       }
       return;
     }
@@ -987,7 +985,7 @@ export async function handleTurbo(msg: Message, arg?: string): Promise<void> {
 
     runner.setTurboMode(enabled);
     const emoji = enabled ? '🔥' : '🐢';
-    const label = enabled ? 'TURBO ON — 5min heartbeat, 20 daily cap, 4h auto-expire' : 'TURBO OFF — normal pace resumed';
+    const label = enabled ? 'MAX PACE ON — persistent (full concurrency + heartbeat)' : 'MAX PACE OFF — normal pace resumed';
     await replyWithEmbed(msg, `${emoji} ${label}`, enabled ? 0xff8800 : 0x00ff41);
   } catch {
     await msg.reply(`❌ Runner not started`);
