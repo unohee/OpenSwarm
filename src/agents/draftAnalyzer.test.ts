@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { CliAdapter, CliRunResult } from '../adapters/types.js';
-import { runDraftAnalysis, isDraftSufficient, draftBudgetFor } from './draftAnalyzer.js';
+import { runDraftAnalysis, isDraftSufficient, draftBudgetFor, deriveRegistryProjectId } from './draftAnalyzer.js';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import * as adapterModule from '../adapters/index.js';
 import * as knowledgeModule from '../knowledge/index.js';
 import * as registryModule from '../registry/sqliteStore.js';
@@ -215,3 +218,34 @@ describe('draftBudgetFor (file-count-adaptive read/analyze budget, INT-2485)', (
   });
 });
 
+
+describe('deriveRegistryProjectId (INT-2502 read-side)', () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'osw-draft-pid-'));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('uses the package.json name (scope stripped) when present', () => {
+    const repo = join(root, 'SomeDir');
+    mkdirSync(repo, { recursive: true });
+    writeFileSync(join(repo, 'package.json'), JSON.stringify({ name: '@intrect/openswarm' }));
+    expect(deriveRegistryProjectId(repo)).toBe('openswarm');
+  });
+
+  it('falls back to the dir basename without package.json (Rust/Python repos)', () => {
+    const repo = join(root, 'WAVE');
+    mkdirSync(repo, { recursive: true });
+    expect(deriveRegistryProjectId(repo)).toBe('WAVE');
+  });
+
+  it('keys a worktree path under its parent repo, not the worktree uuid', () => {
+    const wt = join(root, 'WAVE', 'worktree', 'c771f200-5cdf-485e-80c6');
+    mkdirSync(wt, { recursive: true });
+    expect(deriveRegistryProjectId(wt)).toBe('WAVE');
+  });
+});
