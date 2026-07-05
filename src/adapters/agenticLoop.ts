@@ -9,6 +9,7 @@
 import { TOOL_DEFINITIONS, APPLY_PATCH_TOOL, executeToolCalls, createReadCache, validatePath, type ToolCall, type ToolResult, type ToolDefinition } from './tools.js';
 import { WEB_TOOL_DEFINITIONS } from './webTools.js';
 import { detectRateLimit, RateLimitError } from './rateLimitError.js';
+import { isInfraError } from './errorClassification.js';
 import { parseSearchReplaceBlocks, applyEditBlock, type EditFormat } from '../support/editParser.js';
 import type { CliRunResult } from './types.js';
 
@@ -339,6 +340,16 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
         onLog?.(`■ ${rl.message}`);
         throw rl;
       }
+      // An infra/capacity failure (connection refused, 5xx, model not loaded,
+      // socket drop) must ALSO propagate — the CLI path re-throws these via
+      // worker.ts/reviewer.ts's isInfraError gate, but in-process adapters never
+      // reach that gate because this catch used to swallow everything into a fake
+      // exitCode:0 "success" → reviewer rejects the empty diff → false STUCK.
+      // Re-throw here so it is classified as infra_error (backoff, not STUCK). (INT-2520)
+      if (isInfraError(err)) {
+        onLog?.(`✖ Infra error: ${msg}`);
+        throw err;
+      }
       onLog?.(`✖ API error: ${msg}`);
       finalText = `API error: ${msg}`;
       break;
@@ -561,6 +572,7 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
       const msg = err instanceof Error ? err.message : String(err);
       const rl = detectRateLimit('', msg);
       if (rl) throw rl;
+      if (isInfraError(err)) throw err; // infra on the salvage call → infra_error, not fake result (INT-2520)
       onLog?.(`✖ Final answer turn failed: ${msg}`);
     }
   }

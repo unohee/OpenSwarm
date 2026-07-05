@@ -29,6 +29,33 @@ describe('isInfraError (INT-2010)', () => {
     expect(isInfraError(null)).toBe(false);
     expect(isInfraError('')).toBe(false);
   });
+
+  it('recognises undici "fetch failed" via error.cause.code (INT-2520)', () => {
+    // undici surfaces connection failures as `TypeError: fetch failed` with the
+    // real code on `.cause.code` — the top-level message alone would be missed.
+    const refused = Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } });
+    expect(isInfraError(refused)).toBe(true);
+    const undErr = Object.assign(new TypeError('fetch failed'), { cause: { code: 'UND_ERR_SOCKET' } });
+    expect(isInfraError(undErr)).toBe(true);
+    // "fetch failed" alone is also treated as infra (server unreachable).
+    expect(isInfraError(new TypeError('fetch failed'))).toBe(true);
+  });
+
+  it('recognises local server capacity failures (5xx / loading / overloaded) (INT-2520)', () => {
+    expect(isInfraError(new Error('Local API error (503): model is loading'))).toBe(true);
+    expect(isInfraError(new Error('Local API error (502): bad gateway'))).toBe(true);
+    expect(isInfraError(new Error('Server overloaded, try again'))).toBe(true);
+  });
+
+  it('does NOT flag a bare 5xx number in task/reviewer prose (needs adapter/HTTP context) (INT-2520)', () => {
+    expect(isInfraError(new Error('assertion failed: expected 503 records, got 502'))).toBe(false);
+    expect(isInfraError(new Error('the retry loop caps at 504 attempts'))).toBe(false);
+    expect(isInfraError(new Error('validation error (503) is the wrong code to return here'))).toBe(false);
+    // …but the same code inside an adapter error wrapper IS infra:
+    expect(isInfraError(new Error('OpenAI API error (503): upstream'))).toBe(true);
+    expect(isInfraError(new Error('Codex responses error (502): bad gateway'))).toBe(true);
+    expect(isInfraError(new Error('HTTP 504 gateway timeout'))).toBe(true);
+  });
 });
 
 describe('codexMcpAuthHint (INT-2408)', () => {

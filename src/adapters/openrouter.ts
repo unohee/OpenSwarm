@@ -21,7 +21,8 @@ import {
 } from './agenticLoop.js';
 import { resolveMcpTools } from '../mcp/mcpClient.js';
 import { parseWorkerResult, parseReviewerResult } from './resultParsing.js';
-import { RateLimitError } from './rateLimitError.js';
+import { RateLimitError, rateLimitFromHttpResponse } from './rateLimitError.js';
+import { isInfraError } from './errorClassification.js';
 import { consumeChatCompletionsStream } from './chatStream.js';
 import type { ToolDefinition } from './tools.js';
 
@@ -128,8 +129,10 @@ export class OpenRouterCliAdapter implements CliAdapter {
       );
       return loopResultToCliResult(result);
     } catch (err) {
-      // Rate-limit must propagate so the scheduler pauses (INT-1906).
+      // Rate-limit AND infra/capacity errors must propagate (pause / infra_error),
+      // not be buried in a fake failed result the worker reads as an empty success. (INT-1906, INT-2520)
       if (err instanceof RateLimitError) throw err;
+      if (isInfraError(err)) throw err;
       return {
         exitCode: 1,
         stdout: '',
@@ -202,6 +205,12 @@ export function createApiCaller(apiKey: string, model: string, opts: ApiCallerOp
 
     if (!res.ok) {
       const errText = await res.text().catch(() => '');
+      // OpenRouter signals out-of-credits with HTTP 402 "Insufficient credits"
+      // (NOT 429) and rate limits with 429. Throw a TYPED RateLimitError at the
+      // source so both pause the scheduler instead of the loop swallowing them
+      // into a fake empty success → false STUCK. (INT-2520)
+      const rl = rateLimitFromHttpResponse(res.status, res.headers, errText);
+      if (rl) throw rl;
       throw new Error(`OpenRouter API error (${res.status}): ${errText.slice(0, 500)}`);
     }
 

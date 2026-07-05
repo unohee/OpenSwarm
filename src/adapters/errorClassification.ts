@@ -33,6 +33,8 @@ const INFRA_ERROR_PATTERNS = [
   'enotfound',
   'socket hang up',
   'network error',
+  'fetch failed', // undici: the real code hides in error.cause.code (checked below)
+  'terminated', // undici mid-stream socket drop
   'unauthorized',
   'not authenticated',
   'authentication failed',
@@ -40,6 +42,28 @@ const INFRA_ERROR_PATTERNS = [
   'permission denied',
   '401',
   '403',
+  // Server-side capacity / gateway failures — the model server was reachable but
+  // could not serve (model loading, overloaded, upstream down). Not a verdict on
+  // the task. 429/402 are handled as RateLimitError, not here. Use unambiguous
+  // reason phrases (not bare "503") so task text like "expected 503 rows" is not
+  // mis-flagged; the numeric-status forms go through INFRA_ERROR_REGEXES. (INT-2520)
+  'service unavailable',
+  'bad gateway',
+  'gateway timeout',
+  'overloaded',
+  'model is loading',
+  'model not loaded',
+];
+
+// Numeric HTTP status matched ONLY with surrounding context (an adapter error
+// wrapper like "Local API error (503)", or "HTTP 503" / "status 503"), so a bare
+// number in task/reviewer prose is not mistaken for an infra failure. (INT-2520)
+const INFRA_ERROR_REGEXES: readonly RegExp[] = [
+  // Adapter error wrappers only ("OpenAI API error (503)", "Local API error (502)",
+  // "Codex responses error (504)") — NOT a bare "(503)" in prose, so a task/reviewer
+  // message like "expected (503)" is not mis-flagged.
+  /(?:api|responses) error \((50[234])\)/,
+  /\b(?:http|status|code)\s*[:=]?\s*(50[234])\b/,
 ];
 
 /**
@@ -50,8 +74,17 @@ const INFRA_ERROR_PATTERNS = [
  */
 export function isInfraError(error: unknown): boolean {
   const msg = (error instanceof Error ? error.message : String(error ?? '')).toLowerCase();
+  // undici wraps connection failures as `TypeError: fetch failed` with the real
+  // code (ECONNREFUSED / ECONNRESET / UND_ERR_*) on `error.cause.code` — the
+  // top-level message alone would be classed a task failure. (INT-2520)
+  const causeCode =
+    error && typeof error === 'object' && 'cause' in error
+      ? String((error as { cause?: { code?: unknown } }).cause?.code ?? '').toLowerCase()
+      : '';
+  if (causeCode && INFRA_ERROR_PATTERNS.some((p) => causeCode.includes(p))) return true;
+  if (causeCode.startsWith('und_err')) return true; // any undici transport error
   if (!msg) return false;
-  return INFRA_ERROR_PATTERNS.some((p) => msg.includes(p));
+  return INFRA_ERROR_PATTERNS.some((p) => msg.includes(p)) || INFRA_ERROR_REGEXES.some((r) => r.test(msg));
 }
 
 /**

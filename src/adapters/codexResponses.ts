@@ -19,6 +19,7 @@ import { parseWorkerResult, parseReviewerResult } from './resultParsing.js';
 import { formatCost } from '../support/costTracker.js';
 import type { ToolDefinition } from './tools.js';
 import { RateLimitError, rateLimitFromCodexHeaders } from './rateLimitError.js';
+import { isInfraError } from './errorClassification.js';
 
 import { getCodexModelIds } from './codexModels.js';
 
@@ -393,8 +394,10 @@ export class CodexResponsesAdapter implements CliAdapter {
       if (cli.costInfo) cli.costInfo.model = model;
       return cli;
     } catch (err) {
-      // Rate-limit must propagate so the scheduler pauses (INT-1906).
+      // Rate-limit AND infra/capacity errors must propagate (pause / infra_error),
+      // not be buried in a fake failed result the worker reads as an empty success. (INT-1906, INT-2520)
       if (err instanceof RateLimitError) throw err;
+      if (isInfraError(err)) throw err;
       return {
         exitCode: 1,
         stdout: '',

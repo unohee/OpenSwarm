@@ -18,6 +18,7 @@ import { parseWorkerResult, parseReviewerResult } from './resultParsing.js';
 import { consumeChatCompletionsStream } from './chatStream.js';
 import type { ToolDefinition } from './tools.js';
 import { RateLimitError } from './rateLimitError.js';
+import { isInfraError } from './errorClassification.js';
 
 // 로컬 프로바이더 기본 URL 후보 (우선순위 순)
 const DEFAULT_ENDPOINTS = [
@@ -188,8 +189,12 @@ export class LocalModelAdapter implements CliAdapter {
       }
       return loopResultToCliResult(result);
     } catch (err) {
-      // Rate-limit must propagate so the scheduler pauses (INT-1906).
+      // Rate-limit AND infra/capacity errors (connection refused, 5xx, model not
+      // loaded, socket drop) must propagate so the pipeline classifies them
+      // (pause / infra_error) instead of a fake empty success → STUCK. Local
+      // servers produce these most often. (INT-1906, INT-2520)
       if (err instanceof RateLimitError) throw err;
+      if (isInfraError(err)) throw err;
       const message = err instanceof Error ? err.message : String(err);
       const isTimeout = message.includes('abort') || message.includes('timeout');
 

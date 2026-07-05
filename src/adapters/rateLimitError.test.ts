@@ -1,6 +1,67 @@
 import { describe, it, expect } from 'vitest';
-import { detectRateLimit, rateLimitFromCodexHeaders, RateLimitError } from './rateLimitError.js';
+import { detectRateLimit, rateLimitFromCodexHeaders, rateLimitFromHttpResponse, matchesRateLimitMessage, RateLimitError } from './rateLimitError.js';
 import { runAgenticLoop } from './agenticLoop.js';
+
+// Every provider's REAL usage/rate-limit wire string must be recognised (audit
+// INT-2520). Grounded in actual observed output, not invented. A missed limit
+// becomes a false STUCK (in-process) or loses the scheduler pause (CLI).
+describe('per-provider usage-limit recognition (INT-2520 audit)', () => {
+  const REAL_LIMIT_OUTPUTS: Array<[string, string]> = [
+    ['codex CLI', `{"type":"error","message":"You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 1:20 PM."}`],
+    ['claude CLI (human phrase)', 'claude CLI failed with code 1: Limit reached · resets 8pm (Asia/Seoul) · add funds to continue with extra usage'],
+    ['claude rate_limit_event', '{"type":"rate_limit_event","rate_limit_info":{"overageStatus":"rejected","overageDisabledReason":"out_of_credits"}}'],
+    ['codex-responses header phrase', 'API error: Codex 100% used of 300min window — resets at 2026-06-30T12:00:00Z'],
+    ['OpenAI 429 rate_limit_exceeded', '{"error":{"code":"rate_limit_exceeded","message":"Rate limit reached for gpt-5 …"}}'],
+    ['OpenAI 429 insufficient_quota', '{"error":{"type":"insufficient_quota","message":"You exceeded your current quota, please check your plan and billing details."}}'],
+    ['OpenRouter 402 insufficient credits', '{"error":{"code":402,"message":"Insufficient credits. Add more to continue."}}'],
+    ['HTTP 429 too many requests (local)', 'Local API error (429): Too Many Requests'],
+  ];
+  for (const [name, output] of REAL_LIMIT_OUTPUTS) {
+    it(`detects: ${name}`, () => {
+      expect(matchesRateLimitMessage(output)).toBe(true);
+      expect(detectRateLimit(output, '')).toBeInstanceOf(RateLimitError);
+    });
+  }
+
+  it('does NOT false-positive on ordinary prose that mentions these words', () => {
+    // A worker's own output about a rate-limit / credits / usage feature.
+    const benign = [
+      'Added a usage dashboard; the plan limit is configurable per tenant.',
+      'Implemented credit purchase flow and out-of-stock handling.',
+      'The cache window is 5min; processed 429 rows in the batch.',
+      'Refactored rateLimiter.ts to reset the counter each window.',
+    ];
+    for (const b of benign) {
+      expect(matchesRateLimitMessage(b)).toBe(false);
+      expect(detectRateLimit(b, '')).toBeNull();
+    }
+  });
+});
+
+describe('rateLimitFromHttpResponse (INT-2520)', () => {
+  it('429 → RateLimitError regardless of body wording', () => {
+    expect(rateLimitFromHttpResponse(429, new Headers(), 'server busy')).toBeInstanceOf(RateLimitError);
+  });
+  it('402 → RateLimitError (openrouter out-of-credits)', () => {
+    expect(rateLimitFromHttpResponse(402, new Headers(), 'Insufficient credits')).toBeInstanceOf(RateLimitError);
+  });
+  it('parses Retry-After (seconds) into resetsAt', () => {
+    const err = rateLimitFromHttpResponse(429, new Headers({ 'retry-after': '120' }), '');
+    expect(err?.resetsAt).toBeGreaterThan(Math.floor(Date.now() / 1000));
+  });
+  it('ignores OpenAI duration-style x-ratelimit-reset-* (not epoch) — no 1970 timestamp (INT-2520 review)', () => {
+    // "1s"/"6ms" are durations; parseInt-ing them as epoch would give resetsAt≈1.
+    const err = rateLimitFromHttpResponse(429, new Headers({ 'x-ratelimit-reset-requests': '1s', 'x-ratelimit-reset-tokens': '6ms' }), '');
+    expect(err).toBeInstanceOf(RateLimitError);
+    expect(err?.resetsAt).toBeUndefined(); // falls back to the safe 60s default downstream
+  });
+  it('non-limit status with a quota body still fires (e.g. 400 insufficient_quota)', () => {
+    expect(rateLimitFromHttpResponse(400, new Headers(), '{"code":"insufficient_quota"}')).toBeInstanceOf(RateLimitError);
+  });
+  it('ordinary 500 with no quota wording → null', () => {
+    expect(rateLimitFromHttpResponse(500, new Headers(), 'internal error')).toBeNull();
+  });
+});
 
 describe('detectRateLimit (INT-1906)', () => {
   it('detects a Codex usage_limit_reached payload and parses resets_at', () => {
@@ -66,8 +127,20 @@ describe('runAgenticLoop rate-limit propagation (INT-1906 blocker)', () => {
     ).rejects.toBeInstanceOf(RateLimitError);
   });
 
-  it('does NOT re-throw an ordinary (non-rate-limit) API error', async () => {
-    const callApi = async () => { throw new Error('500 Internal Server Error'); };
+  it('re-throws an INFRA error (undici fetch failed) instead of a fake empty success (INT-2520)', async () => {
+    // Local/in-process adapters used to have a connection-refused swallowed into a
+    // finalText='API error…' → exitCode:0 fake success → reviewer reject → STUCK.
+    // It must now propagate so the pipeline classifies it infra_error (not STUCK).
+    const callApi = async () => {
+      throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } });
+    };
+    await expect(
+      runAgenticLoop({ prompt: 'x', cwd: process.cwd(), model: 't', callApi, webTools: false, maxTurns: 2 }),
+    ).rejects.toThrow(/fetch failed/);
+  });
+
+  it('does NOT re-throw an ordinary (non-rate-limit, non-infra) API error', async () => {
+    const callApi = async () => { throw new Error('the model returned malformed JSON'); };
     const res = await runAgenticLoop({ prompt: 'x', cwd: process.cwd(), model: 't', callApi, webTools: false, maxTurns: 2 });
     expect(res.text).toContain('API error');
   });

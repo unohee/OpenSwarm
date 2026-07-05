@@ -8,6 +8,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { OpenRouterCliAdapter, createApiCaller, applyPromptCaching } from './openrouter.js';
+import { RateLimitError } from './rateLimitError.js';
 import { getAdapter } from './index.js';
 import type { ChatMessage } from './agenticLoop.js';
 
@@ -21,6 +22,27 @@ describe('OpenRouterCliAdapter', () => {
     expect(adapter.name).toBe('openrouter');
     expect(adapter.capabilities.supportsModelSelection).toBe(true);
     expect(adapter.capabilities.supportsJsonOutput).toBe(true);
+  });
+
+  it('run() REJECTS (does not bury as exitCode:1) on an infra fetch failure — INT-2520', async () => {
+    // The run() catch must re-throw infra errors just like RateLimitError, so the
+    // pipeline classifies infra_error instead of the worker reading an empty
+    // exitCode:1 result as a false success → STUCK.
+    const prevKey = process.env.OPENROUTER_API_KEY;
+    process.env.OPENROUTER_API_KEY = 'sk-or-test';
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } });
+    }));
+    try {
+      const adapter = new OpenRouterCliAdapter();
+      await expect(adapter.run({
+        prompt: 'x', cwd: process.cwd(), model: 'openai/gpt-4o',
+        webTools: false, memoryTools: false, mcpTools: [], enableTools: false, maxTurns: 1,
+      } as never)).rejects.toThrow(/fetch failed/);
+    } finally {
+      if (prevKey === undefined) delete process.env.OPENROUTER_API_KEY;
+      else process.env.OPENROUTER_API_KEY = prevKey;
+    }
   });
 
   it('reports unavailable when no profile is stored', async () => {
@@ -177,15 +199,30 @@ describe('OpenRouterCliAdapter', () => {
     expect(out).toEqual(msgs);
   });
 
-  it('throws on non-2xx responses with status code in the error message', async () => {
+  it('throws a generic error (with status code) on an ordinary non-2xx', async () => {
     const fetchMock = vi.fn(async () =>
-      new Response('rate limited', { status: 429 }),
+      new Response('upstream exploded', { status: 500 }),
     );
     vi.stubGlobal('fetch', fetchMock);
 
     const callApi = createApiCaller('sk-or-test-key', 'openai/gpt-4o');
     await expect(
       callApi([{ role: 'user', content: 'x' }], []),
-    ).rejects.toThrow(/OpenRouter API error \(429\)/);
+    ).rejects.toThrow(/OpenRouter API error \(500\)/);
+  });
+
+  it('throws a typed RateLimitError on 429 (rate limit) — INT-2520', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('Rate limit exceeded', { status: 429 })));
+    const callApi = createApiCaller('sk-or-test-key', 'openai/gpt-4o');
+    await expect(callApi([{ role: 'user', content: 'x' }], [])).rejects.toBeInstanceOf(RateLimitError);
+  });
+
+  it('throws a typed RateLimitError on 402 out-of-credits — INT-2520', async () => {
+    // OpenRouter signals out-of-credits with 402, not 429.
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(JSON.stringify({ error: { code: 402, message: 'Insufficient credits. Add more to continue.' } }), { status: 402 }),
+    ));
+    const callApi = createApiCaller('sk-or-test-key', 'openai/gpt-4o');
+    await expect(callApi([{ role: 'user', content: 'x' }], [])).rejects.toBeInstanceOf(RateLimitError);
   });
 });
