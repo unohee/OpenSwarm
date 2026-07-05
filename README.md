@@ -530,11 +530,11 @@ the CLI (fire-and-forget with a short timeout, and failures are silently ignored
 Full version history lives in **[CHANGELOG.md](CHANGELOG.md)** and the
 [GitHub Releases](https://github.com/unohee/OpenSwarm/releases) page.
 
-Latest — **v0.17.4**: the reviewer-revise treadmill is broken — failed
-attempts persist their reviewer feedback and re-attempts start with it
-injected, a repeating reviewer ends the session early, and fan-out winner
-promotion no longer dies on dirty projects. Plus v0.17.3's duplicate-daemon
-prevention and fan-out execution fixes. See CHANGELOG.md for the rest.
+Latest — **v0.17.5**: a repeating reviewer now triggers a one-shot worker
+escalation (higher model and/or `high` effort) before the session gives up —
+on top of v0.17.4's cross-session feedback persistence and fan-out
+dirty-promotion fix, and v0.17.3's duplicate-daemon prevention. See
+CHANGELOG.md for the rest.
 
 ---
 

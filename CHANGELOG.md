@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.17.5 — 2026-07-05
+
+### Added
+
+- **Worker escalation on repeated review feedback** — when the reviewer repeats near-identical revise feedback (the 0.17.4 stagnation signal), the pipeline now escalates the worker once and retries in-session before giving up: `worker.escalateModel` when it differs from what the next iteration would run anyway, plus a reasoning-effort bump to `high` (active with zero config). Same feedback after escalation → early abort as before, with the feedback persisted for the next attempt. Escalation policy (iteration-count + signal) now lives in `workerEscalation.ts`. (INT-2475, #232)
+
 ## 0.17.4 — 2026-07-05
 
 ### Fixed
