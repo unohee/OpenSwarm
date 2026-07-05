@@ -87,6 +87,17 @@ export function matchesRateLimitMessage(text: string): boolean {
 
 // ---- Reset-time extraction (shared) ----
 
+/**
+ * Pull a unix reset timestamp (seconds) out of a JSON body. Accepts BOTH
+ * snake_case "resets_at" (codex / OpenAI) and camelCase "resetsAt" (claude's
+ * rate_limit_event) — matching only snake_case left claude's pause defaulting to
+ * 60s so it immediately re-hit the limit. (INT-2521)
+ */
+export function parseResetsAtFromBody(text: string): number | undefined {
+  const m = text.match(/"resets?_?at"\s*:\s*(\d+)/i);
+  return m ? parseInt(m[1], 10) : undefined;
+}
+
 /** Pull a unix reset timestamp (seconds) out of headers or a JSON body, if present. */
 function extractResetsAt(headers: Headers | undefined, body: string): number | undefined {
   const fromHeader = (k: string): number | undefined => {
@@ -106,8 +117,7 @@ function extractResetsAt(headers: Headers | undefined, body: string): number | u
   if (codexReset != null) return codexReset;
   const retryAfter = fromHeader('retry-after');
   if (retryAfter != null) return Math.floor(Date.now() / 1000) + retryAfter;
-  const bodyResets = body.match(/"resets_at"\s*:\s*(\d+)/);
-  return bodyResets ? parseInt(bodyResets[1], 10) : undefined;
+  return parseResetsAtFromBody(body);
 }
 
 /**
@@ -174,8 +184,7 @@ export function detectRateLimit(stdout: string, stderr: string): RateLimitError 
   const combined = stdout + '\n' + stderr;
   if (!matchesRateLimitMessage(combined)) return null;
 
-  const resetsAtMatch = combined.match(/"resets_at"\s*:\s*(\d+)/);
-  const resetsAt = resetsAtMatch ? parseInt(resetsAtMatch[1], 10) : undefined;
+  const resetsAt = parseResetsAtFromBody(combined);
 
   const label = resetsAt
     ? `Rate limit reached (resets at ${new Date(resetsAt * 1000).toISOString()})`
