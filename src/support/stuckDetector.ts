@@ -95,10 +95,13 @@ export class StuckDetector {
       return { isStuck: false };
     }
 
-    // Check if all errors are the same (compare first 100 chars)
-    const firstError = recentErrors[0].error?.slice(0, 100);
+    // Normalize before comparing: raw prefix-equality on the first 100 chars
+    // mistook transient errors that embed timestamps/paths/ids for "the same
+    // error twice" (INT-2010 follow-up ①). Strip volatile tokens first so only
+    // genuinely identical failures count as a loop.
+    const firstError = normalizeErrorForLoop(recentErrors[0].error);
     const allSame = recentErrors.every(e =>
-      e.error?.slice(0, 100) === firstError
+      normalizeErrorForLoop(e.error) === firstError
     );
 
     if (allSame) {
@@ -224,6 +227,25 @@ export class StuckDetector {
   getHistory(): HistoryEntry[] {
     return [...this.history];
   }
+}
+
+/**
+ * Strip volatile tokens (timestamps, absolute paths, hex ids, line/col numbers)
+ * so two occurrences of the SAME logical error compare equal, while transient
+ * errors that only share a prefix don't (INT-2010 follow-up ①, INT-2507).
+ */
+export function normalizeErrorForLoop(error?: string): string {
+  return (error ?? '')
+    .toLowerCase()
+    .replace(/\d{4}-\d{2}-\d{2}[t ]\d{2}:\d{2}:\d{2}[.\d]*z?/g, '<ts>') // ISO timestamps
+    .replace(/\/[\w./~-]+/g, '<path>') // absolute/relative paths
+    .replace(/0x[0-9a-f]+/g, '<hex>')
+    .replace(/\b[0-9a-f]{8,}\b/g, '<id>') // hashes / uuids fragments
+    .replace(/:\d+(:\d+)?/g, ':<n>') // line:col
+    .replace(/\b\d+(\.\d+)?(ms|s)\b/g, '<dur>')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 200);
 }
 
 /**

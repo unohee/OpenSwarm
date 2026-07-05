@@ -7,7 +7,9 @@
 // ============================================
 
 import { readdir, readFile, stat } from 'node:fs/promises';
-import { join, extname, dirname } from 'node:path';
+import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join, extname, dirname, resolve } from 'node:path';
 import { getRegistryStore } from './sqliteStore.js';
 import type { CodeEntity, EntityKind, RiskLevel } from './schema.js';
 
@@ -625,8 +627,22 @@ export interface ScanResult {
 export async function scanRepository(
   projectPath: string,
   projectId: string,
-  options?: { maxDepth?: number; timeoutMs?: number; verbose?: boolean },
+  options?: { maxDepth?: number; timeoutMs?: number; verbose?: boolean; allowNonRepo?: boolean },
 ): Promise<ScanResult> {
+  // Guard: a scan launched from $HOME (or any non-git directory) walks the whole
+  // home tree and floods the registry with junk buckets — measured 563k rows
+  // under project_id 'unohee' (.atom compile caches etc.), ~90% of the DB.
+  // Refuse unless explicitly opted in. (INT-2507)
+  const resolvedScanPath = resolve(projectPath);
+  if (!options?.allowNonRepo) {
+    if (resolvedScanPath === homedir()) {
+      throw new Error(`Refusing to scan the home directory (${resolvedScanPath}) — run from a project repo or pass allowNonRepo.`);
+    }
+    if (!existsSync(join(resolvedScanPath, '.git'))) {
+      throw new Error(`Refusing to scan a non-git directory (${resolvedScanPath}) — it floods the registry with junk. Pass allowNonRepo to override.`);
+    }
+  }
+
   const startTime = Date.now();
   const maxDepth = options?.maxDepth ?? MAX_DEPTH;
   const timeoutMs = options?.timeoutMs ?? SCAN_TIMEOUT_MS;

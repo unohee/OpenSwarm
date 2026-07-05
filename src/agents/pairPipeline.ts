@@ -95,9 +95,12 @@ export class PairPipeline extends EventEmitter {
       maxReflections: DEFAULT_MAX_REFLECTIONS,
       ...config,
     };
-    // Initialize stuck detector
+    // Initialize stuck detector. sameErrorRepeat 3 (was 2): with errors now
+    // normalized before comparison, 2 identical-after-normalization occurrences
+    // were still occasionally transient (e.g. flaky network in both runs) —
+    // require a third strike before declaring a loop. (INT-2507)
     this.stuckDetector = createStuckDetector({
-      sameErrorRepeat: 2,
+      sameErrorRepeat: 3,
       revisionLoop: 4,
     });
     this.jobProfiles = config.jobProfiles ?? [];

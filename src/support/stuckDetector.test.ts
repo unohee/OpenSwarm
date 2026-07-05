@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { StuckDetector, type HistoryEntry } from './stuckDetector.js';
+import { StuckDetector, normalizeErrorForLoop, type HistoryEntry } from './stuckDetector.js';
 
 let ts = 0;
 
@@ -51,5 +51,18 @@ describe('StuckDetector', () => {
     detector.addEntry(entry({ output: 'same output' }));
 
     expect(detector.check()).toEqual({ isStuck: false });
+  });
+});
+
+describe('normalizeErrorForLoop (INT-2507)', () => {
+  it('equates the same logical error across volatile tokens', () => {
+    const a = 'Error at /Users/u/dev/WAVE/worktree/abc123/src/main.rs:42:7 — build failed in 3.2s (2026-07-05T01:02:03Z)';
+    const b = 'Error at /Users/u/dev/WAVE/worktree/def456/src/main.rs:99:1 — build failed in 12s (2026-07-05T09:08:07Z)';
+    expect(normalizeErrorForLoop(a)).toBe(normalizeErrorForLoop(b));
+  });
+
+  it('keeps genuinely different errors distinct', () => {
+    expect(normalizeErrorForLoop('cargo build failed: missing symbol foo'))
+      .not.toBe(normalizeErrorForLoop('pytest failed: assertion error in test_bar'));
   });
 });

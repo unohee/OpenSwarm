@@ -42,7 +42,7 @@ describe('entity scanner', () => {
     await writeProjectFile('tests/test_foo.py', 'def test_foo():\n    assert foo() == 1\n');
 
     const { scanRepository } = await import('./entityScanner.js');
-    const result = await scanRepository(tmp, 'test-project');
+    const result = await scanRepository(tmp, 'test-project', { allowNonRepo: true });
 
     expect(result.testsMapped).toBe(1);
     expect(registered).toContainEqual(expect.objectContaining({
@@ -52,5 +52,22 @@ describe('entity scanner', () => {
       hasTests: true,
       testFile: 'tests/test_foo.py',
     }));
+  });
+});
+
+describe('scanRepository non-repo guard (INT-2507)', () => {
+  it('refuses to scan the home directory', async () => {
+    const { scanRepository } = await import('./entityScanner.js');
+    const { homedir } = await import('node:os');
+    await expect(scanRepository(homedir(), 'junk')).rejects.toThrow(/Refusing to scan the home directory/);
+  });
+
+  it('refuses a non-git directory unless allowNonRepo', async () => {
+    const { scanRepository } = await import('./entityScanner.js');
+    const { mkdtempSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'osw-nonrepo-'));
+    await expect(scanRepository(dir, 'junk')).rejects.toThrow(/non-git directory/);
   });
 });
