@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.17.3 — 2026-07-05
+
+### Fixed
+
+- **Duplicate daemons are no longer spawned next to a launchd-managed instance** — daemon detection was PID-file-only, but a launchd (or manually started) daemon never writes the PID file, so every bare `openswarm` launch auto-started a second daemon working the same Linear queue in parallel (observed live: 8 duplicated in-flight tasks). `startDaemon` now probes the `:3847` API before spawning and refuses with a `launchctl` hint; `status` reports externally managed daemons as running; `stop` points at `launchctl` instead of a misleading "not running". (INT-2473, #228)
+- **Adaptive worker fan-out actually executes now** — the fan-out gate's threshold-crossing signals fire almost exclusively on self-repair retries, but the runner hard-required a clean worktree, which a retry never has — so fan-out was recommended 53× and executed 0× in production. The runner now snapshots the dirty worktree state via a throwaway temp index, seeds it into each sandbox, and promotes only the incremental winner diff; execution/promotion/fallback are logged to stdout. (#227)
+- **Worker validation-evidence gate false-positives** — chained commands with a leading inspection verb (`git diff && npm test`) counted as "no validation"; `.mts`/`.cts` sources slipped the gate; data-only trees (locale/fixtures/snapshots) were over-blocked while real source modules under mock/fixture dirs bypassed it; and a tester-less pipeline hard-failed workers that could not self-report commands instead of deferring to the reviewer. (#227)
+
+### Added
+
+- **Per-project concurrency cap** — optional `autonomous.maxConcurrentPerProject` (1–10) bounds same-project worktree fan-out at both the scheduler and runner candidate-selection layers; unset means uncapped (KG file-conflict detection still gates overlapping tasks). (#227)
+
 ## 0.17.2 — 2026-07-02
 
 ### Fixed
