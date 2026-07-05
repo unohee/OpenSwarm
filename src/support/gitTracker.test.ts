@@ -32,6 +32,14 @@ describe('gitTracker', () => {
     await expect(getChangedFilesSinceSnapshot(repo, snapshot)).resolves.toContain('new-file.txt');
   });
 
+  it('throws a git-tracker error (not []) when git fails, so real edits are not dropped (INT-2521)', async () => {
+    // An invalid snapshot tree makes `git diff` fail. Returning [] would be
+    // indistinguishable from "no changes" and drop the worker's real work (false
+    // STUCK); it must throw with the git-tracker marker → classified infra_error.
+    await expect(getChangedFilesSinceSnapshot(repo, '0000000000000000000000000000000000000000'))
+      .rejects.toThrow(/git-tracker/);
+  });
+
   it('excludes pre-existing dirty files, reporting only changes after the snapshot (INT-2447)', async () => {
     // Repo is ALREADY dirty before the snapshot: an untracked file + a modified
     // tracked file. Previously the HEAD-only snapshot blamed the worker for both.

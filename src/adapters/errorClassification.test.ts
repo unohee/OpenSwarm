@@ -52,6 +52,10 @@ describe('isInfraError (INT-2010)', () => {
     expect(isInfraError(new TypeError('fetch failed'))).toBe(true);
   });
 
+  it('recognises a git-tracker snapshot/diff failure as infra (INT-2521)', () => {
+    expect(isInfraError(new Error('git-tracker: diff since snapshot failed: fatal: bad object'))).toBe(true);
+  });
+
   it('recognises local server capacity failures (5xx / loading / overloaded) (INT-2520)', () => {
     expect(isInfraError(new Error('Local API error (503): model is loading'))).toBe(true);
     expect(isInfraError(new Error('Local API error (502): bad gateway'))).toBe(true);
