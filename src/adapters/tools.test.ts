@@ -2,7 +2,8 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { TOOL_DEFINITIONS, executeTool, createReadCache, ToolCall } from './tools.js';
+import { TOOL_DEFINITIONS, executeTool, createReadCache, ToolCall, buildBashToolEnv } from './tools.js';
+import { homedir } from 'node:os';
 
 // search_memory loads the memory core lazily; stub the shared helper so the tool
 // test stays fast and deterministic (no LanceDB / embedding model).
@@ -512,5 +513,21 @@ describe('ToolExecOptions', () => {
     expect(res.is_error).toBe(true);
     expect(res.content).toContain('TIMEOUT');
     expect(res.content).toContain('NOT evidence');
+  });
+
+  it('buildBashToolEnv prepends user tool bins (cargo/local) to PATH', () => {
+    const env = buildBashToolEnv({ PATH: '/usr/bin:/bin' });
+    const parts = (env.PATH ?? '').split(':');
+    expect(parts).toContain(path.join(homedir(), '.cargo', 'bin'));
+    expect(parts).toContain(path.join(homedir(), '.local', 'bin'));
+    // Base entries survive, and the augmentation comes first so shims win.
+    expect(parts).toContain('/usr/bin');
+    expect(parts.indexOf(path.join(homedir(), '.cargo', 'bin'))).toBeLessThan(parts.indexOf('/usr/bin'));
+  });
+
+  it('buildBashToolEnv does not duplicate a path already present', () => {
+    const env = buildBashToolEnv({ PATH: `${path.join(homedir(), '.cargo', 'bin')}:/usr/bin` });
+    const cargo = path.join(homedir(), '.cargo', 'bin');
+    expect((env.PATH ?? '').split(':').filter((p) => p === cargo)).toHaveLength(1);
   });
 });
