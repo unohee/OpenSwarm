@@ -667,7 +667,13 @@ export async function executePipeline(
         // codebase size (registry entity count). A fixed 30s timed out on large
         // repos (WAVE ~600k entities) → type=unknown, files=[] → the worker starts
         // BLIND and burns its iteration budget rediscovering scope. (INT-2485)
-        onLog: (line) => broadcastEvent({ type: 'log', data: { taskId, stage: 'draft', line } }),
+        // Mirror to stdout too: broadcast-only draft logs hid the 73% timeout
+        // failure for weeks (same asymmetry that hid the fan-out promote bug —
+        // INT-2472). stdout is the production diagnostic surface. (INT-2505)
+        onLog: (line) => {
+          console.log(`[${task.issueIdentifier ?? taskId}] ${line}`);
+          broadcastEvent({ type: 'log', data: { taskId, stage: 'draft', line } });
+        },
       });
 
       broadcastEvent({ type: 'pipeline:stage', data: { taskId, stage: 'draft', status: 'complete', durationMs: draftResult.durationMs, ...metadata } });
