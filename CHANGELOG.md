@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.17.4 — 2026-07-05
+
+### Fixed
+
+- **Reviewer-revise treadmill** — failing sessions could not converge: a task that failed at max iterations or was rejected was re-picked with zero memory of the reviewer's feedback (measured: 4 successes vs 51 max-iteration exhaustions in a recent window; issues re-picked up to 59×). Every failure/rejection now persists its last reviewer feedback (task-state `lastFailures`, cleared on success) and injects it into the worker's first iteration on re-attempt — on both the parallel and serial heartbeat paths. Two consecutive near-identical revise feedbacks also end the session early instead of burning the remaining iterations (the reflection stagnation brake only counted objective sources, so a repeating reviewer never tripped it). (INT-2474, #230)
+- **Fan-out winner promotion died on dirty projects** — `git apply --3way ... does not match index`: `--3way` validates the patch preimage against the index (=HEAD), but on a self-repair retry only the worktree matches the seeded dirty state. Promotion now uses a plain worktree apply, and a promote failure falls back to the single in-place worker instead of failing the whole stage. (#230)
+
 ## 0.17.3 — 2026-07-05
 
 ### Fixed
