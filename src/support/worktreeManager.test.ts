@@ -1,9 +1,9 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, lstatSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { createWorktree, removeWorktree, resolveSharedPaths, computeFileOverlaps, formatOverlapReport, type WorktreeInfo } from './worktreeManager.js';
+import { createWorktree, preserveWorktree, removeWorktree, resolveSharedPaths, computeFileOverlaps, formatOverlapReport, type WorktreeInfo } from './worktreeManager.js';
 
 describe('worktreeManager path safety', () => {
   let root: string;
@@ -153,6 +153,71 @@ describe('createWorktree shared-path symlinks (INT-2415)', () => {
     const wtSrc = join(info.worktreePath, 'src');
     expect(existsSync(join(wtSrc, 'index.ts'))).toBe(true);
     expect(lstatSync(wtSrc).isSymbolicLink()).toBe(false);
+  });
+});
+
+describe('preserveWorktree → createWorktree resume roundtrip (INT-2503)', () => {
+  let root: string;
+  let repo: string;
+
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync('git', ['-C', cwd, ...args], { stdio: 'pipe' });
+
+  beforeEach(() => {
+    root = join(tmpdir(), `openswarm-worktree-preserve-${process.pid}-${Date.now()}`);
+    repo = join(root, 'repo');
+    mkdirSync(repo, { recursive: true });
+
+    const originBare = join(root, 'origin.git');
+    execFileSync('git', ['init', '--bare', '-b', 'main', originBare], { stdio: 'pipe' });
+    execFileSync('git', ['init', '-b', 'main', repo], { stdio: 'pipe' });
+    git(repo, 'config', 'user.email', 'test@example.com');
+    git(repo, 'config', 'user.name', 'Test');
+    git(repo, 'config', 'commit.gpgsign', 'false');
+    writeFileSync(join(repo, 'app.py'), 'base\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-m', 'init');
+    git(repo, 'remote', 'add', 'origin', originBare);
+    git(repo, 'push', 'origin', 'main');
+  });
+
+  afterEach(() => {
+    try { git(repo, 'worktree', 'remove', '--force', join(repo, 'worktree', 'INT-9')); } catch { /* ignore */ }
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('preserves a dirty failed worktree and resumes it with the partial work intact', async () => {
+    const info = await createWorktree(repo, 'INT-9', 'swarm/INT-9-test');
+    // Failed session left partial work: a tracked edit + a new file.
+    writeFileSync(join(info.worktreePath, 'app.py'), 'base\npartial-impl\n');
+    writeFileSync(join(info.worktreePath, 'newmod.py'), 'wip\n');
+
+    expect(await preserveWorktree(info, 'test failure')).toBe(true);
+    expect(existsSync(join(info.worktreePath, '.openswarm-preserved'))).toBe(true);
+
+    // Retry resumes the SAME worktree — partial work intact, marker consumed.
+    const resumed = await createWorktree(repo, 'INT-9', 'swarm/INT-9-test');
+    expect(resumed.worktreePath).toBe(info.worktreePath);
+    expect(readFileSync(join(resumed.worktreePath, 'app.py'), 'utf8')).toBe('base\npartial-impl\n');
+    expect(existsSync(join(resumed.worktreePath, 'newmod.py'))).toBe(true);
+    expect(existsSync(join(resumed.worktreePath, '.openswarm-preserved'))).toBe(false);
+  });
+
+  it('removes a clean worktree instead of preserving it', async () => {
+    const info = await createWorktree(repo, 'INT-9', 'swarm/INT-9-test');
+    expect(await preserveWorktree(info, 'test failure')).toBe(false);
+    expect(existsSync(info.worktreePath)).toBe(false);
+  });
+
+  it('recreates fresh when the preserved branch does not match', async () => {
+    const info = await createWorktree(repo, 'INT-9', 'swarm/INT-9-test');
+    writeFileSync(join(info.worktreePath, 'app.py'), 'base\nstale-work\n');
+    await preserveWorktree(info, 'test failure');
+
+    // Task title changed → different branch → preserved tree is stale; recreate.
+    const recreated = await createWorktree(repo, 'INT-9', 'swarm/INT-9-renamed');
+    expect(recreated.branchName).toBe('swarm/INT-9-renamed');
+    expect(readFileSync(join(recreated.worktreePath, 'app.py'), 'utf8')).toBe('base\n');
   });
 });
 

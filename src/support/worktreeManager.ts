@@ -5,7 +5,7 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { existsSync, mkdirSync, rmSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { registerOwnedPR } from '../automation/prOwnership.js';
 import { runConventionalCommitGuard } from '../agents/pipelineGuards.js';
@@ -163,12 +163,56 @@ async function linkSharedPaths(repoPath: string, worktreePath: string): Promise<
 // Worktree Lifecycle
 
 /** Create git worktree + checkout branch */
+/**
+ * Marker dropped into a failed session's worktree so its partial implementation
+ * survives cleanup and the retry RESUMES from it instead of re-implementing from
+ * scratch (INT-2503). pruneWorktrees skips marked dirs; createWorktree reuses
+ * them; a successful run still removes the worktree as before.
+ */
+const PRESERVE_MARKER = '.openswarm-preserved';
+
+/**
+ * Preserve a failed session's worktree when it holds actual work: drop the
+ * marker and leave the tree in place. A clean tree has nothing worth keeping —
+ * remove it as before. Returns true when preserved.
+ */
+export async function preserveWorktree(info: WorktreeInfo, reason: string): Promise<boolean> {
+  const worktreePath = assertManagedWorktreePath(info.originalPath, info.worktreePath);
+  const dirty = await git(worktreePath, 'status', '--porcelain').catch(() => '');
+  if (!dirty.trim()) {
+    await removeWorktree(info);
+    return false;
+  }
+  const fileCount = dirty.split('\n').filter(Boolean).length;
+  writeFileSync(
+    join(worktreePath, PRESERVE_MARKER),
+    JSON.stringify({ issueId: info.issueId, branchName: info.branchName, reason, at: new Date().toISOString() }, null, 2),
+    'utf8',
+  );
+  console.log(`[Worktree] Preserved for retry (${fileCount} dirty files, ${reason}): ${worktreePath}`);
+  return true;
+}
+
 export async function createWorktree(
   repoPath: string,
   issueId: string,
   branchName: string,
 ): Promise<WorktreeInfo> {
   const worktreePath = resolveWorktreePath(repoPath, issueId);
+
+  // Retry of a preserved failure: RESUME from the previous attempt's partial
+  // work (and its build caches) instead of wiping it (INT-2503). Consume the
+  // marker — if this attempt fails again it gets re-preserved by the runner.
+  if (existsSync(worktreePath) && existsSync(join(worktreePath, PRESERVE_MARKER))) {
+    const valid = await git(worktreePath, 'status', '--porcelain').then(() => true).catch(() => false);
+    const branch = await git(worktreePath, 'rev-parse', '--abbrev-ref', 'HEAD').then((b) => b.trim()).catch(() => '');
+    if (valid && branch === branchName) {
+      rmSync(join(worktreePath, PRESERVE_MARKER), { force: true });
+      console.log(`[Worktree] Resuming preserved worktree: ${worktreePath} (branch: ${branchName})`);
+      return { worktreePath, branchName, originalPath: repoPath, issueId };
+    }
+    console.warn(`[Worktree] Preserved worktree invalid (valid=${valid}, branch=${branch}) — recreating: ${worktreePath}`);
+  }
 
   // Clean up existing worktree (retry case)
   if (existsSync(worktreePath)) {
@@ -438,7 +482,10 @@ export async function pruneWorktrees(repoPath: string, activeWorktreePaths: Set<
       .filter((l) => l.startsWith('worktree '))
       .map((l) => l.slice('worktree '.length).trim())
       .filter((p) => p.startsWith(prefix))
-      .filter((p) => !activeWorktreePaths.has(p)); // keep worktrees of running tasks
+      .filter((p) => !activeWorktreePaths.has(p)) // keep worktrees of running tasks
+      // Preserved failed-session worktrees carry the retry's partial work —
+      // they must survive daemon restarts and heartbeat sweeps (INT-2503).
+      .filter((p) => !existsSync(join(p, PRESERVE_MARKER)));
     for (const p of orphans) {
       await git(repoPath, 'worktree', 'remove', '--force', p)
         .then(() => console.log(`[Worktree] Swept orphan worktree: ${p}`))

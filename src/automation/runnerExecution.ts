@@ -29,6 +29,7 @@ import {
   buildBranchName,
   createWorktree,
   commitAndCreatePR,
+  preserveWorktree,
   removeWorktree,
 } from '../support/worktreeManager.js';
 import type { WorktreeInfo } from '../support/worktreeManager.js';
@@ -712,6 +713,9 @@ export async function executePipeline(
   // ============================================
   let worktreeInfo: WorktreeInfo | null = null;
   let actualPath = projectPath;
+  // Preserve the worktree on non-success so the retry resumes from the partial
+  // work (INT-2503); unexpected throws leave it false → cleanup as before.
+  let keepWorktree = false;
 
   if (ctx.worktreeMode && task.issueId && task.issueIdentifier) {
     const branchName = buildBranchName(task.issueIdentifier, task.title);
@@ -929,13 +933,20 @@ export async function executePipeline(
       console.log(`[Runner] PR not created for ${task.issueIdentifier}: ${reason}`);
     }
 
+    keepWorktree = !result.success;
     return result;
   } finally {
-    // Clean up worktree regardless of success/failure
+    // Success (PR created) → remove as before. Any non-success outcome
+    // (failed / rejected / rate-limited / cancelled) → PRESERVE the worktree
+    // when it holds actual work, so the retry resumes from the partial
+    // implementation instead of re-doing it from scratch (INT-2503).
+    // preserveWorktree removes clean trees itself; unexpected throws
+    // (keepWorktree=false) clean up as before.
     if (worktreeInfo) {
-      await removeWorktree(worktreeInfo).catch((err) =>
-        console.warn('[Worktree] Cleanup failed:', err)
-      );
+      const cleanup = keepWorktree
+        ? preserveWorktree(worktreeInfo, 'session did not succeed')
+        : removeWorktree(worktreeInfo);
+      await cleanup.catch((err) => console.warn('[Worktree] Cleanup failed:', err));
     }
   }
 }
