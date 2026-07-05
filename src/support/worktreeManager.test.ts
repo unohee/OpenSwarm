@@ -3,7 +3,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, w
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { createWorktree, preserveWorktree, removeWorktree, resolveSharedPaths, computeFileOverlaps, formatOverlapReport, type WorktreeInfo } from './worktreeManager.js';
+import { createWorktree, preserveWorktree, removePreservedWorktreeAt, removeWorktree, resolveSharedPaths, computeFileOverlaps, formatOverlapReport, type WorktreeInfo } from './worktreeManager.js';
 
 describe('worktreeManager path safety', () => {
   let root: string;
@@ -267,5 +267,52 @@ describe('file-overlap report (INT-2392)', () => {
       expect(section).toContain('12 file(s)');
       expect(section).toContain('(+4 more)');
     });
+  });
+});
+
+describe('removePreservedWorktreeAt (INT-2506)', () => {
+  let root: string;
+  let repo: string;
+
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync('git', ['-C', cwd, ...args], { stdio: 'pipe' });
+
+  beforeEach(() => {
+    root = join(tmpdir(), `openswarm-wt-lifecycle-${process.pid}-${Date.now()}`);
+    repo = join(root, 'repo');
+    mkdirSync(repo, { recursive: true });
+    const originBare = join(root, 'origin.git');
+    execFileSync('git', ['init', '--bare', '-b', 'main', originBare], { stdio: 'pipe' });
+    execFileSync('git', ['init', '-b', 'main', repo], { stdio: 'pipe' });
+    git(repo, 'config', 'user.email', 't@t.com');
+    git(repo, 'config', 'user.name', 'T');
+    git(repo, 'config', 'commit.gpgsign', 'false');
+    writeFileSync(join(repo, 'app.py'), 'base\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-m', 'init');
+    git(repo, 'remote', 'add', 'origin', originBare);
+    git(repo, 'push', 'origin', 'main');
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('commits the partial work to the branch, then removes the tree', async () => {
+    const info = await createWorktree(repo, 'INT-9', 'swarm/INT-9-test');
+    writeFileSync(join(info.worktreePath, 'app.py'), 'base\npartial\n');
+    await preserveWorktree(info, 'stuck test');
+
+    await removePreservedWorktreeAt(info.worktreePath);
+
+    expect(existsSync(info.worktreePath)).toBe(false);
+    // The partial work survives on the branch for human inspection.
+    const show = execFileSync('git', ['-C', repo, 'show', 'swarm/INT-9-test:app.py'], { encoding: 'utf8' });
+    expect(show).toBe('base\npartial\n');
+  });
+
+  it('no-ops on paths that are not managed worktrees', async () => {
+    await removePreservedWorktreeAt(repo); // repo root — no /worktree/ segment
+    expect(existsSync(repo)).toBe(true);
   });
 });

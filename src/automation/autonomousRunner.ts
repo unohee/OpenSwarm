@@ -48,7 +48,7 @@ import { t } from '../locale/index.js';
 import { broadcastEvent, type SwarmStats } from '../core/eventHub.js';
 import { writeProviderOverride } from '../core/providerOverride.js';
 import { getTaskState } from '../taskState/store.js';
-import { pruneWorktrees } from '../support/worktreeManager.js';
+import { pruneWorktrees, removePreservedWorktreeAt } from '../support/worktreeManager.js';
 import { loadRepoMetadata } from '../support/repoMetadata.js';
 import { STUCK_LABEL } from '../linear/index.js';
 import { refreshGraph, toProjectSlug } from '../knowledge/index.js';
@@ -435,6 +435,12 @@ export class AutonomousRunner {
           this.completedTaskIds.add(task.issueId); // Prevent re-selection
           clearRetryTime(task.issueId, this.failedTaskRetryTimes); // Clear retry time
           this.saveTaskState();
+          // Terminally stuck → no retry will resume the preserved tree; commit
+          // the partial work to the branch and free the disk (INT-2506).
+          if (result.taskContext?.projectPath) {
+            await removePreservedWorktreeAt(result.taskContext.projectPath)
+              .catch((err) => console.warn('[Worktree] STUCK cleanup failed:', err));
+          }
 
           try {
             await execution.syncFailureState(task, `Max rejection limit reached (${rejectionCount} attempts): ${feedback}`);
@@ -491,6 +497,11 @@ export class AutonomousRunner {
           clearRetryTime(task.issueId, this.failedTaskRetryTimes); // Clear retry time
           this.saveTaskState();
           console.log(`[Scheduler] Task failure count: ${count}/${AutonomousRunner.MAX_RETRY_COUNT} for ${taskCtx} — STUCK`);
+          // Terminally stuck → commit partial work to the branch, free the disk (INT-2506).
+          if (result.taskContext?.projectPath) {
+            await removePreservedWorktreeAt(result.taskContext.projectPath)
+              .catch((err) => console.warn('[Worktree] STUCK cleanup failed:', err));
+          }
           try {
             await execution.syncFailureState(task, `Autonomous execution failed ${count} times: ${failureDetail}`);
             await getTaskSource()?.logStuck(task.issueId, 'autonomous-runner',

@@ -5,7 +5,7 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { registerOwnedPR } from '../automation/prOwnership.js';
 import { runConventionalCommitGuard } from '../agents/pipelineGuards.js';
@@ -170,6 +170,44 @@ async function linkSharedPaths(repoPath: string, worktreePath: string): Promise<
  * them; a successful run still removes the worktree as before.
  */
 const PRESERVE_MARKER = '.openswarm-preserved';
+/** Preserved trees older than this are abandoned (task STUCK or issue closed) — swept. */
+const PRESERVE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+function preserveMarkerAgeMs(worktreePath: string): number | null {
+  try {
+    const raw = JSON.parse(readFileSync(join(worktreePath, PRESERVE_MARKER), 'utf8')) as { at?: string };
+    const at = raw.at ? Date.parse(raw.at) : NaN;
+    return Number.isFinite(at) ? Date.now() - at : null;
+  } catch {
+    return null; // unreadable marker → treat as expired (swept)
+  }
+}
+
+/**
+ * Discard a preserved worktree, keeping the partial work reachable: best-effort
+ * commit it onto the tree's swarm branch (survives worktree removal, human can
+ * inspect), then remove the directory. Used when a task goes terminally STUCK
+ * and by the age sweep. Accepts the worktree path itself — the repo root is the
+ * segment before `/worktree/<id>`. No-op for paths that don't match. (INT-2506)
+ */
+export async function removePreservedWorktreeAt(worktreePath: string): Promise<void> {
+  const m = worktreePath.replace(/\/+$/, '').match(/^(.*)\/worktree\/[^/]+$/);
+  if (!m || !existsSync(worktreePath)) return;
+  const repoRoot = m[1];
+  try {
+    await git(worktreePath, 'add', '-A');
+    await git(
+      worktreePath,
+      '-c', 'user.email=swarm@openswarm.local', '-c', 'user.name=OpenSwarm',
+      'commit', '--no-verify', '-m', 'wip: preserved partial work (auto, pre-cleanup)',
+    );
+    console.log(`[Worktree] WIP committed to branch before cleanup: ${worktreePath}`);
+  } catch { /* clean tree or commit failure — proceed with removal */ }
+  await git(repoRoot, 'worktree', 'remove', '--force', worktreePath).catch(() => {
+    rmSync(worktreePath, { recursive: true, force: true });
+  });
+  console.log(`[Worktree] Removed preserved worktree: ${worktreePath}`);
+}
 
 /**
  * Preserve a failed session's worktree when it holds actual work: drop the
@@ -477,16 +515,24 @@ export async function pruneWorktrees(repoPath: string, activeWorktreePaths: Set<
   try {
     const out = await git(repoPath, 'worktree', 'list', '--porcelain');
     const prefix = `${repoPath}/worktree/`;
-    const orphans = out
+    const candidates = out
       .split('\n')
       .filter((l) => l.startsWith('worktree '))
       .map((l) => l.slice('worktree '.length).trim())
       .filter((p) => p.startsWith(prefix))
-      .filter((p) => !activeWorktreePaths.has(p)) // keep worktrees of running tasks
-      // Preserved failed-session worktrees carry the retry's partial work —
-      // they must survive daemon restarts and heartbeat sweeps (INT-2503).
-      .filter((p) => !existsSync(join(p, PRESERVE_MARKER)));
-    for (const p of orphans) {
+      .filter((p) => !activeWorktreePaths.has(p)); // keep worktrees of running tasks
+    for (const p of candidates) {
+      // Preserved failed-session worktrees carry the retry's partial work — they
+      // survive restarts and sweeps (INT-2503) until they age out (abandoned:
+      // task went STUCK or the issue was closed). Expired ones get their work
+      // committed to the branch, then removed (INT-2506).
+      if (existsSync(join(p, PRESERVE_MARKER))) {
+        const age = preserveMarkerAgeMs(p);
+        if (age !== null && age <= PRESERVE_MAX_AGE_MS) continue; // still fresh — keep
+        console.log(`[Worktree] Preserved worktree expired (${age === null ? 'unreadable marker' : Math.round(age / 3_600_000) + 'h'}) — sweeping: ${p}`);
+        await removePreservedWorktreeAt(p).catch((e) => console.warn(`[Worktree] Expired-preserve sweep failed for ${p}:`, e));
+        continue;
+      }
       await git(repoPath, 'worktree', 'remove', '--force', p)
         .then(() => console.log(`[Worktree] Swept orphan worktree: ${p}`))
         .catch((e) => console.warn(`[Worktree] Orphan sweep failed for ${p}:`, e));
