@@ -64,6 +64,10 @@ const activeJobs: Map<string, Cron> = new Map();
 // Running processes (to prevent concurrent execution)
 const runningProcesses: Map<string, ReturnType<typeof spawn>> = new Map();
 
+/** Wall-clock ceiling for a scheduled claude job — a hang here would silently
+ *  wedge the schedule (every later fire skipped "already running"). (INT-2521) */
+const CRON_JOB_TIMEOUT_MS = 20 * 60_000;
+
 // Recent results (for reporting)
 const recentResults: JobResult[] = [];
 const MAX_RESULTS = 50;
@@ -168,6 +172,24 @@ async function runClaudeCli(
 
     let stdout = '';
     let stderr = '';
+    let settled = false;
+    const finish = (r: { success: boolean; output: string; error?: string }) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(watchdog);
+      runningProcesses.delete(jobId);
+      resolve(r);
+    };
+    // Without this a hung `claude` never resolves → the job stays in
+    // runningProcesses forever → every later fire is skipped "already running"
+    // and the schedule is silently dead until restart. Kill + resolve as a
+    // failure so the consecutive-failure auto-pause can engage. (INT-2521)
+    const watchdog = setTimeout(() => {
+      if (settled) return;
+      console.warn(`[Scheduler] Job ${jobId} exceeded ${Math.round(CRON_JOB_TIMEOUT_MS / 60_000)}min — killing`);
+      proc.kill('SIGKILL');
+      finish({ success: false, output: '', error: `Job timed out after ${CRON_JOB_TIMEOUT_MS}ms` });
+    }, CRON_JOB_TIMEOUT_MS);
 
     proc.stdout?.on('data', (data) => {
       stdout = appendBounded(stdout, data.toString());
@@ -199,7 +221,7 @@ async function runClaudeCli(
         // Use original on parse failure
       }
 
-      resolve({
+      finish({
         success: code === 0,
         output: resultText.slice(0, 2000), // max 2000 chars
         error: stderr || undefined,
@@ -207,8 +229,7 @@ async function runClaudeCli(
     });
 
     proc.on('error', (err) => {
-      runningProcesses.delete(jobId);
-      resolve({
+      finish({
         success: false,
         output: '',
         error: err.message,

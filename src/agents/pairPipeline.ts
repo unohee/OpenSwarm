@@ -69,6 +69,8 @@ export type {
 } from './pairPipelineTypes.js';
 
 export { buildTaskPrefix } from './pipelineTaskPrefix.js';
+export { stageTimeoutMs } from './stageTimeouts.js';
+import { stageTimeoutMs } from './stageTimeouts.js';
 
 // Pair Pipeline
 
@@ -480,7 +482,7 @@ export class PairPipeline extends EventEmitter {
             taskDescription: context.task.description || '',
             projectPath: context.projectPath,
             previousFeedback: combinedFeedback,
-            timeoutMs: this.config.roles?.worker?.timeoutMs ?? 0,
+            timeoutMs: stageTimeoutMs('worker', this.config.roles?.worker?.timeoutMs),
             // getModelForRole gives the matched jobProfile's model precedence (config's
             // light/heavy → gpt-5.5/5.4), falling back to roles.worker.model. Reading
             // roles.worker.model directly here silently dropped the jobProfile model, so a
@@ -566,7 +568,7 @@ export class PairPipeline extends EventEmitter {
             taskDescription: context.task.description || '',
             workerResult: context.workerResult,
             projectPath: context.projectPath,
-            timeoutMs: this.config.roles?.reviewer?.timeoutMs ?? 0,
+            timeoutMs: stageTimeoutMs('reviewer', this.config.roles?.reviewer?.timeoutMs),
             // jobProfile model precedence (see worker stage above). (INT-1599)
             model: this.getModelForRole('reviewer', context.task),
             maxTurns: reviewerMaxTurns,
@@ -610,7 +612,7 @@ export class PairPipeline extends EventEmitter {
             taskDescription: context.task.description || '',
             workerResult: context.workerResult,
             projectPath: context.projectPath,
-            timeoutMs: this.config.roles?.tester?.timeoutMs ?? 0,
+            timeoutMs: stageTimeoutMs('tester', this.config.roles?.tester?.timeoutMs),
             model: this.config.roles?.tester?.model,
             maxTurns: this.config.roles?.tester?.maxTurns,
             adapterName: this.config.roles?.tester?.adapter,
@@ -633,7 +635,7 @@ export class PairPipeline extends EventEmitter {
             taskDescription: context.task.description || '',
             workerResult: context.workerResult,
             projectPath: context.projectPath,
-            timeoutMs: this.config.roles?.documenter?.timeoutMs ?? 0,
+            timeoutMs: stageTimeoutMs('documenter', this.config.roles?.documenter?.timeoutMs),
             model: this.config.roles?.documenter?.model,
             maxTurns: this.config.roles?.documenter?.maxTurns,
             adapterName: this.config.roles?.documenter?.adapter,
@@ -650,7 +652,7 @@ export class PairPipeline extends EventEmitter {
             taskDescription: context.task.description || '',
             workerResult: context.workerResult,
             projectPath: context.projectPath,
-            timeoutMs: this.config.roles?.auditor?.timeoutMs ?? 0,
+            timeoutMs: stageTimeoutMs('auditor', this.config.roles?.auditor?.timeoutMs),
             model: this.config.roles?.auditor?.model,
             maxTurns: this.config.roles?.auditor?.maxTurns,
             adapterName: this.config.roles?.auditor?.adapter,
@@ -667,7 +669,7 @@ export class PairPipeline extends EventEmitter {
             taskDescription: context.task.description || '',
             workerResult: context.workerResult,
             projectPath: context.projectPath,
-            timeoutMs: this.config.roles?.['skill-documenter']?.timeoutMs ?? 0,
+            timeoutMs: stageTimeoutMs('skill-documenter', this.config.roles?.['skill-documenter']?.timeoutMs),
             model: this.config.roles?.['skill-documenter']?.model,
             maxTurns: this.config.roles?.['skill-documenter']?.maxTurns,
             adapterName: this.config.roles?.['skill-documenter']?.adapter,

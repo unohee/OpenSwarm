@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { TaskScheduler } from './taskScheduler.js';
@@ -110,5 +110,25 @@ describe('TaskScheduler cancellation', () => {
     sched.startTask(task('t'), '/repo', deferredExecutor().exec);
     sched.setTaskStage('t', 'reviewer');
     expect(sched.getRunningTasks().find((r) => r.task.id === 't')?.stage).toBe('reviewer');
+  });
+
+  it('hard watchdog aborts + frees the slot when a task never settles (INT-2521)', async () => {
+    vi.useFakeTimers();
+    try {
+      const d = deferredExecutor(); // never resolves → simulates a hang
+      let slotFreed = false;
+      sched.on('slotFreed', () => { slotFreed = true; });
+      sched.startTask(task('hung'), '/repo', d.exec);
+      expect(sched.isTaskRunning('hung')).toBe(true);
+
+      // Advance past the 60-min hard watchdog.
+      await vi.advanceTimersByTimeAsync(60 * 60_000 + 1_000);
+
+      expect(d.wasAborted()).toBe(true);          // executor was signaled to stop
+      expect(sched.isTaskRunning('hung')).toBe(false); // slot reclaimed
+      expect(slotFreed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

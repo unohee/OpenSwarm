@@ -272,9 +272,11 @@ const AutonomousConfigSchema = z.object({
   includeBacklog: z.boolean().optional(),
   /** Model configuration (legacy) */
   models: ModelConfigSchema,
-  /** Worker timeout (ms) - 0 = unlimited (legacy) */
+  /** Worker timeout (ms). 0/unset = use the pipeline's per-stage ceiling
+   *  (stageTimeoutMs) — it is NO LONGER "unlimited": an unbounded stage could hang
+   *  the whole daemon. Set a positive value to override. (INT-2521) */
   workerTimeoutMs: z.number().min(0).default(0),
-  /** Reviewer timeout (ms) - 0 = unlimited (legacy) */
+  /** Reviewer timeout (ms). 0/unset = pipeline per-stage ceiling (not unlimited). */
   reviewerTimeoutMs: z.number().min(0).default(0),
   /** Max concurrent tasks */
   maxConcurrentTasks: z.number().min(1).max(10).default(1),

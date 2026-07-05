@@ -222,17 +222,30 @@ export async function getWorkingDiffDetail(projectPath: string): Promise<FileDif
 /**
  * Git command execution utility
  */
+// Bound each snapshot/diff git call so a stuck git (index lock, corrupt repo)
+// rejects with a timeout instead of hanging the worker's "did real work" check
+// forever. "timed out" → isInfraError → infra_error backoff. (INT-2521)
+const GIT_CMD_TIMEOUT_MS = 5 * 60_000;
+
 function runGitCommand(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<string> {
   return new Promise((resolve, reject) => {
     const proc = spawn('git', args, { cwd, env: env ? { ...process.env, ...env } : process.env });
 
     let stdout = '';
     let stderr = '';
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      proc.kill('SIGKILL');
+      reject(new Error(`git ${args.join(' ')} timed out after ${GIT_CMD_TIMEOUT_MS}ms`));
+    }, GIT_CMD_TIMEOUT_MS);
 
     proc.stdout.on('data', (data) => { stdout += data.toString(); });
     proc.stderr.on('data', (data) => { stderr += data.toString(); });
 
     proc.on('close', (code) => {
+      settled = true;
+      clearTimeout(timer);
       if (code === 0) {
         resolve(stdout);
       } else {
@@ -240,7 +253,7 @@ function runGitCommand(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Pr
       }
     });
 
-    proc.on('error', reject);
+    proc.on('error', (err) => { settled = true; clearTimeout(timer); reject(err); });
   });
 }
 

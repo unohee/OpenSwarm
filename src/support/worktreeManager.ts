@@ -13,9 +13,15 @@ import { loadRepoMetadata } from './repoMetadata.js';
 
 const execFileAsync = promisify(execFile);
 
-/** Safe git command execution (no shell) */
+/** Wall-clock ceiling for a single git invocation (fetch/push/clone included).
+ *  Without it a stalled network git op hangs the whole task before the pipeline's
+ *  own timeouts can engage. A timed-out git rejects with ETIMEDOUT/"timed out",
+ *  which isInfraError classifies → infra_error backoff, not STUCK. (INT-2521) */
+const GIT_TIMEOUT_MS = 5 * 60_000;
+
+/** Safe git command execution (no shell), bounded by GIT_TIMEOUT_MS. */
 async function git(cwd: string, ...args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync('git', ['-C', cwd, ...args]);
+  const { stdout } = await execFileAsync('git', ['-C', cwd, ...args], { timeout: GIT_TIMEOUT_MS });
   return stdout;
 }
 
@@ -28,7 +34,7 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
  * branches with no PR. (INT-2321)
  */
 async function gh(cwd: string, ...args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync('gh', args, { cwd });
+  const { stdout } = await execFileAsync('gh', args, { cwd, timeout: GIT_TIMEOUT_MS });
   return stdout;
 }
 

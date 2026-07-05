@@ -61,12 +61,17 @@ function safeCandidateId(id: string, index: number): string {
   return safe || `candidate-${index + 1}`;
 }
 
+// git clone (used for sandbox seeding) can stall; bound it so a hung clone becomes
+// an infra timeout instead of wedging the fan-out. (INT-2521)
+const FANOUT_GIT_TIMEOUT_MS = 5 * 60_000;
+
 async function git(cwd: string, args: string[], opts?: { env?: NodeJS.ProcessEnv }): Promise<string> {
   const { stdout } = await exec('git', args, {
     cwd,
     encoding: 'utf8',
     env: opts?.env,
     maxBuffer: 20 * 1024 * 1024,
+    timeout: FANOUT_GIT_TIMEOUT_MS,
   } as Parameters<typeof exec>[2]);
   return String(stdout);
 }

@@ -9,6 +9,15 @@ import { resolve } from 'node:path';
 import type { TaskItem } from './decisionEngine.js';
 import type { PipelineResult } from '../agents/pairPipeline.js';
 
+// Absolute upper bound on a single task's wall-clock time — a LAST-RESORT backstop.
+// The fast reclaiming is done by per-stage timeouts (pairPipeline: worker 20min,
+// reviewer/tester 6min) and git-op timeouts; this only catches a hang OUTSIDE those
+// (e.g. non-stage code). Set above realistic multi-iteration work (observed worker
+// runs 2-5min) but low enough to reclaim a genuine hang within the hour. A rare
+// false-kill of a pathologically long-but-progressing task just retries — the
+// watchdog's reject frees the slot and does NOT count toward STUCK. (INT-2521)
+const HARD_TASK_TIMEOUT_MS = 60 * 60_000;
+
 export function normalizeProjectPath(path: string): string {
   // Guard: resolve('') returns process.cwd(), so an accidental empty-string
   // cancellation would match every task under the daemon's cwd. Keep the
@@ -309,6 +318,25 @@ export class TaskScheduler extends EventEmitter {
     console.log(`[Scheduler] Started task: ${task.title}`);
     this.emit('started', runningTask);
 
+    // Hard wall-clock backstop. Per-stage timeouts (pairPipeline stageTimeoutMs) and
+    // git-op timeouts normally reclaim a stall; this catches a hang OUTSIDE those.
+    // We abort (lets the pipeline unwind to 'cancelled' if it's responsive) AND
+    // reject after the ceiling so the slot is freed even if the executor is truly
+    // unresponsive. We deliberately do NOT wait for the executor to confirm it
+    // stopped — that would reintroduce the very hang this guards against; per-task
+    // worktree isolation bounds what a lingering executor can touch, and the abort
+    // signal is its stop request. On reject → handleTaskError: it frees the slot and
+    // emits 'error' (log/Discord only). It does NOT touch the STUCK counters
+    // (failedTaskCounts/incrementRejection live in autonomousRunner, driven by the
+    // 'failed' event's finalStatus, not 'error'), so the task simply stays In
+    // Progress and is re-selected next heartbeat. (INT-2521)
+    const watchdog = setTimeout(() => {
+      if (!this.runningTasks.has(task.id)) return;
+      console.warn(`[Scheduler] Task "${task.title}" exceeded the ${Math.round(HARD_TASK_TIMEOUT_MS / 60_000)}min hard watchdog — aborting and freeing the slot`);
+      abortController.abort();
+      rejectTask(new Error(`Task timed out after ${HARD_TASK_TIMEOUT_MS}ms (scheduler hard watchdog)`));
+    }, HARD_TASK_TIMEOUT_MS);
+
     // Completion handling
     runningTask.promise
       .then((result) => {
@@ -316,7 +344,8 @@ export class TaskScheduler extends EventEmitter {
       })
       .catch((error) => {
         this.handleTaskError(task.id, error);
-      });
+      })
+      .finally(() => clearTimeout(watchdog));
 
     try {
       Promise.resolve(executor(abortController.signal)).then(resolveTask, rejectTask);
