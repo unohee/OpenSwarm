@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { CliAdapter, CliRunResult } from '../adapters/types.js';
-import { runDraftAnalysis, isDraftSufficient } from './draftAnalyzer.js';
+import { runDraftAnalysis, isDraftSufficient, draftBudgetFor } from './draftAnalyzer.js';
 import * as adapterModule from '../adapters/index.js';
 import * as knowledgeModule from '../knowledge/index.js';
 import * as registryModule from '../registry/sqliteStore.js';
@@ -187,6 +187,31 @@ describe('isDraftSufficient — drafter hard gate (INT-1917)', () => {
 
   it('fails on an empty draft', () => {
     expect(isDraftSufficient({})).toBe(false);
+  });
+});
+
+describe('draftBudgetFor (file-count-adaptive read/analyze budget, INT-2485)', () => {
+  it('gives a small repo the base budget (still > the old 30s that timed out)', () => {
+    // WAVE = 306 files, kyte-portal = 874, most repos 300-900 → base tier.
+    expect(draftBudgetFor(306)).toEqual({ timeoutMs: 60_000, maxTurns: 4 });
+    expect(draftBudgetFor(0)).toEqual({ timeoutMs: 60_000, maxTurns: 4 });
+  });
+
+  it('scales up with file count', () => {
+    expect(draftBudgetFor(400).timeoutMs).toBe(90_000);
+    expect(draftBudgetFor(1_200).timeoutMs).toBe(120_000);
+    // STONKS = 2253 files → still the 1200 tier; a very large repo → top tier.
+    expect(draftBudgetFor(2_253).timeoutMs).toBe(120_000);
+    expect(draftBudgetFor(5_000)).toEqual({ timeoutMs: 180_000, maxTurns: 8 });
+  });
+
+  it('is monotonic in timeout and turns', () => {
+    const sizes = [0, 400, 1_200, 3_000, 10_000];
+    const budgets = sizes.map(draftBudgetFor);
+    for (let i = 1; i < budgets.length; i++) {
+      expect(budgets[i].timeoutMs).toBeGreaterThanOrEqual(budgets[i - 1].timeoutMs);
+      expect(budgets[i].maxTurns).toBeGreaterThanOrEqual(budgets[i - 1].maxTurns);
+    }
   });
 });
 

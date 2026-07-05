@@ -662,7 +662,10 @@ export async function executePipeline(
         taskDescription: task.description || '',
         projectPath,
         model: ctx.draftModel,
-        timeoutMs: 30000,
+        // No fixed timeout: the draft scales its own read/analyze budget to the
+        // codebase size (registry entity count). A fixed 30s timed out on large
+        // repos (WAVE ~600k entities) → type=unknown, files=[] → the worker starts
+        // BLIND and burns its iteration budget rediscovering scope. (INT-2485)
         onLog: (line) => broadcastEvent({ type: 'log', data: { taskId, stage: 'draft', line } }),
       });
 

@@ -5,6 +5,8 @@
 //          Planner/Worker에 enriched context를 제공하여 첫 시도 정확도 향상
 // ============================================
 
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { getAdapter, getDefaultAdapterName, spawnCli } from '../adapters/index.js';
 import { analyzeIssue } from '../knowledge/index.js';
 import { getRegistryStore } from '../registry/sqliteStore.js';
@@ -36,6 +38,34 @@ const DRAFT_MODELS: Partial<Record<AdapterName, string>> = {
 const DRAFT_MIN_CRITERIA = 1;
 /** Max attempts to coax a sufficient draft out of one adapter before falling back. */
 const DRAFT_MAX_ATTEMPTS = 2;
+
+/**
+ * Scale the draft's read/analyze budget to codebase size — by TRACKED FILE COUNT,
+ * a robust filesystem proxy (registry entity count is unreliable: it's global
+ * when projectId is absent, and undercounts repos the scanner didn't fully index,
+ * e.g. WAVE's Rust crates). A fixed 30s / 3 turns left the model no room to read
+ * across a real repo and emit the JSON brief → type=unknown, files=[] → the worker
+ * started blind. An explicit options.timeoutMs still overrides. (INT-2485)
+ */
+export function draftBudgetFor(fileCount: number): { timeoutMs: number; maxTurns: number } {
+  if (fileCount >= 3_000) return { timeoutMs: 180_000, maxTurns: 8 };
+  if (fileCount >= 1_200) return { timeoutMs: 120_000, maxTurns: 6 };
+  if (fileCount >= 400) return { timeoutMs: 90_000, maxTurns: 5 };
+  return { timeoutMs: 60_000, maxTurns: 4 };
+}
+
+/** Cheap tracked-file count for the repo — `git ls-files`, one exec, cached-free. */
+async function countTrackedFiles(projectPath: string): Promise<number> {
+  try {
+    const { stdout } = await promisify(execFile)('git', ['ls-files'], {
+      cwd: projectPath,
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    return stdout.split('\n').filter(Boolean).length;
+  } catch {
+    return 0; // not a git repo / error → floor budget
+  }
+}
 
 /** Appended on retry when the first brief was too thin (INT-1917 hard gate). */
 const DRAFT_RETRY_NUDGE = `
@@ -139,15 +169,17 @@ function collectCodebaseState(
   projectPath: string,
   projectId?: string,
   impactAnalysis?: ImpactAnalysis | null,
-): { registrySnapshot: RegistryBrief[]; projectStats?: string } {
+): { registrySnapshot: RegistryBrief[]; projectStats?: string; totalEntities: number } {
   const registrySnapshot: RegistryBrief[] = [];
   let projectStats: string | undefined;
+  let totalEntities = 0;
 
   try {
     const store = getRegistryStore();
 
     // 1. 프로젝트 전체 통계
     const stats = store.getStats(projectId);
+    totalEntities = stats.total;
     const statParts: string[] = [`${stats.total} entities`];
     if (stats.deprecated > 0) statParts.push(`${stats.deprecated} deprecated`);
     if (stats.untested > 0) statParts.push(`${stats.untested} untested`);
@@ -208,7 +240,7 @@ function collectCodebaseState(
     // Registry 미초기화 — 빈 상태로 진행
   }
 
-  return { registrySnapshot, projectStats };
+  return { registrySnapshot, projectStats, totalEntities };
 }
 
 // ============ drafter 의도 분석 ============
@@ -421,6 +453,12 @@ export async function runDraftAnalysis(options: DraftAnalyzerOptions): Promise<D
     onLog?.(`[Draft] Registry: ${codeContext.projectStats}`);
   }
 
+  // Size the read/analyze budget to the codebase (explicit timeout still wins).
+  const fileCount = await countTrackedFiles(options.projectPath);
+  const budget = draftBudgetFor(fileCount);
+  const draftTimeoutMs = options.timeoutMs ?? budget.timeoutMs;
+  onLog?.(`[Draft] Budget: ${fileCount} tracked files → timeout ${Math.round(draftTimeoutMs / 1000)}s, ${budget.maxTurns} turns`);
+
   // 3. Fast model draft analysis (~3s) — model resolves from the adapter when unset
   const prompt = buildDraftPrompt(options, codeContext, impactAnalysis);
 
@@ -455,9 +493,9 @@ export async function runDraftAnalysis(options: DraftAnalyzerOptions): Promise<D
         const raw = await spawnCli(adapter, {
           prompt: attemptPrompt,
           cwd: options.projectPath, // read the real repo (INT-1917) — was '/tmp'
-          timeoutMs: options.timeoutMs ?? 30000,
+          timeoutMs: draftTimeoutMs, // size-adaptive: 30s timed out on large repos → type=unknown (INT-2485)
           model: resolvedModel,
-          maxTurns: 3, // allow read_file/search_files — was 1 (couldn't read code)
+          maxTurns: budget.maxTurns, // size-adaptive: 3 ran out reading a real repo before emitting the brief (INT-2485)
         });
 
         haikuResult = parseDraftResponse(raw.stdout);
