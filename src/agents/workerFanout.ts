@@ -61,22 +61,30 @@ function safeCandidateId(id: string, index: number): string {
   return safe || `candidate-${index + 1}`;
 }
 
-async function git(cwd: string, args: string[], input?: string): Promise<string> {
+async function git(cwd: string, args: string[], opts?: { env?: NodeJS.ProcessEnv }): Promise<string> {
   const { stdout } = await exec('git', args, {
     cwd,
     encoding: 'utf8',
-    input,
+    env: opts?.env,
     maxBuffer: 20 * 1024 * 1024,
-  } as Parameters<typeof exec>[2] & { input?: string });
+  } as Parameters<typeof exec>[2]);
   return String(stdout);
 }
 
-async function isGitWorktreeClean(projectPath: string): Promise<boolean> {
+// Capture ALL uncommitted work in the project (tracked edits, deletions, and
+// untracked new files) as a binary patch vs HEAD, WITHOUT mutating the project's
+// real index or worktree — everything is staged into a throwaway temporary index
+// selected via GIT_INDEX_FILE. Returns '' when the worktree is clean. This lets
+// fan-out run on a dirty tree (e.g. a self-repair retry that still holds the
+// previous iteration's edits) by seeding that state into each sandbox.
+async function captureBaselinePatch(projectPath: string): Promise<string> {
+  const idxDir = await mkdtemp(join(tmpdir(), 'openswarm-fanout-idx-'));
+  const env = { ...process.env, GIT_INDEX_FILE: join(idxDir, 'index') };
   try {
-    const status = await git(projectPath, ['status', '--porcelain']);
-    return status.trim().length === 0;
-  } catch {
-    return false;
+    await git(projectPath, ['add', '-A'], { env });
+    return await git(projectPath, ['diff', '--cached', '--binary', 'HEAD'], { env });
+  } finally {
+    await rm(idxDir, { recursive: true, force: true });
   }
 }
 
@@ -187,11 +195,30 @@ function scoreCandidate(input: {
   return { score, eligible };
 }
 
+// Seed the project's pre-existing uncommitted state into a freshly-cloned
+// sandbox and commit it, so the candidate continues from the dirty base and the
+// winner's promoted diff is the incremental delta (not base+delta, which would
+// double-apply onto the already-dirty project).
+async function seedBaseline(sandbox: string, root: string, id: string, baseline: string): Promise<void> {
+  if (!baseline.trim()) return;
+  const patchPath = join(root, `${id}-base.patch`);
+  await writeFile(patchPath, baseline, 'utf8');
+  await git(sandbox, ['apply', '--whitespace=nowarn', patchPath]);
+  await rm(patchPath, { force: true });
+  await git(sandbox, ['add', '-A']);
+  await git(sandbox, [
+    '-c', 'user.email=fanout@openswarm.local',
+    '-c', 'user.name=OpenSwarm Fanout',
+    'commit', '--quiet', '--no-verify', '-m', 'fanout: seed pre-existing worktree state',
+  ]);
+}
+
 async function runCandidate(
   options: RunWorkerFanoutOptions,
   candidate: WorkerFanoutCandidateConfig,
   index: number,
   root: string,
+  baseline: string,
 ): Promise<WorkerFanoutCandidateRun> {
   const id = safeCandidateId(candidate.id, index);
   const started = Date.now();
@@ -199,6 +226,7 @@ async function runCandidate(
 
   try {
     sandbox = await cloneSandbox(options.projectPath, root, id, sharedPathModeFor(options.linkSharedPaths));
+    await seedBaseline(sandbox, root, id, baseline);
     const result = await runWorker({
       ...options.baseWorkerOptions,
       projectPath: sandbox,
@@ -257,17 +285,19 @@ export async function runWorkerFanout(options: RunWorkerFanoutOptions): Promise<
     return { candidates: [], fallbackReason: 'fan-out needs at least two candidates' };
   }
 
-  if (!(await isGitWorktreeClean(options.projectPath))) {
-    return { candidates: [], fallbackReason: 'project worktree has pre-existing changes' };
-  }
+  // A dirty worktree is expected on self-repair retries (the gate scores fan-out
+  // mainly on retry signals). Rather than bail, snapshot the uncommitted state
+  // and seed it into each sandbox so candidates continue from it and only the
+  // incremental winner diff is promoted back. Falls back to '' (clean) on error.
+  const baseline = await captureBaselinePatch(options.projectPath).catch(() => '');
 
   const root = await mkdtemp(join(tmpdir(), 'openswarm-worker-fanout-'));
   try {
-    options.onLog?.(`[fanout] launching ${options.candidates.length} candidate worker(s)`);
+    options.onLog?.(`[fanout] launching ${options.candidates.length} candidate worker(s)${baseline.trim() ? ' (seeded from dirty worktree)' : ''}`);
     const settled = await runPool(
       options.candidates,
       options.concurrency,
-      (candidate, index) => runCandidate(options, candidate, index, root),
+      (candidate, index) => runCandidate(options, candidate, index, root, baseline),
       (item) => {
         if (item.value) {
           options.onLog?.(`[fanout] ${item.value.id}: score=${item.value.score.toFixed(1)} eligible=${item.value.eligible} files=${item.value.filesChanged.length}`);

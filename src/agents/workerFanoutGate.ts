@@ -180,6 +180,10 @@ export async function runWorkerWithOptionalFanout(input: {
   const { fanoutDecision, fanoutConfig, workerOptions } = input;
   if (fanoutDecision?.shouldFanOut && fanoutConfig?.mode === 'execute') {
     const candidates = buildWorkerFanoutCandidates(workerOptions, fanoutConfig.candidates);
+    // Surface execution to stdout too: onLog only reaches broadcastEvent, so
+    // without this the daemon log shows the gate's "recommend fan-out" line but
+    // no evidence fan-out actually ran (the exact symptom that hid this path).
+    console.log(`[fanout] executing ${candidates.length} candidate(s) — gate score ${fanoutDecision.score}/${fanoutDecision.threshold}`);
     const fanoutResult = await runWorkerFanout({
       projectPath: input.projectPath,
       baseWorkerOptions: workerOptions,
@@ -191,7 +195,11 @@ export async function runWorkerWithOptionalFanout(input: {
       onLog: input.onLog,
     });
 
-    if (fanoutResult.winner) return fanoutResult.winner.result;
+    if (fanoutResult.winner) {
+      console.log(`[fanout] promoted winner ${fanoutResult.winner.id} (${fanoutResult.winner.filesChanged.length} file(s))`);
+      return fanoutResult.winner.result;
+    }
+    console.log(`[fanout] fallback to single worker: ${fanoutResult.fallbackReason ?? 'no winner'}`);
     input.onLog(`[fanout] fallback to single worker: ${fanoutResult.fallbackReason ?? 'no winner'}`);
   }
 
