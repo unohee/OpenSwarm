@@ -249,3 +249,61 @@ describe('deriveRegistryProjectId (INT-2502 read-side)', () => {
     expect(deriveRegistryProjectId(wt)).toBe('WAVE');
   });
 });
+
+describe('parseDraftResponse robustness (INT-2485 follow-up)', () => {
+  const brief = { taskType: 'bugfix', intentSummary: 'Fix the cursor reset between pages properly', relevantFiles: ['src/api/pager.py'], suggestedApproach: 'Thread the cursor through list_items and cover with a test', completionCriteria: ['cursor survives page 2 (test asserts)'] };
+
+  it('accepts an untagged code fence', async () => {
+    const { parseDraftResponse } = await import('./draftAnalyzer.js');
+    const r = parseDraftResponse('Here is the brief:\n```\n' + JSON.stringify(brief) + '\n```');
+    expect(r.taskType).toBe('bugfix');
+    expect(r.relevantFiles).toEqual(['src/api/pager.py']);
+  });
+
+  it('accepts an uppercase JSON fence tag', async () => {
+    const { parseDraftResponse } = await import('./draftAnalyzer.js');
+    const r = parseDraftResponse('```JSON\n' + JSON.stringify(brief) + '\n```');
+    expect(r.taskType).toBe('bugfix');
+  });
+
+  it('repairs trailing commas', async () => {
+    const { parseDraftResponse } = await import('./draftAnalyzer.js');
+    const r = parseDraftResponse('```json\n{"taskType":"feature","relevantFiles":["a.ts",],"intentSummary":"Add the thing to the place","suggestedApproach":"do it","completionCriteria":["thing works",]}\n```');
+    expect(r.taskType).toBe('feature');
+    expect(r.relevantFiles).toEqual(['a.ts']);
+  });
+
+  it('anchors on relevantFiles when taskType is missing from bare JSON', async () => {
+    const { parseDraftResponse } = await import('./draftAnalyzer.js');
+    const r = parseDraftResponse('Analysis done. {"relevantFiles":["src/x.rs"],"intentSummary":"Wire the DSP node into the graph builder","suggestedApproach":"add to registry","completionCriteria":["node appears in graph dump"]}');
+    expect(r.relevantFiles).toEqual(['src/x.rs']);
+    expect(r.taskType).toBe('unknown'); // absent, but the rest is salvaged
+  });
+
+  it('salvages a markdown prose brief (the live unknown pattern)', async () => {
+    const { parseDraftProse } = await import('./draftAnalyzer.js');
+    const prose = [
+      '## Analysis',
+      'Task type: bugfix',
+      'Intent: The archetype prior loader crashes on partial B2 files and loses wavetables.',
+      '### Relevant files',
+      '- `scripts/build_descriptor_archetypes.py`',
+      '- `crates/va-osc-core/src/analog/filters/moog_ladder.rs`',
+      '### Completion criteria',
+      '- loader tolerates empty B2 file (unit test)',
+      '- wavetable count preserved before/after',
+      'Approach: guard the empty-file path and add regression tests.',
+    ].join('\n');
+    const r = parseDraftProse(prose);
+    expect(r.taskType).toBe('bugfix');
+    expect(r.relevantFiles).toContain('scripts/build_descriptor_archetypes.py');
+    expect(r.completionCriteria?.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('still returns unknown for genuinely brief-less text', async () => {
+    const { parseDraftProse } = await import('./draftAnalyzer.js');
+    const r = parseDraftProse('I looked around the repository and it seems complicated. There are many modules.');
+    expect(r.taskType).toBe('unknown');
+    expect(r.relevantFiles).toEqual([]);
+  });
+});

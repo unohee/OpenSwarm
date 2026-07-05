@@ -74,10 +74,14 @@ const DRAFT_RETRY_NUDGE = `
 
 ## ⚠️ Your previous brief was insufficient
 It was missing a concrete intent, real relevant files, or execution-grounded
-completionCriteria. Read the actual code (read_file / search_files) and produce a
-FAITHFUL brief: a specific intent, at least one real file path, and 2–5 completion
-criteria that are verifiable by evidence (call sites, produced artifacts, before/
-after numbers) — never satisfiable by scaffolding alone.`;
+completionCriteria — or your FINAL message did not contain the JSON at all
+(analysis in earlier turns does not count; only your last message is parsed).
+Read the actual code (read_file / search_files) and produce a FAITHFUL brief:
+a specific intent, at least one real file path, and 2–5 completion criteria
+that are verifiable by evidence (call sites, produced artifacts, before/after
+numbers) — never satisfiable by scaffolding alone.
+Your ENTIRE final message must be exactly one \`\`\`json fenced object — no
+prose before or after it.`;
 
 /**
  * drafter hard gate (INT-1917): is the brief faithful enough to hand to a worker?
@@ -353,39 +357,60 @@ Each criterion must be a runtime/observable fact, NOT mere existence of code:
 }
 
 /**
- * drafter 응답 파싱
+ * drafter 응답 파싱 — measured live: a large share of "type=unknown" drafts were
+ * models answering WITHIN budget but not in the one strict shape the old parser
+ * accepted (```json fence containing "taskType"). Accept fence variants, anchor
+ * on any brief field, repair trailing commas, and finally salvage a markdown
+ * prose answer before giving up. (INT-2485 follow-up)
  */
-function parseDraftResponse(output: string): Partial<DraftAnalysis> {
-  // JSON 블록 추출
-  const jsonMatch = output.match(/```json\s*([\s\S]*?)\s*```/);
-  const jsonStr = jsonMatch?.[1] ?? findJsonObject(output);
-  if (!jsonStr) {
-    return { taskType: 'unknown', intentSummary: '', relevantFiles: [], suggestedApproach: '', completionCriteria: [] };
+export function parseDraftResponse(output: string): Partial<DraftAnalysis> {
+  const jsonStr = extractDraftJson(output);
+  if (jsonStr) {
+    try {
+      // Mild repair: trailing commas are the dominant almost-JSON failure.
+      const parsed = JSON.parse(jsonStr.replace(/,\s*([}\]])/g, '$1'));
+      // taskType is now few-shot, not a closed set (INT-1916): accept any non-empty
+      // string the model returns, only falling back to 'unknown' when truly absent.
+      const taskType = typeof parsed.taskType === 'string' && parsed.taskType.trim()
+        ? parsed.taskType.trim()
+        : 'unknown';
+      return {
+        taskType: taskType as DraftAnalysis['taskType'],
+        intentSummary: typeof parsed.intentSummary === 'string' ? parsed.intentSummary : '',
+        relevantFiles: Array.isArray(parsed.relevantFiles)
+          ? parsed.relevantFiles.filter((f: unknown): f is string => typeof f === 'string' && f.trim().length > 0)
+          : [],
+        suggestedApproach: typeof parsed.suggestedApproach === 'string' ? parsed.suggestedApproach : '',
+        completionCriteria: Array.isArray(parsed.completionCriteria)
+          ? parsed.completionCriteria.filter((c: unknown): c is string => typeof c === 'string' && c.trim().length > 0)
+          : [],
+      };
+    } catch { /* fall through to prose salvage */ }
   }
-
-  try {
-    const parsed = JSON.parse(jsonStr);
-    // taskType is now few-shot, not a closed set (INT-1916): accept any non-empty
-    // string the model returns, only falling back to 'unknown' when truly absent.
-    const taskType = typeof parsed.taskType === 'string' && parsed.taskType.trim()
-      ? parsed.taskType.trim()
-      : 'unknown';
-    return {
-      taskType: taskType as DraftAnalysis['taskType'],
-      intentSummary: typeof parsed.intentSummary === 'string' ? parsed.intentSummary : '',
-      relevantFiles: Array.isArray(parsed.relevantFiles) ? parsed.relevantFiles : [],
-      suggestedApproach: typeof parsed.suggestedApproach === 'string' ? parsed.suggestedApproach : '',
-      completionCriteria: Array.isArray(parsed.completionCriteria)
-        ? parsed.completionCriteria.filter((c: unknown): c is string => typeof c === 'string' && c.trim().length > 0)
-        : [],
-    };
-  } catch {
-    return { taskType: 'unknown', intentSummary: '', relevantFiles: [], suggestedApproach: '', completionCriteria: [] };
-  }
+  return parseDraftProse(output);
 }
 
-function findJsonObject(text: string): string | null {
-  const idx = text.indexOf('"taskType"');
+/** Find the brief's JSON object: any fenced object (```json / ``` / ```JSON),
+ *  preferring one that mentions a brief field; else brace-match around any
+ *  known field anchor (the model may omit taskType but emit the rest). */
+function extractDraftJson(text: string): string | null {
+  const fences = [...text.matchAll(/```[a-zA-Z]*\s*([\s\S]*?)```/g)]
+    .map((m) => m[1].trim())
+    .filter((s) => s.startsWith('{'));
+  const fieldRe = /"(taskType|relevantFiles|intentSummary|completionCriteria)"/;
+  const preferred = fences.find((f) => fieldRe.test(f));
+  if (preferred) return preferred;
+  if (fences.length > 0) return fences[fences.length - 1];
+
+  for (const anchor of ['"taskType"', '"relevantFiles"', '"intentSummary"', '"completionCriteria"']) {
+    const obj = findJsonObject(text, anchor);
+    if (obj) return obj;
+  }
+  return null;
+}
+
+function findJsonObject(text: string, anchor: string): string | null {
+  const idx = text.indexOf(anchor);
   if (idx < 0) return null;
   let start = text.lastIndexOf('{', idx);
   if (start < 0) return null;
@@ -398,6 +423,65 @@ function findJsonObject(text: string): string | null {
     }
   }
   return null;
+}
+
+const EMPTY_DRAFT: Partial<DraftAnalysis> = {
+  taskType: 'unknown', intentSummary: '', relevantFiles: [], suggestedApproach: '', completionCriteria: [],
+};
+
+/**
+ * Salvage a markdown/prose brief: the model read the repo and answered with
+ * headings and bullets instead of JSON. Extract the fields it clearly stated —
+ * an imperfect brief still beats sending the worker in blind.
+ */
+export function parseDraftProse(text: string): Partial<DraftAnalysis> {
+  if (!text.trim()) return { ...EMPTY_DRAFT };
+
+  const typeMatch = text.match(/\btask\s*type\b\s*[:\-–]\s*[*_`"']*([a-z][a-z-]{2,})/i);
+
+  const sectionBullets = (heading: RegExp): string[] => {
+    const m = text.match(heading);
+    if (!m || m.index === undefined) return [];
+    const after = text.slice(m.index + m[0].length);
+    // Bullets/numbered lines until the next heading-ish line or blank gap.
+    const lines = after.split('\n');
+    const items: string[] = [];
+    let started = false;
+    for (const line of lines) {
+      const bullet = line.match(/^\s*(?:[-*•]|\d+[.)])\s+(.{3,})$/);
+      if (bullet) { items.push(bullet[1].trim()); started = true; continue; }
+      if (started && line.trim() === '') break;
+      if (started && /^\s*#{1,4}\s|^\s*\*\*[A-Z]/.test(line)) break;
+      if (!started && items.length === 0 && lines.indexOf(line) > 6) break;
+    }
+    return items;
+  };
+
+  const fileToken = /(?:^|[\s`"'(])((?:[\w.-]+\/)+[\w.-]+\.\w{1,8}|[\w-]+\.(?:ts|tsx|js|py|rs|go|java|rb|c|cpp|h|toml|ya?ml|json|md))(?:[\s`"'),:;]|$)/g;
+  const filesSection = text.match(/relevant\s*files?\b[\s\S]{0,600}/i)?.[0] ?? '';
+  const relevantFiles = [...new Set(
+    [...filesSection.matchAll(fileToken)].map((m) => m[1]).filter((f) => !f.endsWith('.md') || filesSection.includes(f)),
+  )].slice(0, 10);
+
+  // NOTE: [ \t]* (not \s*) — \s would cross the newline and swallow the first
+  // bullet's leading dash, silently dropping the first criterion.
+  const completionCriteria = sectionBullets(/completion\s*criteri[aon]+\b[ \t]*[:\-–]?/i).slice(0, 5);
+  const intent = text.match(/\bintent(?:\s*summary)?\b\s*[:\-–]\s*(.{10,200})/i)?.[1]?.trim()
+    ?? text.split('\n').map((l) => l.trim()).find((l) => l.length > 20 && !l.startsWith('#') && !l.startsWith('```'))
+    ?? '';
+  const approach = text.match(/\b(?:suggested\s*)?approach\b\s*[:\-–]\s*(.{10,300})/i)?.[1]?.trim() ?? '';
+
+  // Nothing recognizably brief-shaped → genuine unknown.
+  if (!typeMatch && relevantFiles.length === 0 && completionCriteria.length === 0) {
+    return { ...EMPTY_DRAFT };
+  }
+  return {
+    taskType: (typeMatch?.[1]?.toLowerCase() ?? 'unknown') as DraftAnalysis['taskType'],
+    intentSummary: intent,
+    relevantFiles,
+    suggestedApproach: approach,
+    completionCriteria,
+  };
 }
 
 function getDraftFallbackAdapters(primary: AdapterName): AdapterName[] {
