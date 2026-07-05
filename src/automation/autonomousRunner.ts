@@ -57,6 +57,7 @@ import { detectFileConflicts } from '../orchestration/conflictDetector.js';
 import { resolveAdapterDefaultModel } from '../agents/stageModelResolver.js';
 import type { AutonomousConfig, RunnerState } from './runnerTypes.js';
 import type { AdapterName } from '../adapters/types.js';
+import { mapModelForProvider as mapModelForAdapter } from '../adapters/modelCompat.js';
 import {
   applyBacklogGrooming,
   filterGroomableTasks,
@@ -1586,18 +1587,10 @@ export class AutonomousRunner {
   switchProvider(adapter: AdapterName): void {
     // On a provider switch, keep the model only if it clearly belongs to the new
     // provider; otherwise drop it (undefined) so the target adapter resolves its
-    // own default via getDefaultModel(). No hardcoded per-provider model ids.
-    const mapModelForProvider = (model: string | undefined, _role?: string): string | undefined => {
-      const current = (model || '').trim();
-      if (!current) return undefined;
-      if (adapter === 'codex' || adapter === 'codex-responses') {
-        // ChatGPT-account Codex only runs gpt-* slugs; anything else → adapter default.
-        return current.startsWith('gpt-') ? current : undefined;
-      }
-      // openrouter/gpt/local/lmstudio: a namespaced id ("vendor/model") may carry
-      // over; a bare id from another provider usually won't — drop to the default.
-      return current.includes('/') ? current : undefined;
-    };
+    // own default via getDefaultModel(). Shared with the planner's model guard
+    // (src/adapters/modelCompat.ts) so both stay in sync. (INT-2510)
+    const mapModelForProvider = (model: string | undefined, _role?: string): string | undefined =>
+      mapModelForAdapter(adapter, model);
 
     this.config.defaultAdapter = adapter;
 
@@ -1648,6 +1641,12 @@ export class AutonomousRunner {
     }
     if (this.config.reviewerModel) {
       this.config.reviewerModel = mapModelForProvider(this.config.reviewerModel, 'reviewer');
+    }
+    // The decomposition planner is a role too. Leaving it unmapped sent the
+    // config's codex id straight into `claude -p --model gpt-5.5` — a fast 404
+    // that killed EVERY decomposition on the new provider. (INT-2510)
+    if (this.config.plannerModel) {
+      this.config.plannerModel = mapModelForProvider(this.config.plannerModel, 'planner');
     }
 
     // jobProfiles ALSO pin per-role models (config's light/heavy → e.g. qwen), and getModelForRole
