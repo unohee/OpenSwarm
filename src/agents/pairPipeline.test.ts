@@ -338,9 +338,10 @@ describe('PairPipeline model selection', () => {
     expect(runWorker.mock.calls[0][0].previousFeedback).toContain('Previous attempt failed');
   });
 
-  it('aborts the session early when the reviewer repeats the same revise feedback', async () => {
-    // Reviewer says the same thing twice → the worker is not absorbing it;
-    // burning the remaining iterations is pure waste (INT-2474).
+  it('escalates the worker once on repeated revise feedback, then aborts if it still repeats', async () => {
+    // Reviewer says the same thing twice → escalate the worker (effort bump);
+    // if the ESCALATED attempt gets the same feedback again, stop burning
+    // iterations (INT-2474 + INT-2475).
     runReviewer.mockResolvedValue({
       decision: 'revise',
       feedback: 'The cache invalidation misses the tenant scope; invalidate per tenant and cover it with a test.',
@@ -349,7 +350,7 @@ describe('PairPipeline model selection', () => {
     const { PairPipeline } = await import('./pairPipeline.js');
     const pipeline = new PairPipeline({
       stages: ['worker', 'reviewer'],
-      maxIterations: 5,
+      maxIterations: 6,
       roles: {
         worker: { enabled: true, model: 'worker', timeoutMs: 0 },
         reviewer: { enabled: true, model: 'reviewer', timeoutMs: 0 },
@@ -359,9 +360,62 @@ describe('PairPipeline model selection', () => {
     const result = await pipeline.run(task(), process.cwd());
 
     expect(result.success).toBe(false);
-    // Iteration 1 review + iteration 2's near-identical review → abort before iteration 3.
-    expect(runWorker).toHaveBeenCalledTimes(2);
-    expect(runReviewer).toHaveBeenCalledTimes(2);
+    // it1 review f, it2 review f≈ → escalate, it3 (escalated) review f≈ → abort.
+    expect(runWorker).toHaveBeenCalledTimes(3);
+    expect(runReviewer).toHaveBeenCalledTimes(3);
+    // The escalated (3rd) worker run got the effort bump.
+    expect(runWorker.mock.calls[2][0]).toEqual(expect.objectContaining({ reasoningEffort: 'high' }));
+    expect(runWorker.mock.calls[1][0].reasoningEffort).not.toBe('high');
+  });
+
+  it('lets an escalated worker attempt succeed after repeated revise feedback', async () => {
+    runReviewer
+      .mockResolvedValueOnce({ decision: 'revise', feedback: 'Pagination cursor handling is wrong: the offset resets between pages, fix and add a test.' })
+      .mockResolvedValueOnce({ decision: 'revise', feedback: 'Pagination cursor handling is still wrong — the offset resets between pages; fix it and add a test.' })
+      .mockResolvedValueOnce({ decision: 'approve', feedback: 'fixed' });
+
+    const { PairPipeline } = await import('./pairPipeline.js');
+    const pipeline = new PairPipeline({
+      stages: ['worker', 'reviewer'],
+      maxIterations: 6,
+      roles: {
+        worker: { enabled: true, model: 'worker', timeoutMs: 0 },
+        reviewer: { enabled: true, model: 'reviewer', timeoutMs: 0 },
+      },
+    });
+
+    const result = await pipeline.run(task(), process.cwd());
+
+    expect(result.success).toBe(true);
+    expect(runWorker).toHaveBeenCalledTimes(3);
+    expect(runWorker.mock.calls[2][0]).toEqual(expect.objectContaining({ reasoningEffort: 'high' }));
+  });
+
+  it('escalates to the configured worker escalateModel on repeated revise feedback', async () => {
+    runReviewer
+      .mockResolvedValueOnce({ decision: 'revise', feedback: 'The retry loop swallows the abort signal; propagate cancellation to the adapter call.' })
+      .mockResolvedValueOnce({ decision: 'revise', feedback: 'Retry loop still swallows the abort signal — propagate the cancellation into the adapter call.' })
+      .mockResolvedValueOnce({ decision: 'approve', feedback: 'ok' });
+
+    const { PairPipeline } = await import('./pairPipeline.js');
+    const pipeline = new PairPipeline({
+      stages: ['worker', 'reviewer'],
+      maxIterations: 6,
+      roles: {
+        // escalateAfterIteration pushed out of reach → isolates the signal path
+        worker: { enabled: true, model: 'worker', timeoutMs: 0, escalateModel: 'bigger-model', escalateAfterIteration: 99 },
+        reviewer: { enabled: true, model: 'reviewer', timeoutMs: 0 },
+      },
+    });
+
+    const result = await pipeline.run(task(), process.cwd());
+
+    expect(result.success).toBe(true);
+    expect(runWorker.mock.calls[1][0].model).toBe('worker');
+    expect(runWorker.mock.calls[2][0]).toEqual(expect.objectContaining({
+      model: 'bigger-model',
+      reasoningEffort: 'high',
+    }));
   });
 
   it('defers to the reviewer instead of hard-failing when validation evidence stays missing', async () => {

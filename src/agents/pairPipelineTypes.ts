@@ -104,6 +104,8 @@ export interface PipelineContext {
   workerFanoutDecision?: WorkerFanoutGateDecision;
   /** Feedback of the previous reviewer 'revise' — compared against the next one to detect a repeating reviewer (INT-2474). */
   lastReviseFeedback?: string;
+  /** One-shot worker escalation triggered by repeated similar revise feedback: higher model and/or effort for the retry (INT-2475). */
+  workerEscalation?: { model?: string; reasoningEffort?: 'low' | 'medium' | 'high' };
 }
 
 export type PipelineEventType = 'stage:start' | 'stage:complete' | 'stage:fail' | 'iteration:start' | 'iteration:complete' | 'iteration:fail' | 'pipeline:complete' | 'pipeline:fail' | 'fanout:gate' | 'halt';

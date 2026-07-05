@@ -26,6 +26,7 @@ import {
   similarReviewFeedback,
   DEFAULT_MAX_REFLECTIONS,
 } from './reflection.js';
+import { buildRepeatEscalation, resolveWorkerStageOverrides } from './workerEscalation.js';
 import { hasRepoSnapshot, scanAndCache, analyzeIssue } from '../knowledge/index.js';
 import { getRegistryStore } from '../registry/sqliteStore.js';
 import { recallRepoKnowledge } from '../memory/repoKnowledge.js';
@@ -398,7 +399,7 @@ export class PairPipeline extends EventEmitter {
   private async runStage(
     stage: PipelineStage,
     context: PipelineContext,
-    overrides?: { model?: string }
+    overrides?: { model?: string; reasoningEffort?: 'low' | 'medium' | 'high' }
   ): Promise<StageResult> {
     const startTime = Date.now();
     // Display model: explicit override → configured (jobProfile/role) → adapter
@@ -484,8 +485,8 @@ export class PairPipeline extends EventEmitter {
             model: overrides?.model ?? this.getModelForRole('worker', context.task),
             maxTurns: this.config.roles?.worker?.maxTurns,
             adapterName: this.config.roles?.worker?.adapter,
-            reasoningEffort: this.getEffortForTask(context.task),
-            bashTimeoutMs: await workerAgent.resolveWorkerBashTimeout(context.projectPath, this.getEffortForTask(context.task)), // INT-2415
+            reasoningEffort: overrides?.reasoningEffort ?? this.getEffortForTask(context.task),
+            bashTimeoutMs: await workerAgent.resolveWorkerBashTimeout(context.projectPath, overrides?.reasoningEffort ?? this.getEffortForTask(context.task)), // INT-2415
             // No-edit guard (re-applied from stranded feat/v0.7.0 commit 2eea3bc):
             // reasoning workers frequently end with analysis only and never call
             // edit_file. Without this the guard defaults to 0 (disabled) — measured:
@@ -862,24 +863,16 @@ export class PairPipeline extends EventEmitter {
       console.log(`[${context.taskPrefix}] Iteration ${context.currentIteration}/${maxIterations}`);
 
       // ========== WORKER (with escalation) ==========
-      const workerCfg = this.config.roles?.worker;
-      const escalateThreshold = workerCfg?.escalateAfterIteration ?? 2;
-      const escalateModel = workerCfg?.escalateModel;
-      const shouldEscalate = context.currentIteration >= escalateThreshold && !!escalateModel;
-      const baseWorkerModel = this.getModelForRole('worker', context.task);
-      const workerOverrides = shouldEscalate
-        ? { model: escalateModel }
-        : (baseWorkerModel ? { model: baseWorkerModel } : undefined);
-
-      if (shouldEscalate && escalateModel) {
-        console.log(`[${context.taskPrefix}] Escalating worker model → ${escalateModel} (iteration ${context.currentIteration})`);
-        broadcastEvent({ type: 'pipeline:escalation', data: {
-          taskId: context.task.id,
-          iteration: context.currentIteration,
-          fromModel: workerCfg?.model,
-          toModel: escalateModel,
-        } });
-      }
+      // Iteration-count escalation + one-shot signal escalation (INT-2475) —
+      // policy lives in workerEscalation.ts; the signal takes precedence.
+      const workerOverrides = resolveWorkerStageOverrides({
+        workerCfg: this.config.roles?.worker,
+        iteration: context.currentIteration,
+        baseModel: this.getModelForRole('worker', context.task),
+        signalEscalation: context.workerEscalation,
+        taskId: context.task.id,
+        taskPrefix: context.taskPrefix,
+      });
 
       const fanoutDecision = evaluateWorkerFanoutGate({
         task: context.task,
@@ -1171,22 +1164,52 @@ export class PairPipeline extends EventEmitter {
           // sessions used to burn every remaining iteration on feedback the
           // worker demonstrably isn't absorbing (measured: 146 max-iteration
           // exhaustions vs 21 objective aborts). Two consecutive near-identical
-          // revise feedbacks → end the session now; the runner persists this
-          // feedback and the NEXT attempt starts with it injected (INT-2474).
+          // revise feedbacks → first ESCALATE the worker once (higher model
+          // and/or effort — the current tier has proven it can't absorb this
+          // feedback, INT-2475); if it repeats even after escalation, end the
+          // session — the runner persists the feedback and the NEXT attempt
+          // starts with it injected (INT-2474).
           if (
             context.lastReviseFeedback
             && similarReviewFeedback(context.lastReviseFeedback, reviseFeedback)
           ) {
-            const reason = 'reviewer repeated the same revise feedback — worker is not absorbing it';
-            console.log(`[${context.taskPrefix}] Aborting session early: ${reason}`);
-            this.emit('log', { line: `🛑 ${reason}` });
-            this.emit('iteration:fail', {
-              iteration: context.currentIteration,
-              stage: 'reviewer',
-              context,
-            });
-            agentPair.updateSessionStatus(context.session.id, 'failed');
-            return { success: false };
+            const escalation = !context.workerEscalation
+              ? buildRepeatEscalation({
+                  workerCfg: this.config.roles?.worker,
+                  currentIteration: context.currentIteration,
+                  currentModel: this.getModelForRole('worker', context.task),
+                  currentEffort: this.getEffortForTask(context.task),
+                })
+              : undefined;
+            if (escalation) {
+              context.workerEscalation = escalation;
+              const target = [
+                escalation.model ? `model→${escalation.model}` : '',
+                escalation.reasoningEffort ? `effort→${escalation.reasoningEffort}` : '',
+              ].filter(Boolean).join(', ');
+              console.log(`[${context.taskPrefix}] Reviewer repeated the same feedback — escalating worker (${target})`);
+              this.emit('log', { line: `⬆️ Worker escalation on repeated review feedback (${target})` });
+              broadcastEvent({ type: 'pipeline:escalation', data: {
+                taskId: context.task.id,
+                iteration: context.currentIteration,
+                reason: 'repeated-review-feedback',
+                toModel: escalation.model,
+                toEffort: escalation.reasoningEffort,
+              } });
+            } else {
+              const reason = context.workerEscalation
+                ? 'reviewer repeated the same revise feedback even after worker escalation'
+                : 'reviewer repeated the same revise feedback — no escalation tier available';
+              console.log(`[${context.taskPrefix}] Aborting session early: ${reason}`);
+              this.emit('log', { line: `🛑 ${reason}` });
+              this.emit('iteration:fail', {
+                iteration: context.currentIteration,
+                stage: 'reviewer',
+                context,
+              });
+              agentPair.updateSessionStatus(context.session.id, 'failed');
+              return { success: false };
+            }
           }
           context.lastReviseFeedback = reviseFeedback;
 
