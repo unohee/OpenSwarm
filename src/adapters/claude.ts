@@ -21,6 +21,13 @@ import { writeClaudeMcpConfig } from './memoryMcp.js';
 
 const execFileAsync = promisify(execFile);
 
+/**
+ * Version-agnostic model alias — the claude CLI resolves "sonnet" to the
+ * current Sonnet, so it never goes stale the way a pinned model id would.
+ * Single source for both getDefaultModel() and the buildCommand fallback. (INT-2509)
+ */
+const CLAUDE_DEFAULT_MODEL = 'sonnet';
+
 // Claude CLI Adapter
 
 export class ClaudeCliAdapter implements CliAdapter {
@@ -46,7 +53,10 @@ export class ClaudeCliAdapter implements CliAdapter {
   buildCommand(options: CliRunOptions): { command: string; args: string[] } {
     // options.prompt is the temp file path (set by spawnCli)
     const promptFile = options.prompt;
-    const modelFlag = options.model ? ` --model ${options.model}` : '';
+    // Always pin a model: omitting --model runs the user's PERSONAL default,
+    // which can be the most expensive tier (observed: planner calls landing on
+    // claude-fable-5 at ~$0.64 per trivial call). (INT-2509)
+    const modelFlag = ` --model ${options.model ?? CLAUDE_DEFAULT_MODEL}`;
     const maxTurnsFlag = options.maxTurns ? ` --max-turns ${options.maxTurns}` : '';
     // Register OpenSwarm's memory MCP server unless the caller needs an isolated run.
     // bypassPermissions auto-allows its tool when present.
@@ -57,12 +67,8 @@ export class ClaudeCliAdapter implements CliAdapter {
     return { command: cmd, args: [] };
   }
 
-  /**
-   * Version-agnostic alias — the claude CLI resolves "sonnet" to the current
-   * Sonnet, so it never goes stale the way a pinned model id would.
-   */
   async getDefaultModel(): Promise<string> {
-    return 'sonnet';
+    return CLAUDE_DEFAULT_MODEL;
   }
 
   parseWorkerOutput(raw: CliRunResult): WorkerResult {

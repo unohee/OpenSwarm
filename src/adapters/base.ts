@@ -124,7 +124,11 @@ export async function spawnCli(
             return;
           }
 
-          reject(new Error(`${adapter.name} CLI failed with code ${code}: ${stderrSnippet.slice(0, 200)}`));
+          // stream-json CLIs (claude -p) leave stderr EMPTY and report the
+          // failure in a stdout result event — without this the daemon logs
+          // an unactionable "claude CLI failed with code 1: ". (INT-2509)
+          const detail = stderrSnippet.trim() || extractStreamJsonError(stdout) || '(no stderr)';
+          reject(new Error(`${adapter.name} CLI failed with code ${code}: ${detail.slice(0, 200)}`));
           return;
         }
 
@@ -143,4 +147,27 @@ export async function spawnCli(
       // Ignore cleanup errors
     }
   }
+}
+
+/**
+ * Pull the failure reason out of stream-json stdout. The claude CLI
+ * (--output-format stream-json) exits non-zero with an EMPTY stderr and puts
+ * the actual error in a `{"type":"result","is_error":true,...}` event —
+ * surface it so failures are actionable. Exported for tests. (INT-2509)
+ */
+export function extractStreamJsonError(stdout: string): string {
+  for (const line of stdout.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed.includes('"type":"result"')) continue;
+    try {
+      const ev = JSON.parse(trimmed);
+      if (ev?.type === 'result' && (ev.is_error || (ev.subtype && ev.subtype !== 'success'))) {
+        const reason = typeof ev.result === 'string' && ev.result.trim() ? ev.result : ev.subtype;
+        return String(reason ?? '').trim();
+      }
+    } catch {
+      // not a JSON line
+    }
+  }
+  return '';
 }
