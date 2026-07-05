@@ -1026,34 +1026,34 @@ export class PairPipeline extends EventEmitter {
       // ========== HALT CHECK (confidence too low) ==========
       if (context.workerResult) {
         const confidence = agentPair.calculateConfidence(context.workerResult);
-        if (confidence < CONFIDENCE_THRESHOLDS.HALT) {
-          const haltReason = context.workerResult.haltReason
-            || `Low confidence: ${confidence}%`;
-          console.warn(`[${context.taskPrefix}] HALT triggered: confidence=${confidence}%, reason=${haltReason}`);
-
-          this.emit('halt', {
-            confidence,
-            haltReason,
-            sessionId: context.session.id,
-            iteration: context.currentIteration,
-            context,
-          });
-
-          // Inject revise to retry. Low confidence is a subjective signal, so it
-          // travels through the reviewer channel (dropped on a fresh-context reset).
+        // A degenerate no-op HALTs INDEPENDENTLY of self-reported confidence — a
+        // worker can claim 90% while changing nothing, so it must not slip past. (INT-2521)
+        const degenerate = agentPair.isDegenerateWorkerResult(context.workerResult);
+        if (degenerate || confidence < CONFIDENCE_THRESHOLDS.HALT) {
+          const haltReason = degenerate ? 'Worker produced no changes'
+            : (context.workerResult.haltReason || `Low confidence: ${confidence}%`);
+          console.warn(`[${context.taskPrefix}] HALT triggered: confidence=${confidence}%, degenerate=${degenerate}, reason=${haltReason}`);
+          this.emit('halt', { confidence, haltReason, sessionId: context.session.id, iteration: context.currentIteration, context });
+          // Degenerate no-op → escalate the next attempt (stronger effort/model) vs the same empty run to STUCK. (INT-2521)
+          if (degenerate && !context.workerEscalation) {
+            context.workerEscalation = buildRepeatEscalation({
+              workerCfg: this.config.roles?.worker,
+              currentIteration: context.currentIteration,
+              currentModel: this.getModelForRole('worker', context.task),
+              currentEffort: this.getEffortForTask(context.task),
+            });
+          }
           context.reviewResult = {
             decision: 'revise',
-            feedback: `[HALT] Confidence too low (${confidence}%). ${haltReason}`,
-            issues: [haltReason],
+            feedback: degenerate
+              ? 'Your previous attempt produced ZERO file changes and ran no commands — you did not implement anything. Read the relevant files and make concrete edits now.'
+              : `[HALT] Confidence too low (${confidence}%). ${haltReason}`,
+            issues: [degenerate ? 'Worker produced no changes' : haltReason],
             suggestions: ['Review task requirements', 'Provide additional context', 'Break into sub-tasks'],
           };
           context.feedbackSource = 'review';
           agentPair.trackFailure(context.session.id);
-          this.emit('iteration:fail', {
-            iteration: context.currentIteration,
-            stage: 'worker',
-            context,
-          });
+          this.emit('iteration:fail', { iteration: context.currentIteration, stage: 'worker', context });
           agentPair.updateSessionStatus(context.session.id, 'revising');
           continue;
         }

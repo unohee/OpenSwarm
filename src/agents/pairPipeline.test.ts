@@ -156,6 +156,27 @@ describe('PairPipeline model selection', () => {
     expect(runDocumenter).toHaveBeenCalled();
   });
 
+  it('a degenerate no-op worker does not pass even when it self-reports high confidence (INT-2521)', async () => {
+    // 0 files, 0 commands, empty output, but confidencePercent 90 — the degenerate
+    // check must HALT it independently of the confidence threshold, not fake-pass.
+    runWorker.mockResolvedValueOnce({
+      success: true, summary: 'done', filesChanged: [], commands: [], output: '', confidencePercent: 90,
+    });
+    const { PairPipeline } = await import('./pairPipeline.js');
+    const pipeline = new PairPipeline({
+      stages: ['worker', 'reviewer'],
+      maxIterations: 1,
+      roles: { worker: { enabled: true, timeoutMs: 0 }, reviewer: { enabled: true, timeoutMs: 0 } },
+    });
+
+    const result = await pipeline.run(task(), process.cwd());
+
+    expect(result.success).toBe(false);
+    // The degenerate HALT fires before the reviewer — it must NOT silently reach a
+    // reviewer that could approve the empty diff.
+    expect(runReviewer).not.toHaveBeenCalled();
+  });
+
   it('falls back to role models when no jobProfile matches', async () => {
     const { PairPipeline } = await import('./pairPipeline.js');
     const pipeline = new PairPipeline({

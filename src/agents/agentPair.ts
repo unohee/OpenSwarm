@@ -462,6 +462,19 @@ const UNCERTAINTY_WORDS = [
 ];
 
 /**
+ * A degenerate no-op run: the worker reported success but changed 0 files, ran 0
+ * commands, AND produced no substantive report (trivial summary AND output) — it
+ * did nothing. Requiring an empty summary too spares legitimate no-edit outcomes
+ * (analysis / "no change needed") whose value is in a real summary; only a pure
+ * empty no-op is flagged. Callers escalate instead of re-revising to STUCK. (INT-2521)
+ */
+export function isDegenerateWorkerResult(r: WorkerResult): boolean {
+  return !!r.success && (r.filesChanged?.length ?? 0) === 0 && (r.commands?.length ?? 0) === 0
+    && !r.error && !r.haltReason
+    && (r.summary?.trim().length ?? 0) < 40 && (r.output?.trim().length ?? 0) < 100;
+}
+
+/**
  * Calculate confidence as a 0-100 percentage based on worker result
  */
 export function calculateConfidence(result: WorkerResult): ConfidencePercent {

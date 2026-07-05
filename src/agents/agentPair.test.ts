@@ -17,6 +17,7 @@ import {
   getSessionHistory,
   clearAllSessions,
   calculateConfidence,
+  isDegenerateWorkerResult,
   updateConfidenceTracker,
   needsConfidenceIntervention,
   getConfidenceSummary,
@@ -136,6 +137,36 @@ describe('agentPair', () => {
 
       const updated = setSessionThreadId(session.id, 'thread-123');
       expect(updated?.threadId).toBe('thread-123');
+    });
+  });
+
+  describe('isDegenerateWorkerResult (INT-2521)', () => {
+    const wr = (o: Partial<WorkerResult>): WorkerResult => ({
+      success: true, summary: '', filesChanged: [], commands: [], output: '', ...o,
+    });
+    it('flags a success run with 0 files, 0 commands, empty output', () => {
+      expect(isDegenerateWorkerResult(wr({ output: '' }))).toBe(true);
+      expect(isDegenerateWorkerResult(wr({ output: '   \n ' }))).toBe(true);
+    });
+    it('is NOT degenerate when files changed', () => {
+      expect(isDegenerateWorkerResult(wr({ filesChanged: ['a.ts'] }))).toBe(false);
+    });
+    it('is NOT degenerate when commands ran', () => {
+      expect(isDegenerateWorkerResult(wr({ commands: ['npm test'] }))).toBe(false);
+    });
+    it('is NOT degenerate on a real analysis run (substantial output)', () => {
+      expect(isDegenerateWorkerResult(wr({ output: 'x'.repeat(250) }))).toBe(false);
+    });
+    it('is NOT degenerate on a legitimate no-edit outcome with a substantive summary', () => {
+      // e.g. "no change needed" — the value is in the summary, not a diff.
+      expect(isDegenerateWorkerResult(wr({
+        summary: 'Investigated — no change needed; the bug is already fixed on main, verified by reading auth.ts.',
+      }))).toBe(false);
+    });
+    it('is NOT degenerate when the worker failed, errored, or halted', () => {
+      expect(isDegenerateWorkerResult(wr({ success: false }))).toBe(false);
+      expect(isDegenerateWorkerResult(wr({ error: 'boom' }))).toBe(false);
+      expect(isDegenerateWorkerResult(wr({ haltReason: 'stuck' }))).toBe(false);
     });
   });
 
