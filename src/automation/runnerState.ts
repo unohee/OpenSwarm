@@ -177,6 +177,11 @@ const JUNK_DETAILS = new Set([
   'No feedback provided',
   'No summary provided',
   'Worker execution failed',
+  // t('common.fallback.noSummary') literals — the reviewer parse fallback emits
+  // these as `feedback` and they leaked through as a persisted "detail" (live:
+  // INT-2193 lastFailure === '(no summary)').
+  '(no summary)',
+  '(요약 없음)',
 ]);
 
 /**

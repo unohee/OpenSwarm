@@ -201,3 +201,8 @@ describe('pickFailureDetail (INT-2504)', () => {
     expect(mod.pickFailureDetail(['Unknown error', '  ', undefined, 'No feedback provided'])).toBeUndefined();
   });
 });
+
+it('pickFailureDetail skips locale noSummary fallbacks (INT-2504 follow-up)', () => {
+  expect(mod.pickFailureDetail(['(no summary)', 'real feedback here'])).toBe('real feedback here');
+  expect(mod.pickFailureDetail(['(요약 없음)'])).toBeUndefined();
+});
