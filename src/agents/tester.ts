@@ -9,6 +9,7 @@ import { getAdapter, spawnCli } from '../adapters/index.js';
 import { type CostInfo, extractCostFromStreamJson, formatCost } from '../support/costTracker.js';
 import { expandPath } from '../core/config.js';
 import { RateLimitError } from '../adapters/rateLimitError.js';
+import { isInfraError } from '../adapters/errorClassification.js';
 
 // Types
 
@@ -119,7 +120,13 @@ export async function runTester(options: TesterOptions): Promise<TesterResult> {
 
     return parseTesterOutput(raw.stdout);
   } catch (error) {
+    // Rate-limit AND infra failures (CLI exit, timeout, auth, spawn) mean the
+    // TESTER never ran — they are NOT "tests failed". Propagate so the pipeline
+    // classifies rate_limited / infra_error instead of feeding a bogus
+    // "fix the tests" self-repair loop that burns iterations → false STUCK.
+    // worker.ts:337 / reviewer.ts:264 already do this; the tester was missing it. (INT-2521)
     if (error instanceof RateLimitError) throw error;
+    if (isInfraError(error)) throw error;
     return {
       success: false,
       testsPassed: 0,
