@@ -19,6 +19,14 @@ export interface CliRunResult {
   stdout: string;
   stderr: string;
   durationMs: number;
+  /**
+   * Shell commands the worker actually ran (OpenSwarm's own agentic loop executes
+   * the `bash` tool, so it is ground truth — unlike the model's self-reported
+   * `commands`, which is frequently empty). Adapters that run their own loop
+   * populate this; parseWorkerOutput merges it into WorkerResult.commands so the
+   * validation-evidence gate and reviewers see the real checks. (INT-2485)
+   */
+  executedCommands?: string[];
 }
 
 /**

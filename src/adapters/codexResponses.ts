@@ -494,7 +494,14 @@ export class CodexResponsesAdapter implements CliAdapter {
   }
 
   parseWorkerOutput(raw: CliRunResult): WorkerResult {
-    return parseWorkerResult(raw.stdout);
+    const result = parseWorkerResult(raw.stdout);
+    // Backfill the model's frequently-empty self-reported `commands` with the
+    // shell commands the agentic loop actually ran, so the validation-evidence
+    // gate and reviewers see the real checks. (INT-2485)
+    if (raw.executedCommands && raw.executedCommands.length > 0) {
+      result.commands = [...new Set([...result.commands, ...raw.executedCommands])].slice(0, 20);
+    }
+    return result;
   }
 
   parseReviewerOutput(raw: CliRunResult): ReviewResult {

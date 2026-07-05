@@ -157,6 +157,9 @@ export interface AgenticLoopResult {
   cachedTokens: number;
   /** 소요 시간 (ms) */
   durationMs: number;
+  /** Shell commands the worker actually ran via the `bash` tool — ground truth
+   *  for the validation-evidence gate (self-reported `commands` is often empty). */
+  executedCommands: string[];
 }
 
 // ============ 에이전틱 루프 ============
@@ -238,6 +241,7 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
   const readCache = createReadCache(); // 루프 단위 read 캐시 (중복 read 차단)
   let toolCallCount = 0;
   let editToolCount = 0; // edit_file/write_file 호출 수 (no-edit 가드용)
+  const executedCommands: string[] = []; // `bash` 도구로 실제 실행한 명령 (검증 증거 ground truth)
   // 진전 정체 감지: 이번 턴의 도구 호출이 모두 이전과 동일(name+args)하면 새 정보·변경
   // 없는 반복이다. N턴 연속이면 루프로 보고 조기 종료한다 — 고정 turn 한도(작업 제한)가
   // 아니라 진전 기반 중단. maxTurns는 비상 천장으로만 남는다.
@@ -446,6 +450,19 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
       (tc.function.name === 'edit_file' || tc.function.name === 'write_file' || tc.function.name === 'apply_patch') && !results[i]?.is_error,
     ).length;
 
+    // Capture the shell commands the worker actually ran (ground truth for the
+    // validation-evidence gate — the model's self-reported `commands` is often
+    // empty). Only successful bash calls; deduped, capped. (INT-2485)
+    toolCalls.forEach((tc, i) => {
+      if (tc.function.name !== 'bash' || results[i]?.is_error) return;
+      try {
+        const cmd = String(JSON.parse(tc.function.arguments).command ?? '').trim();
+        if (cmd && !executedCommands.includes(cmd) && executedCommands.length < 20) {
+          executedCommands.push(cmd);
+        }
+      } catch { /* ignore unparseable args */ }
+    });
+
     // Progress-based stop: if every tool call this turn repeats a prior one
     // (same name+args → no new info or change), count it as a stalled turn.
     // N consecutive stalled turns → wrap up via the final-answer turn.
@@ -525,6 +542,7 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
     totalTokens,
     cachedTokens,
     durationMs: Date.now() - startTime,
+    executedCommands,
   };
 }
 
@@ -537,6 +555,7 @@ export function loopResultToCliResult(result: AgenticLoopResult): CliRunResult {
     stdout: result.text,
     stderr: '',
     durationMs: result.durationMs,
+    executedCommands: result.executedCommands,
   };
 }
 

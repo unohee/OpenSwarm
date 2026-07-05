@@ -17,6 +17,46 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe('parseWorkerOutput command backfill', () => {
+  const adapter = new CodexResponsesAdapter();
+
+  it('backfills empty self-reported commands with the agentic loop executed commands', () => {
+    const raw = {
+      exitCode: 0,
+      stdout: '```json\n{"success":true,"summary":"Fixed","filesChanged":["db/x.py"],"commands":[]}\n```',
+      stderr: '',
+      durationMs: 1,
+      executedCommands: ['pytest tests/test_x.py', 'ruff check .'],
+    };
+    const result = adapter.parseWorkerOutput(raw);
+    expect(result.commands).toEqual(['pytest tests/test_x.py', 'ruff check .']);
+  });
+
+  it('merges + dedupes self-reported and executed commands', () => {
+    const raw = {
+      exitCode: 0,
+      stdout: '```json\n{"success":true,"summary":"ok","filesChanged":["a.ts"],"commands":["npm test"]}\n```',
+      stderr: '',
+      durationMs: 1,
+      executedCommands: ['npm test', 'npm run lint'],
+    };
+    const result = adapter.parseWorkerOutput(raw);
+    expect(result.commands).toEqual(['npm test', 'npm run lint']);
+  });
+
+  it('leaves commands empty when the worker ran no shell commands', () => {
+    const raw = {
+      exitCode: 0,
+      stdout: '```json\n{"success":true,"summary":"edit only","filesChanged":["a.ts"],"commands":[]}\n```',
+      stderr: '',
+      durationMs: 1,
+      executedCommands: [],
+    };
+    const result = adapter.parseWorkerOutput(raw);
+    expect(result.commands).toEqual([]);
+  });
+});
+
 describe('selectDefaultCodexResponseModel', () => {
   it('prefers the stable default when the live catalog includes it', () => {
     expect(selectDefaultCodexResponseModel(['gpt-5.3-codex-spark', 'gpt-5.4-mini', 'gpt-5.5'])).toBe('gpt-5.5');
