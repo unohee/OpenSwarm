@@ -34,6 +34,7 @@ const INFRA_ERROR_PATTERNS = [
   'socket hang up',
   'network error',
   'git-tracker:', // git snapshot/diff failed mid-run — infra, not a task verdict (colon-anchored to avoid prose) (INT-2521)
+  'reviewer-stage:', // reviewer ran but its output couldn't be parsed into a verdict — infra, not a quality reject (INT-2521)
   'fetch failed', // undici: the real code hides in error.cause.code (checked below)
   'terminated', // undici mid-stream socket drop
   'unauthorized',

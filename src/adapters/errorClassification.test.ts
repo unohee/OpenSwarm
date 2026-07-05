@@ -56,6 +56,12 @@ describe('isInfraError (INT-2010)', () => {
     expect(isInfraError(new Error('git-tracker: diff since snapshot failed: fatal: bad object'))).toBe(true);
   });
 
+  it('recognises a reviewer-stage parse failure as infra, not a quality reject (INT-2521)', () => {
+    expect(isInfraError(new Error('reviewer-stage: produced no parseable verdict: TypeError x'))).toBe(true);
+    // …but a task/review that merely discusses the reviewer stage is NOT infra:
+    expect(isInfraError(new Error('the reviewer stage should reject empty diffs'))).toBe(false);
+  });
+
   it('recognises local server capacity failures (5xx / loading / overloaded) (INT-2520)', () => {
     expect(isInfraError(new Error('Local API error (503): model is loading'))).toBe(true);
     expect(isInfraError(new Error('Local API error (502): bad gateway'))).toBe(true);

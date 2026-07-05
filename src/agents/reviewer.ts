@@ -262,12 +262,16 @@ export async function runReviewer(options: ReviewerOptions): Promise<ReviewResul
     // as 'infra_error' instead of letting it masquerade as a 'reject' that
     // increments the rejection-limit STUCK counter. (INT-2010)
     if (isInfraError(error)) throw error;
-    return {
-      decision: 'reject',
-      feedback: `Reviewer execution failed: ${error instanceof Error ? error.message : String(error)}`,
-      issues: ['Error occurred during reviewer agent execution'],
-      suggestions: ['Manual review required'],
-    };
+    // Whatever is left ran the reviewer but produced NO usable verdict — most often
+    // adapter.parseReviewerOutput throwing on malformed output. This is NOT a quality
+    // 'reject' (a 'reject' discards the worker's work AND counts toward the
+    // rejection→STUCK limit, turning a reviewer-side parse bug into a false STUCK),
+    // and NOT a 'revise' (which the CLI reads as an exit-0 success and which spends
+    // the worker's revision budget on a reviewer-side problem). Throw an infra-marked
+    // error → the pipeline classifies infra_error (backoff retry, no STUCK) and the
+    // CLI exits non-zero. (INT-2521)
+    const msg = error instanceof Error ? error.message : String(error);
+    throw new Error(`reviewer-stage: produced no parseable verdict: ${msg}`, { cause: error });
   }
 }
 

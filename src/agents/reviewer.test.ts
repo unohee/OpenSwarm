@@ -2,9 +2,31 @@
 // Purpose: Unit tests for reviewer module
 // Test Status: Complete
 
-import { describe, it, expect } from 'vitest';
-import { formatReviewFeedback, buildRevisionPrompt, type ReviewerOptions } from './reviewer.js';
+import { describe, it, expect, vi, afterEach, beforeAll } from 'vitest';
+import { formatReviewFeedback, buildRevisionPrompt, runReviewer, type ReviewerOptions } from './reviewer.js';
 import type { WorkerResult, ReviewResult } from './agentPair.js';
+import * as adapters from '../adapters/index.js';
+import { initLocale } from '../locale/index.js';
+
+describe('runReviewer parse failure (INT-2521)', () => {
+  beforeAll(() => { initLocale('en'); });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('rejects with a reviewer-stage infra error (not a quality reject) when parse throws', async () => {
+    // The reviewer RAN but its output couldn't be parsed → NOT a 'reject' (false STUCK)
+    // and NOT a 'revise' (CLI exit-0 success). It must throw the infra-marked error.
+    vi.spyOn(adapters, 'spawnCli').mockResolvedValue({ exitCode: 0, stdout: 'garbage', stderr: '', durationMs: 1 } as never);
+    vi.spyOn(adapters, 'getAdapter').mockReturnValue({
+      name: 'mock',
+      getDefaultModel: async () => 'm',
+      parseReviewerOutput: () => { throw new TypeError('cannot read property decision of undefined'); },
+    } as never);
+    const wr: WorkerResult = { success: true, summary: 's', filesChanged: ['a.ts'], commands: [], output: '' };
+    await expect(
+      runReviewer({ taskTitle: 't', taskDescription: 'd', workerResult: wr, projectPath: '/tmp/x' }),
+    ).rejects.toThrow(/reviewer-stage: produced no parseable verdict/);
+  });
+});
 
 describe('reviewer', () => {
   describe('formatReviewFeedback', () => {
