@@ -186,3 +186,18 @@ describe('runnerState persistence and helpers', () => {
     expect(mod.formatRetryTime(Date.now() + (2 * 60 + 5) * 60_000)).toBe('in 2h 5m');
   });
 });
+
+describe('pickFailureDetail (INT-2504)', () => {
+  it('skips junk-but-truthy details in favor of real feedback', () => {
+    expect(mod.pickFailureDetail(['Unknown error', 'The cache misses tenant scope; fix and test.']))
+      .toBe('The cache misses tenant scope; fix and test.');
+  });
+
+  it('prefers earlier meaningful candidates (reviewer feedback first)', () => {
+    expect(mod.pickFailureDetail(['Reviewer said X', 'worker error Y'])).toBe('Reviewer said X');
+  });
+
+  it('returns undefined when everything is junk or empty', () => {
+    expect(mod.pickFailureDetail(['Unknown error', '  ', undefined, 'No feedback provided'])).toBeUndefined();
+  });
+});

@@ -19,6 +19,7 @@ import {
   loadProjectSelection,
   saveProjectSelection,
   recordLastFailureDetail,
+  pickFailureDetail,
   type LastFailureEntry,
   type TaskState,
   type ProjectInfo,
@@ -411,7 +412,8 @@ export class AutonomousRunner {
 
       // If rejected, track rejection count and block after max attempts
       if (task.issueId && result.finalStatus === 'rejected') {
-        const feedback = result.reviewResult?.feedback || 'No feedback provided';
+        const feedback = pickFailureDetail([result.lastReviewFeedback, result.reviewResult?.feedback])
+          ?? 'No feedback provided';
         const rejectionCount = incrementRejection(task.issueId, feedback);
         // Persist for prompt injection on the retry (same mechanism as failures).
         recordLastFailureDetail(this.taskStateRef, task.issueId, feedback);
@@ -470,13 +472,17 @@ export class AutonomousRunner {
         const count = (this.failedTaskCounts.get(task.issueId) ?? 0) + 1;
         this.failedTaskCounts.set(task.issueId, count);
 
-        // Surface the underlying failure (worker CLI error / review feedback) so the
-        // stuck comment is actionable instead of an opaque "failed N times", AND
-        // persist it so the NEXT attempt starts with this feedback instead of
-        // blind — re-picked tasks used to repeat the exact same mistake (INT-2474).
-        const failureDetail = result.workerResult?.error
-          || result.reviewResult?.feedback
-          || 'No error detail captured (worker produced no output).';
+        // Surface the underlying failure so the stuck comment is actionable AND
+        // persist it for the next attempt's injection (INT-2474). Prefer the last
+        // REAL reviewer feedback: reviewResult can hold a synthetic entry
+        // (validation nudge / HALT overwrite it), and a junk-but-truthy worker
+        // error ("Unknown error" from the text-fallback parser) used to mask the
+        // reviewer's actionable feedback entirely (INT-2504).
+        const failureDetail = pickFailureDetail([
+          result.lastReviewFeedback,
+          result.reviewResult?.feedback,
+          result.workerResult?.error,
+        ]) ?? 'No error detail captured (worker produced no output).';
         recordLastFailureDetail(this.taskStateRef, task.issueId, failureDetail);
 
         if (count >= AutonomousRunner.MAX_RETRY_COUNT) {

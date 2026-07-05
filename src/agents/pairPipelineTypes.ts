@@ -71,6 +71,10 @@ export interface PipelineResult {
   iterations: number;
   workerResult?: WorkerResult;
   reviewResult?: ReviewResult;
+  /** The last REAL reviewer revise feedback. `reviewResult` can end up holding a
+   *  synthetic entry (validation nudge / HALT overwrite it), which made failed
+   *  sessions persist "Unknown error"-grade detail for the retry (INT-2504). */
+  lastReviewFeedback?: string;
   testerResult?: TesterResult;
   documenterResult?: DocumenterResult;
   auditorResult?: AuditorResult;

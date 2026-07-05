@@ -170,6 +170,29 @@ export interface TaskState {
   lastFailureDetails: Map<string, LastFailureEntry>; // issueId → last failure feedback
 }
 
+/** Placeholder strings that carry zero diagnostic value — never persist these
+ *  as a failure detail when something meaningful is available (INT-2504). */
+const JUNK_DETAILS = new Set([
+  'Unknown error',
+  'No feedback provided',
+  'No summary provided',
+  'Worker execution failed',
+]);
+
+/**
+ * Pick the first MEANINGFUL failure detail. The old chain
+ * (`workerResult.error || reviewResult.feedback`) let a junk-but-truthy error
+ * string ("Unknown error" from the text-fallback parser) mask the reviewer's
+ * actionable feedback — the retry then got injected with garbage (INT-2504).
+ */
+export function pickFailureDetail(candidates: Array<string | undefined>): string | undefined {
+  for (const c of candidates) {
+    const trimmed = c?.trim();
+    if (trimmed && !JUNK_DETAILS.has(trimmed)) return trimmed;
+  }
+  return undefined;
+}
+
 export function recordLastFailureDetail(state: TaskState, issueId: string, detail: string): void {
   const trimmed = detail.trim();
   if (!trimmed) return;

@@ -368,6 +368,29 @@ describe('PairPipeline model selection', () => {
     expect(runWorker.mock.calls[1][0].reasoningEffort).not.toBe('high');
   });
 
+  it('exposes the last REAL reviewer feedback on a max-iterations failure (INT-2504)', async () => {
+    // Distinct feedback each round (no repeat-escalation), session dies at max-iter.
+    runReviewer
+      .mockResolvedValueOnce({ decision: 'revise', feedback: 'First: the cursor pagination resets between pages.' })
+      .mockResolvedValueOnce({ decision: 'revise', feedback: 'Second: the tenant scoping on cache invalidation is still missing entirely.' });
+
+    const { PairPipeline } = await import('./pairPipeline.js');
+    const pipeline = new PairPipeline({
+      stages: ['worker', 'reviewer'],
+      maxIterations: 2,
+      roles: {
+        worker: { enabled: true, model: 'worker', timeoutMs: 0 },
+        reviewer: { enabled: true, model: 'reviewer', timeoutMs: 0 },
+      },
+    });
+
+    const result = await pipeline.run(task(), process.cwd());
+
+    expect(result.success).toBe(false);
+    // The retry's injected detail must be the actual last reviewer feedback.
+    expect(result.lastReviewFeedback).toContain('tenant scoping on cache invalidation');
+  });
+
   it('nudges for missing validation at most once, then defers even if the worker keeps editing new files', async () => {
     // Regression: the worker edits a DIFFERENT file every iteration without ever
     // running a validation command. The gate used to bounce each time (each bounce

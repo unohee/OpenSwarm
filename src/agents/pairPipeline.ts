@@ -1145,7 +1145,8 @@ export class PairPipeline extends EventEmitter {
         });
 
         if (decision === 'reject') {
-          // reject = terminate immediately
+          // reject = terminate immediately (keep the real feedback for the retry)
+          context.lastReviseFeedback = (reviewerResult.result as ReviewResult).feedback ?? context.lastReviseFeedback;
           console.log(`[${context.taskPrefix}] Reviewer rejected`);
           agentPair.updateSessionStatus(context.session.id, 'rejected');
           return { success: false };
@@ -1284,6 +1285,7 @@ export class PairPipeline extends EventEmitter {
       iterations: context.currentIteration,
       workerResult: context.workerResult,
       reviewResult: context.reviewResult,
+      lastReviewFeedback: context.lastReviseFeedback,
       testerResult: context.testerResult,
       documenterResult: context.documenterResult,
       auditorResult: context.auditorResult,
