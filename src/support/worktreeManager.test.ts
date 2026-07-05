@@ -209,6 +209,20 @@ describe('preserveWorktree → createWorktree resume roundtrip (INT-2503)', () =
     expect(existsSync(info.worktreePath)).toBe(false);
   });
 
+  it('PRESERVES (does not delete) when git status FAILS — cannot confirm clean (INT-2521)', async () => {
+    const info = await createWorktree(repo, 'INT-9', 'swarm/INT-9-test');
+    writeFileSync(join(info.worktreePath, 'app.py'), 'base\nreal-partial-work\n');
+    // Break the worktree's git linkage so `git status` errors (a lock / corruption
+    // analog). The old `.catch(() => '')` treated that error as "clean" and DELETED
+    // the tree — losing real partial work. It must now preserve.
+    writeFileSync(join(info.worktreePath, '.git'), 'gitdir: /nonexistent/broken\n');
+
+    expect(await preserveWorktree(info, 'test failure')).toBe(true);
+    expect(existsSync(info.worktreePath)).toBe(true); // tree NOT deleted
+    expect(existsSync(join(info.worktreePath, '.openswarm-preserved'))).toBe(true);
+    expect(readFileSync(join(info.worktreePath, 'app.py'), 'utf8')).toBe('base\nreal-partial-work\n');
+  });
+
   it('recreates fresh when the preserved branch does not match', async () => {
     const info = await createWorktree(repo, 'INT-9', 'swarm/INT-9-test');
     writeFileSync(join(info.worktreePath, 'app.py'), 'base\nstale-work\n');

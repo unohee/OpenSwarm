@@ -222,18 +222,31 @@ export async function removePreservedWorktreeAt(worktreePath: string): Promise<v
  */
 export async function preserveWorktree(info: WorktreeInfo, reason: string): Promise<boolean> {
   const worktreePath = assertManagedWorktreePath(info.originalPath, info.worktreePath);
-  const dirty = await git(worktreePath, 'status', '--porcelain').catch(() => '');
-  if (!dirty.trim()) {
+  // Distinguish a genuinely clean tree from a git-status FAILURE (index/ref lock
+  // under parallel load, transient corruption). The old `.catch(() => '')` treated
+  // an error as "clean" → removeWorktree DELETED trees that may hold real partial
+  // work whenever git merely errored, defeating the preserve-for-resume guarantee.
+  // On any doubt, PRESERVE — never delete unconfirmed work. (INT-2521)
+  let dirty: string | null;
+  try {
+    dirty = await git(worktreePath, 'status', '--porcelain');
+  } catch (err) {
+    if (!existsSync(worktreePath)) return false; // tree gone — nothing to preserve or remove
+    console.warn(`[Worktree] git status failed — preserving the tree to be safe: ${worktreePath}`, err instanceof Error ? err.message : err);
+    dirty = null;
+  }
+  if (dirty !== null && !dirty.trim()) {
     await removeWorktree(info);
     return false;
   }
-  const fileCount = dirty.split('\n').filter(Boolean).length;
+  const fileCount = dirty === null ? 0 : dirty.split('\n').filter(Boolean).length;
   writeFileSync(
     join(worktreePath, PRESERVE_MARKER),
     JSON.stringify({ issueId: info.issueId, branchName: info.branchName, reason, at: new Date().toISOString() }, null, 2),
     'utf8',
   );
-  console.log(`[Worktree] Preserved for retry (${fileCount} dirty files, ${reason}): ${worktreePath}`);
+  const label = dirty === null ? 'git status unavailable — preserved to be safe' : `${fileCount} dirty files`;
+  console.log(`[Worktree] Preserved for retry (${label}, ${reason}): ${worktreePath}`);
   return true;
 }
 
