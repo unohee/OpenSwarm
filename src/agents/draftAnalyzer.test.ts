@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import * as adapterModule from '../adapters/index.js';
 import * as knowledgeModule from '../knowledge/index.js';
 import * as registryModule from '../registry/sqliteStore.js';
+import { RateLimitError } from '../adapters/rateLimitError.js';
 
 describe('runDraftAnalysis fallback', () => {
   const makeAdapter = (name: string): CliAdapter => ({
@@ -85,6 +86,19 @@ describe('runDraftAnalysis fallback', () => {
     expect(adapterModule.spawnCli).toHaveBeenCalledTimes(1);
     // Pipeline continues with a best-effort (insufficient) draft.
     expect(result.sufficient).toBe(false);
+  });
+
+  it('re-throws a typed RateLimitError instead of swallowing it into a best-effort draft (INT-2521)', async () => {
+    // A rate limit during draft must reach the pipeline so the scheduler pauses,
+    // not be swallowed as non-blocking (which lets planner + worker keep hammering).
+    vi.spyOn(adapterModule, 'getDefaultAdapterName').mockReturnValue('codex');
+    vi.spyOn(adapterModule, 'getAdapter').mockImplementation((name) => makeAdapter(name));
+    vi.spyOn(adapterModule, 'spawnCli')
+      .mockRejectedValue(new RateLimitError(1782824950, 'Codex usage limit reached'));
+
+    await expect(
+      runDraftAnalysis({ taskTitle: 'Fix edge', taskDescription: 'Test', projectPath: '/tmp/project' }),
+    ).rejects.toBeInstanceOf(RateLimitError);
   });
 
   it('drafter hard gate: retries on the same adapter when the brief is insufficient', async () => {

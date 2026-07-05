@@ -10,6 +10,7 @@ import type { ImpactAnalysis } from '../knowledge/types.js';
 import type { AdapterName } from '../adapters/types.js';
 import { getAdapter, spawnCli } from '../adapters/index.js';
 import { mapModelForProvider } from '../adapters/modelCompat.js';
+import { RateLimitError } from '../adapters/rateLimitError.js';
 import { expandPath } from '../core/config.js';
 
 // Types
@@ -127,6 +128,10 @@ export async function runPlanner(options: PlannerOptions): Promise<PlannerResult
 
     return parsePlannerOutput(raw.stdout, options.taskTitle);
   } catch (error) {
+    // A rate limit here must propagate so the scheduler pauses — flattening it to
+    // {success:false} made decomposeTask fall back to direct execution, which then
+    // hammered the exhausted provider with the worker. (INT-2521)
+    if (error instanceof RateLimitError) throw error;
     return {
       success: false,
       originalIssue: options.taskTitle,
