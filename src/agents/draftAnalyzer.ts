@@ -7,6 +7,8 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { getAdapter, getDefaultAdapterName, spawnCli } from '../adapters/index.js';
 import { analyzeIssue } from '../knowledge/index.js';
 import { getRegistryStore } from '../registry/sqliteStore.js';
@@ -165,6 +167,27 @@ export interface DraftAnalyzerOptions {
  * Code Registry + Knowledge Graph에서 코드베이스 상태를 수집
  * LLM 호출 없이 로컬 DB 조회만으로 완료
  */
+/**
+ * Registry rows are keyed by the SCAN-time project id (package.json name, else
+ * the repo dir basename) — NOT the Linear project UUID the pipeline carries.
+ * The daemon never passed a projectId here, so getStats(undefined) returned the
+ * GLOBAL count across every scanned directory (624k entities incl. a 563k
+ * 'unohee' home-dir junk bucket) and polluted the draft prompt with cross-repo
+ * noise. Derive the registry key from projectPath with the same rule the
+ * scanner uses, and NEVER fall back to global stats. (INT-2502 read-side)
+ */
+export function deriveRegistryProjectId(projectPath: string): string {
+  // A worktree path (…/<repo>/worktree/<uuid>) keys under the parent repo.
+  const normalized = projectPath.replace(/\/+$/, '');
+  const wt = normalized.match(/^(.*)\/worktree\/[^/]+$/);
+  const repoRoot = wt ? wt[1] : normalized;
+  try {
+    const pkg = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf-8')) as { name?: unknown };
+    if (typeof pkg.name === 'string' && pkg.name) return pkg.name.replace(/^@[^/]+\//, '');
+  } catch { /* no/invalid package.json → basename */ }
+  return repoRoot.split('/').pop() ?? repoRoot;
+}
+
 function collectCodebaseState(
   projectPath: string,
   projectId?: string,
@@ -173,12 +196,13 @@ function collectCodebaseState(
   const registrySnapshot: RegistryBrief[] = [];
   let projectStats: string | undefined;
   let totalEntities = 0;
+  const registryKey = projectId ?? deriveRegistryProjectId(projectPath);
 
   try {
     const store = getRegistryStore();
 
-    // 1. 프로젝트 전체 통계
-    const stats = store.getStats(projectId);
+    // 1. 프로젝트 전체 통계 — always scoped; global stats are cross-repo noise.
+    const stats = store.getStats(registryKey);
     totalEntities = stats.total;
     const statParts: string[] = [`${stats.total} entities`];
     if (stats.deprecated > 0) statParts.push(`${stats.deprecated} deprecated`);
@@ -225,7 +249,7 @@ function collectCodebaseState(
 
     // 3. 검색으로 못 찾은 high-risk entity가 있으면 추가 (상위 5개)
     if (registrySnapshot.length < 3) {
-      const highRisk = store.highRiskEntities(projectId).slice(0, 5);
+      const highRisk = store.highRiskEntities(registryKey).slice(0, 5);
       for (const e of highRisk) {
         if (!affectedFiles.has(e.filePath)) {
           registrySnapshot.push({
