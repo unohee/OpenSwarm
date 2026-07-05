@@ -62,6 +62,16 @@ describe('isInfraError (INT-2010)', () => {
     expect(isInfraError(new Error('the reviewer stage should reject empty diffs'))).toBe(false);
   });
 
+  it('recognises host resource exhaustion (disk full / OOM) as infra, not a task failure (INT-2521)', () => {
+    // A full disk crashed the daemon in production; ENOSPC must backoff-retry, not STUCK.
+    expect(isInfraError(new Error('ENOSPC: no space left on device, open \'/repo/worktree/.openswarm-preserved\''))).toBe(true);
+    expect(isInfraError(new Error('write failed: no space left on device'))).toBe(true);
+    expect(isInfraError(Object.assign(new Error('spawn failed'), { cause: { code: 'ENOSPC' } }))).toBe(true);
+    expect(isInfraError(new Error('ENOMEM: not enough memory'))).toBe(true);
+    // …but ordinary prose mentioning space is NOT infra
+    expect(isInfraError(new Error('the layout leaves no space left for the label'))).toBe(false);
+  });
+
   it('recognises local server capacity failures (5xx / loading / overloaded) (INT-2520)', () => {
     expect(isInfraError(new Error('Local API error (503): model is loading'))).toBe(true);
     expect(isInfraError(new Error('Local API error (502): bad gateway'))).toBe(true);

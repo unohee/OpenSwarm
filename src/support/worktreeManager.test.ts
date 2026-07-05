@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -207,6 +207,24 @@ describe('preserveWorktree → createWorktree resume roundtrip (INT-2503)', () =
     const info = await createWorktree(repo, 'INT-9', 'swarm/INT-9-test');
     expect(await preserveWorktree(info, 'test failure')).toBe(false);
     expect(existsSync(info.worktreePath)).toBe(false);
+  });
+
+  it('does NOT crash when the preserve-marker write fails (ENOSPC/EACCES) — reports NOT preserved (INT-2521)', async () => {
+    const info = await createWorktree(repo, 'INT-9', 'swarm/INT-9-test');
+    writeFileSync(join(info.worktreePath, 'app.py'), 'base\npartial-impl\n'); // dirty work
+    // A read-only worktree dir makes the marker writeFileSync throw — exactly what a
+    // full disk (ENOSPC) did in production, where an unguarded write crashed the whole
+    // daemon via executePipeline. preserveWorktree must swallow it and honestly report
+    // NOT preserved (false): the marker is the only thing that would protect the tree
+    // from the next createWorktree()/sweep, so it must never claim a preservation it
+    // can't back. It also never leaves a marker behind.
+    chmodSync(info.worktreePath, 0o555);
+    try {
+      await expect(preserveWorktree(info, 'disk full')).resolves.toBe(false);
+      expect(existsSync(join(info.worktreePath, '.openswarm-preserved'))).toBe(false); // marker never written
+    } finally {
+      if (existsSync(info.worktreePath)) chmodSync(info.worktreePath, 0o755); // restore for cleanup
+    }
   });
 
   it('PRESERVES (does not delete) when git status FAILS — cannot confirm clean (INT-2521)', async () => {

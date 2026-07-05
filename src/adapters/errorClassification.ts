@@ -33,6 +33,9 @@ const INFRA_ERROR_PATTERNS = [
   'enotfound',
   'socket hang up',
   'network error',
+  'enospc', // disk full — an environment condition, not a task verdict; backoff-retry once space frees (INT-2521)
+  'no space left on device', // the human-readable form of ENOSPC (full phrase, so prose like "no space left for the label" is not mis-flagged)
+  'enomem', // out of memory — same class: host resource exhaustion, not a bad edit
   'git-tracker:', // git snapshot/diff failed mid-run — infra, not a task verdict (colon-anchored to avoid prose) (INT-2521)
   'reviewer-stage:', // reviewer ran but its output couldn't be parsed into a verdict — infra, not a quality reject (INT-2521)
   'fetch failed', // undici: the real code hides in error.cause.code (checked below)

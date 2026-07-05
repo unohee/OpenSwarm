@@ -240,11 +240,33 @@ export async function preserveWorktree(info: WorktreeInfo, reason: string): Prom
     return false;
   }
   const fileCount = dirty === null ? 0 : dirty.split('\n').filter(Boolean).length;
-  writeFileSync(
-    join(worktreePath, PRESERVE_MARKER),
-    JSON.stringify({ issueId: info.issueId, branchName: info.branchName, reason, at: new Date().toISOString() }, null, 2),
-    'utf8',
-  );
+  // The resume marker is the ONLY thing that protects this tree from the next
+  // createWorktree() recreate (which deletes the branch + worktree, ~L286/L299) and
+  // the heartbeat orphan-sweep (pruneWorktrees drops marker-less trees). So if we
+  // can't write it, we CANNOT honestly claim the work is preserved. Two rules here:
+  //   1. Never throw. An unguarded writeFileSync threw ENOSPC straight through
+  //      executePipeline and crashed the whole daemon under a full disk (observed
+  //      live: disk 100% → runner crash-loop). (INT-2521)
+  //   2. Don't lie. Best-effort remove the tree to reclaim space — which is exactly
+  //      what helps when the disk is full — and report NOT preserved. ENOSPC is an
+  //      infra error, so the task retries fresh from origin/main once space frees.
+  const markerPath = join(worktreePath, PRESERVE_MARKER);
+  try {
+    writeFileSync(
+      markerPath,
+      JSON.stringify({ issueId: info.issueId, branchName: info.branchName, reason, at: new Date().toISOString() }, null, 2),
+      'utf8',
+    );
+  } catch (err) {
+    console.warn(`[Worktree] Preserve-marker write failed — cannot preserve, reclaiming space: ${worktreePath}`, err instanceof Error ? err.message : err);
+    // A failed write can leave a truncated marker behind. Drop it first so a later
+    // createWorktree()/prune doesn't treat the corpse as a real preserved tree, THEN
+    // best-effort remove the whole worktree to reclaim space. Both are best-effort —
+    // neither may throw (that is the very crash this guard exists to prevent).
+    try { rmSync(markerPath, { force: true }); } catch { /* read-only/ENOSPC — leave it; prune treats an unreadable marker as sweepable */ }
+    await removeWorktree(info).catch((e) => console.warn(`[Worktree] Cleanup after failed preserve also failed: ${worktreePath}`, e instanceof Error ? e.message : e));
+    return false;
+  }
   const label = dirty === null ? 'git status unavailable — preserved to be safe' : `${fileCount} dirty files`;
   console.log(`[Worktree] Preserved for retry (${label}, ${reason}): ${worktreePath}`);
   return true;

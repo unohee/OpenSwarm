@@ -54,6 +54,7 @@ const CASES: Array<{ name: string; err: string | Error; bucket: Bucket }> = [
   { name: 'git-tracker snapshot/diff failure', err: 'git-tracker: diff since snapshot failed: fatal: bad object', bucket: 'infra_error' },
   { name: 'reviewer parse crash', err: 'reviewer-stage: produced no parseable verdict: TypeError x', bucket: 'infra_error' },
   { name: 'scheduler hard watchdog', err: 'Task timed out after 3600000ms (scheduler hard watchdog)', bucket: 'infra_error' },
+  { name: 'disk full (ENOSPC)', err: "ENOSPC: no space left on device, open '/repo/worktree/.openswarm-preserved'", bucket: 'infra_error' },
 
   // ---- genuine task failures (MUST count toward STUCK) ----
   { name: 'code TypeError', err: 'TypeError: cannot read property foo of undefined', bucket: 'task_failure' },
