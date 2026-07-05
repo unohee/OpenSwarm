@@ -11,17 +11,20 @@ import type { AdapterName } from '../adapters/types.js';
 
 const OVERRIDE_DIR = join(homedir(), '.config', 'openswarm');
 const OVERRIDE_PATH = join(OVERRIDE_DIR, 'provider-override.json');
-// `claude` is intentionally excluded: it is an opt-in fallback provider, not a primary the operator
-// should be able to pin via a persisted toggle (a stale claude pin with no credits hangs the loop).
-const VALID: readonly Exclude<AdapterName, 'claude'>[] = ['codex', 'codex-responses', 'gpt', 'local', 'lmstudio', 'openrouter'];
-const VALID_SET = new Set<Exclude<AdapterName, 'claude'>>(VALID);
+// `claude` WAS excluded (a stale claude pin with no credits hangs the loop), but that guard also
+// made an operator's EXPLICIT switch silently no-op — the daemon stayed on the old provider with
+// zero feedback (observed 2026-07-05: override={"provider":"claude"} → no switch, no log). Honor
+// the operator's choice; the startup mismatch warning still prints loudly, and a credit-less pin
+// surfaces as visible worker failures rather than a silent revert.
+const VALID: readonly AdapterName[] = ['claude', 'codex', 'codex-responses', 'gpt', 'local', 'lmstudio', 'openrouter'];
+const VALID_SET = new Set<AdapterName>(VALID);
 
 /** The provider the user last selected via the dashboard, or undefined if never toggled. */
 export function readProviderOverride(): AdapterName | undefined {
   try {
     if (!existsSync(OVERRIDE_PATH)) return undefined;
     const { provider } = JSON.parse(readFileSync(OVERRIDE_PATH, 'utf8')) as { provider?: string };
-    return VALID_SET.has(provider as Exclude<AdapterName, 'claude'>) ? (provider as Exclude<AdapterName, 'claude'>) : undefined;
+    return VALID_SET.has(provider as AdapterName) ? (provider as AdapterName) : undefined;
   } catch {
     return undefined;
   }
@@ -48,7 +51,6 @@ export function formatProviderOverrideMismatchWarning(
 /** Record the user's provider choice so it survives a restart. Best-effort — never blocks the toggle. */
 export function writeProviderOverride(provider: AdapterName): void {
   try {
-    if (provider === 'claude') return;
     mkdirSync(OVERRIDE_DIR, { recursive: true });
     writeFileSync(OVERRIDE_PATH, `${JSON.stringify({ provider }, null, 2)}\n`, 'utf8');
   } catch {

@@ -40,25 +40,14 @@ describe('providerOverride', () => {
     expect(readProviderOverride()).toBeUndefined();
   });
 
-  it('does not persist claude overrides', async () => {
+  it('persists and reads back a claude override — an explicit operator switch must not silently no-op', async () => {
     const fs = await import('node:fs');
     fs.rmSync('/tmp/openswarm-home', { recursive: true, force: true });
 
     const { writeProviderOverride, readProviderOverride } = await import('./providerOverride.js');
     writeProviderOverride('claude');
 
-    expect(fs.existsSync('/tmp/openswarm-home/.config/openswarm/provider-override.json')).toBe(false);
-    expect(readProviderOverride()).toBeUndefined();
-  });
-
-  it('ignores claude persisted values if the file is present', async () => {
-    const fs = await import('node:fs');
-    fs.rmSync('/tmp/openswarm-home', { recursive: true, force: true });
-    fs.mkdirSync('/tmp/openswarm-home/.config/openswarm', { recursive: true });
-    fs.writeFileSync('/tmp/openswarm-home/.config/openswarm/provider-override.json', JSON.stringify({ provider: 'claude' }), 'utf8');
-
-    const { readProviderOverride } = await import('./providerOverride.js');
-    expect(readProviderOverride()).toBeUndefined();
+    expect(readProviderOverride()).toBe('claude');
   });
 
   it('formats a loud mismatch warning naming both providers and the override file (INT-2408)', async () => {
