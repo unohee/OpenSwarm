@@ -140,7 +140,7 @@ export async function runTester(options: TesterOptions): Promise<TesterResult> {
 /**
  * Parse Tester output
  */
-function parseTesterOutput(output: string): TesterResult {
+export function parseTesterOutput(output: string): TesterResult {
   try {
     const costInfo = extractCostFromStreamJson(output);
     if (costInfo) {
@@ -272,14 +272,19 @@ function extractFromText(text: string): TesterResult {
     }
   }
 
+  // A tester that produced NO output verified nothing — the "no error keyword ⇒
+  // success" default would fake a PASS on an empty/degenerate run and let
+  // unverified code through the blocking test gate. Only genuinely empty output is
+  // flagged, so a short-but-real run ("collected 0 items") is unaffected. (INT-2521)
+  const noOutput = text.trim().length === 0;
   return {
-    success: !hasError || (hasSuccess && testsFailed === 0),
+    success: !noOutput && (!hasError || (hasSuccess && testsFailed === 0)),
     testsPassed,
     testsFailed,
     coverage,
     output: text,
     failedTests: failedTests.length > 0 ? failedTests : undefined,
-    error: hasError ? extractErrorMessage(text) : undefined,
+    error: hasError ? extractErrorMessage(text) : (noOutput ? 'Tester produced no output — result unverified' : undefined),
   };
 }
 
