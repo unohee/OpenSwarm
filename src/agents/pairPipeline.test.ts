@@ -315,6 +315,55 @@ describe('PairPipeline model selection', () => {
     }));
   });
 
+  it('injects prior-session failure feedback into the first worker iteration', async () => {
+    const { PairPipeline } = await import('./pairPipeline.js');
+    const pipeline = new PairPipeline({
+      stages: ['worker', 'reviewer'],
+      maxIterations: 1,
+      roles: {
+        worker: { enabled: true, model: 'worker', timeoutMs: 0 },
+        reviewer: { enabled: true, model: 'reviewer', timeoutMs: 0 },
+      },
+    });
+
+    const result = await pipeline.run(
+      task({ priorAttemptFeedback: 'Previous run: the config parser silently drops unknown keys — fix and add a test.' }),
+      process.cwd(),
+    );
+
+    expect(result.success).toBe(true);
+    expect(runWorker.mock.calls[0][0]).toEqual(expect.objectContaining({
+      previousFeedback: expect.stringContaining('config parser silently drops unknown keys'),
+    }));
+    expect(runWorker.mock.calls[0][0].previousFeedback).toContain('Previous attempt failed');
+  });
+
+  it('aborts the session early when the reviewer repeats the same revise feedback', async () => {
+    // Reviewer says the same thing twice → the worker is not absorbing it;
+    // burning the remaining iterations is pure waste (INT-2474).
+    runReviewer.mockResolvedValue({
+      decision: 'revise',
+      feedback: 'The cache invalidation misses the tenant scope; invalidate per tenant and cover it with a test.',
+    });
+
+    const { PairPipeline } = await import('./pairPipeline.js');
+    const pipeline = new PairPipeline({
+      stages: ['worker', 'reviewer'],
+      maxIterations: 5,
+      roles: {
+        worker: { enabled: true, model: 'worker', timeoutMs: 0 },
+        reviewer: { enabled: true, model: 'reviewer', timeoutMs: 0 },
+      },
+    });
+
+    const result = await pipeline.run(task(), process.cwd());
+
+    expect(result.success).toBe(false);
+    // Iteration 1 review + iteration 2's near-identical review → abort before iteration 3.
+    expect(runWorker).toHaveBeenCalledTimes(2);
+    expect(runReviewer).toHaveBeenCalledTimes(2);
+  });
+
   it('defers to the reviewer instead of hard-failing when validation evidence stays missing', async () => {
     // A worker whose git changes were promoted to success with commands=[]
     // (no JSON block) must not be killed after a couple of retries — the gate is

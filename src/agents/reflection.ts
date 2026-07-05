@@ -86,6 +86,31 @@ function sameErrors(a: string[], b: string[]): boolean {
 }
 
 /**
+ * Fuzzy match for consecutive reviewer revise feedback: prose never repeats
+ * verbatim, so exact matching (sameErrors) can't catch a reviewer saying the
+ * same thing twice. Token-set Jaccard over normalized words — two feedbacks
+ * above the threshold mean the worker isn't absorbing the review and further
+ * iterations will only burn tokens (INT-2474).
+ */
+export function similarReviewFeedback(a: string, b: string, threshold = 0.6): boolean {
+  const tokens = (s: string): Set<string> =>
+    new Set(
+      s
+        .toLowerCase()
+        .replace(/[^\p{L}\p{N}]+/gu, ' ')
+        .split(' ')
+        .filter((w) => w.length > 2),
+    );
+  const ta = tokens(a);
+  const tb = tokens(b);
+  if (ta.size === 0 || tb.size === 0) return false;
+  let intersection = 0;
+  for (const w of ta) if (tb.has(w)) intersection++;
+  const union = ta.size + tb.size - intersection;
+  return union > 0 && intersection / union >= threshold;
+}
+
+/**
  * Record a failure as a reflection entry.
  *
  * For objective sources this increments the self-repair count and reports

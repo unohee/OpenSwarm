@@ -59,6 +59,7 @@ export interface TaskItem {
   fileScope?: string[];    // Files/modules this task modifies (planner-declared) — for parallel conflict detection
   impactAnalysis?: ImpactAnalysis;  // Knowledge graph impact analysis
   estimatedMinutes?: number;
+  priorAttemptFeedback?: string;  // Last failure/rejection feedback from a previous session — injected into the worker's first iteration (INT-2474)
 }
 
 /**

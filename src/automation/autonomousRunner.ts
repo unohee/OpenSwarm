@@ -18,6 +18,8 @@ import {
   recordProjectCompletion,
   loadProjectSelection,
   saveProjectSelection,
+  recordLastFailureDetail,
+  type LastFailureEntry,
   type TaskState,
   type ProjectInfo,
 } from './runnerState.js';
@@ -187,6 +189,10 @@ export class AutonomousRunner {
   private completedTaskIds = new Set<string>();
   private failedTaskCounts = new Map<string, number>();
   private failedTaskRetryTimes = new Map<string, number>(); // issueId → next retry timestamp (ms)
+  // Last failure feedback per issue — re-injected into the next attempt's worker
+  // prompt so re-picked tasks don't restart blind and repeat the same mistake
+  // the reviewer already called out (INT-2474). Persisted; cleared on success.
+  private lastFailureDetails = new Map<string, LastFailureEntry>();
   private static readonly MAX_RETRY_COUNT = 4; // Increased from 2 to allow more retries with backoff
 
   // Rate-limit hold: epoch ms until which all task execution is paused.
@@ -204,6 +210,7 @@ export class AutonomousRunner {
       completedTaskIds: this.completedTaskIds,
       failedTaskCounts: this.failedTaskCounts,
       failedTaskRetryTimes: this.failedTaskRetryTimes,
+      lastFailureDetails: this.lastFailureDetails,
     };
   }
 
@@ -279,6 +286,7 @@ export class AutonomousRunner {
         this.completedTaskIds.add(task.issueId);
         clearRejection(task.issueId); // Clear rejection count on success
         clearRetryTime(task.issueId, this.failedTaskRetryTimes); // Clear retry backoff time
+        this.lastFailureDetails.delete(task.issueId); // Stale feedback must not haunt future work
         this.saveTaskState();
         // Track project-level pace (5h rolling window)
         const projectName = task.linearProject?.name ?? 'unknown';
@@ -405,6 +413,8 @@ export class AutonomousRunner {
       if (task.issueId && result.finalStatus === 'rejected') {
         const feedback = result.reviewResult?.feedback || 'No feedback provided';
         const rejectionCount = incrementRejection(task.issueId, feedback);
+        // Persist for prompt injection on the retry (same mechanism as failures).
+        recordLastFailureDetail(this.taskStateRef, task.issueId, feedback);
 
         // Store the rejection reason as a repo pitfall (constraint) — blocks repeating the same mistake
         if (result.taskContext?.projectPath) {
@@ -460,17 +470,21 @@ export class AutonomousRunner {
         const count = (this.failedTaskCounts.get(task.issueId) ?? 0) + 1;
         this.failedTaskCounts.set(task.issueId, count);
 
+        // Surface the underlying failure (worker CLI error / review feedback) so the
+        // stuck comment is actionable instead of an opaque "failed N times", AND
+        // persist it so the NEXT attempt starts with this feedback instead of
+        // blind — re-picked tasks used to repeat the exact same mistake (INT-2474).
+        const failureDetail = result.workerResult?.error
+          || result.reviewResult?.feedback
+          || 'No error detail captured (worker produced no output).';
+        recordLastFailureDetail(this.taskStateRef, task.issueId, failureDetail);
+
         if (count >= AutonomousRunner.MAX_RETRY_COUNT) {
           // Max retries exceeded - permanently block
           this.completedTaskIds.add(task.issueId); // Prevent re-selection
           clearRetryTime(task.issueId, this.failedTaskRetryTimes); // Clear retry time
           this.saveTaskState();
           console.log(`[Scheduler] Task failure count: ${count}/${AutonomousRunner.MAX_RETRY_COUNT} for ${taskCtx} — STUCK`);
-          // Surface the underlying failure (worker CLI error / review feedback) so the
-          // stuck comment is actionable instead of an opaque "failed N times".
-          const failureDetail = result.workerResult?.error
-            || result.reviewResult?.feedback
-            || 'No error detail captured (worker produced no output).';
           try {
             await execution.syncFailureState(task, `Autonomous execution failed ${count} times: ${failureDetail}`);
             await getTaskSource()?.logStuck(task.issueId, 'autonomous-runner',
@@ -1245,7 +1259,20 @@ export class AutonomousRunner {
     return safeTasks;
   }
 
+  /**
+   * Re-attempt of a previously failed/rejected issue: carry the last failure
+   * feedback into the run so the worker's first iteration addresses it instead
+   * of repeating the same mistake blind (INT-2474). Called on BOTH execution
+   * paths — parallel enqueue and the serial (maxConcurrentTasks=1) heartbeat.
+   */
+  private attachPriorFeedback(task: TaskItem): void {
+    if (!task.issueId) return;
+    const prior = this.lastFailureDetails.get(task.issueId);
+    if (prior) task.priorAttemptFeedback = prior.detail;
+  }
+
   private enqueueCandidate(task: TaskItem, projectPath: string): void {
+    this.attachPriorFeedback(task);
     this.scheduler.enqueue(task, projectPath);
     broadcastEvent({ type: 'task:queued', data: { taskId: task.id, title: task.title, projectPath, issueIdentifier: task.issueIdentifier } });
     this.syslog(`✓ Queued: ${task.issueIdentifier || ''} ${task.title} → ${projectPath.split('/').slice(-2).join('/')}`);
@@ -1260,6 +1287,10 @@ export class AutonomousRunner {
 
   /** Execute task in pair mode */
   private async executeTaskPairMode(task: TaskItem): Promise<void> {
+    // Serial path (maxConcurrentTasks=1) bypasses enqueueCandidate — attach the
+    // prior-session feedback here too so both paths inject it (INT-2474).
+    this.attachPriorFeedback(task);
+
     // Auto-resolve project path
     const projectPath = await this.resolveProjectPath(task);
 

@@ -9,6 +9,7 @@ import {
   recordReflection,
   shouldStopReflecting,
   buildReflectionFeedback,
+  similarReviewFeedback,
   DEFAULT_MAX_REFLECTIONS,
   MAX_TRAIL_ENTRIES,
   type ReflectionState,
@@ -191,6 +192,26 @@ describe('reflection', () => {
       const repeat = recordReflection(s, { iteration: 2, source: 'lint', errors: ['same'] });
       expect(repeat.progressed).toBe(false); // stagnation signal fires at count=2 of 3
       expect(shouldStopReflecting(s, 3)).toBe(false);
+    });
+  });
+
+  describe('similarReviewFeedback', () => {
+    it('matches identical and lightly reworded feedback', () => {
+      const a = 'The error handling in fetchUser is missing: add a try/catch around the network call and return a typed error.';
+      expect(similarReviewFeedback(a, a)).toBe(true);
+      const b = 'Error handling in fetchUser is still missing — add try/catch around the network call and return a typed error.';
+      expect(similarReviewFeedback(a, b)).toBe(true);
+    });
+
+    it('does not match feedback about different problems', () => {
+      const a = 'The error handling in fetchUser is missing: add a try/catch around the network call.';
+      const b = 'The pagination cursor is off by one; the last page repeats the first item of the next page.';
+      expect(similarReviewFeedback(a, b)).toBe(false);
+    });
+
+    it('returns false for empty or trivial feedback', () => {
+      expect(similarReviewFeedback('', 'anything at all here')).toBe(false);
+      expect(similarReviewFeedback('a b', 'a b')).toBe(false); // all tokens too short
     });
   });
 });

@@ -102,6 +102,8 @@ export interface PipelineContext {
   reflection: ReflectionState;
   feedbackSource?: 'objective' | 'review';
   workerFanoutDecision?: WorkerFanoutGateDecision;
+  /** Feedback of the previous reviewer 'revise' — compared against the next one to detect a repeating reviewer (INT-2474). */
+  lastReviseFeedback?: string;
 }
 
 export type PipelineEventType = 'stage:start' | 'stage:complete' | 'stage:fail' | 'iteration:start' | 'iteration:complete' | 'iteration:fail' | 'pipeline:complete' | 'pipeline:fail' | 'fanout:gate' | 'halt';

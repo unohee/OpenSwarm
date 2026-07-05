@@ -23,6 +23,7 @@ import {
   recordReflection,
   shouldStopReflecting,
   buildReflectionFeedback,
+  similarReviewFeedback,
   DEFAULT_MAX_REFLECTIONS,
 } from './reflection.js';
 import { hasRepoSnapshot, scanAndCache, analyzeIssue } from '../knowledge/index.js';
@@ -456,8 +457,19 @@ export class PairPipeline extends EventEmitter {
           const reviewPart = includeReview
             ? reviewerAgent.buildRevisionPrompt(context.reviewResult!)
             : undefined;
+          // Cross-SESSION feedback: a re-picked task that failed/was rejected
+          // before carries the last reviewer feedback (persisted in task state).
+          // Without this the new session starts blind and repeats the exact
+          // mistake the reviewer already called out (INT-2474). First iteration
+          // only — later iterations have fresher in-session feedback above.
+          const priorSessionPart =
+            context.currentIteration === 1 && context.task.priorAttemptFeedback
+              ? '## Previous attempt failed (feedback from an earlier session)\n'
+                + 'A prior run of this task did not pass. Address these points first and do not repeat them:\n'
+                + context.task.priorAttemptFeedback
+              : undefined;
           const combinedFeedback =
-            [reflectionPart, reviewPart].filter(Boolean).join('\n\n') || undefined;
+            [priorSessionPart, reflectionPart, reviewPart].filter(Boolean).join('\n\n') || undefined;
 
           const workerOptions: WorkerOptions = {
             taskTitle: context.task.title,
@@ -1152,6 +1164,32 @@ export class PairPipeline extends EventEmitter {
         }
 
         if (decision === 'revise') {
+          const reviseFeedback = (reviewerResult.result as ReviewResult).feedback ?? '';
+
+          // The reflection stagnation detector only counts OBJECTIVE sources, so
+          // a reviewer that keeps saying the same thing never trips it — failing
+          // sessions used to burn every remaining iteration on feedback the
+          // worker demonstrably isn't absorbing (measured: 146 max-iteration
+          // exhaustions vs 21 objective aborts). Two consecutive near-identical
+          // revise feedbacks → end the session now; the runner persists this
+          // feedback and the NEXT attempt starts with it injected (INT-2474).
+          if (
+            context.lastReviseFeedback
+            && similarReviewFeedback(context.lastReviseFeedback, reviseFeedback)
+          ) {
+            const reason = 'reviewer repeated the same revise feedback — worker is not absorbing it';
+            console.log(`[${context.taskPrefix}] Aborting session early: ${reason}`);
+            this.emit('log', { line: `🛑 ${reason}` });
+            this.emit('iteration:fail', {
+              iteration: context.currentIteration,
+              stage: 'reviewer',
+              context,
+            });
+            agentPair.updateSessionStatus(context.session.id, 'failed');
+            return { success: false };
+          }
+          context.lastReviseFeedback = reviseFeedback;
+
           // revise = next iteration. Reviewer feedback is subjective → it travels
           // through the reviewer channel and is dropped on a fresh-context reset.
           console.log(`[${context.taskPrefix}] Reviewer requested revision`);

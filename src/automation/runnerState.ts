@@ -153,10 +153,30 @@ export function getDailyPaceInfo(): DailyPaceState {
   return { completedToday: totalToday, dateKey: today, lastCompletionAt: lastCompletion, projectCounts };
 }
 
+/** Last failure detail per issue — injected into the next attempt's worker
+ * prompt so a re-picked task doesn't repeat the exact mistake the reviewer
+ * already called out (INT-2474). Capped and cleared on success. */
+export interface LastFailureEntry {
+  detail: string;
+  at: string; // ISO-8601
+}
+
+const MAX_FAILURE_DETAIL_CHARS = 2000;
+
 export interface TaskState {
   completedTaskIds: Set<string>;
   failedTaskCounts: Map<string, number>;
   failedTaskRetryTimes: Map<string, number>; // issueId → next retry timestamp (ms)
+  lastFailureDetails: Map<string, LastFailureEntry>; // issueId → last failure feedback
+}
+
+export function recordLastFailureDetail(state: TaskState, issueId: string, detail: string): void {
+  const trimmed = detail.trim();
+  if (!trimmed) return;
+  state.lastFailureDetails.set(issueId, {
+    detail: trimmed.slice(0, MAX_FAILURE_DETAIL_CHARS),
+    at: new Date().toISOString(),
+  });
 }
 
 export function loadTaskState(state: TaskState): void {
@@ -167,6 +187,7 @@ export function loadTaskState(state: TaskState): void {
       completed?: string[];
       failed?: Record<string, number>;
       retryTimes?: Record<string, number>;
+      lastFailures?: Record<string, LastFailureEntry>;
     };
     if (Array.isArray(data.completed)) {
       for (const id of data.completed) state.completedTaskIds.add(id);
@@ -181,6 +202,11 @@ export function loadTaskState(state: TaskState): void {
         state.failedTaskRetryTimes.set(id, time as number);
       }
     }
+    if (data.lastFailures && typeof data.lastFailures === 'object') {
+      for (const [id, entry] of Object.entries(data.lastFailures)) {
+        if (entry && typeof entry.detail === 'string') state.lastFailureDetails.set(id, entry);
+      }
+    }
     console.log(`[AutonomousRunner] Loaded task state: ${state.completedTaskIds.size} completed, ${state.failedTaskCounts.size} failed`);
   } catch (err) {
     console.warn('[AutonomousRunner] Failed to load task state:', err);
@@ -193,6 +219,7 @@ export function saveTaskState(state: TaskState): void {
       completed: Array.from(state.completedTaskIds),
       failed: Object.fromEntries(state.failedTaskCounts),
       retryTimes: Object.fromEntries(state.failedTaskRetryTimes),
+      lastFailures: Object.fromEntries(state.lastFailureDetails),
       updatedAt: new Date().toISOString(),
     };
     ensureParentDir(TASK_STATE_FILE);

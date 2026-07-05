@@ -79,21 +79,43 @@ describe('runnerState persistence and helpers', () => {
       completed: ['done-1'],
       failed: { bad: 2 },
       retryTimes: { bad: 12345 },
+      lastFailures: { bad: { detail: 'reviewer said: missing tests', at: '2026-07-05T00:00:00.000Z' } },
     }));
-    const state = { completedTaskIds: new Set<string>(), failedTaskCounts: new Map<string, number>(), failedTaskRetryTimes: new Map<string, number>() };
+    const state = {
+      completedTaskIds: new Set<string>(),
+      failedTaskCounts: new Map<string, number>(),
+      failedTaskRetryTimes: new Map<string, number>(),
+      lastFailureDetails: new Map<string, { detail: string; at: string }>(),
+    };
     mod.loadTaskState(state);
     expect([...state.completedTaskIds]).toEqual(['done-1']);
     expect(state.failedTaskCounts.get('bad')).toBe(2);
     expect(state.failedTaskRetryTimes.get('bad')).toBe(12345);
+    expect(state.lastFailureDetails.get('bad')?.detail).toBe('reviewer said: missing tests');
 
     state.completedTaskIds.add('done-2');
     state.failedTaskCounts.set('worse', 3);
     state.failedTaskRetryTimes.set('worse', 999);
+    mod.recordLastFailureDetail(state, 'worse', 'reviewer said: wrong API shape');
     mod.saveTaskState(state);
     const saved = JSON.parse(readFileSync(mod.TASK_STATE_FILE, 'utf8'));
     expect(saved.completed).toContain('done-2');
     expect(saved.failed.worse).toBe(3);
     expect(saved.retryTimes.worse).toBe(999);
+    expect(saved.lastFailures.worse.detail).toBe('reviewer said: wrong API shape');
+  });
+
+  it('caps recorded failure detail and ignores blank details', () => {
+    const state = {
+      completedTaskIds: new Set<string>(),
+      failedTaskCounts: new Map<string, number>(),
+      failedTaskRetryTimes: new Map<string, number>(),
+      lastFailureDetails: new Map<string, { detail: string; at: string }>(),
+    };
+    mod.recordLastFailureDetail(state, 'big', 'x'.repeat(5000));
+    expect(state.lastFailureDetails.get('big')!.detail.length).toBe(2000);
+    mod.recordLastFailureDetail(state, 'blank', '   ');
+    expect(state.lastFailureDetails.has('blank')).toBe(false);
   });
 
   it('tracks rejection entries and trims reasons', () => {
