@@ -18,6 +18,7 @@ const STATE_DIR = join(homedir(), '.config', 'openswarm');
 const LOG_DIR = join(STATE_DIR, 'logs');
 const PID_FILE = join(STATE_DIR, 'openswarm.pid');
 const LOG_FILE = join(LOG_DIR, 'openswarm.log');
+const DAEMON_PORT = 3847;
 
 export interface DaemonStatus {
   running: boolean;
@@ -25,6 +26,8 @@ export interface DaemonStatus {
   uptimeSeconds?: number;
   pidFile: string;
   logFile: string;
+  /** True when no PID file matched but the daemon API answered — a launchd-managed or manually started instance. */
+  external?: boolean;
 }
 
 function ensureStateDirs(): void {
@@ -50,6 +53,25 @@ function readPidFile(): number | null {
 }
 
 /**
+ * Probe the daemon's HTTP API directly. The PID file only tracks daemons
+ * spawned by `openswarm start` — a launchd-managed (or manually run) instance
+ * never writes it, so PID-file-only detection reports "not running" while a
+ * daemon is actively serving. That mis-detection made the TUI auto-start spawn
+ * a SECOND daemon working the same Linear queue in parallel (INT-2473).
+ * The port answers for any daemon regardless of how it was started.
+ */
+export async function probeDaemonPort(port = DAEMON_PORT, timeoutMs = 800): Promise<boolean> {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/stats`, {
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Resolve the path to dist/index.js. daemon.js lives at dist/cli/daemon.js,
  * so index.js is one level up.
  */
@@ -65,9 +87,9 @@ function closeFdQuietly(fd: number): void {
 /**
  * Start the service as a detached background process.
  * Returns the child PID on success.
- * Throws if a daemon is already running.
+ * Throws if a daemon is already running (PID file OR port 3847 responding).
  */
-export function startDaemon(): { pid: number; logFile: string } {
+export async function startDaemon(): Promise<{ pid: number; logFile: string }> {
   ensureStateDirs();
 
   const existing = readPidFile();
@@ -80,6 +102,15 @@ export function startDaemon(): { pid: number; logFile: string } {
   if (existing !== null) {
     // Stale pid file — previous run crashed without cleaning up.
     try { unlinkSync(PID_FILE); } catch { /* ignore */ }
+  }
+
+  // No PID file, but the API may still be live: a launchd-managed or manually
+  // started daemon. Spawning another would double-process the same task queue.
+  if (await probeDaemonPort()) {
+    throw new Error(
+      `OpenSwarm is already serving port ${DAEMON_PORT} (externally managed — e.g. launchd). ` +
+      `Not spawning a duplicate. Use 'launchctl kickstart -k gui/$UID/com.intrect.openswarm' to restart it.`
+    );
   }
 
   const indexPath = resolveIndexPath();
@@ -182,6 +213,20 @@ export function getDaemonStatus(): DaemonStatus {
   } catch { /* ignore */ }
 
   return { running: true, pid, uptimeSeconds, pidFile: PID_FILE, logFile: LOG_FILE };
+}
+
+/**
+ * Like getDaemonStatus, but also detects daemons the PID file can't see
+ * (launchd-managed / manually started) by probing the API port. Prefer this
+ * anywhere the answer gates spawning a new daemon.
+ */
+export async function getDaemonStatusFull(): Promise<DaemonStatus> {
+  const base = getDaemonStatus();
+  if (base.running) return base;
+  if (await probeDaemonPort()) {
+    return { running: true, external: true, pidFile: PID_FILE, logFile: LOG_FILE };
+  }
+  return base;
 }
 
 export const DAEMON_PATHS = { STATE_DIR, LOG_DIR, PID_FILE, LOG_FILE } as const;

@@ -421,7 +421,7 @@ program
 
     const { startDaemon, getDaemonStatus, readLogTail } = await import('./cli/daemon.js');
     try {
-      const { pid, logFile } = startDaemon();
+      const { pid, logFile } = await startDaemon();
       // The child can die immediately on a startup error (bad config, port in
       // use, throwing dependency). Spawning only proves the OS forked it — wait
       // briefly and confirm it's actually alive before claiming success, so we
@@ -453,10 +453,18 @@ program
   .option('-t, --timeout <ms>', 'Max time to wait for graceful shutdown (default 10000)', '10000')
   .action(async (opts: { timeout: string }) => {
     const timeoutMs = parseInt(opts.timeout, 10);
-    const { stopDaemon } = await import('./cli/daemon.js');
+    const { stopDaemon, probeDaemonPort } = await import('./cli/daemon.js');
     try {
       const stopped = await stopDaemon(Number.isFinite(timeoutMs) ? timeoutMs : 10_000);
       if (!stopped) {
+        // No PID file — but an externally managed (launchd) daemon may still be
+        // serving. Point at the right lever instead of a misleading "not running".
+        if (await probeDaemonPort()) {
+          console.log('OpenSwarm is running but externally managed (no PID file — e.g. launchd).');
+          console.log('  stop: launchctl bootout gui/$UID/com.intrect.openswarm');
+          console.log('  restart: launchctl kickstart -k gui/$UID/com.intrect.openswarm');
+          return;
+        }
         console.log('OpenSwarm is not running.');
         return;
       }
@@ -473,12 +481,18 @@ program
   .command('status')
   .description('Report daemon status (pid, uptime, log path)')
   .action(async () => {
-    const { getDaemonStatus } = await import('./cli/daemon.js');
-    const status = getDaemonStatus();
+    const { getDaemonStatusFull } = await import('./cli/daemon.js');
+    const status = await getDaemonStatusFull();
     if (!status.running) {
       console.log('OpenSwarm is not running.');
       console.log(`  pid file: ${status.pidFile}`);
       console.log(`  log file: ${status.logFile}`);
+      return;
+    }
+    if (status.external) {
+      console.log('OpenSwarm is running (externally managed — e.g. launchd).');
+      console.log('  port 3847 is responding; no PID file for this instance.');
+      console.log(`  restart: launchctl kickstart -k gui/$UID/com.intrect.openswarm`);
       return;
     }
     const uptime = status.uptimeSeconds ?? 0;
@@ -664,9 +678,13 @@ async function launchChatTui(sessionId?: string): Promise<void> {
   // agent itself doesn't depend on the daemon. Done before console muting so the
   // one-line status is visible.
   try {
-    const { getDaemonStatus, startDaemon } = await import('./cli/daemon.js');
-    if (!getDaemonStatus().running) {
-      const { pid } = startDaemon();
+    const { getDaemonStatus, getDaemonStatusFull, startDaemon } = await import('./cli/daemon.js');
+    // Port-probe-aware check: a launchd-managed daemon has no PID file, and
+    // spawning a second daemon next to it double-processes the same task
+    // queue (INT-2473). Only spawn when neither the PID file nor the API port
+    // shows a live daemon.
+    if (!(await getDaemonStatusFull()).running) {
+      const { pid } = await startDaemon();
       process.stdout.write(`Starting OpenSwarm daemon (pid ${pid}) for the monitor tabs…\n`);
       await new Promise((r) => setTimeout(r, 1500));
       if (!getDaemonStatus().running) {
