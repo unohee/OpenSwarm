@@ -22,6 +22,27 @@ describe('StuckDetector', () => {
     expect(detector.check()).toMatchObject({ isStuck: true });
   });
 
+  it('does NOT treat a repeating INFRA error as a stuck loop (INT-2521)', () => {
+    // An infra/capacity error recurring a few times is a retryable outage, not a
+    // genuine stuck loop — it backs off and is excluded from STUCK elsewhere.
+    const detector = new StuckDetector({ sameErrorRepeat: 2 });
+    detector.addEntry(entry({ success: false, error: 'codex CLI failed with code 1: timed out' }));
+    detector.addEntry(entry({ success: false, error: 'codex CLI failed with code 1: timed out' }));
+    expect(detector.check()).toEqual({ isStuck: false });
+
+    const d2 = new StuckDetector({ sameErrorRepeat: 2 });
+    d2.addEntry(entry({ success: false, error: 'connect ECONNREFUSED 127.0.0.1:1234' }));
+    d2.addEntry(entry({ success: false, error: 'connect ECONNREFUSED 127.0.0.1:1234' }));
+    expect(d2.check()).toEqual({ isStuck: false });
+  });
+
+  it('still flags a repeating genuine (non-infra) task error as stuck', () => {
+    const detector = new StuckDetector({ sameErrorRepeat: 2 });
+    detector.addEntry(entry({ success: false, error: 'TypeError: cannot read property x of undefined' }));
+    detector.addEntry(entry({ success: false, error: 'TypeError: cannot read property x of undefined' }));
+    expect(detector.check()).toMatchObject({ isStuck: true });
+  });
+
   it('does not treat historical matching errors as consecutive after progress', () => {
     const detector = new StuckDetector({ sameErrorRepeat: 2 });
 

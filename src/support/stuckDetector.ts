@@ -3,6 +3,8 @@
 // OpenHands-style infinite loop detection
 // ============================================
 
+import { isInfraError } from '../adapters/errorClassification.js';
+
 export interface StuckThresholds {
   sameOutputRepeat: number;    // Same output repeat threshold
   sameErrorRepeat: number;     // Same error repeat threshold
@@ -105,6 +107,14 @@ export class StuckDetector {
     );
 
     if (allSame) {
+      // A repeating INFRA/capacity error (rate limit, 5xx, connection drop, CLI
+      // exit) is not a genuine stuck loop — it's a retryable outage that backs off
+      // and is excluded from STUCK elsewhere (INT-2010). Counting it here would
+      // re-introduce the false STUCK: an infra hiccup that recurs a few times
+      // would trip the loop detector even though the task never got a fair run. (INT-2521)
+      if (isInfraError(recentErrors[0].error)) {
+        return { isStuck: false };
+      }
       return {
         isStuck: true,
         reason: `Same error repeated ${recentErrors.length} times`,
