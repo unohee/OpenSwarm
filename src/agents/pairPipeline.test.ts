@@ -11,6 +11,7 @@ import { RateLimitError } from '../adapters/rateLimitError.js';
 
 const runWorker = vi.fn();
 const runReviewer = vi.fn();
+const runDocumenter = vi.fn();
 const broadcastEvent = vi.fn();
 const getDefaultModel = vi.fn();
 
@@ -27,6 +28,11 @@ vi.mock('./reviewer.js', async () => {
     ...actual,
     runReviewer,
   };
+});
+
+vi.mock('./documenter.js', async () => {
+  const actual = await vi.importActual<typeof import('./documenter.js')>('./documenter.js');
+  return { ...actual, runDocumenter };
 });
 
 vi.mock('../knowledge/index.js', () => ({
@@ -125,6 +131,29 @@ describe('PairPipeline model selection', () => {
     expect(runReviewer).toHaveBeenCalledWith(expect.objectContaining<Partial<ReviewerOptions>>({
       model: 'profile-reviewer',
     }));
+  });
+
+  it('a post-success documenter rate-limit does NOT revert the approved task (INT-2521)', async () => {
+    // Worker approved, reviewer approved — the task is DONE. A documenter (post-
+    // success, non-blocking) rate-limit must not discard that success.
+    // Once-only so the rejection can't leak into later tests (clearAllMocks keeps impls).
+    runDocumenter.mockRejectedValueOnce(new RateLimitError(1782824950, 'Codex usage limit reached'));
+    const { PairPipeline } = await import('./pairPipeline.js');
+    const pipeline = new PairPipeline({
+      stages: ['worker', 'reviewer', 'documenter'],
+      maxIterations: 1,
+      roles: {
+        worker: { enabled: true, timeoutMs: 0 },
+        reviewer: { enabled: true, timeoutMs: 0 },
+        documenter: { enabled: true, timeoutMs: 0 },
+      },
+    });
+
+    const result = await pipeline.run(task(), process.cwd());
+
+    expect(result.success).toBe(true);
+    expect(result.finalStatus).toBe('approved');
+    expect(runDocumenter).toHaveBeenCalled();
   });
 
   it('falls back to role models when no jobProfile matches', async () => {

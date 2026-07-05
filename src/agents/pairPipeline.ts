@@ -196,36 +196,26 @@ export class PairPipeline extends EventEmitter {
 
       // Run Documenter after all stages pass
       if (this.hasStage('documenter') && context.workerResult?.success) {
-        if (
-          this.config.skipDocumenterIfNoChange &&
-          (!context.workerResult.filesChanged || context.workerResult.filesChanged.length === 0)
-        ) {
+        if (this.config.skipDocumenterIfNoChange && !context.workerResult.filesChanged?.length) {
           console.log(`[${context.taskPrefix}] Skipping documenter: no files changed`);
         } else {
-          const documenterResult = await this.runStage('documenter', context);
-          stages.push(documenterResult);
-          // Documenter failure does not cause overall failure
+          await this.runPostSuccessStage('documenter', context, stages);
         }
       }
 
       // Auditor (post-success, non-blocking)
       if (this.hasStage('auditor') && context.workerResult?.success) {
-        const auditorFileThreshold = this.config.skipAuditorUnderFileCount ?? 3;
-        const auditorChangedFiles = context.workerResult.filesChanged || [];
-        if (auditorChangedFiles.length < auditorFileThreshold) {
-          console.log(`[${context.taskPrefix}] Skipping auditor: ${auditorChangedFiles.length} files changed (threshold: ${auditorFileThreshold})`);
+        const auditorFiles = context.workerResult.filesChanged?.length ?? 0;
+        if (auditorFiles < (this.config.skipAuditorUnderFileCount ?? 3)) {
+          console.log(`[${context.taskPrefix}] Skipping auditor: ${auditorFiles} files changed`);
         } else {
-          const auditorResult = await this.runStage('auditor', context);
-          stages.push(auditorResult);
-          // Auditor failure does not affect overall success
+          await this.runPostSuccessStage('auditor', context, stages);
         }
       }
 
       // Skill Documenter (post-success, non-blocking)
       if (this.hasStage('skill-documenter') && context.workerResult?.success) {
-        const sdResult = await this.runStage('skill-documenter', context);
-        stages.push(sdResult);
-        // Skill Documenter failure does not affect overall success
+        await this.runPostSuccessStage('skill-documenter', context, stages);
       }
 
       // Success
@@ -396,6 +386,16 @@ export class PairPipeline extends EventEmitter {
    */
   private hasStage(stage: PipelineStage): boolean {
     return this.config.stages.includes(stage);
+  }
+
+  /** Post-success non-blocking stage: its failure (incl. rate-limit/infra) must
+   *  NEVER revert the approved task; only cancellation propagates. (INT-2521) */
+  private async runPostSuccessStage(stage: PipelineStage, context: PipelineContext, stages: StageResult[]): Promise<void> {
+    try { stages.push(await this.runStage(stage, context)); }
+    catch (err) {
+      if (err instanceof PipelineCancelledError || this.abortSignal?.aborted) throw err;
+      console.warn(`[${context.taskPrefix}] ${stage} skipped (non-blocking failure): ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   /**
