@@ -8,7 +8,7 @@
 
 import { TOOL_DEFINITIONS, APPLY_PATCH_TOOL, executeToolCalls, createReadCache, validatePath, type ToolCall, type ToolResult, type ToolDefinition } from './tools.js';
 import { WEB_TOOL_DEFINITIONS } from './webTools.js';
-import { detectRateLimit } from './rateLimitError.js';
+import { detectRateLimit, RateLimitError } from './rateLimitError.js';
 import { parseSearchReplaceBlocks, applyEditBlock, type EditFormat } from '../support/editParser.js';
 import type { CliRunResult } from './types.js';
 
@@ -317,12 +317,23 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
         finalText = finalText || '(stopped)';
         break;
       }
-      const msg = err instanceof Error ? err.message : String(err);
       // A 429/usage-limit raised by the in-process API caller (gpt/local/
       // openrouter/codex-responses) would otherwise be swallowed into finalText
       // here and returned as a normal result — the scheduler never learns it was
-      // rate-limited. Re-throw it as a typed RateLimitError so it propagates up to
-      // the pipeline, which pauses instead of failing/spamming. (INT-1906)
+      // rate-limited. Re-throw it so it propagates up to the pipeline, which
+      // pauses instead of failing/spamming. (INT-1906)
+      //
+      // The caller already throws a TYPED RateLimitError (codexResponses 429 →
+      // rateLimitFromCodexHeaders). Preserve the type FIRST: its human-readable
+      // message ("Codex 100% used of 300min window — resets at …") does NOT
+      // contain the raw tokens detectRateLimit scans for, so stringifying it
+      // silently downgraded a rate limit into a 2s empty "success" → 55%
+      // confidence HALT → false STUCK. (INT-2519)
+      if (err instanceof RateLimitError) {
+        onLog?.(`■ ${err.message}`);
+        throw err;
+      }
+      const msg = err instanceof Error ? err.message : String(err);
       const rl = detectRateLimit('', msg);
       if (rl) {
         onLog?.(`■ ${rl.message}`);
@@ -542,7 +553,15 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
       apiCallCount++;
       finalText = response.choices?.[0]?.message?.content ?? '';
     } catch (err) {
-      onLog?.(`✖ Final answer turn failed: ${err instanceof Error ? err.message : String(err)}`);
+      // A rate limit on the salvage call must still propagate — swallowing it
+      // here would return an empty result the scheduler reads as a plain failure
+      // instead of pausing. Mirror the main call path: preserve a typed
+      // RateLimitError, then re-detect an untyped one from the message. (INT-2519)
+      if (err instanceof RateLimitError) throw err;
+      const msg = err instanceof Error ? err.message : String(err);
+      const rl = detectRateLimit('', msg);
+      if (rl) throw rl;
+      onLog?.(`✖ Final answer turn failed: ${msg}`);
     }
   }
 

@@ -49,11 +49,20 @@ export function rateLimitFromCodexHeaders(headers: Headers, body: string): RateL
 export function detectRateLimit(stdout: string, stderr: string): RateLimitError | null {
   const combined = stdout + '\n' + stderr;
 
+  const lower = combined.toLowerCase();
   const hasSignal =
     combined.includes('usage_limit_reached') ||
     combined.includes('rate_limit_exceeded') ||
     combined.includes('"rate_limit_error"') ||
-    (combined.includes('429') && /rate.{0,15}limit/i.test(combined));
+    (combined.includes('429') && /rate.{0,15}limit/i.test(combined)) ||
+    // Human-readable Codex usage-limit phrasing (rateLimitFromCodexHeaders output:
+    // "Codex 100% used of 300min window — resets at …" / "Codex usage limit reached").
+    // Stringifying a typed RateLimitError strips the raw tokens above, so a CLI /
+    // string path must still recognise these. (INT-2519)
+    lower.includes('usage limit reached') ||
+    /\d+%\s*used\s+of\s+\d+min\s+window/.test(lower) ||
+    lower.includes('out of credits') ||
+    lower.includes('out_of_credits');
 
   if (!hasSignal) return null;
 

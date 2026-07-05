@@ -34,6 +34,18 @@ describe('detectRateLimit (INT-1906)', () => {
     expect(detectRateLimit('listening on port 4290; processed 429 rows', '')).toBeNull();
   });
 
+  it('detects the human-readable Codex usage-limit phrasing (INT-2519)', () => {
+    // rateLimitFromCodexHeaders output that reached a CLI/string path.
+    expect(detectRateLimit('API error: Codex 100% used of 300min window — resets at 2026-06-30T12:00:00Z', ''))
+      .toBeInstanceOf(RateLimitError);
+    expect(detectRateLimit('', 'Codex usage limit reached — resets at …')).toBeInstanceOf(RateLimitError);
+    expect(detectRateLimit('overageStatus: out_of_credits', '')).toBeInstanceOf(RateLimitError);
+  });
+
+  it('does not treat ordinary "used"/"window" wording as a rate limit (no false positive)', () => {
+    expect(detectRateLimit('the cache window is 5min; 80% used of the disk', '')).toBeNull();
+  });
+
   it('scans both stdout and stderr (signal split across streams)', () => {
     const err = detectRateLimit('partial output', 'error: usage_limit_reached "resets_at": 1782343811');
     expect(err).toBeInstanceOf(RateLimitError);
@@ -58,6 +70,44 @@ describe('runAgenticLoop rate-limit propagation (INT-1906 blocker)', () => {
     const callApi = async () => { throw new Error('500 Internal Server Error'); };
     const res = await runAgenticLoop({ prompt: 'x', cwd: process.cwd(), model: 't', callApi, webTools: false, maxTurns: 2 });
     expect(res.text).toContain('API error');
+  });
+
+  it('preserves a TYPED RateLimitError whose human message detectRateLimit would miss (INT-2519)', async () => {
+    // codexResponses throws rateLimitFromCodexHeaders → a typed RateLimitError whose
+    // message ("Codex 100% used of 300min window — resets at …") lacks the raw tokens
+    // detectRateLimit scans for. Before the instanceof guard this was stringified,
+    // failed re-detection, and became a 2s empty "success" → 55% HALT → false STUCK.
+    const callApi = async () => {
+      throw new RateLimitError(1782824950, 'Codex 100% used of 300min window — resets at 2026-06-30T12:00:00.000Z', 100, 300);
+    };
+    await expect(
+      runAgenticLoop({ prompt: 'x', cwd: process.cwd(), model: 't', callApi, webTools: false, maxTurns: 2 }),
+    ).rejects.toBeInstanceOf(RateLimitError);
+  });
+
+  it('propagates an UNTYPED rate limit thrown from the final-answer salvage turn (INT-2519)', async () => {
+    // Drive the loop to exhaust maxTurns with no final text (tool calls only), so the
+    // final-answer salvage call fires. That call throws an untyped 429 — it must
+    // propagate, not be swallowed like an ordinary error.
+    let n = 0;
+    const callApi = async (_messages: unknown, tools: unknown[]) => {
+      if (Array.isArray(tools) && tools.length === 0) {
+        // salvage call (tools stripped) → untyped rate-limit error
+        throw new Error('HTTP 429 — rate limit exceeded, retry later');
+      }
+      n += 1;
+      return {
+        choices: [{
+          message: { role: 'assistant', content: null, tool_calls: [
+            { id: `c${n}`, type: 'function' as const, function: { name: 'read_file', arguments: JSON.stringify({ path: `nope${n}.ts` }) } },
+          ] },
+          finish_reason: 'tool_calls',
+        }],
+      };
+    };
+    await expect(
+      runAgenticLoop({ prompt: 'x', cwd: process.cwd(), model: 't', callApi: callApi as never, webTools: false, maxTurns: 2 }),
+    ).rejects.toBeInstanceOf(RateLimitError);
   });
 });
 
