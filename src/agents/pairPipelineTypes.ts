@@ -106,6 +106,8 @@ export interface PipelineContext {
   lastReviseFeedback?: string;
   /** One-shot worker escalation triggered by repeated similar revise feedback: higher model and/or effort for the retry (INT-2475). */
   workerEscalation?: { model?: string; reasoningEffort?: 'low' | 'medium' | 'high' };
+  /** The missing-validation-evidence gate has already nudged once this session — after that it defers to the reviewer instead of consuming more iterations (INT-2485). */
+  validationNudged?: boolean;
 }
 
 export type PipelineEventType = 'stage:start' | 'stage:complete' | 'stage:fail' | 'iteration:start' | 'iteration:complete' | 'iteration:fail' | 'pipeline:complete' | 'pipeline:fail' | 'fanout:gate' | 'halt';

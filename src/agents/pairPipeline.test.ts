@@ -368,6 +368,41 @@ describe('PairPipeline model selection', () => {
     expect(runWorker.mock.calls[1][0].reasoningEffort).not.toBe('high');
   });
 
+  it('nudges for missing validation at most once, then defers even if the worker keeps editing new files', async () => {
+    // Regression: the worker edits a DIFFERENT file every iteration without ever
+    // running a validation command. The gate used to bounce each time (each bounce
+    // "progressed" so stagnation-defer never fired), burning the whole iteration
+    // budget → Max-iteration STUCK. It must nudge once, then defer to the reviewer.
+    let n = 0;
+    runWorker.mockImplementation(async () => ({
+      success: true,
+      summary: 'edited without validating',
+      filesChanged: [`src/file_${n++}.ts`], // different file each call
+      commands: [],
+      output: '',
+      confidencePercent: 95,
+    }));
+    runReviewer.mockResolvedValue({ decision: 'approve', feedback: 'ok' });
+
+    const { PairPipeline } = await import('./pairPipeline.js');
+    const pipeline = new PairPipeline({
+      stages: ['worker', 'reviewer'],
+      maxIterations: 3,
+      roles: {
+        worker: { enabled: true, model: 'worker', timeoutMs: 0 },
+        reviewer: { enabled: true, model: 'reviewer', timeoutMs: 0 },
+      },
+    });
+
+    const result = await pipeline.run(task(), process.cwd());
+
+    // Nudge on iter 1 (bounce), defer on iter 2 → reviewer approves → success,
+    // WITHOUT exhausting all 3 iterations on validation bounces.
+    expect(result.success).toBe(true);
+    expect(runWorker).toHaveBeenCalledTimes(2);
+    expect(runReviewer).toHaveBeenCalledTimes(1);
+  });
+
   it('lets an escalated worker attempt succeed after repeated revise feedback', async () => {
     runReviewer
       .mockResolvedValueOnce({ decision: 'revise', feedback: 'Pagination cursor handling is wrong: the offset resets between pages, fix and add a test.' })
