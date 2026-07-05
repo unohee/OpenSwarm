@@ -11,10 +11,21 @@ describe('isInfraError (INT-2010)', () => {
   it('flags spawn / auth / timeout / network failures', () => {
     expect(isInfraError(new Error('spawn codex ENOENT'))).toBe(true);
     expect(isInfraError(new Error('Request failed: 401 Unauthorized'))).toBe(true);
+    expect(isInfraError(new Error('403 Forbidden'))).toBe(true);
+    expect(isInfraError(new Error('OpenAI API error (401): invalid key'))).toBe(true);
+    expect(isInfraError(new Error('request rejected with status 403'))).toBe(true);
     expect(isInfraError(new Error('connect ETIMEDOUT'))).toBe(true);
     expect(isInfraError(new Error('codex timeout after 300000ms'))).toBe(true);
     expect(isInfraError(new Error('read ECONNRESET'))).toBe(true);
     expect(isInfraError('getaddrinfo ENOTFOUND api.openai.com')).toBe(true);
+  });
+
+  it('does NOT flag a bare 401/403 number in prose (needs auth word or wrapper) (INT-2521)', () => {
+    expect(isInfraError(new Error('assertion failed at line 401 of the parser'))).toBe(false);
+    expect(isInfraError(new Error('the error code 4013 is not a real HTTP status'))).toBe(false);
+    expect(isInfraError(new Error('expected 403 rows in the fixture'))).toBe(false);
+    // a generic application "error code 401" is NOT an HTTP/auth infra failure
+    expect(isInfraError(new Error('validation error code 401: form field missing'))).toBe(false);
   });
 
   it('does NOT flag genuine task/code failures', () => {

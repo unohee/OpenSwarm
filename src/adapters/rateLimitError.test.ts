@@ -63,6 +63,19 @@ describe('rateLimitFromHttpResponse (INT-2520)', () => {
   });
 });
 
+describe('reset-time extraction — snake_case AND camelCase (INT-2521)', () => {
+  it('detectRateLimit reads claude camelCase "resetsAt" (was defaulting to 60s)', () => {
+    const claudeEvent = '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1783249200,"overageDisabledReason":"out_of_credits"}}';
+    const err = detectRateLimit(claudeEvent, '');
+    expect(err).toBeInstanceOf(RateLimitError);
+    expect(err?.resetsAt).toBe(1783249200);
+  });
+  it('detectRateLimit still reads codex/OpenAI snake_case "resets_at"', () => {
+    const err = detectRateLimit('error: usage_limit_reached "resets_at": 1782343811', '');
+    expect(err?.resetsAt).toBe(1782343811);
+  });
+});
+
 describe('detectRateLimit (INT-1906)', () => {
   it('detects a Codex usage_limit_reached payload and parses resets_at', () => {
     const stdout =

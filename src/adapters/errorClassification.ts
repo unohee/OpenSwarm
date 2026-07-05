@@ -36,12 +36,14 @@ const INFRA_ERROR_PATTERNS = [
   'fetch failed', // undici: the real code hides in error.cause.code (checked below)
   'terminated', // undici mid-stream socket drop
   'unauthorized',
+  'forbidden',
   'not authenticated',
   'authentication failed',
   'invalid api key',
   'permission denied',
-  '401',
-  '403',
+  // NOTE: bare '401'/'403' were removed — they matched prose like "line 401" or
+  // "error 4013". Real auth failures carry a word ('unauthorized'/'forbidden'/…)
+  // or an adapter/HTTP-status wrapper, both covered here + in INFRA_ERROR_REGEXES. (INT-2521)
   // Server-side capacity / gateway failures — the model server was reachable but
   // could not serve (model loading, overloaded, upstream down). Not a verdict on
   // the task. 429/402 are handled as RateLimitError, not here. Use unambiguous
@@ -59,11 +61,15 @@ const INFRA_ERROR_PATTERNS = [
 // wrapper like "Local API error (503)", or "HTTP 503" / "status 503"), so a bare
 // number in task/reviewer prose is not mistaken for an infra failure. (INT-2520)
 const INFRA_ERROR_REGEXES: readonly RegExp[] = [
-  // Adapter error wrappers only ("OpenAI API error (503)", "Local API error (502)",
+  // Adapter error wrappers only ("OpenAI API error (503)", "Local API error (401)",
   // "Codex responses error (504)") — NOT a bare "(503)" in prose, so a task/reviewer
-  // message like "expected (503)" is not mis-flagged.
-  /(?:api|responses) error \((50[234])\)/,
-  /\b(?:http|status|code)\s*[:=]?\s*(50[234])\b/,
+  // message like "expected (503)" is not mis-flagged. Covers auth (401/403) and
+  // server-capacity (5xx) status codes. (INT-2520, INT-2521)
+  /(?:api|responses) error \((40[13]|50[234])\)/,
+  // "http"/"status" only — NOT "code", which collides with generic application
+  // error codes ("error code 401: invalid form field"). Real HTTP failures say
+  // http/status or carry an adapter wrapper / auth word. (INT-2521)
+  /\b(?:http|status)\s*[:=]?\s*(40[13]|50[234])\b/,
 ];
 
 /**
