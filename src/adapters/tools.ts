@@ -8,12 +8,37 @@
 import fs from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { homedir } from 'node:os';
 import path from 'node:path';
 import { webFetch, webSearch } from './webTools.js';
 import { isMcpTool, callMcpTool } from '../mcp/mcpClient.js';
 import { applyV4APatch } from './applyPatch.js';
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * The daemon's launchd PATH is minimal (/usr/bin:/bin:/opt/homebrew/bin, no
+ * ~/.cargo/bin or ~/.local/bin), and the `bash` tool runs non-login (`bash -c`),
+ * so it never sources the user's shell profile. Result: `cargo`/`uv`/`pyenv`
+ * shims are "command not found", the worker cannot build/test its Rust/Python
+ * changes, and the validation gate + reviewer reject it → Max-iteration STUCK
+ * (observed live on every WAVE Rust task: "cargo: command not found"). Prepend
+ * the common user tool bins a login shell would have added. (INT-2485)
+ */
+export function buildBashToolEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const home = homedir();
+  const extra = [
+    path.join(home, '.cargo', 'bin'),
+    path.join(home, '.local', 'bin'),
+    path.join(home, 'go', 'bin'),
+    path.join(home, '.bun', 'bin'),
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
+  ];
+  const current = (base.PATH ?? '').split(':').filter(Boolean);
+  const merged = [...extra.filter((p) => !current.includes(p)), ...current];
+  return { ...base, PATH: merged.join(':') };
+}
 
 // ============ 도구 정의 (OpenAI function calling 포맷) ============
 
@@ -524,7 +549,7 @@ export async function executeTool(
             cwd,
             timeout: execOptions?.bashTimeoutMs ?? DEFAULT_BASH_TIMEOUT_MS,
             maxBuffer: 1024 * 512,
-            env: process.env,
+            env: buildBashToolEnv(),
           });
           const output = stdout + (stderr ? `\n[stderr] ${stderr}` : '');
           // 출력이 너무 길면 잘라냄
