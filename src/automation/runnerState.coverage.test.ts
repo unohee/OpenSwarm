@@ -13,6 +13,12 @@ async function loadFreshModule() {
   tempHome = mkdtempSync(join(tmpdir(), 'openswarm-runner-state-'));
   vi.stubEnv('HOME', tempHome);
   vi.stubEnv('USERPROFILE', tempHome);
+  // Clear any RUNNER_* overrides inherited from the shell (e.g. CI) so every path
+  // derives from tempHome, independent of the ambient environment. (INT-2543)
+  for (const v of ['OPENSWARM_RUNNER_TASK_STATE_FILE', 'OPENSWARM_RUNNER_REJECTION_STATE_FILE',
+    'OPENSWARM_RUNNER_PIPELINE_HISTORY_FILE', 'OPENSWARM_RUNNER_DECOMPOSITION_STATE_FILE']) {
+    vi.stubEnv(v, '');
+  }
   mod = await import('./runnerState.js');
 }
 
@@ -205,4 +211,58 @@ describe('pickFailureDetail (INT-2504)', () => {
 it('pickFailureDetail skips locale noSummary fallbacks (INT-2504 follow-up)', () => {
   expect(mod.pickFailureDetail(['(no summary)', 'real feedback here'])).toBe('real feedback here');
   expect(mod.pickFailureDetail(['(요약 없음)'])).toBeUndefined();
+});
+
+describe('state-file env overrides (INT-2543)', () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('honors the OPENSWARM_RUNNER_* overrides for all four state files (test isolation)', async () => {
+    vi.resetModules();
+    const taskPath = join(tmpdir(), 'ovr-int2543-task.json');
+    const rejPath = join(tmpdir(), 'ovr-int2543-rej.json');
+    const histPath = join(tmpdir(), 'ovr-int2543-hist.json');
+    const decompPath = join(tmpdir(), 'ovr-int2543-decomp.json');
+    vi.stubEnv('OPENSWARM_RUNNER_TASK_STATE_FILE', taskPath);
+    vi.stubEnv('OPENSWARM_RUNNER_REJECTION_STATE_FILE', rejPath);
+    vi.stubEnv('OPENSWARM_RUNNER_PIPELINE_HISTORY_FILE', histPath);
+    vi.stubEnv('OPENSWARM_RUNNER_DECOMPOSITION_STATE_FILE', decompPath);
+    const m = await import('./runnerState.js');
+    expect(m.TASK_STATE_FILE).toBe(taskPath);
+    expect(m.REJECTION_STATE_FILE).toBe(rejPath);
+    expect(m.PIPELINE_HISTORY_FILE).toBe(histPath);
+    expect(m.DECOMPOSITION_STATE_FILE).toBe(decompPath);
+  });
+
+  it('appendPipelineHistory writes ONLY to the overridden pipeline-history file', async () => {
+    vi.resetModules();
+    const histPath = join(tmpdir(), `ovr-int2543-hist-${process.pid}-write.json`);
+    if (existsSync(histPath)) rmSync(histPath);
+    vi.stubEnv('OPENSWARM_RUNNER_PIPELINE_HISTORY_FILE', histPath);
+    vi.stubEnv('HOME', mkdtempSync(join(tmpdir(), 'oh-'))); // guard: any leak lands here, not real ~/.claude
+    const m = await import('./runnerState.js');
+    m.appendPipelineHistory({ taskId: 't1', issueId: 'INT-X', title: 'x', finalStatus: 'approved', success: true, durationMs: 1, at: '2026-01-01T00:00:00Z' } as any);
+    expect(existsSync(histPath)).toBe(true); // the override path got the write
+    expect(JSON.parse(readFileSync(histPath, 'utf8')).length).toBe(1);
+  });
+
+  it('does NOT reuse the canonical store env var (would clobber taskState/store schema)', async () => {
+    vi.resetModules();
+    // Setting ONLY the canonical store's var must not move the legacy runner path —
+    // sharing it would let one store overwrite the other's differently-schema'd file.
+    vi.stubEnv('OPENSWARM_TASK_STATE_FILE', join(tmpdir(), 'canonical-store.json'));
+    vi.stubEnv('OPENSWARM_RUNNER_TASK_STATE_FILE', ''); // independent of ambient shell env
+    vi.stubEnv('HOME', '/tmp/fake-home-int2543');
+    vi.stubEnv('USERPROFILE', '/tmp/fake-home-int2543');
+    const m = await import('./runnerState.js');
+    expect(m.TASK_STATE_FILE).toBe('/tmp/fake-home-int2543/.claude/openswarm-task-state.json');
+  });
+
+  it('falls back to the ~/.claude default when the override is unset (backward compatible)', async () => {
+    vi.resetModules();
+    vi.stubEnv('OPENSWARM_RUNNER_TASK_STATE_FILE', ''); // empty → falsy → fallback
+    vi.stubEnv('HOME', '/tmp/fake-home-int2543');
+    vi.stubEnv('USERPROFILE', '/tmp/fake-home-int2543');
+    const m = await import('./runnerState.js');
+    expect(m.TASK_STATE_FILE).toBe('/tmp/fake-home-int2543/.claude/openswarm-task-state.json');
+  });
 });
