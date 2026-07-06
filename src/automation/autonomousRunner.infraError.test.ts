@@ -74,7 +74,11 @@ describe('AutonomousRunner infra_error handling (INT-2010)', () => {
   beforeEach(async () => {
     vi.resetModules();
     tempDir = mkdtempSync(join(tmpdir(), 'openswarm-infra-'));
-    vi.stubEnv('OPENSWARM_TASK_STATE_FILE', join(tempDir, 'task-state.json'));
+    vi.stubEnv('OPENSWARM_TASK_STATE_FILE', join(tempDir, 'task-state.json')); // canonical store (taskState/store)
+    vi.stubEnv('OPENSWARM_RUNNER_TASK_STATE_FILE', join(tempDir, 'runner-task-state.json')); // legacy runnerState
+    vi.stubEnv('OPENSWARM_RUNNER_REJECTION_STATE_FILE', join(tempDir, 'runner-rejection-state.json'));
+    vi.stubEnv('OPENSWARM_RUNNER_PIPELINE_HISTORY_FILE', join(tempDir, 'runner-pipeline-history.json'));
+    vi.stubEnv('OPENSWARM_RUNNER_DECOMPOSITION_STATE_FILE', join(tempDir, 'runner-decomposition-state.json'));
     ({ AutonomousRunner } = await import('./autonomousRunner.js'));
     runnerExecution = await import('./runnerExecution.js');
   }, 30000);

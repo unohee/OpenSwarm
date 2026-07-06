@@ -17,10 +17,19 @@ export function isPathEnabled(resolvedPath: string, enabledProjects: Set<string>
   return false;
 }
 
-export const TASK_STATE_FILE = join(homedir(), '.claude', 'openswarm-task-state.json');
-export const PIPELINE_HISTORY_FILE = join(homedir(), '.claude', 'openswarm-pipeline-history.json');
-export const REJECTION_STATE_FILE = join(homedir(), '.claude', 'openswarm-rejection-state.json');
-export const DECOMPOSITION_STATE_FILE = join(homedir(), '.claude', 'openswarm-decomposition-state.json');
+// State-file paths honor env overrides so tests (and alternate deployments) can
+// redirect them off the real ~/.claude state — an unset override keeps the exact
+// legacy path (backward compatible). Without this, every runner integration test
+// wrote the LIVE daemon's state files (observed: ISSUE-1 accrued 184 phantom failures),
+// which also made those tests flaky. Read at import; tests stub the env then re-import.
+// NOTE: these use OPENSWARM_RUNNER_* names, deliberately DISTINCT from the canonical
+// task store's OPENSWARM_TASK_STATE_FILE (src/taskState/store.ts) — this legacy runner
+// state has a different schema ({completed,failed,retryTimes,…}), so sharing the env
+// var would let one store silently overwrite the other's file. (INT-2543)
+export const TASK_STATE_FILE = process.env.OPENSWARM_RUNNER_TASK_STATE_FILE || join(homedir(), '.claude', 'openswarm-task-state.json');
+export const PIPELINE_HISTORY_FILE = process.env.OPENSWARM_RUNNER_PIPELINE_HISTORY_FILE || join(homedir(), '.claude', 'openswarm-pipeline-history.json');
+export const REJECTION_STATE_FILE = process.env.OPENSWARM_RUNNER_REJECTION_STATE_FILE || join(homedir(), '.claude', 'openswarm-rejection-state.json');
+export const DECOMPOSITION_STATE_FILE = process.env.OPENSWARM_RUNNER_DECOMPOSITION_STATE_FILE || join(homedir(), '.claude', 'openswarm-decomposition-state.json');
 export const DAILY_PACE_FILE = join(homedir(), '.openswarm', 'daily-pace.json');
 export const PROJECT_SELECTION_FILE = join(homedir(), '.openswarm', 'project-selection.json');
 const MAX_PIPELINE_HISTORY = 100;
