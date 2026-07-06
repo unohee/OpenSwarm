@@ -40,6 +40,12 @@ const UNCERTAINTY_PATTERNS = [
   'could be', 'seems like', 'appears to',
   'not tested', 'untested', 'skip test',
   'todo', 'fixme', 'xxx',
+  // A worker can close out a "diagnose the root cause" task while its own report
+  // admits the cause was never pinned down — e.g. "cause: unconfirmed (open
+  // question)" — and still get approved because none of the phrases above catch
+  // it. Real incident: STO-1447/PR #217 closed Done on a workaround alone.
+  // (INT-2421)
+  'unconfirmed', 'not confirmed', 'not yet confirmed', 'open question',
 ];
 
 // Fake Data Detection Patterns

@@ -548,3 +548,139 @@ describe('unsafe binary staging guard (INT-2430)', () => {
     git(repo, 'worktree', 'remove', '--force', info.worktreePath);
   });
 });
+
+describe('sibling merged-PR staleness warning (INT-2421)', () => {
+  let root: string;
+  let repo: string;
+  const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' });
+
+  beforeEach(() => {
+    root = join(tmpdir(), `openswarm-stale-sibling-${process.pid}-${Date.now()}`);
+    repo = join(root, 'repo');
+    mkdirSync(repo, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("flags a merged PR touching the same file that this branch's history does not contain", async () => {
+    const originBare = join(root, 'origin.git');
+    execFileSync('git', ['init', '--bare', '-b', 'main', originBare], { stdio: 'pipe' });
+    execFileSync('git', ['init', '-b', 'main', repo], { stdio: 'pipe' });
+    git(repo, 'config', 'user.email', 'test@example.com');
+    git(repo, 'config', 'user.name', 'Test');
+    git(repo, 'config', 'commit.gpgsign', 'false');
+
+    writeFileSync(join(repo, 'watchlist.py'), 'def gate():\n    return True  # bug: soft-penalty escape hatch\n');
+    mkdirSync(join(repo, 'src'), { recursive: true });
+    writeFileSync(join(repo, 'src', 'index.ts'), 'export const x = 1;\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-m', 'init');
+    git(repo, 'remote', 'add', 'origin', originBare);
+    git(repo, 'push', 'origin', 'main');
+
+    // Our branch forks HERE — before the sibling fix below lands on main.
+    const info = await createWorktree(repo, 'INT-1', 'swarm/INT-1-test');
+
+    // A sibling PR fixes watchlist.py and merges to main AFTER our fork point.
+    git(repo, 'checkout', '-b', 'fix/sibling');
+    writeFileSync(join(repo, 'watchlist.py'), 'def gate():\n    return False  # escape hatch removed\n');
+    git(repo, 'commit', '-am', 'fix sibling bug');
+    git(repo, 'checkout', 'main');
+    git(repo, 'merge', '--no-ff', '-m', 'Merge fix/sibling', 'fix/sibling');
+    git(repo, 'push', 'origin', 'main');
+    const mergeCommitOid = git(repo, 'rev-parse', 'main').trim();
+
+    // Our branch also touches watchlist.py — unaware of the sibling's fix, exactly
+    // the shape of the real incident (both PRs touch the same gate function).
+    writeFileSync(join(info.worktreePath, 'watchlist.py'), 'def gate():\n    return True  # raised threshold, escape hatch still present\n');
+    writeFileSync(join(info.worktreePath, 'src', 'index.ts'), 'export const x = 2;\n');
+
+    // Fake `gh`: no existing PR for our branch, no other open PRs, one merged PR
+    // (#218) whose mergeCommit is the sibling fix above, and it touches watchlist.py.
+    const bin = join(root, 'bin');
+    mkdirSync(bin, { recursive: true });
+    const ghLog = join(root, 'gh-args.log');
+    writeFileSync(join(bin, 'gh'), `#!/bin/sh
+printf '%s\\n' "$*" >> "${ghLog}"
+case "$*" in
+  *"pr list --head"*) echo "";;
+  *"pr list --state open"*) echo "[]";;
+  *"pr list --state merged"*) echo '[{"number":218,"headRefName":"fix/sibling","mergeCommit":{"oid":"${mergeCommitOid}"}}]';;
+  *"pr diff 218"*) echo "watchlist.py";;
+  *"pr create"*) echo "https://example.test/created";;
+esac
+`);
+    chmodSync(join(bin, 'gh'), 0o755);
+
+    const prevPath = process.env.PATH;
+    process.env.PATH = `${bin}:${prevPath}`;
+    try {
+      await commitAndCreatePR(info, 'Our change', 'INT-1', 'desc');
+    } finally {
+      process.env.PATH = prevPath;
+    }
+
+    // The fake gh script logs raw args ($*) verbatim, including any literal
+    // newlines inside --body's value, so the PR body can span multiple lines
+    // in the log file — check the whole log, not a single split('\n') line.
+    const calls = readFileSync(ghLog, 'utf8');
+    expect(calls).toContain('pr create');
+    expect(calls).toContain('MERGED PR #218');
+    expect(calls).toContain('watchlist.py');
+
+    git(repo, 'worktree', 'remove', '--force', info.worktreePath);
+  });
+
+  it('does not warn when the merged PR is already in this branch\'s history', async () => {
+    const originBare = join(root, 'origin.git');
+    execFileSync('git', ['init', '--bare', '-b', 'main', originBare], { stdio: 'pipe' });
+    execFileSync('git', ['init', '-b', 'main', repo], { stdio: 'pipe' });
+    git(repo, 'config', 'user.email', 'test@example.com');
+    git(repo, 'config', 'user.name', 'Test');
+    git(repo, 'config', 'commit.gpgsign', 'false');
+
+    writeFileSync(join(repo, 'watchlist.py'), 'def gate():\n    return False\n');
+    mkdirSync(join(repo, 'src'), { recursive: true });
+    writeFileSync(join(repo, 'src', 'index.ts'), 'export const x = 1;\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-m', 'init');
+    git(repo, 'remote', 'add', 'origin', originBare);
+    git(repo, 'push', 'origin', 'main');
+
+    // Our branch forks AFTER the "sibling fix" is already on main.
+    const info = await createWorktree(repo, 'INT-2', 'swarm/INT-2-test');
+    const mergeCommitOid = git(repo, 'rev-parse', 'main').trim();
+    writeFileSync(join(info.worktreePath, 'src', 'index.ts'), 'export const x = 2;\n');
+
+    const bin = join(root, 'bin');
+    mkdirSync(bin, { recursive: true });
+    const ghLog = join(root, 'gh-args.log');
+    writeFileSync(join(bin, 'gh'), `#!/bin/sh
+printf '%s\\n' "$*" >> "${ghLog}"
+case "$*" in
+  *"pr list --head"*) echo "";;
+  *"pr list --state open"*) echo "[]";;
+  *"pr list --state merged"*) echo '[{"number":218,"headRefName":"fix/sibling","mergeCommit":{"oid":"${mergeCommitOid}"}}]';;
+  *"pr diff 218"*) echo "watchlist.py";;
+  *"pr create"*) echo "https://example.test/created";;
+esac
+`);
+    chmodSync(join(bin, 'gh'), 0o755);
+
+    const prevPath = process.env.PATH;
+    process.env.PATH = `${bin}:${prevPath}`;
+    try {
+      await commitAndCreatePR(info, 'Our change', 'INT-2', 'desc');
+    } finally {
+      process.env.PATH = prevPath;
+    }
+
+    const calls = readFileSync(ghLog, 'utf8');
+    expect(calls).toContain('pr create');
+    expect(calls).not.toContain('MERGED PR');
+
+    git(repo, 'worktree', 'remove', '--force', info.worktreePath);
+  });
+});

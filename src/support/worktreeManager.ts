@@ -512,6 +512,31 @@ async function collectActiveScopes(worktreePath: string, selfBranch: string): Pr
     }
   } catch { /* git unavailable — skip branch scopes */ }
 
+  // Recently-merged PRs whose fix this branch's history does NOT contain —
+  // if it also touches the same files, this branch likely forked before that
+  // fix landed and would silently reintroduce it. Real incident: STONKS PR #218
+  // called itself a "follow-up" to #215, but #218 had branched before #215
+  // merged and never picked up its fix. (INT-2421)
+  try {
+    const raw = await gh(worktreePath, 'pr', 'list', '--state', 'merged', '--json', 'number,headRefName,mergeCommit', '--limit', '30');
+    const merged: { number: number; headRefName: string; mergeCommit?: { oid: string } }[] = JSON.parse(raw || '[]');
+    for (const pr of merged) {
+      if (pr.headRefName === selfBranch || !pr.mergeCommit?.oid) continue;
+      const alreadyIncluded = await git(worktreePath, 'merge-base', '--is-ancestor', pr.mergeCommit.oid, 'HEAD')
+        .then(() => true).catch(() => false);
+      if (alreadyIncluded) continue;
+      try {
+        const files = toLines(await gh(worktreePath, 'pr', 'diff', String(pr.number), '--name-only'));
+        if (files.length) {
+          scopes.push({
+            label: `⚠️ MERGED PR #${pr.number} (${pr.headRefName}) — not in this branch's history, verify its fix wasn't dropped`,
+            files,
+          });
+        }
+      } catch { /* skip this merged PR */ }
+    }
+  } catch { /* gh unavailable — skip merged-PR staleness check */ }
+
   return scopes;
 }
 

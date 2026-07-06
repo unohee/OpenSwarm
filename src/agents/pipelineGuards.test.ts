@@ -586,4 +586,31 @@ describe('pipelineGuards — INT-2388 deterministic guards', () => {
     expect(res.results.find(r => r.guard === 'deadModule')).toBeUndefined();
     expect(res.results.find(r => r.guard === 'reformatScope')).toBeUndefined();
   });
+
+  // A worker can close a "diagnose root cause" task while its own report admits
+  // the cause was never pinned down — this signal must reach the reviewer instead
+  // of dying silently (INT-2421, real incident: STO-1447/PR #217).
+  describe('uncertaintyDetection', () => {
+    it('flags a worker report admitting an unconfirmed root cause', async () => {
+      const res = await runGuards(
+        { ...mockWorker(), summary: 'Cause — unconfirmed (open question), added a backfill workaround.' },
+        repo,
+        { uncertaintyDetection: true },
+      );
+      const issues = guardIssues(res, 'uncertaintyDetection');
+      expect(issues.some(i => i.includes('unconfirmed'))).toBe(true);
+      // non-blocking — surfaced as a warning, does not fail the guard run
+      expect(res.allPassed).toBe(true);
+    });
+
+    it('does not flag a confident, evidence-backed report', async () => {
+      const res = await runGuards(
+        { ...mockWorker(), summary: 'Root cause confirmed at trading_engine.py:42; fixed and verified with a regression test.' },
+        repo,
+        { uncertaintyDetection: true },
+      );
+      const issues = guardIssues(res, 'uncertaintyDetection');
+      expect(issues.length).toBe(0);
+    });
+  });
 });
