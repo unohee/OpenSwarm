@@ -3,7 +3,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { createWorktree, preserveWorktree, removePreservedWorktreeAt, removeWorktree, resolveSharedPaths, computeFileOverlaps, formatOverlapReport, type WorktreeInfo } from './worktreeManager.js';
+import { createWorktree, preserveWorktree, removePreservedWorktreeAt, removeWorktree, resolveSharedPaths, computeFileOverlaps, formatOverlapReport, resolveBaseRef, commitAndCreatePR, type WorktreeInfo } from './worktreeManager.js';
 
 describe('worktreeManager path safety', () => {
   let root: string;
@@ -346,5 +346,101 @@ describe('removePreservedWorktreeAt (INT-2506)', () => {
   it('no-ops on paths that are not managed worktrees', async () => {
     await removePreservedWorktreeAt(repo); // repo root — no /worktree/ segment
     expect(existsSync(repo)).toBe(true);
+  });
+});
+
+describe('resolveBaseRef / createWorktree on non-main-default repos (INT-2545)', () => {
+  let root: string;
+  const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-C', cwd, ...args], { stdio: 'pipe' });
+
+  // Build a repo whose origin default branch is `defaultBranch`, pushed to a bare
+  // remote named `remoteName`. Returns the repo path.
+  function makeRepo(name: string, defaultBranch: string, remoteName: string): string {
+    const repo = join(root, name);
+    const bare = join(root, `${name}.git`);
+    mkdirSync(repo, { recursive: true });
+    execFileSync('git', ['init', '--bare', '-b', defaultBranch, bare], { stdio: 'pipe' });
+    execFileSync('git', ['init', '-b', defaultBranch, repo], { stdio: 'pipe' });
+    git(repo, 'config', 'user.email', 'test@example.com');
+    git(repo, 'config', 'user.name', 'Test');
+    git(repo, 'config', 'commit.gpgsign', 'false');
+    writeFileSync(join(repo, 'app.py'), 'base\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-m', 'init');
+    git(repo, 'remote', 'add', remoteName, bare);
+    git(repo, 'push', remoteName, defaultBranch);
+    // Set <remote>/HEAD so symbolic-ref resolves (mirrors a normal clone).
+    git(repo, 'remote', 'set-head', remoteName, defaultBranch);
+    return repo;
+  }
+
+  beforeEach(() => {
+    root = join(tmpdir(), `openswarm-baseref-${process.pid}-${Date.now()}`);
+    mkdirSync(root, { recursive: true });
+  });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  it('resolves origin/main, origin/master, and a non-origin remote', async () => {
+    const mainRepo = makeRepo('mainrepo', 'main', 'origin');
+    expect(await resolveBaseRef(mainRepo)).toEqual({ remote: 'origin', branch: 'main', ref: 'origin/main' });
+
+    const masterRepo = makeRepo('masterrepo', 'master', 'origin');
+    expect(await resolveBaseRef(masterRepo)).toEqual({ remote: 'origin', branch: 'master', ref: 'origin/master' });
+
+    const forkRepo = makeRepo('forkrepo', 'main', 'unohee'); // remote not named origin (vega-agent case)
+    expect(await resolveBaseRef(forkRepo)).toEqual({ remote: 'unohee', branch: 'main', ref: 'unohee/main' });
+  });
+
+  it('createWorktree succeeds on a master-default repo (was: fatal invalid reference origin/main)', async () => {
+    const repo = makeRepo('masterrepo', 'master', 'origin');
+    const info = await createWorktree(repo, 'INT-9', 'swarm/INT-9-test');
+    expect(existsSync(info.worktreePath)).toBe(true);
+    // Branched from origin/master — app.py from the base commit is present.
+    expect(existsSync(join(info.worktreePath, 'app.py'))).toBe(true);
+    expect(execFileSync('git', ['-C', info.worktreePath, 'rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf8' }).trim())
+      .toBe('swarm/INT-9-test');
+    git(repo, 'worktree', 'remove', '--force', info.worktreePath);
+  });
+
+  it('createWorktree succeeds on a repo whose remote is not named origin', async () => {
+    const repo = makeRepo('forkrepo', 'main', 'unohee');
+    const info = await createWorktree(repo, 'INT-9', 'swarm/INT-9-test');
+    expect(existsSync(info.worktreePath)).toBe(true);
+    expect(existsSync(join(info.worktreePath, 'app.py'))).toBe(true);
+    git(repo, 'worktree', 'remove', '--force', info.worktreePath);
+  });
+
+  it('commitAndCreatePR pushes to the RESOLVED remote and PRs against the resolved base (non-origin)', async () => {
+    const repo = makeRepo('forkrepo', 'main', 'unohee');
+    const bare = join(root, 'forkrepo.git');
+    const info = await createWorktree(repo, 'INT-9', 'swarm/INT-9-test');
+    writeFileSync(join(info.worktreePath, 'feature.py'), 'new work\n'); // a change to commit + PR
+
+    // Fake `gh` on PATH: record its args, return a non-/pull/ URL so registerOwnedPR
+    // (which parses github.com/owner/repo#/pull/N) is skipped — no state written.
+    const bin = join(root, 'bin');
+    mkdirSync(bin, { recursive: true });
+    const ghLog = join(root, 'gh-args.log');
+    writeFileSync(join(bin, 'gh'),
+      `#!/bin/sh\nprintf '%s\\n' "$*" >> "${ghLog}"\ncase "$*" in *"pr create"*) echo "https://example.test/created";; esac\n`);
+    chmodSync(join(bin, 'gh'), 0o755);
+
+    const prevPath = process.env.PATH;
+    process.env.PATH = `${bin}:${prevPath}`;
+    try {
+      const url = await commitAndCreatePR(info, 'test title', 'INT-9', 'desc');
+      expect(url).toBe('https://example.test/created');
+    } finally {
+      process.env.PATH = prevPath;
+    }
+
+    // The push landed on the NON-origin remote (had base ref stayed origin/main, the
+    // commits-ahead count would be 0 and it would have bailed BEFORE pushing).
+    expect(execFileSync('git', ['-C', bare, 'branch', '--list', 'swarm/INT-9-test'], { encoding: 'utf8' }))
+      .toContain('swarm/INT-9-test');
+    // gh pr create used the resolved base branch, not a hardcoded 'main'-that-happens-to-match.
+    expect(readFileSync(ghLog, 'utf8')).toMatch(/pr create .*--base main/);
+
+    git(repo, 'worktree', 'remove', '--force', info.worktreePath);
   });
 });

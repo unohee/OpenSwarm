@@ -38,6 +38,38 @@ async function gh(cwd: string, ...args: string[]): Promise<string> {
   return stdout;
 }
 
+/**
+ * Resolve the base remote + default branch to branch worktrees and PRs from.
+ * OpenSwarm hardcoded `origin/main` everywhere, which silently broke every repo that
+ * doesn't match BOTH assumptions: a repo whose default branch is `master`
+ * (pykiwoom-rest, ArtifactNet) died at `git worktree add … origin/main` with
+ * `fatal: invalid reference: origin/main` → creation failed → the issue could NEVER be
+ * worked; a repo whose remote isn't named `origin` (vega-agent uses `unohee`) failed
+ * the same way. Prefer the remote's own HEAD (`<remote>/HEAD`), fall back to main then
+ * master. Works from a repo path or a worktree path (both share the repo's refs).
+ * (INT-2545)
+ */
+export async function resolveBaseRef(gitDir: string): Promise<{ remote: string; branch: string; ref: string }> {
+  const remotes = (await git(gitDir, 'remote').catch(() => ''))
+    .split('\n').map((s) => s.trim()).filter(Boolean);
+  const remote = remotes.includes('origin') ? 'origin' : (remotes[0] || 'origin');
+  let branch = '';
+  try {
+    const head = (await git(gitDir, 'symbolic-ref', `refs/remotes/${remote}/HEAD`)).trim();
+    branch = head.replace(`refs/remotes/${remote}/`, '');
+  } catch { /* <remote>/HEAD not set locally — fall through to probing */ }
+  if (!branch) {
+    for (const cand of ['main', 'master']) {
+      if (await git(gitDir, 'rev-parse', '--verify', `${remote}/${cand}`).then(() => true).catch(() => false)) {
+        branch = cand;
+        break;
+      }
+    }
+  }
+  if (!branch) branch = 'main'; // last resort — a bare repo with no fetched default
+  return { remote, branch, ref: `${remote}/${branch}` };
+}
+
 // Types
 
 export interface WorktreeInfo {
@@ -312,14 +344,17 @@ export async function createWorktree(
     );
   }
 
-  // Update main to latest
-  await git(repoPath, 'fetch', 'origin', 'main').catch((e) =>
-    console.warn(`[Worktree] Failed to fetch origin/main:`, e)
+  // Resolve the repo's real base ref (remote + default branch) — NOT hardcoded
+  // origin/main, which fataled on master-default / non-origin repos and blocked every
+  // task in them. (INT-2545)
+  const base = await resolveBaseRef(repoPath);
+  await git(repoPath, 'fetch', base.remote, base.branch).catch((e) =>
+    console.warn(`[Worktree] Failed to fetch ${base.ref}:`, e)
   );
 
-  // Create fresh worktree from origin/main
-  await git(repoPath, 'worktree', 'add', '-b', branchName, worktreePath, 'origin/main');
-  console.log(`[Worktree] Created: ${worktreePath} (branch: ${branchName})`);
+  // Create fresh worktree from the resolved base ref
+  await git(repoPath, 'worktree', 'add', '-b', branchName, worktreePath, base.ref);
+  console.log(`[Worktree] Created: ${worktreePath} (branch: ${branchName}, base: ${base.ref})`);
 
   // Share the original repo's gitignored deps/data into the fresh worktree so the
   // worker can actually install / run tests / verify against real data. (INT-2415)
@@ -405,13 +440,14 @@ async function collectActiveScopes(worktreePath: string, selfBranch: string): Pr
 
   // Active swarm/* branches without their own PR yet (exclude self + PR'd branches).
   try {
-    const branches = toLines(await git(worktreePath, 'branch', '-r', '--list', 'origin/swarm/*'))
-      .map(b => b.replace(/^origin\//, ''));
+    const base = await resolveBaseRef(worktreePath);
+    const branches = toLines(await git(worktreePath, 'branch', '-r', '--list', `${base.remote}/swarm/*`))
+      .map(b => b.replace(new RegExp(`^${base.remote}/`), ''));
     for (const b of branches) {
       if (b === selfBranch || prBranches.has(b)) continue;
       try {
-        const files = toLines(await git(worktreePath, 'diff', '--name-only', `origin/main...origin/${b}`));
-        if (files.length) scopes.push({ label: `branch origin/${b}`, files });
+        const files = toLines(await git(worktreePath, 'diff', '--name-only', `${base.ref}...${base.remote}/${b}`));
+        if (files.length) scopes.push({ label: `branch ${base.remote}/${b}`, files });
       } catch { /* skip this branch */ }
     }
   } catch { /* git unavailable — skip branch scopes */ }
@@ -425,7 +461,8 @@ async function collectActiveScopes(worktreePath: string, selfBranch: string): Pr
  */
 async function buildFileOverlapSection(worktreePath: string, selfBranch: string): Promise<string> {
   try {
-    const selfFiles = toLines(await git(worktreePath, 'diff', '--name-only', 'origin/main...HEAD'));
+    const base = await resolveBaseRef(worktreePath);
+    const selfFiles = toLines(await git(worktreePath, 'diff', '--name-only', `${base.ref}...HEAD`));
     if (selfFiles.length === 0) return '';
     const others = await collectActiveScopes(worktreePath, selfBranch);
     return formatOverlapReport(computeFileOverlaps(selfFiles, others));
@@ -463,20 +500,22 @@ export async function commitAndCreatePR(
     console.log(`[Worktree] Committed uncommitted changes (${branchName})`);
   }
 
-  // Check if there are any commits ahead of origin/main (including worker-made commits)
-  const commitsAhead = await git(worktreePath, 'rev-list', '--count', 'origin/main..HEAD')
+  // Check if there are any commits ahead of the base ref (including worker-made
+  // commits) — resolved, not hardcoded origin/main (INT-2545).
+  const base = await resolveBaseRef(worktreePath);
+  const commitsAhead = await git(worktreePath, 'rev-list', '--count', `${base.ref}..HEAD`)
     .then((out) => parseInt(out.trim(), 10))
     .catch(() => 0);
 
   if (commitsAhead === 0) {
-    console.log(`[Worktree] No commits ahead of origin/main (${branchName}) - nothing to PR`);
-    throw new Error('No commits to create PR from - branch has no changes compared to main');
+    console.log(`[Worktree] No commits ahead of ${base.ref} (${branchName}) - nothing to PR`);
+    throw new Error(`No commits to create PR from - branch has no changes compared to ${base.branch}`);
   }
 
-  console.log(`[Worktree] Branch ${branchName} has ${commitsAhead} commit(s) ahead of origin/main`);
+  console.log(`[Worktree] Branch ${branchName} has ${commitsAhead} commit(s) ahead of ${base.ref}`);
 
-  // Push branch to remote (always push since we have commits ahead)
-  await git(worktreePath, 'push', '-u', 'origin', branchName, '--force-with-lease');
+  // Push branch to the resolved remote (always push since we have commits ahead)
+  await git(worktreePath, 'push', '-u', base.remote, branchName, '--force-with-lease');
   console.log(`[Worktree] Pushed branch ${branchName}`);
 
   // If PR already exists, just return the URL
@@ -504,7 +543,7 @@ export async function commitAndCreatePR(
     '🤖 Generated with [OpenSwarm](https://github.com/Intrect-io/OpenSwarm)',
   ].join('\n');
 
-  const prUrl = await gh(worktreePath, 'pr', 'create', '--head', branchName, '--base', 'main', '--title', title, '--body', prBody);
+  const prUrl = await gh(worktreePath, 'pr', 'create', '--head', branchName, '--base', base.branch, '--title', title, '--body', prBody);
 
   const url = prUrl.trim();
   console.log(`[Worktree] PR created: ${url}`);
