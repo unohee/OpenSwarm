@@ -266,13 +266,10 @@ describe('runWorkerFanout shared-path handling and sandbox retention', () => {
     // Gitignored so captureBaselinePatch's `git add -A` never stages these —
     // otherwise the dirty-worktree seeding patch would try to re-create
     // node_modules/marker.txt inside a sandbox that already has it from the
-    // shared-path copy/link step, and `git apply` would conflict. No trailing
-    // slash on the node_modules pattern: a directory-only pattern
-    // ("node_modules/") does NOT match a symlink named node_modules (Git only
-    // treats real directories as matching '/'-suffixed patterns), which would
-    // otherwise leak the linkSharedPaths symlink into `git status` as an
-    // untracked change in the linkSharedPaths=true scenario below.
-    await writeFile(path.join(repo, '.gitignore'), 'node_modules\nopenswarm.json\n', 'utf8');
+    // shared-path copy/link step, and `git apply` would conflict. Keep the
+    // realistic directory-only pattern: Git does not apply `node_modules/` to
+    // a symlink, so fanout must exclude the harness-created link explicitly.
+    await writeFile(path.join(repo, '.gitignore'), 'node_modules/\nopenswarm.json\n', 'utf8');
     initRepo(repo);
     // Uncommitted (so `git clone` never carries it into a sandbox) — the
     // realistic shape of a gitignored deps dir.
@@ -352,6 +349,7 @@ describe('runWorkerFanout shared-path handling and sandbox retention', () => {
     });
 
     expect(result.fallbackReason).toBeUndefined();
+    expect(result.winner?.filesChanged).toEqual(['edited.txt']);
     const root = findKeptSandboxRoot(logs);
     cleanupDirs.push(root);
     const linkedMarker = path.join(root, 'primary', 'node_modules');
