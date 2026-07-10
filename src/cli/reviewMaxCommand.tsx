@@ -29,7 +29,7 @@ import {
   type AuditSummary,
 } from './reviewAudit.js';
 import { AuditBoard } from '../tui/components/AuditBoard.js';
-import { resolveIssueFromBranch, ensureTaskSource, resolveProjectId } from './reviewCommand.js';
+import { resolveIssueFromBranch, ensureTaskSource, ensureProjectMapping } from './reviewCommand.js';
 import { synthesizeAuditIssues } from './auditPM.js';
 import { c, status } from '../support/colors.js';
 import type { AdapterName } from '../adapters/types.js';
@@ -102,7 +102,7 @@ async function confirmCost(areas: number, files: number, concurrency: number): P
 }
 
 /** File each area's recommendedActions as Linear follow-ups, one call per area (avoids the 10-action cap). */
-async function filePerAreaFollowups(cwd: string, fileIssue: string | boolean, run: AuditRun): Promise<void> {
+export async function filePerAreaFollowups(cwd: string, fileIssue: string | boolean, run: AuditRun): Promise<void> {
   const withActions = run.results.filter((r) => r.review?.recommendedActions?.length);
   if (!withActions.length) {
     console.log('No follow-ups to file.');
@@ -130,12 +130,21 @@ async function filePerAreaFollowups(cwd: string, fileIssue: string | boolean, ru
     parent = resolveIssueFromBranch(branch);
     if (parent) console.log(`Filing follow-ups under ${parent} (inferred from branch "${branch}").`);
   }
-  const projectId = parent ? undefined : await resolveProjectId(cwd);
+
+  const mapping = await ensureProjectMapping(cwd, parent);
+  if (mapping.abort) {
+    console.log('Skipped filing follow-ups — map this repo to a Linear project first, then re-run.');
+    return;
+  }
 
   const { fileReviewerFollowups } = await import('../automation/runnerExecution.js');
   let filed = 0;
   for (const r of withActions) {
-    filed += await fileReviewerFollowups(source, parent, r.review!, { autoFile: true, projectId, requireApprove: false });
+    filed += await fileReviewerFollowups(source, parent, r.review!, {
+      autoFile: true,
+      projectId: mapping.projectId,
+      requireApprove: false,
+    });
   }
   console.log(
     filed > 0
@@ -340,18 +349,17 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
  * behavior). Returns the created issue's internal id (usable as a sub-issue
  * parent) or null on failure. (INT-2022 / INT-2225)
  */
-async function createMasterAuditIssue(
-  cwd: string,
+export async function createMasterAuditIssue(
   summary: AuditSummary,
   report: string,
   ts: string,
+  projectId: string | undefined,
 ): Promise<string | null> {
   const source = await ensureTaskSource();
   if (!source) {
     console.log(status.warn('Linear not connected — report saved to file only. `openswarm auth login --provider linear` to enable.'));
     return null;
   }
-  const projectId = await resolveProjectId(cwd);
   const title = `chore(audit): codebase audit ${ts.slice(0, 10)} — review --max (${summary.recommendedActions.length} follow-ups)`;
   try {
     const res = await source.createTask(title, report, projectId);
@@ -375,7 +383,7 @@ async function createMasterAuditIssue(
  * follow-ups, or the LLM output couldn't be parsed), the master issue alone still
  * captures everything. (INT-2225)
  */
-async function filePmSynthesizedIssues(
+export async function filePmSynthesizedIssues(
   cwd: string,
   opts: ReviewMaxOptions,
   summary: AuditSummary,
@@ -394,23 +402,23 @@ async function filePmSynthesizedIssues(
     );
     return;
   }
-  const projectId = await resolveProjectId(cwd);
-  if (!projectId) {
-    // No <repo>/openswarm.json mapping → issues get filed without a project (and
-    // on a multi-team config, only the first team). Tell the user how to map it. (INT-2239)
-    console.warn(
-      status.warn(
-        'No Linear project mapped for this repo (openswarm.json `linear.projectId` missing) — ' +
-          'issues will not be linked to a project. Run `openswarm add` here to map it.',
-      ),
-    );
-  }
-
   // Resolve the parent: explicit --issues <id>, else create the master report issue.
-  let parentId: string | undefined =
+  const explicitParentId: string | undefined =
     typeof opts.fileIssue === 'string' && opts.fileIssue ? opts.fileIssue : undefined;
+
+  // No <repo>/openswarm.json mapping and no explicit parent to inherit a project
+  // from → map this repo now (interactive) or bail rather than file an orphan
+  // (no project) issue. (INT-2239 / INT-2599)
+  const mapping = await ensureProjectMapping(cwd, explicitParentId, { log: (l) => console.log(status.info(l)) });
+  if (mapping.abort) {
+    console.log(status.warn('Skipped filing follow-ups — map this repo to a Linear project first, then re-run.'));
+    return;
+  }
+  const projectId = mapping.projectId;
+
+  let parentId: string | undefined = explicitParentId;
   if (!parentId && !opts.noLinear) {
-    parentId = (await createMasterAuditIssue(cwd, summary, report, ts)) ?? undefined;
+    parentId = (await createMasterAuditIssue(summary, report, ts, projectId)) ?? undefined;
   }
 
   console.log(`${status.running('PM synthesis')} ${c.yellow(`${actions.length} follow-up(s)`)} ${c.dim('into cohesive issues')}`);

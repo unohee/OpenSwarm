@@ -1,5 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
-import { buildReviewWorkerResult, formatReviewOutput, runReviewCommand, resolveIssueFromBranch } from './reviewCommand.js';
+import {
+  buildReviewWorkerResult,
+  formatReviewOutput,
+  runReviewCommand,
+  resolveIssueFromBranch,
+  ensureProjectMapping,
+} from './reviewCommand.js';
 import type { ReviewResult } from '../agents/agentPair.js';
 
 // Only exercised by tests that do NOT override deps.getChangedFiles — every
@@ -53,6 +59,73 @@ describe('resolveIssueFromBranch (INT-1967)', () => {
   });
 });
 
+describe('ensureProjectMapping (INT-2599)', () => {
+  // A path with no openswarm.json, so resolveProjectId(cwd) always misses and
+  // each test's own stubs drive the rest of the decision tree.
+  const unmappedCwd = '/tmp/openswarm-test-ensure-project-mapping-unmapped';
+
+  it('short-circuits without touching Linear when an explicit parent is given', async () => {
+    const resolveCredential = vi.fn(async () => ({ apiKey: 'x' }));
+    const result = await ensureProjectMapping(unmappedCwd, 'INT-1', { resolveCredential });
+    expect(result).toEqual({ projectId: undefined, abort: false });
+    expect(resolveCredential).not.toHaveBeenCalled();
+  });
+
+  it('proceeds without a project when Linear is not configured at all', async () => {
+    const result = await ensureProjectMapping(unmappedCwd, undefined, {
+      resolveCredential: async () => null,
+    });
+    expect(result).toEqual({ projectId: undefined, abort: false });
+  });
+
+  it('fails closed (no orphan issue) when unmapped and there is no terminal to prompt', async () => {
+    const logs: string[] = [];
+    const pickAndSave = vi.fn();
+    const result = await ensureProjectMapping(unmappedCwd, undefined, {
+      resolveCredential: async () => ({ apiKey: 'x' }),
+      isTTY: false,
+      pickAndSave,
+      log: (l) => logs.push(l),
+    });
+    expect(result).toEqual({ projectId: undefined, abort: true });
+    expect(pickAndSave).not.toHaveBeenCalled();
+    expect(logs.join('\n')).toMatch(/openswarm add/);
+  });
+
+  it('maps interactively on a TTY and returns the saved project id', async () => {
+    const pickAndSave = vi.fn(async () => ({
+      kind: 'saved' as const,
+      teamId: 'team-1',
+      mapping: { teamId: 'team-1', projectId: 'proj-1', projectName: 'Demo' },
+    }));
+    const result = await ensureProjectMapping(unmappedCwd, undefined, {
+      resolveCredential: async () => ({ apiKey: 'x' }),
+      isTTY: true,
+      pickAndSave,
+    });
+    expect(result).toEqual({ projectId: 'proj-1', abort: false });
+    expect(pickAndSave).toHaveBeenCalledWith(unmappedCwd, { apiKey: 'x' });
+  });
+
+  it('fails closed when the Linear team lookup itself fails (no-teams is not a user choice) (INT-2619)', async () => {
+    const result = await ensureProjectMapping(unmappedCwd, undefined, {
+      resolveCredential: async () => ({ apiKey: 'x' }),
+      isTTY: true,
+      pickAndSave: async () => ({ kind: 'no-teams' as const }),
+    });
+    expect(result).toEqual({ projectId: undefined, abort: true });
+  });
+
+  it('proceeds without a project when the user actively skips the interactive picker', async () => {
+    const result = await ensureProjectMapping(unmappedCwd, undefined, {
+      resolveCredential: async () => ({ apiKey: 'x' }),
+      isTTY: true,
+      pickAndSave: async () => ({ kind: 'skipped' as const }),
+    });
+    expect(result).toEqual({ projectId: undefined, abort: false });
+  });
+});
+
 describe('runReviewCommand --issues branch inference (INT-1967)', () => {
   const approveWithFollowups = async () =>
     ({ decision: 'approve', feedback: 'ok', recommendedActions: [{ type: 'test', title: 't' }] }) as ReviewResult;
@@ -84,6 +157,7 @@ describe('runReviewCommand --issues branch inference (INT-1967)', () => {
         review: approveWithFollowups,
         getBranch: async () => 'main',
         fileFollowups: async () => 0, // e.g. Linear not configured
+        ensureProjectMapping: async () => ({ projectId: undefined, abort: false }),
         startProgress: () => null,
         log: (l) => logs.push(l),
       },
@@ -112,6 +186,7 @@ describe('runReviewCommand --issues branch inference (INT-1967)', () => {
         review: approveWithFollowups,
         getBranch: async () => 'main',
         fileFollowups,
+        ensureProjectMapping: async () => ({ projectId: undefined, abort: false }),
         startProgress: () => null,
         log: (l) => logs.push(l),
       },

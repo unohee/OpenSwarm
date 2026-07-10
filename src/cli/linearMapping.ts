@@ -16,8 +16,10 @@ import { AuthProfileStore, ensureValidToken } from '../auth/index.js';
 /**
  * Resolve a Linear credential for non-interactive use (no auth prompt):
  *  1. linear:default OAuth profile (refreshed via ensureValidToken), then
- *  2. LINEAR_API_KEY env var.
- * Returns null when neither is present — the caller should hint at `auth login`.
+ *  2. LINEAR_API_KEY env var, then
+ *  3. config.yaml `linear.apiKey` — the same source ensureTaskSource() uses, so
+ *     this stays in sync with what actually initializes Linear for filing. (INT-2619)
+ * Returns null when none is present — the caller should hint at `auth login`.
  */
 export async function resolveLinearCredential(): Promise<LinearCredential | null> {
   try {
@@ -31,6 +33,13 @@ export async function resolveLinearCredential(): Promise<LinearCredential | null
   }
   const apiKey = process.env.LINEAR_API_KEY?.trim();
   if (apiKey) return { apiKey };
+  try {
+    const { loadConfig } = await import('../core/config.js');
+    const configApiKey = loadConfig().linearApiKey?.trim();
+    if (configApiKey) return { apiKey: configApiKey };
+  } catch { // cxt-ignore: error_swallow,exception_hiding — no usable config → no credential
+    /* fall through to null */
+  }
   return null;
 }
 

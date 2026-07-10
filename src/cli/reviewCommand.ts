@@ -88,6 +88,71 @@ export async function resolveProjectId(cwd: string): Promise<string | undefined>
   }
 }
 
+export interface ProjectMappingResult {
+  /** Resolved Linear project id — undefined when none applies (explicit parent) or none is available. */
+  projectId: string | undefined;
+  /** True when Linear filing should be skipped entirely rather than create a project-less (orphan) issue. */
+  abort: boolean;
+}
+
+/**
+ * Preflight before filing a standalone/master Linear issue (no explicit
+ * `--issues <id>` parent to inherit a project from): if this repo has no
+ * openswarm.json Linear mapping yet, map it now — interactively on a TTY
+ * (writes openswarm.json, same picker as `openswarm add`), or fail closed
+ * headless so an unattended run never silently creates an orphan issue. (INT-2599)
+ */
+export async function ensureProjectMapping(
+  cwd: string,
+  parentIssueId: string | undefined,
+  deps: {
+    resolveCredential?: () => Promise<import('../linear/index.js').LinearCredential | null>;
+    pickAndSave?: (
+      repoPath: string,
+      cred: import('../linear/index.js').LinearCredential,
+    ) => Promise<import('./linearMapping.js').MappingPickResult>;
+    isTTY?: boolean;
+    log?: (line: string) => void;
+  } = {},
+): Promise<ProjectMappingResult> {
+  // A sub-issue under an explicit parent inherits that parent's project.
+  if (parentIssueId) return { projectId: undefined, abort: false };
+
+  const existing = await resolveProjectId(cwd);
+  if (existing) return { projectId: existing, abort: false };
+
+  const log = deps.log ?? ((l: string) => console.log(l));
+  const resolveCredential =
+    deps.resolveCredential ?? (async () => (await import('./linearMapping.js')).resolveLinearCredential());
+  const cred = await resolveCredential();
+  if (!cred) return { projectId: undefined, abort: false }; // Linear isn't configured — downstream reports that.
+
+  const isTTY = deps.isTTY ?? !!process.stdin.isTTY;
+  if (!isTTY) {
+    log(
+      `No Linear project mapped for this repo (openswarm.json missing) and no terminal to map it interactively — ` +
+        `skipping issue filing to avoid an unassigned (orphan) issue. Run \`openswarm add ${cwd}\` once in a ` +
+        `terminal to map it, then re-run.`,
+    );
+    return { projectId: undefined, abort: true };
+  }
+
+  log('This repo is not mapped to a Linear project yet — mapping it now:');
+  const pickAndSave =
+    deps.pickAndSave ?? (async (p, c) => (await import('./linearMapping.js')).pickAndSaveLinearMapping(p, c));
+  try {
+    const result = await pickAndSave(cwd, cred);
+    if (result.kind === 'saved') return { projectId: result.mapping.projectId, abort: false };
+    // 'no-teams' means the Linear lookup itself failed or returned nothing — not a
+    // user choice — so fail closed rather than silently file a project-less issue.
+    if (result.kind === 'no-teams') return { projectId: undefined, abort: true };
+    return { projectId: undefined, abort: false }; // user actively skipped the picker — not a silent gap.
+  } catch (err) {
+    if (err instanceof Error && err.name === 'ExitPromptError') return { projectId: undefined, abort: true };
+    throw err;
+  }
+}
+
 /**
  * A Linear-backed task source for the standalone `review` CLI. The daemon
  * registers one at startup, but a bare `openswarm review` does not — so init
@@ -151,6 +216,8 @@ export async function runReviewCommand(
     getChangedFiles?: (cwd: string) => Promise<string[]>;
     review?: (wr: WorkerResult, cwd: string, onLog?: (line: string) => void) => Promise<ReviewResult>;
     fileFollowups?: (parentIssueId: string | undefined, review: ReviewResult) => Promise<number>;
+    /** Override the project-mapping preflight (tests stub this to skip the interactive picker). */
+    ensureProjectMapping?: (cwd: string, parentIssueId: string | undefined) => Promise<ProjectMappingResult>;
     log?: (line: string) => void;
     /** Override the progress indicator (default: TTY-gated spinner). Tests pass a stub. */
     startProgress?: () => { note: (line: string) => void; stop: () => void } | null;
@@ -223,28 +290,34 @@ export async function runReviewCommand(
       if (parent) log(`Filing follow-ups under ${parent} (inferred from branch "${branch}").`);
     }
     // No parent → create top-level (standalone) issues rather than refusing. (INT-1968)
-    // Default path initializes a Linear task source itself (the daemon isn't
-    // running here), and files regardless of decision. (INT-1969)
-    const fileFollowups =
-      deps.fileFollowups ??
-      (async (p: string | undefined, r: ReviewResult) => {
-        const { fileReviewerFollowups } = await import('../automation/runnerExecution.js');
-        const source = await ensureTaskSource();
-        if (!source) return 0;
-        const projectId = p ? undefined : await resolveProjectId(cwd);
-        return fileReviewerFollowups(source, p, r, { autoFile: true, projectId, requireApprove: false });
-      });
-    const filed = await fileFollowups(parent, result);
-    if (filed > 0) {
-      log(
-        parent
-          ? `Filed ${filed} follow-up sub-issue(s) under ${parent}.`
-          : `Filed ${filed} standalone follow-up issue(s) (pass \`--issues <id>\` to nest them under an issue).`,
-      );
+    // Before that, make sure this repo actually has a Linear project to land
+    // in — map it now (interactive) or bail rather than file an orphan. (INT-2599)
+    const mapping = await (deps.ensureProjectMapping ?? (async (c, p) => ensureProjectMapping(c, p, { log })))(cwd, parent);
+    if (mapping.abort) {
+      log('Skipped filing follow-ups — map this repo to a Linear project first (see above), then re-run.');
     } else {
-      log(
-        `Could not file follow-ups (0 created). Is Linear connected? Run \`openswarm auth login --provider linear\` (or set linearApiKey in config).`,
-      );
+      // Default path initializes a Linear task source itself (the daemon isn't
+      // running here), and files regardless of decision. (INT-1969)
+      const fileFollowups =
+        deps.fileFollowups ??
+        (async (p: string | undefined, r: ReviewResult) => {
+          const { fileReviewerFollowups } = await import('../automation/runnerExecution.js');
+          const source = await ensureTaskSource();
+          if (!source) return 0;
+          return fileReviewerFollowups(source, p, r, { autoFile: true, projectId: mapping.projectId, requireApprove: false });
+        });
+      const filed = await fileFollowups(parent, result);
+      if (filed > 0) {
+        log(
+          parent
+            ? `Filed ${filed} follow-up sub-issue(s) under ${parent}.`
+            : `Filed ${filed} standalone follow-up issue(s) (pass \`--issues <id>\` to nest them under an issue).`,
+        );
+      } else {
+        log(
+          `Could not file follow-ups (0 created). Is Linear connected? Run \`openswarm auth login --provider linear\` (or set linearApiKey in config).`,
+        );
+      }
     }
   } else if (followups) {
     // Suggestions were made but nothing was filed — make the flag discoverable. (INT-1966/1967)
