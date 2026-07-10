@@ -660,18 +660,13 @@ describe('PairPipeline coverage extension', () => {
     const result = await pipeline.run(task(), process.cwd());
 
     expect(result.success).toBe(true);
-    // The escalation decision is logged and drives the *displayed* stage model...
+    // The escalation decision is logged and drives both the displayed stage
+    // model and the model passed to the actual reviewer invocation.
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('Reviewer escalation → reviewer-big'));
     const reviewerStageEvent = broadcastEvent.mock.calls
       .map((c) => c[0])
       .find((e) => e.type === 'pipeline:stage' && e.data.stage === 'reviewer' && e.data.status === 'complete');
     expect(reviewerStageEvent?.data.model).toBe('reviewer-big');
-    // ...but runStage()'s reviewer case never reads `overrides.model` into
-    // reviewerOptions (only the worker case does) — so the actual reviewer
-    // call keeps using getModelForRole(), NOT the escalated model. This looks
-    // like a latent bug (escalation is cosmetic-only for the reviewer role);
-    // reported rather than fixed, since fixing pairPipeline.ts is out of scope
-    // for this coverage task.
-    expect(runReviewer.mock.calls[0][0]).toEqual(expect.objectContaining({ model: undefined }));
+    expect(runReviewer.mock.calls[0][0]).toEqual(expect.objectContaining({ model: 'reviewer-big' }));
   });
 });

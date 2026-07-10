@@ -573,7 +573,7 @@ export class PairPipeline extends EventEmitter {
             projectPath: context.projectPath,
             timeoutMs: stageTimeoutMs('reviewer', this.config.roles?.reviewer?.timeoutMs),
             // jobProfile model precedence (see worker stage above). (INT-1599)
-            model: this.getModelForRole('reviewer', context.task),
+            model: overrides?.model ?? this.getModelForRole('reviewer', context.task),
             maxTurns: reviewerMaxTurns,
             adapterName: this.config.roles?.reviewer?.adapter,
             reasoningEffort: this.getEffortForTask(context.task),
