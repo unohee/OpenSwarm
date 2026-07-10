@@ -23,6 +23,7 @@ jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -33,9 +34,16 @@ jobs:
         run: |
           VERSION=$(node -p "require('./package.json').version")
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          # Check both the git tag AND the npm registry — a version can reach npm
+          # via a manual publish (e.g. npmrc token workaround) without this workflow
+          # ever creating the tag, which used to make this check say "not released"
+          # and then E403 on `npm publish` (3 consecutive failed runs, INT-2665).
           if git rev-parse "v$VERSION" >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
             echo "v$VERSION already tagged — nothing to release."
+          elif npm view "@intrect/openswarm@$VERSION" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "$VERSION already on npm (published outside this workflow) — nothing to release."
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
             echo "Releasing v$VERSION."
@@ -51,19 +59,16 @@ jobs:
       - if: steps.ver.outputs.exists == 'false'
         run: npm ci
 
-      # Hard gates — a red one blocks the release.
+      # Hard gates — a red one blocks the release. Tests promoted from advisory
+      # to hard (INT-2271 resolved: full suite green, see CHANGELOG).
       - if: steps.ver.outputs.exists == 'false'
         run: npm run lint
       - if: steps.ver.outputs.exists == 'false'
         run: npm run typecheck
       - if: steps.ver.outputs.exists == 'false'
         run: npm run build
-
-      # Advisory (matches ci.yml until the 2 known service.test failures are
-      # resolved — INT-2271). Promote to a hard gate once green.
       - if: steps.ver.outputs.exists == 'false'
         run: npm test
-        continue-on-error: true
 
       - name: Publish to npm
         if: steps.ver.outputs.exists == 'false'
