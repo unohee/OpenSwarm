@@ -21,6 +21,23 @@ describe('addForwardCompatModels', () => {
   it('does not synthesize when no template matches', () => {
     expect(addForwardCompatModels(['gpt-5-codex'])).toEqual(['gpt-5-codex']);
   });
+
+  it('tiers the gpt-5.6 family: sol synthesizes from any legacy signal (mirrors gpt-5.5), terra/luna are narrower', () => {
+    // gpt-5.4-mini alone: broad net (sol, mirroring gpt-5.5's old template) + the matching
+    // narrow tier (luna); terra requires 5.4/5.5 specifically, so it's absent here.
+    expect(addForwardCompatModels(['gpt-5.4-mini'])).toEqual([
+      'gpt-5.4-mini',
+      'gpt-5.6-sol',
+      'gpt-5.6-luna',
+      'gpt-5.5',
+    ]);
+    // gpt-5.4 alone: sol + terra synthesize; luna needs gpt-5.4-mini specifically, so it's absent.
+    expect(addForwardCompatModels(['gpt-5.4'])).toEqual(['gpt-5.4', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.5']);
+    const fromCodex = addForwardCompatModels(['gpt-5.3-codex']);
+    expect(fromCodex).toContain('gpt-5.6-sol');
+    expect(fromCodex).not.toContain('gpt-5.6-terra');
+    expect(fromCodex).not.toContain('gpt-5.6-luna');
+  });
 });
 
 describe('getCodexModelIds — offline sources', () => {

@@ -29,9 +29,20 @@ const FETCH_TIMEOUT_MS = 10_000;
  * hermes) are deliberately excluded so the picker never leaks a model selection
  * will reject. Live discovery (the primary path when authenticated) overrides
  * this list entirely.
+ *
+ * GPT-5.6 (sol/terra/luna) launched with a new naming scheme (no `-codex`
+ * suffix), verified against a live account's ~/.codex/models_cache.json on
+ * 2026-07-10 (priority 1/2/3, ahead of gpt-5.5). That live cache no longer
+ * listed gpt-5-codex or gpt-5.3-codex, but this is a single account's
+ * snapshot, not confirmation the backend rejects them fleet-wide (unlike the
+ * gpt-5.2-codex/etc slugs above, which were verified dead) — both stay in the
+ * fallback until that's independently confirmed.
  */
 export const DEFAULT_CODEX_MODELS: string[] = [
   'gpt-5-codex',
+  'gpt-5.6-sol',
+  'gpt-5.6-terra',
+  'gpt-5.6-luna',
   'gpt-5.5',
   'gpt-5.4',
   'gpt-5.4-mini',
@@ -47,6 +58,9 @@ export const DEFAULT_CODEX_MODELS: string[] = [
  * present (mirrors Clawdbot's forward-compat catalog for GPT-5 Codex variants).
  */
 const FORWARD_COMPAT_TEMPLATES: Array<[synthetic: string, templates: string[]]> = [
+  ['gpt-5.6-sol', ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex']],
+  ['gpt-5.6-terra', ['gpt-5.5', 'gpt-5.4']],
+  ['gpt-5.6-luna', ['gpt-5.4-mini']],
   ['gpt-5.5', ['gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex']],
   ['gpt-5.4-mini', ['gpt-5.3-codex']],
   ['gpt-5.4', ['gpt-5.3-codex']],
