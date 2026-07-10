@@ -6,7 +6,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { registerOwnedPR } from '../automation/prOwnership.js';
 import { runConventionalCommitGuard } from '../agents/pipelineGuards.js';
 import { loadRepoMetadata } from './repoMetadata.js';
@@ -95,7 +95,7 @@ export function buildBranchName(issueIdentifier: string, title: string): string 
 
 function isPathInside(parent: string, child: string): boolean {
   const rel = relative(parent, child);
-  return rel === '' || (!!rel && !rel.startsWith('..') && !isAbsolute(rel));
+  return rel === '' || (!!rel && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }
 
 function worktreeRoot(repoPath: string): string {
@@ -329,6 +329,12 @@ export async function createWorktree(
   if (existsSync(worktreePath)) {
     await git(repoPath, 'worktree', 'remove', '--force', worktreePath).catch((e) => console.warn(`[Worktree] Failed to remove existing worktree: ${worktreePath}`, e));
     rmSync(worktreePath, { recursive: true, force: true });
+    // A broken worktree .git pointer can make `worktree remove` fail while its
+    // admin entry remains registered. Prune after the direct-removal fallback
+    // so the old branch is no longer considered in use and retry can recreate it.
+    await git(repoPath, 'worktree', 'prune').catch((e) =>
+      console.warn(`[Worktree] Failed to prune stale worktree metadata: ${worktreePath}`, e)
+    );
   }
 
   // Always create fresh branch from latest main to avoid conflicts

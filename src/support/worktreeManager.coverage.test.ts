@@ -57,23 +57,26 @@ describe('buildBranchName (pure)', () => {
   });
 });
 
-describe('resolveWorktreePath escape check — false positive on dot-leading segments (discovered fragility)', () => {
-  // isPathInside(parent, child) rejects any relative path whose string starts
-  // with the TWO CHARACTERS ".." (`rel.startsWith('..')`), rather than
-  // checking it as a distinct path segment (e.g. `rel === '..' || rel.startsWith('../')`).
-  // An issueId of three (or more) dots passes the `^[A-Za-z0-9._-]+$` regex
-  // and is not exactly '.' or '..', so it reaches this second check — but its
-  // resolved path is a perfectly ordinary same-level entry ("worktree/..."),
-  // not an escape. It gets rejected anyway, purely because the string "..."
-  // starts with the substring "..". Fails safe (over-rejects) rather than
-  // under-rejects, so not a security hole, but it is a real, reachable
-  // false-positive worth knowing about — not dead code.
-  it('rejects a literal "..." issueId as an escape even though it never leaves the worktree root', async () => {
+describe('resolveWorktreePath escape check', () => {
+  it('accepts a literal "..." issueId because it remains inside the worktree root', async () => {
     const root = join(tmpdir(), `openswarm-escape-falsepos-${process.pid}-${Date.now()}`);
     const repo = join(root, 'repo');
+    const originBare = join(root, 'origin.git');
     mkdirSync(repo, { recursive: true });
     try {
-      await expect(createWorktree(repo, '...', 'swarm/dots-test')).rejects.toThrow(/Resolved worktree path escapes/);
+      execFileSync('git', ['init', '--bare', '-b', 'main', originBare], { stdio: 'pipe' });
+      execFileSync('git', ['init', '-b', 'main', repo], { stdio: 'pipe' });
+      execFileSync('git', ['-C', repo, 'config', 'user.email', 'test@example.com']);
+      execFileSync('git', ['-C', repo, 'config', 'user.name', 'Test']);
+      writeFileSync(join(repo, 'app.py'), 'base\n');
+      execFileSync('git', ['-C', repo, 'add', '-A']);
+      execFileSync('git', ['-C', repo, 'commit', '-m', 'init'], { stdio: 'pipe' });
+      execFileSync('git', ['-C', repo, 'remote', 'add', 'origin', originBare]);
+      execFileSync('git', ['-C', repo, 'push', 'origin', 'main'], { stdio: 'pipe' });
+
+      const info = await createWorktree(repo, '...', 'swarm/dots-test');
+      expect(info.worktreePath).toBe(resolve(repo, 'worktree', '...'));
+      expect(existsSync(join(info.worktreePath, 'app.py'))).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -265,25 +268,8 @@ describe('createWorktree retry/resume error paths', () => {
     // branch=''), so createWorktree correctly refuses to resume it and logs
     // "Preserved worktree invalid ... recreating".
     //
-    // NOTE (discovered gap, not fixed here — see task report): the retry
-    // cleanup step immediately after this (`git worktree remove --force` then
-    // an unconditional rmSync fallback, and — since the branch name matches —
-    // a `git branch -D` of the old branch) does NOT run `git worktree prune`
-    // when `git worktree remove` itself fails validation (as it does here,
-    // for the same broken-.git reason). That leaves stale
-    // `.git/worktrees/<id>` admin metadata behind referencing a now-deleted
-    // directory AND keeps the old branch "in use" by that stale entry, so
-    // `git branch -D` also fails, and the final `git worktree add -b
-    // <branchName>` fails too (branch still exists) — i.e. this retry does
-    // NOT actually self-heal for this failure mode. This asserts today's real
-    // (broken) outcome rather than papering over it.
     writeFileSync(join(info.worktreePath, '.git'), 'gitdir: /nonexistent/broken\n');
 
-    await expect(createWorktree(repo, 'INT-1', 'swarm/INT-1-test')).rejects.toThrow(/already exists|missing but already registered worktree/);
-
-    // A `git worktree prune` (as the daemon's periodic pruneWorktrees sweep
-    // would eventually run) clears the stale registration and unblocks it.
-    execFileSync('git', ['-C', repo, 'worktree', 'prune'], { stdio: 'pipe' });
     const recreated = await createWorktree(repo, 'INT-1', 'swarm/INT-1-test');
     expect(existsSync(join(recreated.worktreePath, '.openswarm-preserved'))).toBe(false);
     expect(readFileSync(join(recreated.worktreePath, 'app.py'), 'utf8')).toBe('base\n'); // fresh from base, not the partial content
