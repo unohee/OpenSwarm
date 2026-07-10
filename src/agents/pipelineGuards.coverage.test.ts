@@ -8,7 +8,7 @@
 // ============================================
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -25,6 +25,7 @@ function guardIssues(results: Awaited<ReturnType<typeof runGuards>>, guard: stri
 
 describe('pipelineGuards — additional coverage', () => {
   let repo: string;
+  let originalPath: string | undefined;
 
   beforeEach(() => {
     repo = join(tmpdir(), `openswarm-guards-cov-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -35,9 +36,26 @@ describe('pipelineGuards — additional coverage', () => {
     writeFileSync(join(repo, 'base.ts'), 'export const base = 1;\n');
     execFileSync('git', ['add', 'base.ts'], { cwd: repo });
     execFileSync('git', ['commit', '-m', 'initial'], { cwd: repo });
+
+    // Keep the quality-gate tests independent from tools installed on the host.
+    // `runQualityGate` invokes `npx tsc` and `ruff` from the target repository,
+    // so provide deterministic fixture executables for both success and failure.
+    const nodeBin = join(repo, 'node_modules', '.bin');
+    const fixtureBin = join(repo, 'bin');
+    mkdirSync(nodeBin, { recursive: true });
+    mkdirSync(fixtureBin, { recursive: true });
+    const tscFixture = join(nodeBin, 'tsc');
+    writeFileSync(tscFixture, '#!/bin/sh\nif [ -f bad.ts ]; then exit 1; fi\n');
+    chmodSync(tscFixture, 0o755);
+    const ruffFixture = join(fixtureBin, 'ruff');
+    writeFileSync(ruffFixture, '#!/bin/sh\nshift\nif grep -q "import os" "$@"; then exit 1; fi\n');
+    chmodSync(ruffFixture, 0o755);
+    originalPath = process.env.PATH;
+    process.env.PATH = `${fixtureBin}:${originalPath ?? ''}`;
   });
 
   afterEach(() => {
+    process.env.PATH = originalPath;
     if (existsSync(repo)) rmSync(repo, { recursive: true, force: true });
   });
 
