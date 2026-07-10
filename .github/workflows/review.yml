@@ -31,6 +31,9 @@ jobs:
   review:
     name: openswarm review
     runs-on: [self-hosted, openswarm-review]
+    # Bounded well below the single shared self-hosted runner's patience — a hung
+    # review (LLM call never returns) must not block every other PR behind it.
+    timeout-minutes: 20
     # Fork PRs never get repo secrets on this trigger (GitHub strips them), so
     # the app-token step below would fail with an opaque auth error — skip with
     # an explicit reason instead.
