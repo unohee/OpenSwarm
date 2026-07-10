@@ -31,6 +31,8 @@ export interface WorkerFanoutCandidateRun {
   score: number;
   eligible: boolean;
   error?: string;
+  /** Shared-path symlinks injected by the harness, never candidate edits. */
+  linkedSharedPaths?: string[];
 }
 
 export interface WorkerFanoutRunResult {
@@ -98,15 +100,15 @@ async function cloneSandbox(
   root: string,
   id: string,
   sharedPathMode: 'copy' | 'link' | 'off',
-): Promise<string> {
+): Promise<{ sandbox: string; linkedSharedPaths: string[] }> {
   const sandbox = join(root, id);
   await git(projectPath, ['clone', '--quiet', '--no-hardlinks', '--', projectPath, sandbox]);
-  if (sharedPathMode === 'link') await linkSharedPaths(projectPath, sandbox);
+  const linkedSharedPaths = sharedPathMode === 'link' ? await linkSharedPaths(projectPath, sandbox) : [];
   if (sharedPathMode === 'copy') await copySharedPaths(projectPath, sandbox);
-  return sandbox;
+  return { sandbox, linkedSharedPaths };
 }
 
-async function linkSharedPaths(projectPath: string, sandboxPath: string): Promise<void> {
+async function linkSharedPaths(projectPath: string, sandboxPath: string): Promise<string[]> {
   let metadata = null;
   try {
     metadata = await loadRepoMetadata(projectPath);
@@ -114,13 +116,16 @@ async function linkSharedPaths(projectPath: string, sandboxPath: string): Promis
     metadata = null;
   }
 
+  const linked: string[] = [];
   for (const rel of resolveSharedPaths(projectPath, metadata)) {
     const target = resolve(projectPath, rel);
     const linkPath = resolve(sandboxPath, rel);
     if (existsSync(linkPath)) continue;
     await mkdir(dirname(linkPath), { recursive: true });
     await symlink(target, linkPath);
+    linked.push(rel);
   }
+  return linked;
 }
 
 async function copySharedPaths(projectPath: string, sandboxPath: string): Promise<void> {
@@ -151,7 +156,7 @@ function sharedPathModeFor(linkSharedPaths: boolean | undefined): 'copy' | 'link
   return 'copy';
 }
 
-async function changedFiles(projectPath: string): Promise<string[]> {
+async function changedFiles(projectPath: string, ignoredPaths: string[] = []): Promise<string[]> {
   const out = await git(projectPath, ['status', '--porcelain']).catch(() => '');
   return out
     .split('\n')
@@ -161,7 +166,7 @@ async function changedFiles(projectPath: string): Promise<string[]> {
       const file = line.slice(3);
       return file.includes(' -> ') ? file.split(' -> ').pop() ?? file : file;
     })
-    .filter(Boolean);
+    .filter((file) => Boolean(file) && !ignoredPaths.some((ignored) => file === ignored || file.startsWith(`${ignored}/`)));
 }
 
 /**
@@ -170,7 +175,7 @@ async function changedFiles(projectPath: string): Promise<string[]> {
  * spaces/newlines survive. Returns { write } (paths whose content to copy from
  * the sandbox) and { remove } (paths to delete from the project).
  */
-async function winnerChangeSet(sandbox: string): Promise<{ write: string[]; remove: string[] }> {
+async function winnerChangeSet(sandbox: string, ignoredPaths: string[] = []): Promise<{ write: string[]; remove: string[] }> {
   const write = new Set<string>();
   const remove = new Set<string>();
 
@@ -195,7 +200,8 @@ async function winnerChangeSet(sandbox: string): Promise<{ write: string[]; remo
   const untracked = await git(sandbox, ['ls-files', '--others', '--exclude-standard', '-z']);
   for (const p of untracked.split('\0').filter(Boolean)) write.add(p);
 
-  return { write: [...write], remove: [...remove] };
+  const included = (path: string) => !ignoredPaths.some((ignored) => path === ignored || path.startsWith(`${ignored}/`));
+  return { write: [...write].filter(included), remove: [...remove].filter(included) };
 }
 
 /**
@@ -208,8 +214,8 @@ async function winnerChangeSet(sandbox: string): Promise<{ write: string[]; remo
  * seeded base, so the copy yields `base + winner-edits`, untouched files keep
  * their project content. Returns the promoted path list.
  */
-async function promoteWinnerFiles(projectPath: string, sandbox: string): Promise<string[]> {
-  const { write, remove } = await winnerChangeSet(sandbox);
+async function promoteWinnerFiles(projectPath: string, sandbox: string, ignoredPaths: string[] = []): Promise<string[]> {
+  const { write, remove } = await winnerChangeSet(sandbox, ignoredPaths);
   for (const rel of remove) {
     await rm(join(projectPath, rel), { force: true });
   }
@@ -275,9 +281,10 @@ async function runCandidate(
   const id = safeCandidateId(candidate.id, index);
   const started = Date.now();
   let sandbox = '';
+  let linkedSharedPaths: string[] = [];
 
   try {
-    sandbox = await cloneSandbox(options.projectPath, root, id, sharedPathModeFor(options.linkSharedPaths));
+    ({ sandbox, linkedSharedPaths } = await cloneSandbox(options.projectPath, root, id, sharedPathModeFor(options.linkSharedPaths)));
     await seedBaseline(sandbox, root, id, baseline);
     const result = await runWorker({
       ...options.baseWorkerOptions,
@@ -294,7 +301,7 @@ async function runCandidate(
         : undefined,
       onLog: (line) => options.onLog?.(`[${id}] ${line}`),
     });
-    const files = await changedFiles(sandbox);
+    const files = await changedFiles(sandbox, linkedSharedPaths);
     const guards = options.guards && files.length > 0
       ? await runGuards({ ...result, filesChanged: files }, sandbox, options.guards)
       : undefined;
@@ -308,6 +315,7 @@ async function runCandidate(
       durationMs: Date.now() - started,
       score: scored.score,
       eligible: scored.eligible,
+      linkedSharedPaths,
     };
   } catch (err) {
     const result: WorkerResult = {
@@ -328,6 +336,7 @@ async function runCandidate(
       score: scored.score,
       eligible: false,
       error: result.error,
+      linkedSharedPaths,
     };
   }
 }
@@ -375,7 +384,7 @@ export async function runWorkerFanout(options: RunWorkerFanoutOptions): Promise<
     // which is what would have run without fan-out.
     let copied: string[];
     try {
-      copied = await promoteWinnerFiles(options.projectPath, winner.projectPath);
+      copied = await promoteWinnerFiles(options.projectPath, winner.projectPath, winner.linkedSharedPaths);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       return { candidates, fallbackReason: `winner promotion failed: ${msg}` };
