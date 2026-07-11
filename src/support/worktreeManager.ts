@@ -409,6 +409,42 @@ export interface FileOverlap {
   files: string[];
 }
 
+export interface OpenPRFileOverlap extends FileOverlap {
+  number: number;
+  url: string;
+}
+
+/**
+ * Check planned files before a worker branch is created. This is intentionally
+ * fail-open when GitHub is unavailable, but a successful query lets the runner
+ * avoid producing another divergent implementation of the same files.
+ */
+export async function findOpenPRFileOverlaps(
+  repoPath: string,
+  plannedFiles: string[],
+): Promise<OpenPRFileOverlap[]> {
+  if (plannedFiles.length === 0) return [];
+  const planned = new Set(plannedFiles.map((f) => f.replace(/^\.\//, '')));
+  try {
+    // `files` is available on `gh pr list --json`; fetch every scope in one API
+    // request instead of running an unbounded `gh pr diff` loop.
+    // gh paginates internally up to the requested limit. 1,000 is a deliberate
+    // safety ceiling well above GitHub's practical open-PR queue sizes while
+    // keeping one bounded request and covering the former 100-PR blind spot.
+    const raw = await gh(repoPath, 'pr', 'list', '--state', 'open', '--json', 'number,url,headRefName,files', '--limit', '1000');
+    const prs: { number: number; url: string; headRefName: string; files?: { path: string }[] }[] = JSON.parse(raw || '[]');
+    const overlaps: OpenPRFileOverlap[] = [];
+    for (const pr of prs) {
+      const shared = (pr.files ?? []).map((f) => f.path).filter((f) => planned.has(f.replace(/^\.\//, '')));
+      if (shared.length > 0) overlaps.push({ number: pr.number, url: pr.url, label: `PR #${pr.number} (${pr.headRefName})`, files: shared });
+    }
+    return overlaps;
+  } catch (err) {
+    console.warn('[Worktree] Preflight open-PR overlap check skipped:', err);
+    return [];
+  }
+}
+
 /** Pure: intersect this branch's changed files with each other scope's files. */
 export function computeFileOverlaps(selfFiles: string[], others: BranchScope[]): FileOverlap[] {
   const selfSet = new Set(selfFiles);

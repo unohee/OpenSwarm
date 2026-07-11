@@ -15,6 +15,8 @@ import { RateLimitError } from '../adapters/rateLimitError.js';
 import { isInfraError } from '../adapters/errorClassification.js';
 import { resolveEditFormat, SEARCH_REPLACE_PROMPT, WHOLE_FILE_PROMPT, type EditFormat } from '../support/editParser.js';
 import { loadSandboxBashTimeoutMs } from '../support/repoMetadata.js';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 // Types
 
@@ -72,6 +74,29 @@ export interface WorkerOptions {
  * "live/E2E verification" the worker could never physically complete.
  */
 export const WORKER_BASH_TIMEOUT_DEFAULT_MS = 300_000;
+
+const REPO_RULE_FILES = ['AGENTS.md', 'CLAUDE.md'] as const;
+const REPO_RULES_MAX_CHARS = 12_000;
+
+/** Load binding repository instructions into the autonomous worker prompt. */
+export function loadWorkerRepoRules(projectPath: string): string {
+  const sections: string[] = [];
+  for (const name of REPO_RULE_FILES) {
+    const path = join(projectPath, name);
+    if (!existsSync(path)) continue;
+    try {
+      const full = readFileSync(path, 'utf8').trim();
+      if (!full) continue;
+      const body = full.length > REPO_RULES_MAX_CHARS
+        ? `${full.slice(0, REPO_RULES_MAX_CHARS)}\n… (truncated — read ${name} before editing)`
+        : full;
+      sections.push(`## Binding repository instructions (${name})\n${body}`);
+    } catch {
+      // Best-effort: the base prompt still tells the worker to read repo rules.
+    }
+  }
+  return sections.length > 0 ? `\n\n${sections.join('\n\n')}` : '';
+}
 
 /** Keep Git as the sole changed-file authority and enforce planner scope. */
 export function reconcileWorkerFiles(
@@ -232,7 +257,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
     // or whole-file instruction is appended to the worker's system prompt so the
     // model emits the format the agentic loop expects.
     const editFormat = options.editFormat ?? resolveEditFormat(adapterName);
-    let systemPrompt = getPrompts().systemPrompt;
+    let systemPrompt = getPrompts().systemPrompt + loadWorkerRepoRules(cwd);
     if (editFormat === 'search-replace') systemPrompt += SEARCH_REPLACE_PROMPT;
     else if (editFormat === 'whole-file') systemPrompt += WHOLE_FILE_PROMPT;
 

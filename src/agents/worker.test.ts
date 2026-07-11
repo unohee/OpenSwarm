@@ -3,8 +3,11 @@
 // Test Status: Complete
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import type { WorkerResult } from './agentPair.js';
-import { formatWorkReport, formatWorkerGitChangeStatus, reconcileWorkerFiles, resolveWorkerBashTimeoutMs, WORKER_BASH_TIMEOUT_DEFAULT_MS, type WorkerOptions } from './worker.js';
+import { formatWorkReport, formatWorkerGitChangeStatus, reconcileWorkerFiles, resolveWorkerBashTimeoutMs, loadWorkerRepoRules, WORKER_BASH_TIMEOUT_DEFAULT_MS, type WorkerOptions } from './worker.js';
 
 describe('worker', () => {
   beforeEach(() => {
@@ -13,6 +16,22 @@ describe('worker', () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+  });
+
+  it('injects both AGENTS.md and CLAUDE.md repository rules', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'openswarm-worker-rules-'));
+    try {
+      writeFileSync(join(dir, 'AGENTS.md'), 'Do not edit vendored files.');
+      writeFileSync(join(dir, 'CLAUDE.md'), 'fallback-only');
+
+      const rules = loadWorkerRepoRules(dir);
+      expect(rules).toContain('Binding repository instructions (AGENTS.md)');
+      expect(rules).toContain('Do not edit vendored files.');
+      expect(rules).toContain('Binding repository instructions (CLAUDE.md)');
+      expect(rules).toContain('fallback-only');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   describe('formatWorkerGitChangeStatus', () => {

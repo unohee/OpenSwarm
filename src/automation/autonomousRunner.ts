@@ -304,9 +304,10 @@ export class AutonomousRunner {
         recordProjectCompletion(projectName, result.totalCost?.costUsd);
       }
 
-      // Skip completion handling for decomposed tasks. Child issues represent the runnable work.
+      // Skip completion handling when another open PR already owns the planned
+      // files. Both cases have a different coordination surface for completion.
       if (result.finalStatus === 'decomposed') {
-        console.log(`[Scheduler] Task decomposed into sub-issues, skipping Done state`);
+        console.log(`[Scheduler] Task ${result.finalStatus}; skipping Done state`);
         this.scheduleNextHeartbeat();
         return;
       }
@@ -360,6 +361,16 @@ export class AutonomousRunner {
         }).catch(e => console.warn('[Scheduler] Project update failed:', e));
       }
 
+      this.scheduleNextHeartbeat();
+    });
+
+    this.scheduler.on('superseded', async ({ task, result }) => {
+      const taskCtx = this.formatTaskContext(task);
+      console.log(`[Scheduler] Task superseded: ${taskCtx} ${task.title}`);
+      this.recordPipelineHistory(task, result);
+      if (task.issueId) setRetryTime(task.issueId, 3, this.failedTaskRetryTimes);
+      this.saveTaskState();
+      broadcastEvent({ type: 'log', data: { taskId: task.issueId || task.id, stage: 'preflight', line: 'Existing open PR owns planned files; deferred for re-check' } });
       this.scheduleNextHeartbeat();
     });
 

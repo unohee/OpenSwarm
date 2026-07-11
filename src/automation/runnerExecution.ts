@@ -29,6 +29,7 @@ import {
   buildBranchName,
   createWorktree,
   commitAndCreatePR,
+  findOpenPRFileOverlaps,
   preserveWorktree,
   removeWorktree,
 } from '../support/worktreeManager.js';
@@ -703,6 +704,25 @@ export async function executePipeline(
 
       broadcastEvent({ type: 'pipeline:stage', data: { taskId, stage: 'draft', status: 'complete', durationMs: draftResult.durationMs, ...metadata } });
       console.log(`[AutonomousRunner] Draft: type=${draftResult.taskType}, files=${draftResult.relevantFiles.length}, ${draftResult.durationMs}ms`);
+
+      // Stop before branch creation when an open PR already owns any planned
+      // file. The existing PR is the coordination surface; starting another
+      // worker here is what produced the INT-2568 audit PR clusters.
+      if (ctx.worktreeMode && draftResult.relevantFiles.length > 0) {
+        const overlaps = await findOpenPRFileOverlaps(projectPath, draftResult.relevantFiles);
+        if (overlaps.length > 0) {
+          const lines = overlaps.map((o) => `- ${o.url}: ${o.files.map((f) => `\`${f}\``).join(', ')}`);
+          console.warn(`[AutonomousRunner] Existing open PR owns planned files — skipping duplicate worker: ${lines.join(' ')}`);
+          return {
+            success: true,
+            sessionId: `superseded-${Date.now()}`,
+            iterations: 0,
+            totalDuration: draftResult.durationMs,
+            finalStatus: 'superseded',
+            stages: [],
+          };
+        }
+      }
     } catch (err) {
       if (err instanceof RateLimitError) throw err; // → outer catch → rate_limited (INT-2521)
       console.warn('[AutonomousRunner] Draft analysis failed (non-blocking):', err);

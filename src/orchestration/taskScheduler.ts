@@ -363,7 +363,12 @@ export class TaskScheduler extends EventEmitter {
 
     this.runningTasks.delete(taskId);
 
-    if (result.finalStatus === 'cancelled') {
+    if (result.finalStatus === 'superseded') {
+      // Existing in-flight work owns this scope. It is neither completed nor
+      // failed; free the slot and let the runner schedule a delayed re-check.
+      console.log(`[Scheduler] Task superseded: ${running.task.title}`);
+      this.emit('superseded', { task: running.task, result });
+    } else if (result.finalStatus === 'cancelled') {
       // A cancelled task is neither a success nor a failure — don't bump counts
       // or trigger the failure/retry path. Just free the slot.
       console.log(`[Scheduler] Task cancelled: ${running.task.title}`);

@@ -105,6 +105,23 @@ describe('AutonomousRunner infra_error handling (INT-2010)', () => {
     expect(history.every((entry: { failureCause?: string }) => entry.failureCause === 'infra')).toBe(true);
   });
 
+  it('does not persist a superseded open issue as completed (INT-2568)', async () => {
+    const source = mockTaskSource();
+    runnerExecution.setTaskSource(source);
+    const runner = new AutonomousRunner(cfg());
+    const scheduler = (runner as unknown as { scheduler: TaskScheduler }).scheduler;
+    const superseded: PipelineResult = { ...result('superseded'), success: true };
+
+    scheduler.startTask(task(), '/repo', async () => superseded);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    const state = JSON.parse(readFileSync(join(tempDir, 'runner-task-state.json'), 'utf8'));
+    expect(state.completed).not.toContain('ISSUE-1');
+    expect(state.retryTimes['ISSUE-1']).toBeGreaterThan(Date.now());
+    expect(scheduler.getStats()).toMatchObject({ completed: 0, failed: 0 });
+    expect(source.updateState).not.toHaveBeenCalled();
+  });
+
   it('still marks STUCK after MAX_RETRY_COUNT genuine failures (control)', async () => {
     const source = mockTaskSource();
     runnerExecution.setTaskSource(source);

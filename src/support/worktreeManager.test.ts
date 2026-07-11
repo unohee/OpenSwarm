@@ -3,7 +3,31 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { createWorktree, preserveWorktree, removePreservedWorktreeAt, removeWorktree, resolveSharedPaths, computeFileOverlaps, formatOverlapReport, resolveBaseRef, commitAndCreatePR, type WorktreeInfo } from './worktreeManager.js';
+import { createWorktree, preserveWorktree, removePreservedWorktreeAt, removeWorktree, resolveSharedPaths, computeFileOverlaps, formatOverlapReport, findOpenPRFileOverlaps, resolveBaseRef, commitAndCreatePR, type WorktreeInfo } from './worktreeManager.js';
+
+describe('open PR planned-file preflight (INT-2568)', () => {
+  it('reports only open PRs that overlap the draft file scope', async () => {
+    const root = join(tmpdir(), `openswarm-pr-preflight-${process.pid}-${Date.now()}`);
+    const bin = join(root, 'bin');
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, 'gh'), `#!/bin/sh
+case "$*" in
+  *"pr list --state open"*) echo '[{"number":16,"url":"https://example.test/16","headRefName":"audit/a","files":[{"path":"src/subtraction.rs"},{"path":"README.md"}]},{"number":18,"url":"https://example.test/18","headRefName":"audit/b","files":[{"path":"src/deess/spectral.rs"}]}]';;
+esac
+`);
+    chmodSync(join(bin, 'gh'), 0o755);
+    const previous = process.env.PATH;
+    process.env.PATH = `${bin}:${previous}`;
+    try {
+      await expect(findOpenPRFileOverlaps(root, ['./src/subtraction.rs'])).resolves.toEqual([
+        expect.objectContaining({ number: 16, files: ['src/subtraction.rs'] }),
+      ]);
+    } finally {
+      process.env.PATH = previous;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('worktreeManager path safety', () => {
   let root: string;
