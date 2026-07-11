@@ -38,8 +38,7 @@ export async function loadTrustedVerifyPlan(projectPath: string, config: VerifyC
   // infrastructure: fail closed instead of silently falling back to an LLM.
   if (loaded.error) throw new Error(`verify-config: ${loaded.error}`);
   const commands = (loaded.manifest?.commands ?? await discoverVerifyCommands(projectPath)).slice(0, config.maxCommands);
-  const packageJson = loaded.manifest ? undefined
-    : await readFile(join(projectPath, 'package.json'), 'utf8').catch(() => undefined);
+  const packageJson = await readFile(join(projectPath, 'package.json'), 'utf8').catch(() => undefined);
   return { commands, packageJson };
 }
 
