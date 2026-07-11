@@ -268,7 +268,13 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
         cwd,
         // 15 min per area: the adapter default (5 min) SIGKILLs fix workers on
         // issue-heavy areas mid-edit.
-        { concurrency, adapter: opts.adapter as AdapterName | undefined, fixTimeoutMs: 900_000, maxRounds },
+        {
+          concurrency,
+          adapter: opts.adapter as AdapterName | undefined,
+          fixTimeoutMs: 900_000,
+          maxRounds,
+          maxDurationMs: 2 * 60 * 60 * 1000,
+        },
         {
           onRoundStart: (round, flagged) =>
             console.log(`\n${c.bold(`Round ${round}${maxRounds === undefined ? '' : `/${maxRounds}`}`)} — fixing ${flagged} area(s)...`),
@@ -294,6 +300,7 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
         'max-rounds': 'round budget spent',
         'no-progress': 'workers made no edits',
         'rate-limit': 'usage limit hit',
+        'time-budget': 'two-hour safety budget spent',
       };
       // Count "not approved" (includes errored/rate-limited areas), matching
       // loop.resolved — fixTargets would undercount an errored area.
