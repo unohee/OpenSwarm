@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { access, mkdtemp, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, join, resolve } from 'node:path';
 import { isInfraError } from '../adapters/errorClassification.js';
@@ -115,6 +115,17 @@ async function runAtBase(
     root = await mkdtemp(join(tmpdir(), 'openswarm-verify-base-'));
     worktreePath = join(root, 'worktree');
     await git(projectPath, ['worktree', 'add', '--detach', worktreePath, baseCommit]);
+    // Package scripts resolve dependencies relative to cwd, not only through
+    // PATH. A detached worktree intentionally has no ignored node_modules, so
+    // expose the already-installed HEAD dependencies to make base and head run
+    // under the same toolchain without mutating the baseline checkout.
+    const headNodeModules = join(projectPath, 'node_modules');
+    try {
+      await access(headNodeModules);
+      await symlink(headNodeModules, join(worktreePath, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
     const headBin = join(projectPath, 'node_modules', '.bin');
     const env = { ...process.env, PATH: `${headBin}${delimiter}${process.env.PATH ?? ''}` };
     return await runCommand(command, worktreePath, env);

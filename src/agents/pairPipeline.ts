@@ -1224,11 +1224,17 @@ export class PairPipeline extends EventEmitter {
           continue;
         }
 
-        // approve → done (tester already ran before the reviewer — INT-1703)
         agentPair.resetFailureStreak(context.session.id); // Reset on approval
       }
 
-      // ========== ALL PASSED ==========
+      if (context.testerResult?.deterministic === true
+        && context.testerResult.success === false
+        && this.config.verify?.blockOnNewFailures === true) {
+        console.log(`[${context.taskPrefix}] Deterministic verification has a blocking new failure`);
+        this.emit('iteration:fail', { iteration: context.currentIteration, stage: 'tester', context });
+        agentPair.updateSessionStatus(context.session.id, 'failed');
+        return { success: false };
+      }
       console.log(`[${context.taskPrefix}] Iteration ${context.currentIteration} completed successfully`);
       this.emit('iteration:complete', {
         iteration: context.currentIteration,
@@ -1237,15 +1243,10 @@ export class PairPipeline extends EventEmitter {
       return { success: true };
     }
 
-    // maxIterations exceeded
     console.log(`[${context.taskPrefix}] Max iterations (${maxIterations}) exceeded`);
     agentPair.updateSessionStatus(context.session.id, 'failed');
     return { success: false };
   }
-
-  // ============================================
-  // Result Building
-  // ============================================
 
   /**
    * Build pipeline result

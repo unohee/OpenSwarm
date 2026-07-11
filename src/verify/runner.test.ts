@@ -69,6 +69,28 @@ describe('runVerify', () => {
     expect(evidence).toMatchObject({ headStatus: 'fail', baseStatus: 'pass', newFailure: true });
   });
 
+  it('runs npm package scripts against head-installed node_modules at base', async () => {
+    await writeFile(join(repo, 'package.json'), JSON.stringify({
+      scripts: { test: 'verify-fixture' },
+    }), 'utf8');
+    git('add', 'package.json');
+    git('commit', '-m', 'base package script');
+    const bin = join(repo, 'node_modules', '.bin');
+    await mkdir(bin, { recursive: true });
+    const executable = join(bin, 'verify-fixture');
+    await writeFile(executable, '#!/bin/sh\nif [ -f broken ]; then exit 1; fi\n', 'utf8');
+    await chmod(executable, 0o755);
+    await writeFile(join(repo, 'broken'), 'yes\n', 'utf8');
+
+    const [evidence] = await runVerify({
+      projectPath: repo,
+      commands: [verify('npm test --silent')],
+      baseRef: 'HEAD',
+    });
+
+    expect(evidence).toMatchObject({ headStatus: 'fail', baseStatus: 'pass', newFailure: true });
+  });
+
   it('keeps a failure that also exists at base non-blocking', async () => {
     await writeFile(join(repo, 'broken'), 'yes\n', 'utf8');
     git('add', 'broken');

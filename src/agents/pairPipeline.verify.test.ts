@@ -63,6 +63,7 @@ function task(): TaskItem {
 }
 
 async function runPipeline(options: {
+  stages?: Array<'worker' | 'tester' | 'reviewer'>;
   continueOnTestFail?: boolean;
   skipTesterIfNoCodeChange?: boolean;
   verbose?: boolean;
@@ -215,6 +216,41 @@ describe('PairPipeline deterministic tester (INT-2662)', () => {
     expect(result.success).toBe(false);
     expect(result.testerResult).toMatchObject({ success: false, deterministic: true, failedTests: ['unit tests'] });
     expect(runReviewer).toHaveBeenCalledOnce();
+  });
+
+  it('does not let reviewer approval waive a blocking deterministic new failure', async () => {
+    runReviewer.mockResolvedValue({ decision: 'approve', feedback: 'looks fine' });
+    discoverVerifyCommands.mockResolvedValue([verifyCommand]);
+    runVerify.mockResolvedValue([{
+      command: verifyCommand,
+      baseStatus: 'pass',
+      headStatus: 'fail',
+      newFailure: true,
+      rawOutputTail: 'new regression',
+      durationMs: 5,
+    }]);
+
+    const { result } = await runPipeline();
+
+    expect(result).toMatchObject({ success: false, finalStatus: 'failed', failureSignal: 'gate-fail' });
+    expect(runReviewer).toHaveBeenCalledOnce();
+  });
+
+  it('blocks a deterministic new failure even when no reviewer stage is configured', async () => {
+    discoverVerifyCommands.mockResolvedValue([verifyCommand]);
+    runVerify.mockResolvedValue([{
+      command: verifyCommand,
+      baseStatus: 'pass',
+      headStatus: 'fail',
+      newFailure: true,
+      rawOutputTail: 'new regression',
+      durationMs: 5,
+    }]);
+
+    const { result } = await runPipeline({ stages: ['worker', 'tester'] });
+
+    expect(result).toMatchObject({ success: false, finalStatus: 'failed', failureSignal: 'gate-fail' });
+    expect(runReviewer).not.toHaveBeenCalled();
   });
 
   it('runs verification for a validation-relevant manifest change', async () => {
