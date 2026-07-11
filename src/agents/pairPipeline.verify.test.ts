@@ -118,7 +118,7 @@ describe('PairPipeline deterministic tester (INT-2662)', () => {
       rawOutputTail: 'pass', durationMs: 1,
     }]);
 
-    const { result } = await runPipeline();
+    const { result } = await runPipeline({ skipTesterIfNoCodeChange: true });
 
     expect(result.success).toBe(true);
     expect(runVerify).toHaveBeenCalledOnce();
