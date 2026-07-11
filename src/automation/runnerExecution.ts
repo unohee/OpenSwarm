@@ -941,7 +941,7 @@ export async function executePipeline(
       await ctx.reportToDiscord(haltEmbed);
     });
 
-    const stages = getEnabledStages(roles);
+    const stages = getEnabledStages(roles, ctx.verify);
     const issueRef = task.issueIdentifier || task.issueId || '';
     const projectDisplay = task.linearProject?.name
       ? `📁 ${task.linearProject.name} (${actualPath.split('/').slice(-2).join('/')})`
@@ -1079,11 +1079,11 @@ export function formatExecutionCommentContext(
     : '';
 }
 
-function getEnabledStages(roles?: DefaultRolesConfig): PipelineStage[] {
+function getEnabledStages(roles?: DefaultRolesConfig, verify?: import('../core/types.js').VerifyConfig): PipelineStage[] {
   const stages: PipelineStage[] = [];
   if (roles?.worker?.enabled !== false) stages.push('worker');
   if (roles?.reviewer?.enabled !== false) stages.push('reviewer');
-  if (roles?.tester?.enabled) stages.push('tester');
+  if (roles?.tester?.enabled || verify?.enabled) stages.push('tester');
   if (roles?.documenter?.enabled) stages.push('documenter');
   return stages;
 }

@@ -817,6 +817,29 @@ describe('runnerExecution.ts coverage extension', () => {
       expect(stagesField?.value).toBe('worker → reviewer → tester → documenter');
     });
 
+    it('includes the deterministic tester stage when verify is enabled independently of the tester role', async () => {
+      const getRolesForProject = vi.fn(() => ({
+        worker: { enabled: true, timeoutMs: 0 },
+        reviewer: { enabled: true, timeoutMs: 0 },
+        tester: { enabled: false, timeoutMs: 0 },
+      }));
+      createPipelineFromConfig.mockReturnValue(makeFakePipeline(pipelineResult()));
+      const reportToDiscord = vi.fn(async () => {});
+
+      await executePipeline(makeCtx({
+        getRolesForProject,
+        reportToDiscord,
+        verify: { enabled: true, blockOnNewFailures: true, maxCommands: 4 },
+      }), task(), '/repo');
+
+      expect(createPipelineFromConfig.mock.calls[0][7]).toMatchObject({ enabled: true });
+      const startEmbed = reportToDiscord.mock.calls
+        .map((c) => c[0])
+        .find((m): m is EmbedBuilder => m instanceof EmbedBuilder);
+      const stagesField = (startEmbed as EmbedBuilder).data.fields?.find((f) => f.name === 'Stages');
+      expect(stagesField?.value).toBe('worker → reviewer → tester');
+    });
+
     it('falls back to the directory basename for the pipeline metadata repository name when the task has no Linear project', async () => {
       createPipelineFromConfig.mockReturnValue(makeFakePipeline(pipelineResult()));
 
