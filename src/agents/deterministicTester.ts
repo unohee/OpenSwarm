@@ -4,16 +4,26 @@ import { loadVerifyManifest } from '../verify/manifest.js';
 import { runVerify } from '../verify/runner.js';
 import type { TesterResult } from './tester.js';
 import type { VerifyConfig } from '../core/types.js';
+import type { VerifyCommand } from '../verify/manifest.js';
 import { isInfraError } from '../adapters/errorClassification.js';
 
-/** Returns null only when the repository exposes no deterministic verify commands. */
-export async function runDeterministicTester(projectPath: string, config: VerifyConfig): Promise<TesterResult | null> {
-  if (!config.enabled) return null;
+export async function loadTrustedVerifyCommands(projectPath: string, config: VerifyConfig): Promise<VerifyCommand[]> {
+  if (!config.enabled) return [];
   const loaded = await loadVerifyManifest(projectPath);
   // A checked-in manifest error is a task/configuration failure, not transient
   // infrastructure: fail closed instead of silently falling back to an LLM.
   if (loaded.error) throw new Error(`verify-config: ${loaded.error}`);
-  const commands = (loaded.manifest?.commands ?? await discoverVerifyCommands(projectPath)).slice(0, config.maxCommands);
+  return (loaded.manifest?.commands ?? await discoverVerifyCommands(projectPath)).slice(0, config.maxCommands);
+}
+
+/** Returns null only when the repository exposes no deterministic verify commands. */
+export async function runDeterministicTester(
+  projectPath: string,
+  config: VerifyConfig,
+  trustedCommands?: VerifyCommand[],
+): Promise<TesterResult | null> {
+  if (!config.enabled) return null;
+  const commands = trustedCommands ?? await loadTrustedVerifyCommands(projectPath, config);
   if (commands.length === 0) return null;
 
   const base = await resolveBaseRef(projectPath).catch((error) => {
@@ -41,12 +51,13 @@ export async function runDeterministicTester(projectPath: string, config: Verify
 export async function runTesterWithVerification(options: {
   projectPath: string;
   verify?: VerifyConfig;
+  trustedCommands?: VerifyCommand[];
   fallback: () => Promise<TesterResult>;
   onInfra?: (error: unknown) => void;
 }): Promise<TesterResult> {
   if (options.verify?.enabled) {
     try {
-      const deterministic = await runDeterministicTester(options.projectPath, options.verify);
+      const deterministic = await runDeterministicTester(options.projectPath, options.verify, options.trustedCommands);
       if (deterministic) return deterministic;
     } catch (error) {
       if (!isInfraError(error)) throw error;

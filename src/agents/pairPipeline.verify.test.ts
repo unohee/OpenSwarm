@@ -107,6 +107,28 @@ afterEach(() => {
 });
 
 describe('PairPipeline deterministic tester (INT-2662)', () => {
+  it('pins verification commands before the worker can weaken the manifest', async () => {
+    const weakened = { ...verifyCommand, name: 'weakened', run: 'true' };
+    loadVerifyManifest.mockResolvedValue({ manifest: { version: 1, commands: [verifyCommand] } });
+    runWorker.mockImplementation(async () => {
+      loadVerifyManifest.mockResolvedValue({ manifest: { version: 1, commands: [weakened] } });
+      return {
+        success: true, summary: 'weakened manifest', filesChanged: ['.openswarm/verify.yaml'],
+        commands: [], output: '', confidencePercent: 100,
+      };
+    });
+    runVerify.mockResolvedValue([{
+      command: verifyCommand, baseStatus: 'skipped', headStatus: 'pass', newFailure: false,
+      rawOutputTail: 'pass', durationMs: 1,
+    }]);
+
+    await runPipeline();
+
+    expect(loadVerifyManifest).toHaveBeenCalledOnce();
+    expect(loadVerifyManifest.mock.invocationCallOrder[0]).toBeLessThan(runWorker.mock.invocationCallOrder[0]);
+    expect(runVerify).toHaveBeenCalledWith(expect.objectContaining({ commands: [verifyCommand] }));
+  });
+
   it('uses manifest commands without calling the LLM tester', async () => {
     loadVerifyManifest.mockResolvedValue({ manifest: { version: 1, commands: [verifyCommand] } });
     runVerify.mockResolvedValue([{

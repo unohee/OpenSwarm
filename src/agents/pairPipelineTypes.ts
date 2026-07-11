@@ -9,6 +9,7 @@ import type { SkillDocumenterResult } from './skillDocumenter.js';
 import type { GuardsRunResult } from './pipelineGuards.js';
 import type { ReflectionState } from './reflection.js';
 import type { WorkerFanoutGateDecision } from './workerFanoutGate.js';
+import type { VerifyCommand } from '../verify/manifest.js';
 
 export interface PipelineRunMetadata {
   repository?: string;
@@ -114,6 +115,10 @@ export interface PipelineContext {
   workerEscalation?: { model?: string; reasoningEffort?: 'low' | 'medium' | 'high' };
   /** The missing-validation-evidence gate has already nudged once this session — after that it defers to the reviewer instead of consuming more iterations (INT-2485). */
   validationNudged?: boolean;
+  /** Commands captured before the worker runs, preventing self-modification of the verification gate. */
+  trustedVerifyCommands?: VerifyCommand[];
+  /** Deferred capture error so invalid manifests retain tester-stage failure semantics. */
+  trustedVerifyError?: unknown;
 }
 
 export type PipelineEventType = 'stage:start' | 'stage:complete' | 'stage:fail' | 'iteration:start' | 'iteration:complete' | 'iteration:fail' | 'pipeline:complete' | 'pipeline:fail' | 'fanout:gate' | 'halt';

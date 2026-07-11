@@ -49,7 +49,7 @@ import { StuckDetector, createStuckDetector } from '../support/stuckDetector.js'
 import { RateLimitError } from '../adapters/rateLimitError.js';
 import { isInfraError, isTimeoutError } from '../adapters/errorClassification.js';
 import { resolveAdapterDefaultModel } from './stageModelResolver.js';
-import { runTesterWithVerification } from './deterministicTester.js';
+import { loadTrustedVerifyCommands, runTesterWithVerification } from './deterministicTester.js';
 import { isClassifiedStageError, rethrowClassified, extractClassifiedStageResult, PipelineCancelledError } from './stageErrorClassification.js';
 import {
   isTesterCodeFile,
@@ -155,7 +155,6 @@ export class PairPipeline extends EventEmitter {
       }
     }
 
-    // Create session
     const session = agentPair.createPairSession({
       taskId: task.issueIdentifier || task.issueId || task.id,
       taskTitle: task.title,
@@ -169,7 +168,6 @@ export class PairPipeline extends EventEmitter {
     });
 
     const taskPrefix = buildTaskPrefix(task, projectPath);
-
     const context: PipelineContext = {
       task,
       projectPath,
@@ -179,9 +177,10 @@ export class PairPipeline extends EventEmitter {
       taskPrefix,
       reflection: createReflectionState(),
     };
-
     try {
-      // Full iteration loop: Worker → Reviewer → Tester
+      if (this.config.verify?.enabled) try {
+        context.trustedVerifyCommands = await loadTrustedVerifyCommands(projectPath, this.config.verify);
+      } catch (error) { context.trustedVerifyError = error; }
       const iterationResult = await this.runFullIterationLoop(context, stages);
 
       if (!iterationResult.success) {
@@ -264,7 +263,6 @@ export class PairPipeline extends EventEmitter {
       };
     }
   }
-
   /**
    * Worker에 주입할 코드 컨텍스트 수집
    * Draft 분석이 있으면 재사용, 없으면 직접 수집
@@ -388,9 +386,11 @@ export class PairPipeline extends EventEmitter {
 
   private async runTester(context: PipelineContext): Promise<TesterResult> {
     if (!context.workerResult) throw new Error('Worker result required for tester');
+    if (context.trustedVerifyError) throw context.trustedVerifyError;
     return await runTesterWithVerification({
       projectPath: context.projectPath,
       verify: this.config.verify,
+      trustedCommands: context.trustedVerifyCommands,
       onInfra: (error) => console.warn(`[${context.taskPrefix}] Deterministic verify unavailable; falling back to LLM tester: ${error instanceof Error ? error.message : String(error)}`),
       fallback: () => testerAgent.runTester({
         taskTitle: context.task.title, taskDescription: context.task.description || '',
