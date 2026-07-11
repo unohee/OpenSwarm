@@ -120,10 +120,10 @@ async function runCommand(command: VerifyCommand, root: string, env: NodeJS.Proc
 async function runTrustedCommand(
   command: VerifyCommand,
   root: string,
-  trustedPackageJsonByDirectory: Record<string, string> = {},
+  trustedPackageJsonByDirectory?: Record<string, string>,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<CommandResult> {
-  if (Object.keys(trustedPackageJsonByDirectory).length === 0) return await runCommand(command, root, env);
+  if (trustedPackageJsonByDirectory === undefined) return await runCommand(command, root, env);
   const projectRoot = resolve(root);
   let directory = resolve(projectRoot, command.cwd ?? '.');
   let trustedPackageJson: string | undefined;

@@ -157,6 +157,23 @@ describe('runVerify', () => {
     expect(evidence.rawOutputTail).toContain('[security] verify package resolution changed');
   });
 
+  it('fails closed when the trusted plan had no package and one is later added', async () => {
+    await mkdir(join(repo, 'packages', 'api'), { recursive: true });
+    git('add', 'packages');
+    await writeFile(join(repo, 'packages', 'api', '.keep'), 'tracked');
+    git('add', 'packages/api/.keep');
+    git('commit', '-m', 'package cwd without manifest');
+    await writeFile(join(repo, 'packages', 'api', 'package.json'), '{"scripts":{"test":"true"}}');
+
+    const [evidence] = await runVerify({
+      projectPath: repo,
+      commands: [{ ...verify('npm test --silent'), cwd: 'packages/api' }],
+      baseRef: 'HEAD', trustedPackageJsonByDirectory: {},
+    });
+    expect(evidence).toMatchObject({ headStatus: 'fail', baseStatus: 'skipped', newFailure: true });
+    expect(evidence.rawOutputTail).toContain('[security] verify package resolution changed');
+  });
+
   it('fails closed when the captured nearest package manifest is deleted', async () => {
     const packageDir = join(repo, 'packages', 'api');
     await mkdir(packageDir, { recursive: true });
