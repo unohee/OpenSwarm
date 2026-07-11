@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { access, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, join, resolve, sep } from 'node:path';
@@ -26,14 +27,16 @@ export interface RunVerifyOptions {
 interface CommandResult {
   status: 'pass' | 'fail' | 'infra';
   output: string;
+  outputFingerprint?: string;
+  baselineEnvironmentChanged?: boolean;
 }
 
-function hasSameFailure(baseOutput: string, headOutput: string): boolean {
+function hasSameFailure(base: CommandResult, head: CommandResult): boolean {
   // A shared non-zero exit code is not enough to prove that the failure is
   // pre-existing: HEAD may contain the old failure plus a new regression.
   // Only waive the failure when the observable failure output is identical.
   // Commands with unstable output therefore fail closed and require review.
-  return baseOutput.trim() === headOutput.trim();
+  return base.outputFingerprint !== undefined && base.outputFingerprint === head.outputFingerprint;
 }
 
 function appendTail(current: Buffer, chunk: Buffer): Buffer {
@@ -56,6 +59,7 @@ async function runCommand(command: VerifyCommand, root: string, env: NodeJS.Proc
   const shell = process.env.SHELL || '/bin/sh';
   return await new Promise((resolveResult) => {
     let output: Buffer = Buffer.alloc(0);
+    const outputHash = createHash('sha256');
     let settled = false;
     let timedOut = false;
     const detached = process.platform !== 'win32';
@@ -65,15 +69,15 @@ async function runCommand(command: VerifyCommand, root: string, env: NodeJS.Proc
       detached,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    child.stdout.on('data', (chunk: Buffer) => { output = appendTail(output, chunk); });
-    child.stderr.on('data', (chunk: Buffer) => { output = appendTail(output, chunk); });
+    child.stdout.on('data', (chunk: Buffer) => { outputHash.update(chunk); output = appendTail(output, chunk); });
+    child.stderr.on('data', (chunk: Buffer) => { outputHash.update(chunk); output = appendTail(output, chunk); });
 
     const finish = (status: CommandResult['status'], extra = '') => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      if (extra) output = appendTail(output, Buffer.from(extra));
-      resolveResult({ status, output: output.toString('utf8') });
+      if (extra) { outputHash.update(extra); output = appendTail(output, Buffer.from(extra)); }
+      resolveResult({ status, output: output.toString('utf8'), outputFingerprint: outputHash.digest('hex') });
     };
     const timer = setTimeout(() => {
       timedOut = true;
@@ -153,6 +157,11 @@ async function runAtBase(
   let worktreePath: string | undefined;
   try {
     const baseCommit = await git(projectPath, ['merge-base', 'HEAD', baseRef]);
+    const dependencyChanges = await git(projectPath, [
+      'diff', '--name-only', baseCommit, '--',
+      'package.json', 'package-lock.json', 'npm-shrinkwrap.json', 'pnpm-lock.yaml', 'yarn.lock',
+      'Cargo.lock', 'go.sum', 'requirements.txt', 'pyproject.toml', 'uv.lock', 'poetry.lock',
+    ]);
     root = await mkdtemp(join(tmpdir(), 'openswarm-verify-base-'));
     worktreePath = join(root, 'worktree');
     await git(projectPath, ['worktree', 'add', '--detach', worktreePath, baseCommit]);
@@ -169,7 +178,8 @@ async function runAtBase(
     }
     const headBin = join(projectPath, 'node_modules', '.bin');
     const env = { ...process.env, PATH: `${headBin}${delimiter}${process.env.PATH ?? ''}` };
-    return await runTrustedCommand(command, worktreePath, trustedPackageJson, env);
+    const result = await runTrustedCommand(command, worktreePath, trustedPackageJson, env);
+    return { ...result, baselineEnvironmentChanged: dependencyChanges.length > 0 };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return { status: 'infra', output: message.slice(-OUTPUT_TAIL_BYTES) };
@@ -227,7 +237,7 @@ export async function runVerify(options: RunVerifyOptions): Promise<VerifyEviden
       baseStatus: base.status,
       headStatus: 'fail',
       newFailure: base.status === 'pass'
-        || (base.status === 'fail' && !hasSameFailure(base.output, head.output)),
+        || (base.status === 'fail' && (base.baselineEnvironmentChanged || !hasSameFailure(base, head))),
       rawOutputTail,
       durationMs: Date.now() - started,
     });

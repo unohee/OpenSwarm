@@ -147,6 +147,32 @@ describe('runVerify', () => {
     expect(evidence.rawOutputTail).toContain('[head]\nexisting-failure\nnew-failure');
   });
 
+  it('uses the full output fingerprint when unique failure text precedes the visible tail', async () => {
+    await writeFile(join(repo, 'existing-failure'), 'yes\n', 'utf8');
+    git('add', 'existing-failure');
+    git('commit', '-m', 'pre-existing long failure');
+    await writeFile(join(repo, 'new-failure'), 'yes\n', 'utf8');
+    const command = "if [ -f new-failure ]; then echo head-only-failure; fi; printf '%09000d' 0; exit 1";
+
+    const [evidence] = await runVerify({ projectPath: repo, commands: [verify(command)], baseRef: 'HEAD' });
+
+    expect(evidence).toMatchObject({ headStatus: 'fail', baseStatus: 'fail', newFailure: true });
+    expect(evidence.rawOutputTail).not.toContain('head-only-failure');
+  });
+
+  it('does not waive matching failures when dependency inputs changed', async () => {
+    await writeFile(join(repo, 'package.json'), '{"dependencies":{"fixture":"1.0.0"}}', 'utf8');
+    git('add', 'package.json');
+    git('commit', '-m', 'base dependency');
+    await writeFile(join(repo, 'package.json'), '{"dependencies":{"fixture":"2.0.0"}}', 'utf8');
+
+    const [evidence] = await runVerify({
+      projectPath: repo, commands: [verify('echo same-failure; exit 1')], baseRef: 'HEAD',
+    });
+
+    expect(evidence).toMatchObject({ headStatus: 'fail', baseStatus: 'fail', newFailure: true });
+  });
+
   it('classifies command-not-found as infrastructure', async () => {
     const [evidence] = await runVerify({
       projectPath: repo,
