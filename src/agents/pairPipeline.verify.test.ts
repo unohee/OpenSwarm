@@ -62,12 +62,18 @@ function task(): TaskItem {
   };
 }
 
-async function runPipeline(options: { continueOnTestFail?: boolean; verbose?: boolean } = {}) {
+async function runPipeline(options: {
+  continueOnTestFail?: boolean;
+  skipTesterIfNoCodeChange?: boolean;
+  verbose?: boolean;
+  verify?: { enabled: boolean; blockOnNewFailures: boolean; maxCommands: number };
+} = {}) {
   const { PairPipeline } = await import('./pairPipeline.js');
   const pipeline = new PairPipeline({
     stages: ['worker', 'tester', 'reviewer'],
     maxIterations: 1,
     skipTesterIfNoCodeChange: false,
+    verify: { enabled: true, blockOnNewFailures: true, maxCommands: 4 },
     ...options,
   });
   const logs: string[] = [];
@@ -133,7 +139,7 @@ describe('PairPipeline deterministic tester (INT-2662)', () => {
     }]);
     const { result } = await runPipeline();
     expect(result.success).toBe(true);
-    expect(result.testerResult).toMatchObject({ deterministic: true, testsPassed: 1, testsFailed: 0 });
+    expect(result.testerResult).toMatchObject({ deterministic: true, testsPassed: 0, testsFailed: 1 });
     expect(runTester).not.toHaveBeenCalled();
   });
 
@@ -144,7 +150,16 @@ describe('PairPipeline deterministic tester (INT-2662)', () => {
     expect(result.testerResult?.deterministic).toBeUndefined();
   });
 
-  it('propagates deterministic infrastructure failures as infra_error', async () => {
+  it('fails closed when the explicit verification manifest is invalid', async () => {
+    loadVerifyManifest.mockResolvedValue({ manifest: null, error: 'commands[0].run is required' });
+    const { result } = await runPipeline();
+    expect(result.success).toBe(false);
+    expect(result.stages.at(-1)).toMatchObject({ stage: 'tester', success: false });
+    expect(runTester).not.toHaveBeenCalled();
+    expect(runReviewer).not.toHaveBeenCalled();
+  });
+
+  it('downgrades deterministic infrastructure failures to the LLM fallback', async () => {
     discoverVerifyCommands.mockResolvedValue([verifyCommand]);
     runVerify.mockResolvedValue([{
       command: verifyCommand,
@@ -155,11 +170,38 @@ describe('PairPipeline deterministic tester (INT-2662)', () => {
       durationMs: 20,
     }]);
     const { result } = await runPipeline();
-    expect(result).toMatchObject({ success: false, finalStatus: 'infra_error' });
-    expect(result.stages.at(-1)).toMatchObject({ stage: 'tester', success: false });
+    expect(result).toMatchObject({ success: true, finalStatus: 'approved' });
+    expect(result.testerResult?.deterministic).toBeUndefined();
+    expect(runTester).toHaveBeenCalledOnce();
+    expect(runReviewer).toHaveBeenCalledOnce();
   });
 
-  it('keeps an approved task successful when continueOnTestFail is enabled', async () => {
+  it('downgrades an unavailable baseline comparison to the LLM fallback', async () => {
+    discoverVerifyCommands.mockResolvedValue([verifyCommand]);
+    runVerify.mockResolvedValue([{
+      command: verifyCommand, baseStatus: 'infra', headStatus: 'fail', newFailure: false,
+      rawOutputTail: 'unable to create baseline worktree', durationMs: 20,
+    }]);
+    const { result } = await runPipeline();
+    expect(result).toMatchObject({ success: true, finalStatus: 'approved' });
+    expect(result.testerResult?.deterministic).toBeUndefined();
+    expect(runTester).toHaveBeenCalledOnce();
+  });
+
+  it('preserves self-repair when an LLM fallback reports failure', async () => {
+    runTester.mockResolvedValue({
+      success: false, testsPassed: 0, testsFailed: 1, failedTests: ['LLM failure'], output: 'failed',
+    });
+    const { result } = await runPipeline();
+    expect(result.success).toBe(false);
+    expect(runTester).toHaveBeenCalledOnce();
+    expect(runReviewer).not.toHaveBeenCalled();
+  });
+
+  it('lets the reviewer judge a deterministic new failure', async () => {
+    runReviewer.mockResolvedValue({
+      decision: 'revise', feedback: 'unit tests introduced a new regression', issues: ['unit tests'],
+    });
     discoverVerifyCommands.mockResolvedValue([verifyCommand]);
     runVerify.mockResolvedValue([{
       command: verifyCommand,
@@ -169,9 +211,89 @@ describe('PairPipeline deterministic tester (INT-2662)', () => {
       rawOutputTail: 'new regression',
       durationMs: 5,
     }]);
-    const { result } = await runPipeline({ continueOnTestFail: true });
-    expect(result.success).toBe(true);
+    const { result } = await runPipeline();
+    expect(result.success).toBe(false);
     expect(result.testerResult).toMatchObject({ success: false, deterministic: true, failedTests: ['unit tests'] });
     expect(runReviewer).toHaveBeenCalledOnce();
+  });
+
+  it('runs verification for a validation-relevant manifest change', async () => {
+    runWorker.mockResolvedValue({
+      success: true, summary: 'updated manifest', filesChanged: ['.openswarm/verify.yaml'],
+      commands: ['npm test'], output: '', confidencePercent: 100,
+    });
+    loadVerifyManifest.mockResolvedValue({ manifest: { version: 1, commands: [verifyCommand] } });
+    runVerify.mockResolvedValue([{
+      command: verifyCommand, baseStatus: 'skipped', headStatus: 'pass',
+      newFailure: false, rawOutputTail: 'pass', durationMs: 1,
+    }]);
+    const { result } = await runPipeline({ skipTesterIfNoCodeChange: true });
+    expect(result.testerResult?.deterministic).toBe(true);
+    expect(runVerify).toHaveBeenCalledOnce();
+  });
+
+  it('limits manifest commands and executes deterministic verify only once', async () => {
+    const commands = Array.from({ length: 5 }, (_, index) => ({ ...verifyCommand, name: `command-${index}` }));
+    loadVerifyManifest.mockResolvedValue({ manifest: { version: 1, commands } });
+    runVerify.mockImplementation(async ({ commands: selected }) => selected.map((command: VerifyCommand) => ({
+      command,
+      baseStatus: 'skipped',
+      headStatus: 'pass',
+      newFailure: false,
+      rawOutputTail: 'pass',
+      durationMs: 1,
+    })));
+    await runPipeline({ verify: { enabled: true, blockOnNewFailures: true, maxCommands: 2 } });
+    expect(runVerify).toHaveBeenCalledOnce();
+    expect(runVerify.mock.calls[0][0].commands).toHaveLength(2);
+    expect(runReviewer).toHaveBeenCalledWith(expect.objectContaining({
+      verificationEvidence: expect.arrayContaining([expect.objectContaining({ command: expect.objectContaining({ name: 'command-0' }) })]),
+    }));
+  });
+
+  it('does not mark new failures failed when blockOnNewFailures is disabled', async () => {
+    discoverVerifyCommands.mockResolvedValue([verifyCommand]);
+    runVerify.mockResolvedValue([{
+      command: verifyCommand,
+      baseStatus: 'pass',
+      headStatus: 'fail',
+      newFailure: true,
+      rawOutputTail: 'new regression',
+      durationMs: 5,
+    }]);
+    const { result } = await runPipeline({ verify: { enabled: true, blockOnNewFailures: false, maxCommands: 4 } });
+    expect(result.testerResult).toMatchObject({ success: true, testsFailed: 1, deterministic: true });
+  });
+
+  it('auto-enables the tester stage from createPipelineFromConfig when verify is enabled', async () => {
+    loadVerifyManifest.mockResolvedValue({ manifest: { version: 1, commands: [verifyCommand] } });
+    runVerify.mockResolvedValue([{
+      command: verifyCommand,
+      baseStatus: 'skipped',
+      headStatus: 'pass',
+      newFailure: false,
+      rawOutputTail: 'pass',
+      durationMs: 1,
+    }]);
+    const { createPipelineFromConfig } = await import('./pairPipeline.js');
+    const roles = {
+      worker: { enabled: true, timeoutMs: 0 },
+      reviewer: { enabled: true, timeoutMs: 0 },
+      tester: { enabled: false, timeoutMs: 0 },
+    };
+    const pipeline = createPipelineFromConfig(
+      roles,
+      1,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { enabled: true, blockOnNewFailures: true, maxCommands: 4 },
+    );
+    const result = await pipeline.run(task(), process.cwd());
+    expect(result.success).toBe(true);
+    expect(result.testerResult?.deterministic).toBe(true);
+    expect(runVerify).toHaveBeenCalledOnce();
   });
 });

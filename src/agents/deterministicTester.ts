@@ -3,30 +3,55 @@ import { discoverVerifyCommands } from '../verify/discover.js';
 import { loadVerifyManifest } from '../verify/manifest.js';
 import { runVerify } from '../verify/runner.js';
 import type { TesterResult } from './tester.js';
+import type { VerifyConfig } from '../core/types.js';
+import { isInfraError } from '../adapters/errorClassification.js';
 
 /** Returns null only when the repository exposes no deterministic verify commands. */
-export async function runDeterministicTester(projectPath: string): Promise<TesterResult | null> {
+export async function runDeterministicTester(projectPath: string, config: VerifyConfig): Promise<TesterResult | null> {
+  if (!config.enabled) return null;
   const loaded = await loadVerifyManifest(projectPath);
-  if (loaded.error) throw new Error(`verify-runner: ${loaded.error}`);
-  const commands = loaded.manifest?.commands ?? await discoverVerifyCommands(projectPath);
+  // A checked-in manifest error is a task/configuration failure, not transient
+  // infrastructure: fail closed instead of silently falling back to an LLM.
+  if (loaded.error) throw new Error(`verify-config: ${loaded.error}`);
+  const commands = (loaded.manifest?.commands ?? await discoverVerifyCommands(projectPath)).slice(0, config.maxCommands);
   if (commands.length === 0) return null;
 
   const base = await resolveBaseRef(projectPath).catch((error) => {
     throw new Error(`verify-runner: failed to resolve base ref: ${error instanceof Error ? error.message : String(error)}`);
   });
   const evidence = await runVerify({ projectPath, commands, baseRef: base.ref });
-  const infra = evidence.find((item) => item.headStatus === 'infra');
+  const infra = evidence.find((item) => item.headStatus === 'infra'
+    || (item.headStatus === 'fail' && item.baseStatus === 'infra'));
   if (infra) {
     throw new Error(`verify-runner: ${infra.command.name} infrastructure failure: ${infra.rawOutputTail}`);
   }
-  const failures = evidence.filter((item) => item.newFailure);
+  const headFailures = evidence.filter((item) => item.headStatus === 'fail');
+  const newFailures = headFailures.filter((item) => item.newFailure);
   return {
-    success: failures.length === 0,
-    testsPassed: evidence.length - failures.length,
-    testsFailed: failures.length,
+    success: !config.blockOnNewFailures || newFailures.length === 0,
+    testsPassed: evidence.filter((item) => item.headStatus === 'pass').length,
+    testsFailed: headFailures.length,
     output: evidence.map((item) => `[${item.command.name}] ${item.rawOutputTail}`).join('\n'),
-    failedTests: failures.map((item) => item.command.name),
+    failedTests: headFailures.map((item) => item.command.name),
     deterministic: true,
     verificationEvidence: evidence,
   };
+}
+
+export async function runTesterWithVerification(options: {
+  projectPath: string;
+  verify?: VerifyConfig;
+  fallback: () => Promise<TesterResult>;
+  onInfra?: (error: unknown) => void;
+}): Promise<TesterResult> {
+  if (options.verify?.enabled) {
+    try {
+      const deterministic = await runDeterministicTester(options.projectPath, options.verify);
+      if (deterministic) return deterministic;
+    } catch (error) {
+      if (!isInfraError(error)) throw error;
+      options.onInfra?.(error);
+    }
+  }
+  return await options.fallback();
 }

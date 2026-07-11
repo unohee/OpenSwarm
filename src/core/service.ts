@@ -253,6 +253,7 @@ export async function startService(config: SwarmConfig): Promise<void> {
       worktreeMode: config.autonomous.worktreeMode ?? false,
       // Pipeline guards
       guards: config.autonomous.guards,
+      verify: config.autonomous.verify,
       // Bad-edit / reflection self-repair budget
       maxReflections: config.autonomous.maxReflections,
       interTaskCooldownMs: config.autonomous.interTaskCooldownMs ?? 1_800_000,

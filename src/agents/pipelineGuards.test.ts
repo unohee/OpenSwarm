@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runGuards } from './pipelineGuards.js';
 import type { WorkerResult } from './agentPair.js';
 
@@ -30,6 +30,13 @@ describe('pipelineGuards — INT-2388 deterministic guards', () => {
 
   afterEach(() => {
     if (existsSync(repo)) rmSync(repo, { recursive: true, force: true });
+  });
+
+  it('warns that the legacy quality gate is deprecated', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await runGuards(mockWorker(), repo, { qualityGate: true });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('autonomous.verify'));
+    warn.mockRestore();
   });
 
   describe('dependencyAntiPatternCheck', () => {

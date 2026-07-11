@@ -103,6 +103,10 @@ openswarm annotate "funcName" --tag "needs-refactor"
 openswarm annotate "funcName" --warn "error/security: SQL injection"
 ```
 
+### Deterministic verification
+
+Autonomous pipelines enable baseline-diff verification by default: OpenSwarm runs repository test/typecheck commands once, compares a failing head against the merge base, and gives the reviewer structured evidence so pre-existing failures do not block unrelated work. Add `.openswarm/verify.yaml` for repository-specific commands (see [`templates/verify.example.yaml`](templates/verify.example.yaml)), or let OpenSwarm discover standard Node, Python, Rust, and Go checks. Configure the behavior under `autonomous.verify`; the legacy `guards.qualityGate` whole-tree check is deprecated.
+
 ### `openswarm exec` options
 
 | Option | Description |

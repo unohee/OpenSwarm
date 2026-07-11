@@ -257,6 +257,12 @@ const PipelineGuardsConfigSchema = z.object({
   reformatCheck: z.boolean().optional(),
 }).optional();
 
+const VerifyConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  blockOnNewFailures: z.boolean().default(true),
+  maxCommands: z.number().int().min(1).max(20).default(4),
+}).default({ enabled: true, blockOnNewFailures: true, maxCommands: 4 });
+
 const AutonomousConfigSchema = z.object({
   /** Auto-enable on service start */
   enabled: z.boolean().default(false),
@@ -298,6 +304,8 @@ const AutonomousConfigSchema = z.object({
   jobProfiles: z.array(JobProfileSchema).optional(),
   /** Pipeline quality guards (bad-edit lint gate, BS detector, etc.) */
   guards: PipelineGuardsConfigSchema,
+  /** Deterministic baseline-diff verification (default ON). */
+  verify: VerifyConfigSchema,
   /** Max objective self-repair attempts (lint/bs/test) before giving up */
   maxReflections: z.number().min(1).max(10).default(3),
   /** Cooldown between task completions in ms (default: 1800000 = 30min) */
@@ -607,6 +615,7 @@ function transformConfig(raw: RawConfig): SwarmConfig {
       worktreeMode: raw.autonomous.worktreeMode,
       allowSameProjectConcurrent: raw.autonomous.allowSameProjectConcurrent,
       guards: raw.autonomous.guards,
+      verify: raw.autonomous.verify,
       maxReflections: raw.autonomous.maxReflections,
       interTaskCooldownMs: raw.autonomous.interTaskCooldownMs,
       // jobProfiles was validated by the schema but dropped here, so per-task

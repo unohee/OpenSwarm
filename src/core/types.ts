@@ -492,6 +492,12 @@ export interface PipelineGuardsConfig {
   autoFileFollowups?: boolean;
 }
 
+export type VerifyConfig = {
+  enabled: boolean;
+  blockOnNewFailures: boolean;
+  maxCommands: number;
+};
+
 export type AutonomousStartupConfig = {
   /** Auto-enable on service start */
   enabled: boolean;
@@ -534,6 +540,8 @@ export type AutonomousStartupConfig = {
   allowSameProjectConcurrent?: boolean;
   /** Pipeline guards configuration */
   guards?: Partial<PipelineGuardsConfig>;
+  /** Deterministic baseline-diff verification, enabled by default. */
+  verify?: VerifyConfig;
   /**
    * Max objective self-repair attempts (lint/bs/test failures) tolerated before
    * the bad-edit/reflection loop gives up. Independent of maxAttempts so it can

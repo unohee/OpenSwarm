@@ -49,10 +49,11 @@ import { StuckDetector, createStuckDetector } from '../support/stuckDetector.js'
 import { RateLimitError } from '../adapters/rateLimitError.js';
 import { isInfraError } from '../adapters/errorClassification.js';
 import { resolveAdapterDefaultModel } from './stageModelResolver.js';
-import { runDeterministicTester } from './deterministicTester.js';
+import { runTesterWithVerification } from './deterministicTester.js';
 import { isClassifiedStageError, rethrowClassified, extractClassifiedStageResult, PipelineCancelledError } from './stageErrorClassification.js';
 import {
   isTesterCodeFile,
+  isValidationRelevantFile,
   missingWorkerValidationIssues,
   testerWouldRunForWorkerResult,
 } from './workerValidationEvidence.js';
@@ -68,7 +69,6 @@ export type {
 export { buildTaskPrefix } from './pipelineTaskPrefix.js';
 export { stageTimeoutMs } from './stageTimeouts.js';
 import { stageTimeoutMs } from './stageTimeouts.js';
-// Pair Pipeline
 export class PairPipeline extends EventEmitter {
   private config: PipelineConfig;
   private stuckDetector: StuckDetector;
@@ -375,9 +375,7 @@ export class PairPipeline extends EventEmitter {
     }
   }
 
-  /**
-   * Check if a stage is enabled
-   */
+  /** Check if a stage is enabled. */
   private hasStage(stage: PipelineStage): boolean {
     return this.config.stages.includes(stage);
   }
@@ -393,23 +391,21 @@ export class PairPipeline extends EventEmitter {
 
   private async runTester(context: PipelineContext): Promise<TesterResult> {
     if (!context.workerResult) throw new Error('Worker result required for tester');
-    const deterministic = await runDeterministicTester(context.projectPath);
-    if (deterministic) return deterministic;
-    return await testerAgent.runTester({
-      taskTitle: context.task.title,
-      taskDescription: context.task.description || '',
-      workerResult: context.workerResult,
+    return await runTesterWithVerification({
       projectPath: context.projectPath,
-      timeoutMs: stageTimeoutMs('tester', this.config.roles?.tester?.timeoutMs),
-      model: this.config.roles?.tester?.model,
-      maxTurns: this.config.roles?.tester?.maxTurns,
-      adapterName: this.config.roles?.tester?.adapter,
+      verify: this.config.verify,
+      onInfra: (error) => console.warn(`[${context.taskPrefix}] Deterministic verify unavailable; falling back to LLM tester: ${error instanceof Error ? error.message : String(error)}`),
+      fallback: () => testerAgent.runTester({
+        taskTitle: context.task.title, taskDescription: context.task.description || '',
+        workerResult: context.workerResult!, projectPath: context.projectPath,
+        timeoutMs: stageTimeoutMs('tester', this.config.roles?.tester?.timeoutMs),
+        model: this.config.roles?.tester?.model, maxTurns: this.config.roles?.tester?.maxTurns,
+        adapterName: this.config.roles?.tester?.adapter,
+      }),
     });
   }
 
-  /**
-   * Run a single stage
-   */
+  /** Run a single stage. */
   private async runStage(
     stage: PipelineStage,
     context: PipelineContext,
@@ -1065,14 +1061,17 @@ export class PairPipeline extends EventEmitter {
         // Skip tester if no code files changed (configurable, default true)
         const skipIfNoCode = this.config.skipTesterIfNoCodeChange ?? true;
         const changedFiles = context.workerResult?.filesChanged || [];
-        const hasCodeChange = changedFiles.some(isTesterCodeFile);
+        const hasCodeChange = changedFiles.some(file => this.config.verify?.enabled
+          ? isValidationRelevantFile(file)
+          : isTesterCodeFile(file));
         if (skipIfNoCode && !hasCodeChange) {
           console.log(`[${context.taskPrefix}] Skipping tester: no code files changed (${changedFiles.length} files: ${changedFiles.join(', ') || 'none'})`);
         } else {
         const testerResult = await this.runStage('tester', context);
         stages.push(testerResult);
 
-        if (!testerResult.success && !this.config.continueOnTestFail) {
+        const reviewerShouldJudgeFailure = context.testerResult?.deterministic === true;
+        if (!testerResult.success && !this.config.continueOnTestFail && !reviewerShouldJudgeFailure) {
           // Test failure is objective ground truth → record into the reflection
           // trail and drive a bounded self-repair retry (INT-1679).
           console.log(`[${context.taskPrefix}] Tester failed, retrying...`);
@@ -1351,6 +1350,7 @@ export function createPipelineFromConfig(
   draftAnalysis?: PipelineConfig['draftAnalysis'],
   maxReflections?: number,
   runMetadata?: PipelineRunMetadata,
+  verify?: PipelineConfig['verify'],
 ): PairPipeline {
   const stages: PipelineStage[] = [];
 
@@ -1360,7 +1360,7 @@ export function createPipelineFromConfig(
   if (roles?.reviewer?.enabled !== false) {
     stages.push('reviewer');
   }
-  if (roles?.tester?.enabled) {
+  if (roles?.tester?.enabled || verify?.enabled) {
     stages.push('tester');
   }
   if (roles?.documenter?.enabled) {
@@ -1382,6 +1382,7 @@ export function createPipelineFromConfig(
     jobProfiles,
     draftAnalysis,
     runMetadata,
+    verify,
   });
 }
 

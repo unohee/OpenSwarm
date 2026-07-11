@@ -141,6 +141,27 @@ agents:
 
       const config = loadConfig('/tmp/config.json');
       expect(config.autonomous?.maxReflections).toBe(3);
+      expect(config.autonomous?.verify).toEqual({
+        enabled: true,
+        blockOnNewFailures: true,
+        maxCommands: 4,
+      });
+    });
+
+    it('should preserve explicit autonomous.verify overrides', () => {
+      const jsonContent = JSON.stringify({
+        language: 'en',
+        linear: { apiKey: 'k', teamId: 't' },
+        agents: [{ name: 'main', projectPath: '/p', enabled: true, paused: false }],
+        autonomous: { enabled: true, verify: { enabled: false, blockOnNewFailures: false, maxCommands: 2 } },
+      });
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockReturnValue(jsonContent);
+      expect(loadConfig('/tmp/config.json').autonomous?.verify).toEqual({
+        enabled: false,
+        blockOnNewFailures: false,
+        maxCommands: 2,
+      });
     });
 
     it('should accept jobProfiles with partial role overrides', () => {

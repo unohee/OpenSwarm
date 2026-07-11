@@ -82,8 +82,8 @@ const VALID_BRANCH_PATTERNS = [
 // Guard Functions
 
 /**
- * Quality gate: run tsc --noEmit on TypeScript files or ruff check on Python files.
- * Blocking — failure causes a revise.
+ * @deprecated Prefer autonomous.verify baseline-diff evidence. This whole-tree
+ * gate is retained for compatibility and may block on pre-existing failures.
  */
 async function runQualityGate(
   workerResult: WorkerResult,
@@ -735,6 +735,7 @@ export async function runGuards(
   const results: GuardResult[] = [];
 
   if (config.qualityGate) {
+    console.warn('[Guard:qualityGate] Deprecated: use autonomous.verify baseline-diff verification instead.');
     results.push(await runQualityGate(workerResult, projectPath));
   }
 

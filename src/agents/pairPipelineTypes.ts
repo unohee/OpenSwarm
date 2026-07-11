@@ -1,5 +1,5 @@
 import type { TaskItem } from '../orchestration/decisionEngine.js';
-import type { PipelineStage, RoleConfig, PipelineGuardsConfig, JobProfile } from '../core/types.js';
+import type { PipelineStage, RoleConfig, PipelineGuardsConfig, JobProfile, VerifyConfig } from '../core/types.js';
 import type { CostInfo } from '../support/costTracker.js';
 import type { WorkerResult, ReviewResult, PairSession } from './agentPair.js';
 import type { TesterResult } from './tester.js';
@@ -34,6 +34,7 @@ export interface PipelineConfig {
     'skill-documenter'?: RoleConfig;
   };
   guards?: Partial<PipelineGuardsConfig>;
+  verify?: VerifyConfig;
   jobProfiles?: JobProfile[];
   runMetadata?: PipelineRunMetadata;
   skipTesterIfNoCodeChange?: boolean;

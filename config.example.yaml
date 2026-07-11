@@ -105,9 +105,16 @@ autonomous:
       model: gemma-4-e4b-it
       timeoutMs: 120000   # 2 minutes
 
+  # Deterministic baseline-diff verification (enabled by default).
+  # Define repo-specific commands in .openswarm/verify.yaml; see templates/verify.example.yaml.
+  verify:
+    enabled: true
+    blockOnNewFailures: true
+    maxCommands: 4
+
   # Pipeline guards
   guards:
-    qualityGate: true       # bad-edit lint gate: tsc/ruff on changed files (blocking)
+    qualityGate: false      # deprecated whole-tree gate; prefer verify above
     fakeDataGuard: true
     conventionalCommits: true
     branchValidation: true

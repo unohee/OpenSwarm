@@ -170,6 +170,8 @@ export interface ExecutionContext {
   scheduleNextHeartbeat?: () => void;
   /** Pipeline guards configuration */
   guards?: Partial<import('../core/types.js').PipelineGuardsConfig>;
+  /** Deterministic baseline-diff verification. */
+  verify?: import('../core/types.js').VerifyConfig;
   /** Max objective self-repair attempts (lint/bs/test) before giving up (default: 3) */
   maxReflections?: number;
 }
@@ -810,6 +812,7 @@ export async function executePipeline(
       } : undefined,
       ctx.maxReflections,
       pipelineMetadata(task, actualPath, worktreeInfo),
+      ctx.verify,
     );
 
     const taskPrefix = buildTaskPrefix(task, actualPath);
