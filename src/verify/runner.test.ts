@@ -103,6 +103,23 @@ describe('runVerify', () => {
     expect(evidence).toMatchObject({ headStatus: 'fail', baseStatus: 'fail', newFailure: false });
   });
 
+  it('marks an additional head failure as new when base already fails', async () => {
+    await writeFile(join(repo, 'existing-failure'), 'yes\n', 'utf8');
+    git('add', 'existing-failure');
+    git('commit', '-m', 'pre-existing failure');
+    await writeFile(join(repo, 'new-failure'), 'yes\n', 'utf8');
+
+    const [evidence] = await runVerify({
+      projectPath: repo,
+      commands: [verify('for file in existing-failure new-failure; do if [ -f "$file" ]; then echo "$file" >&2; failed=1; fi; done; test -z "$failed"')],
+      baseRef: 'HEAD',
+    });
+
+    expect(evidence).toMatchObject({ headStatus: 'fail', baseStatus: 'fail', newFailure: true });
+    expect(evidence.rawOutputTail).toContain('[base]\nexisting-failure');
+    expect(evidence.rawOutputTail).toContain('[head]\nexisting-failure\nnew-failure');
+  });
+
   it('classifies command-not-found as infrastructure', async () => {
     const [evidence] = await runVerify({
       projectPath: repo,

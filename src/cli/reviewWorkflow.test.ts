@@ -20,4 +20,11 @@ describe('OpenSwarm review workflow bootstrap (INT-2552)', () => {
     const comment = steps.find((step) => step.name === 'Post review comment');
     expect(comment?.run).toContain('if [ -f review-output.txt ]');
   });
+
+  it('fails closed unless the emitted review decision is APPROVE', () => {
+    const review = steps.find((step) => step.name === 'Run openswarm review');
+    const gate = steps.find((step) => step.name === 'Fail the check unless review approves');
+    expect(review?.run).toContain('decision=${decision:-UNKNOWN}');
+    expect(gate?.if).toContain("steps.review.outputs.decision != 'APPROVE'");
+  });
 });

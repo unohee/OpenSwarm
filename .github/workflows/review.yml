@@ -65,9 +65,12 @@ jobs:
         run: |
           set +e
           node dist/cli.js review --base "origin/${{ github.event.pull_request.base.ref }}" > review-output.txt 2>&1
-          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          command_exit_code=$?
           set -e
           cat review-output.txt
+          decision=$(sed -nE 's/.*Decision: (APPROVE|REVISE|REJECT).*/\1/p' review-output.txt | tail -1)
+          echo "exit_code=$command_exit_code" >> "$GITHUB_OUTPUT"
+          echo "decision=${decision:-UNKNOWN}" >> "$GITHUB_OUTPUT"
 
       - name: Post review comment
         if: always()
@@ -90,6 +93,6 @@ jobs:
           } > comment-body.md
           gh pr comment "${{ github.event.pull_request.number }}" --body-file comment-body.md
 
-      - name: Fail the check on a reject verdict
-        if: steps.review.outputs.exit_code != '0'
+      - name: Fail the check unless review approves
+        if: steps.review.outputs.exit_code != '0' || steps.review.outputs.decision != 'APPROVE'
         run: exit 1

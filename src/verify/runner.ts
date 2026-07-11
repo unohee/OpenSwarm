@@ -27,6 +27,14 @@ interface CommandResult {
   output: string;
 }
 
+function hasSameFailure(baseOutput: string, headOutput: string): boolean {
+  // A shared non-zero exit code is not enough to prove that the failure is
+  // pre-existing: HEAD may contain the old failure plus a new regression.
+  // Only waive the failure when the observable failure output is identical.
+  // Commands with unstable output therefore fail closed and require review.
+  return baseOutput.trim() === headOutput.trim();
+}
+
 function appendTail(current: Buffer, chunk: Buffer): Buffer {
   const combined = Buffer.concat([current, chunk]);
   return combined.length <= OUTPUT_TAIL_BYTES ? combined : combined.subarray(combined.length - OUTPUT_TAIL_BYTES);
@@ -178,7 +186,8 @@ export async function runVerify(options: RunVerifyOptions): Promise<VerifyEviden
       command,
       baseStatus: base.status,
       headStatus: 'fail',
-      newFailure: base.status === 'pass',
+      newFailure: base.status === 'pass'
+        || (base.status === 'fail' && !hasSameFailure(base.output, head.output)),
       rawOutputTail,
       durationMs: Date.now() - started,
     });
