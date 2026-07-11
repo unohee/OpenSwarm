@@ -103,7 +103,7 @@ describe('runVerify', () => {
 
     const [evidence] = await runVerify({
       projectPath: repo,
-      commands: [verify('  npm run-script test --silent')],
+      commands: [verify('npm test --silent')],
       baseRef: 'HEAD',
       trustedPackageJson,
     });

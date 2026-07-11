@@ -104,9 +104,7 @@ async function runTrustedCommand(
   trustedPackageJson?: string,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<CommandResult> {
-  if (!trustedPackageJson || !/^\s*npm\s+(?:run|run-script)\s+/.test(command.run)) {
-    return await runCommand(command, root, env);
-  }
+  if (!trustedPackageJson) return await runCommand(command, root, env);
   const packagePath = join(root, 'package.json');
   const current = await readFile(packagePath, 'utf8');
   try {
