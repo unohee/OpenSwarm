@@ -161,16 +161,31 @@ describe('runVerify', () => {
   });
 
   it('does not waive matching failures when dependency inputs changed', async () => {
-    await writeFile(join(repo, 'package.json'), '{"dependencies":{"fixture":"1.0.0"}}', 'utf8');
-    git('add', 'package.json');
+    await mkdir(join(repo, 'packages', 'app'), { recursive: true });
+    await writeFile(join(repo, 'packages', 'app', 'package.json'), '{"dependencies":{"fixture":"1.0.0"}}', 'utf8');
+    git('add', 'packages/app/package.json');
     git('commit', '-m', 'base dependency');
-    await writeFile(join(repo, 'package.json'), '{"dependencies":{"fixture":"2.0.0"}}', 'utf8');
+    await writeFile(join(repo, 'packages', 'app', 'package.json'), '{"dependencies":{"fixture":"2.0.0"}}', 'utf8');
+
+    const [evidence] = await runVerify({
+      projectPath: repo,
+      commands: [{ ...verify('echo same-failure; exit 1'), cwd: 'packages/app' }],
+      baseRef: 'HEAD',
+    });
+
+    expect(evidence).toMatchObject({ headStatus: 'fail', baseStatus: 'fail', newFailure: true });
+  });
+
+  it.each(['Cargo.toml', 'go.mod'])('invalidates baseline failures when %s changes', async (name) => {
+    await writeFile(join(repo, name), 'base\n', 'utf8');
+    git('add', name);
+    git('commit', '-m', `base ${name}`);
+    await writeFile(join(repo, name), 'changed\n', 'utf8');
 
     const [evidence] = await runVerify({
       projectPath: repo, commands: [verify('echo same-failure; exit 1')], baseRef: 'HEAD',
     });
-
-    expect(evidence).toMatchObject({ headStatus: 'fail', baseStatus: 'fail', newFailure: true });
+    expect(evidence.newFailure).toBe(true);
   });
 
   it('classifies command-not-found as infrastructure', async () => {

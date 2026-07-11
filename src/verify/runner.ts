@@ -7,6 +7,11 @@ import { isInfraError } from '../adapters/errorClassification.js';
 import type { VerifyCommand } from './manifest.js';
 
 const OUTPUT_TAIL_BYTES = 8 * 1024;
+const DEPENDENCY_INPUTS = new Set([
+  'package.json', 'package-lock.json', 'npm-shrinkwrap.json', 'pnpm-lock.yaml', 'yarn.lock',
+  'Cargo.toml', 'Cargo.lock', 'go.mod', 'go.sum', 'requirements.txt', 'pyproject.toml',
+  'uv.lock', 'poetry.lock',
+]);
 
 export interface VerifyEvidence {
   command: VerifyCommand;
@@ -157,11 +162,8 @@ async function runAtBase(
   let worktreePath: string | undefined;
   try {
     const baseCommit = await git(projectPath, ['merge-base', 'HEAD', baseRef]);
-    const dependencyChanges = await git(projectPath, [
-      'diff', '--name-only', baseCommit, '--',
-      'package.json', 'package-lock.json', 'npm-shrinkwrap.json', 'pnpm-lock.yaml', 'yarn.lock',
-      'Cargo.lock', 'go.sum', 'requirements.txt', 'pyproject.toml', 'uv.lock', 'poetry.lock',
-    ]);
+    const changedFiles = await git(projectPath, ['diff', '--name-only', baseCommit, '--']);
+    const dependencyChanges = changedFiles.split('\n').some((file) => DEPENDENCY_INPUTS.has(file.split('/').pop() ?? ''));
     root = await mkdtemp(join(tmpdir(), 'openswarm-verify-base-'));
     worktreePath = join(root, 'worktree');
     await git(projectPath, ['worktree', 'add', '--detach', worktreePath, baseCommit]);
@@ -179,7 +181,7 @@ async function runAtBase(
     const headBin = join(projectPath, 'node_modules', '.bin');
     const env = { ...process.env, PATH: `${headBin}${delimiter}${process.env.PATH ?? ''}` };
     const result = await runTrustedCommand(command, worktreePath, trustedPackageJson, env);
-    return { ...result, baselineEnvironmentChanged: dependencyChanges.length > 0 };
+    return { ...result, baselineEnvironmentChanged: dependencyChanges };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return { status: 'infra', output: message.slice(-OUTPUT_TAIL_BYTES) };
