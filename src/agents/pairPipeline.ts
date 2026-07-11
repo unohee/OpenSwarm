@@ -976,7 +976,7 @@ export class PairPipeline extends EventEmitter {
       if (hasReviewer && context.workerResult && !testerWouldRunForWorkerResult(
         context.workerResult,
         hasTester,
-        this.config.skipTesterIfNoCodeChange ?? true
+        this.config.skipTesterIfNoCodeChange ?? true, this.config.verify?.enabled === true,
       )) {
         const validationIssues = missingWorkerValidationIssues(context.workerResult);
         if (validationIssues.length > 0) {

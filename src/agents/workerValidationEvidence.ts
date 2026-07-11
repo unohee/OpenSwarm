@@ -68,11 +68,14 @@ export function missingWorkerValidationIssues(result: WorkerResult): string[] {
 export function testerWouldRunForWorkerResult(
   result: WorkerResult,
   hasTester: boolean,
-  skipIfNoCode: boolean
+  skipIfNoCode: boolean,
+  verifyEnabled = false,
 ): boolean {
   if (!hasTester) return false;
   if (!skipIfNoCode) return true;
-  return (result.filesChanged ?? []).some(file => TESTER_CODE_FILE_RE.test(file));
+  return (result.filesChanged ?? []).some(file => verifyEnabled
+    ? isValidationRelevantFile(file)
+    : TESTER_CODE_FILE_RE.test(file));
 }
 
 export function isTesterCodeFile(file: string): boolean {

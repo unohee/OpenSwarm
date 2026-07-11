@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { WorkerResult } from './agentPair.js';
-import { missingWorkerValidationIssues } from './workerValidationEvidence.js';
+import { missingWorkerValidationIssues, testerWouldRunForWorkerResult } from './workerValidationEvidence.js';
 
 function worker(partial: Partial<WorkerResult>): WorkerResult {
   return {
@@ -77,5 +77,13 @@ describe('missingWorkerValidationIssues', () => {
       filesChanged: ['README.md', 'CHANGELOG.md'],
       commands: [],
     }))).toEqual([]);
+  });
+});
+
+describe('testerWouldRunForWorkerResult', () => {
+  it('uses validation-relevant config files when deterministic verify is enabled', () => {
+    const result = worker({ filesChanged: ['package.json'], commands: [] });
+    expect(testerWouldRunForWorkerResult(result, true, true, true)).toBe(true);
+    expect(testerWouldRunForWorkerResult(result, true, true, false)).toBe(false);
   });
 });

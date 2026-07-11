@@ -107,6 +107,24 @@ afterEach(() => {
 });
 
 describe('PairPipeline deterministic tester (INT-2662)', () => {
+  it('reaches deterministic verify for a package-only change with a one-iteration budget', async () => {
+    runWorker.mockResolvedValue({
+      success: true, summary: 'updated package config', filesChanged: ['package.json'],
+      commands: [], output: '', confidencePercent: 100,
+    });
+    discoverVerifyCommands.mockResolvedValue([verifyCommand]);
+    runVerify.mockResolvedValue([{
+      command: verifyCommand, baseStatus: 'skipped', headStatus: 'pass', newFailure: false,
+      rawOutputTail: 'pass', durationMs: 1,
+    }]);
+
+    const { result } = await runPipeline();
+
+    expect(result.success).toBe(true);
+    expect(runVerify).toHaveBeenCalledOnce();
+    expect(runReviewer).toHaveBeenCalledOnce();
+  });
+
   it('pins verification commands before the worker can weaken the manifest', async () => {
     const weakened = { ...verifyCommand, name: 'weakened', run: 'true' };
     loadVerifyManifest.mockResolvedValue({ manifest: { version: 1, commands: [verifyCommand] } });
