@@ -115,6 +115,9 @@ describe('PairPipeline deterministic tester (INT-2662)', () => {
     expect(result.testerResult).toMatchObject({ success: true, deterministic: true, testsPassed: 1, testsFailed: 0 });
     expect(runTester).not.toHaveBeenCalled();
     expect(discoverVerifyCommands).not.toHaveBeenCalled();
+    expect(runReviewer).toHaveBeenCalledWith(expect.objectContaining({
+      verificationEvidence: [expect.objectContaining({ headStatus: 'pass', newFailure: false })],
+    }));
     expect(logs).toContainEqual(expect.stringContaining('(deterministic)'));
   });
 

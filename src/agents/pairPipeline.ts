@@ -584,6 +584,7 @@ export class PairPipeline extends EventEmitter {
             adapterName: this.config.roles?.reviewer?.adapter,
             reasoningEffort: this.getEffortForTask(context.task),
             completionCriteria: this.config.draftAnalysis?.completionCriteria,
+            verificationEvidence: context.testerResult?.verificationEvidence,
             // Surface non-blocking guard warnings (dead-module, reformat/scope)
             // so the reviewer verifies them instead of them dying in a log. (INT-2388)
             guardWarnings: context.guardsResult?.results

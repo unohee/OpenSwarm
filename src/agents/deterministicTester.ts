@@ -27,5 +27,6 @@ export async function runDeterministicTester(projectPath: string): Promise<Teste
     output: evidence.map((item) => `[${item.command.name}] ${item.rawOutputTail}`).join('\n'),
     failedTests: failures.map((item) => item.command.name),
     deterministic: true,
+    verificationEvidence: evidence,
   };
 }

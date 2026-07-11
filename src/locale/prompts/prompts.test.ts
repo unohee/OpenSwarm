@@ -272,6 +272,26 @@ describe('buildReviewerPrompt', () => {
     expect(ko).toContain('경계 입력');
   });
 
+  it('adds deterministic-evidence instructions symmetrically when evidence exists', () => {
+    const verificationEvidence = '## Verification Evidence (deterministic, harness-run)\n- test (test): head=pass, base=skipped, newFailure=no, 1.0s';
+    const en = enPrompts.buildReviewerPrompt({ ...opts, verificationEvidence });
+    const ko = koPrompts.buildReviewerPrompt({ ...opts, verificationEvidence });
+    for (const prompt of [en, ko]) {
+      expect(prompt).toContain('## Verification Evidence (deterministic, harness-run)');
+      expect(prompt).toContain('newFailure=no');
+      expect(prompt).toContain('approve');
+    }
+    expect(en).toContain('Do not request or perform the same command again');
+    expect(ko).toContain('같은 명령의 재실행을 요구하거나 직접 반복하지 말고');
+  });
+
+  it('preserves the previous prompt when deterministic evidence is absent', () => {
+    const en = enPrompts.buildReviewerPrompt(opts);
+    const ko = koPrompts.buildReviewerPrompt(opts);
+    expect(en).not.toContain('Verification Evidence (deterministic, harness-run)');
+    expect(ko).not.toContain('Verification Evidence (deterministic, harness-run)');
+  });
+
   // Audit mode reframes the reviewer for diff-less, existing-file review. (INT-2006)
   describe('audit mode', () => {
     const auditOpts = {

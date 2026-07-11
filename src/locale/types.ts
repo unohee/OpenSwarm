@@ -449,6 +449,8 @@ export interface PromptTemplates {
     workerReport: string;
     /** Execution-grounded definition of done the reviewer hard-gates on (INT-1914). */
     completionCriteria?: string[];
+    /** Pre-rendered deterministic harness evidence; empty when verification is unavailable. */
+    verificationEvidence?: string;
     /**
      * 'change' (default): review a worker's diff against requirements — the pair
      * pipeline. 'audit': evaluate existing files with no diff/worker — the

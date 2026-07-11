@@ -10,6 +10,7 @@ import { type CostInfo, extractCostFromStreamJson, formatCost } from '../support
 import { expandPath } from '../core/config.js';
 import { RateLimitError } from '../adapters/rateLimitError.js';
 import { isInfraError } from '../adapters/errorClassification.js';
+import type { VerifyEvidence } from '../verify/runner.js';
 
 // Types
 
@@ -36,6 +37,7 @@ export interface TesterResult {
   costInfo?: CostInfo;
   /** True when produced by the deterministic verify runner instead of an LLM. */
   deterministic?: boolean;
+  verificationEvidence?: VerifyEvidence[];
 }
 
 // Prompts

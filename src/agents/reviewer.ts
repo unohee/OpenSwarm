@@ -11,6 +11,8 @@ import { getAdapter, spawnCli } from '../adapters/index.js';
 import { expandPath } from '../core/config.js';
 import { RateLimitError } from '../adapters/rateLimitError.js';
 import { isInfraError } from '../adapters/errorClassification.js';
+import type { VerifyEvidence } from '../verify/runner.js';
+import { renderVerifyEvidence } from './verificationEvidence.js';
 
 // Types
 
@@ -34,6 +36,8 @@ export interface ReviewerOptions {
    * line. (INT-2388)
    */
   guardWarnings?: string[];
+  /** Deterministic command evidence produced by the harness tester. */
+  verificationEvidence?: VerifyEvidence[];
   /**
    * 'change' (default): review a worker's diff. 'audit': evaluate existing files
    * with no diff/worker (the `review --max` codebase audit). (INT-2006)
@@ -101,7 +105,7 @@ Keep it brief. This is a fast filter, not a deep review.`;
 /**
  * Build Reviewer prompt using locale templates
  */
-function buildReviewerPrompt(options: ReviewerOptions): string {
+export function buildReviewerPrompt(options: ReviewerOptions): string {
   const files = options.workerResult.filesChanged;
   const filesSummary = files.length <= 20
     ? (files.join(', ') || '(none)')
@@ -139,6 +143,7 @@ ${guardSection}`;
     taskDescription: options.taskDescription,
     workerReport,
     completionCriteria: options.completionCriteria,
+    verificationEvidence: renderVerifyEvidence(options.verificationEvidence ?? []),
   });
 }
 
