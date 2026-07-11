@@ -245,8 +245,8 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
 
   // (3.5) --fix: iterate fix → re-review until every flagged area approves or an
   //       explicitly requested --fix-rounds budget runs out. Each round fixes the
-  //       currently-flagged areas, then re-reviews only the ones actually edited
-  //       for a fresh verdict. Edits accumulate in the working tree — no commit —
+  //       currently-flagged areas, then re-reviews the full audit surface for a
+  //       fresh verdict. Edits accumulate in the working tree — no commit —
   //       so the user reviews the diff first. (INT-2249 / INT-2443)
   if (opts.fix) {
     const targets = fixTargets(run);

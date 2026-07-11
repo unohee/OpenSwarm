@@ -542,6 +542,15 @@ describe('runFixVerifyLoop (INT-2443)', () => {
     expect(result.stopReason).toBe('time-budget');
   });
 
+  it('interrupts an in-flight fix phase when the whole-loop budget expires', async () => {
+    const result = await runFixVerifyLoop(initial(), '/repo', { concurrency: 1, maxDurationMs: 10 }, {
+      fix: async () => await new Promise<{ success: boolean; filesChanged: string[] }>(() => {}),
+    });
+    expect(result.rounds).toHaveLength(0);
+    expect(result.resolved).toBe(false);
+    expect(result.stopReason).toBe('time-budget');
+  });
+
   it('reports all-approved before consulting an expired time budget', async () => {
     const clean: AuditRun = {
       results: [{ area: area('src/a'), review: { decision: 'approve', feedback: '' } }],

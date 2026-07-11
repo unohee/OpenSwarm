@@ -630,7 +630,7 @@ export interface FixVerifyRound {
   /** Areas the fix workers actually edited. */
   edited: number;
   filesChanged: string[];
-  /** Edited areas that flipped to approve after the re-review. */
+  /** Previously flagged areas that the fresh whole-audit now approves. */
   resolved: number;
   /** Areas still flagged across the whole run after the re-review. */
   remaining: number;
@@ -677,6 +677,32 @@ export interface RunFixVerifyLoopDeps {
   now?: () => number;
 }
 
+class FixLoopTimeBudgetError extends Error {
+  constructor() {
+    super('fix/review loop time budget exhausted');
+    this.name = 'FixLoopTimeBudgetError';
+  }
+}
+
+/** Reject promptly when the whole-loop budget expires; the same signal aborts in-flight agents. */
+async function withinFixLoopBudget<T>(work: Promise<T>, budgetSignal: AbortSignal): Promise<T> {
+  if (budgetSignal.aborted) throw new FixLoopTimeBudgetError();
+  return await new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new FixLoopTimeBudgetError());
+    budgetSignal.addEventListener('abort', onAbort, { once: true });
+    work.then(
+      (value) => {
+        budgetSignal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error) => {
+        budgetSignal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
 /**
  * Overlay fresh re-review verdicts onto a base run: any area the re-review
  * actually re-verdicted takes the new result, the rest keep theirs. (mergeFallback
@@ -714,8 +740,10 @@ export async function runFixVerifyLoop(
   const maxDurationMs = opts.maxDurationMs && opts.maxDurationMs > 0 ? opts.maxDurationMs : 2 * 60 * 60 * 1000;
   const now = deps.now ?? Date.now;
   const startedAt = now();
-  const reviewOpts: RunMaxReviewOptions = { concurrency: opts.concurrency, adapter: opts.adapter, signal: opts.signal };
-  const fixOpts: RunAreaFixesOptions = { concurrency: opts.concurrency, adapter: opts.adapter, timeoutMs: opts.fixTimeoutMs, signal: opts.signal };
+  const budgetSignal = AbortSignal.timeout(maxDurationMs);
+  const phaseSignal = opts.signal ? AbortSignal.any([opts.signal, budgetSignal]) : budgetSignal;
+  const reviewOpts: RunMaxReviewOptions = { concurrency: opts.concurrency, adapter: opts.adapter, signal: phaseSignal };
+  const fixOpts: RunAreaFixesOptions = { concurrency: opts.concurrency, adapter: opts.adapter, timeoutMs: opts.fixTimeoutMs, signal: phaseSignal };
   const reviewDeps: RunMaxReviewDeps = { review: deps.review, onProgress: deps.onReviewProgress };
   const fixDeps: RunAreaFixesDeps = { fix: deps.fix, onProgress: deps.onFixProgress };
   const allAreas = initial.results.map((result) => result.area);
@@ -743,7 +771,16 @@ export async function runFixVerifyLoop(
     }
     deps.onRoundStart?.(round, targets.length);
 
-    const fixes = await runAreaFixes(run, cwd, fixOpts, fixDeps);
+    let fixes: FixAreaResult[];
+    try {
+      fixes = await withinFixLoopBudget(runAreaFixes(run, cwd, fixOpts, fixDeps), budgetSignal);
+    } catch (error) {
+      if (error instanceof FixLoopTimeBudgetError) {
+        stopReason = 'time-budget';
+        break;
+      }
+      throw error;
+    }
     const edited = fixes.filter((f) => f.applied && f.filesChanged.length);
     for (const f of edited) for (const p of f.filesChanged) allFiles.add(p);
 
@@ -758,7 +795,16 @@ export async function runFixVerifyLoop(
     // Re-review the entire surface. Fixes are scoped by directory but can still
     // affect callers and shared contracts elsewhere, so a targeted review cannot
     // prove that the repository is fully clean.
-    const reReview = await runMaxReview(allAreas, cwd, reviewOpts, reviewDeps);
+    let reReview: AuditRun;
+    try {
+      reReview = await withinFixLoopBudget(runMaxReview(allAreas, cwd, reviewOpts, reviewDeps), budgetSignal);
+    } catch (error) {
+      if (error instanceof FixLoopTimeBudgetError) {
+        stopReason = 'time-budget';
+        break;
+      }
+      throw error;
+    }
     run = mergeReReview(run, reReview);
 
     const remaining = unresolved(run);
