@@ -140,6 +140,40 @@ describe('runVerify', () => {
     expect(await readFile(join(packageDir, 'package.json'), 'utf8')).toBe(weakened);
   });
 
+  it('fails closed when a closer package manifest appears after plan capture', async () => {
+    const trustedRoot = JSON.stringify({ scripts: { test: 'echo trusted-root' } });
+    await writeFile(join(repo, 'package.json'), trustedRoot);
+    git('add', 'package.json');
+    git('commit', '-m', 'trusted root package');
+    await mkdir(join(repo, 'packages', 'api'), { recursive: true });
+    await writeFile(join(repo, 'packages', 'api', 'package.json'), '{"scripts":{"test":"true"}}');
+
+    const [evidence] = await runVerify({
+      projectPath: repo,
+      commands: [{ ...verify('npm test --silent'), cwd: 'packages/api' }],
+      baseRef: 'HEAD', trustedPackageJsonByDirectory: { '': trustedRoot },
+    });
+    expect(evidence).toMatchObject({ headStatus: 'fail', baseStatus: 'skipped', newFailure: true });
+    expect(evidence.rawOutputTail).toContain('[security] verify package resolution changed');
+  });
+
+  it('fails closed when the captured nearest package manifest is deleted', async () => {
+    const packageDir = join(repo, 'packages', 'api');
+    await mkdir(packageDir, { recursive: true });
+    const trusted = JSON.stringify({ scripts: { test: 'echo trusted' } });
+    await writeFile(join(packageDir, 'package.json'), trusted);
+    git('add', 'packages/api/package.json');
+    git('commit', '-m', 'trusted nested package');
+    await unlink(join(packageDir, 'package.json'));
+
+    const [evidence] = await runVerify({
+      projectPath: repo,
+      commands: [{ ...verify('npm test --silent'), cwd: 'packages/api' }],
+      baseRef: 'HEAD', trustedPackageJsonByDirectory: { 'packages/api': trusted },
+    });
+    expect(evidence).toMatchObject({ headStatus: 'fail', baseStatus: 'skipped', newFailure: true });
+  });
+
   it('preserves Git metadata inside the isolated head sandbox', async () => {
     const [evidence] = await runVerify({
       projectPath: repo,

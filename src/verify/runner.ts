@@ -123,11 +123,25 @@ async function runTrustedCommand(
   trustedPackageJsonByDirectory: Record<string, string> = {},
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<CommandResult> {
-  let directory = resolve(root, command.cwd ?? '.');
+  if (Object.keys(trustedPackageJsonByDirectory).length === 0) return await runCommand(command, root, env);
+  const projectRoot = resolve(root);
+  let directory = resolve(projectRoot, command.cwd ?? '.');
   let trustedPackageJson: string | undefined;
-  while (directory === resolve(root) || directory.startsWith(`${resolve(root)}${sep}`)) {
-    trustedPackageJson = trustedPackageJsonByDirectory[relative(resolve(root), directory)];
-    if (trustedPackageJson !== undefined || directory === resolve(root)) break;
+  while (directory === projectRoot || directory.startsWith(`${projectRoot}${sep}`)) {
+    const key = relative(projectRoot, directory);
+    const trusted = trustedPackageJsonByDirectory[key];
+    const actual = await readFile(join(directory, 'package.json'), 'utf8').catch((error) => {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+      throw error;
+    });
+    if (trusted !== undefined || actual !== undefined) {
+      if (trusted === undefined || actual === undefined) {
+        return { status: 'fail', output: `[security] verify package resolution changed for cwd: ${command.cwd ?? '.'}` };
+      }
+      trustedPackageJson = trusted;
+      break;
+    }
+    if (directory === projectRoot) break;
     directory = dirname(directory);
   }
   if (!trustedPackageJson) return await runCommand(command, root, env);
