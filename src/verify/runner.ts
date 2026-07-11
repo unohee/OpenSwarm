@@ -148,25 +148,30 @@ async function runTrustedCommand(
 async function createHeadSandbox(projectPath: string, commands: VerifyCommand[]): Promise<{ root: string; project: string }> {
   const root = await mkdtemp(join(tmpdir(), 'openswarm-verify-head-'));
   const project = join(root, 'worktree');
-  await cp(projectPath, project, {
-    recursive: true,
-    filter: (source) => {
-      const path = relative(projectPath, source);
-      return path === '' || !path.split(sep).some((segment) => segment === '.git' || segment === 'node_modules');
-    },
-  });
-  const dependencyDirs = new Set(['', ...commands.map((command) => command.cwd ?? '')]);
-  for (const directory of dependencyDirs) {
-    const source = join(projectPath, directory, 'node_modules');
-    const target = join(project, directory, 'node_modules');
-    try {
-      await access(source);
-      await symlink(source, target, process.platform === 'win32' ? 'junction' : 'dir');
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  try {
+    await cp(projectPath, project, {
+      recursive: true,
+      filter: (source) => {
+        const path = relative(projectPath, source);
+        return path === '' || !path.split(sep).some((segment) => segment === 'node_modules');
+      },
+    });
+    const dependencyDirs = new Set(['', ...commands.map((command) => command.cwd ?? '')]);
+    for (const directory of dependencyDirs) {
+      const source = join(projectPath, directory, 'node_modules');
+      const target = join(project, directory, 'node_modules');
+      try {
+        await access(source);
+        await symlink(source, target, process.platform === 'win32' ? 'junction' : 'dir');
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
     }
+    return { root, project };
+  } catch (error) {
+    await rm(root, { recursive: true, force: true });
+    throw error;
   }
-  return { root, project };
 }
 
 async function git(projectPath: string, args: string[]): Promise<string> {

@@ -140,6 +140,16 @@ describe('runVerify', () => {
     expect(await readFile(join(packageDir, 'package.json'), 'utf8')).toBe(weakened);
   });
 
+  it('preserves Git metadata inside the isolated head sandbox', async () => {
+    const [evidence] = await runVerify({
+      projectPath: repo,
+      commands: [verify('git rev-parse --is-inside-work-tree && git diff --check')],
+      baseRef: 'HEAD',
+    });
+    expect(evidence).toMatchObject({ headStatus: 'pass', newFailure: false });
+    expect(evidence.rawOutputTail).toContain('true');
+  });
+
   it('keeps a failure that also exists at base non-blocking', async () => {
     await writeFile(join(repo, 'broken'), 'yes\n', 'utf8');
     git('add', 'broken');
