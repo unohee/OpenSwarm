@@ -93,12 +93,16 @@ describe('runVerify', () => {
 
   it('preserves trusted npm lifecycle scripts and restores the worker package', async () => {
     const trustedPackageJson = JSON.stringify({
-      scripts: { pretest: 'echo trusted-pre', test: 'echo trusted-test', posttest: 'echo trusted-post' },
+      scripts: {
+        pretest: 'echo trusted-pre',
+        test: 'node -e "console.log(require(\'./package.json\').workerMetadata)"',
+        posttest: 'echo trusted-post',
+      },
     });
     await writeFile(join(repo, 'package.json'), trustedPackageJson, 'utf8');
     git('add', 'package.json');
     git('commit', '-m', 'trusted npm scripts');
-    const weakenedPackageJson = JSON.stringify({ scripts: { test: 'true' } });
+    const weakenedPackageJson = JSON.stringify({ workerMetadata: 'current-metadata', scripts: { test: 'true' } });
     await writeFile(join(repo, 'package.json'), weakenedPackageJson, 'utf8');
 
     const [evidence] = await runVerify({
@@ -109,7 +113,7 @@ describe('runVerify', () => {
     });
 
     expect(evidence.rawOutputTail).toContain('trusted-pre');
-    expect(evidence.rawOutputTail).toContain('trusted-test');
+    expect(evidence.rawOutputTail).toContain('current-metadata');
     expect(evidence.rawOutputTail).toContain('trusted-post');
     expect(await readFile(join(repo, 'package.json'), 'utf8')).toBe(weakenedPackageJson);
   });

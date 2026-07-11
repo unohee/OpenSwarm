@@ -108,7 +108,11 @@ async function runTrustedCommand(
   const packagePath = join(root, 'package.json');
   const current = await readFile(packagePath, 'utf8');
   try {
-    await writeFile(packagePath, trustedPackageJson, 'utf8');
+    const currentPackage = JSON.parse(current) as Record<string, unknown>;
+    const trustedPackage = JSON.parse(trustedPackageJson) as { scripts?: unknown };
+    // Pin only lifecycle definitions. HEAD dependency/module/export metadata
+    // remains under test while worker-mutated scripts cannot weaken the gate.
+    await writeFile(packagePath, `${JSON.stringify({ ...currentPackage, scripts: trustedPackage.scripts }, null, 2)}\n`, 'utf8');
     return await runCommand(command, root, env);
   } finally {
     await writeFile(packagePath, current, 'utf8');
