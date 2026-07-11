@@ -1,8 +1,8 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
-import { captureVerifyInputFingerprint } from './deterministicTester.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { captureVerifyInputFingerprint, runTesterWithVerification } from './deterministicTester.js';
 
 let root: string | undefined;
 
@@ -12,15 +12,35 @@ afterEach(async () => {
 });
 
 describe('deterministic verification trust inputs', () => {
-  it('detects package script and explicit manifest mutation', async () => {
+  it('detects package script mutation', async () => {
     root = await mkdtemp(join(tmpdir(), 'openswarm-verify-trust-'));
     await writeFile(join(root, 'package.json'), '{"scripts":{"test":"vitest"}}');
     const initial = await captureVerifyInputFingerprint(root);
     await writeFile(join(root, 'package.json'), '{"scripts":{"test":"true"}}');
     expect(await captureVerifyInputFingerprint(root)).not.toBe(initial);
 
+  });
+
+  it('detects explicit manifest mutation independently', async () => {
+    root = await mkdtemp(join(tmpdir(), 'openswarm-verify-trust-'));
     await mkdir(join(root, '.openswarm'));
+    const initial = await captureVerifyInputFingerprint(root);
     await writeFile(join(root, '.openswarm', 'verify.yaml'), 'version: 1\ncommands: []\n');
     expect(await captureVerifyInputFingerprint(root)).not.toBe(initial);
+  });
+
+  it('fails closed without invoking fallback when trusted inputs change', async () => {
+    root = await mkdtemp(join(tmpdir(), 'openswarm-verify-trust-'));
+    const trustedInputFingerprint = await captureVerifyInputFingerprint(root);
+    await writeFile(join(root, 'package.json'), '{"scripts":{"test":"true"}}');
+    const fallback = vi.fn();
+
+    await expect(runTesterWithVerification({
+      projectPath: root,
+      verify: { enabled: true, blockOnNewFailures: true, maxCommands: 4 },
+      trustedInputFingerprint,
+      fallback,
+    })).rejects.toThrow('verification inputs changed after worker execution');
+    expect(fallback).not.toHaveBeenCalled();
   });
 });
