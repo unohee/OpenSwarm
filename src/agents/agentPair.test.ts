@@ -151,16 +151,12 @@ describe('agentPair', () => {
     it('is NOT degenerate when files changed', () => {
       expect(isDegenerateWorkerResult(wr({ filesChanged: ['a.ts'] }))).toBe(false);
     });
-    it('is NOT degenerate when commands ran', () => {
-      expect(isDegenerateWorkerResult(wr({ commands: ['npm test'] }))).toBe(false);
-    });
-    it('is NOT degenerate on a real analysis run (substantial output)', () => {
-      expect(isDegenerateWorkerResult(wr({ output: 'x'.repeat(250) }))).toBe(false);
-    });
-    it('is NOT degenerate on a legitimate no-edit outcome with a substantive summary', () => {
-      // e.g. "no change needed" — the value is in the summary, not a diff.
+    it('requires explicit noChangesReason despite commands, output, or summary', () => {
+      expect(isDegenerateWorkerResult(wr({ commands: ['npm test'] }))).toBe(true);
+      expect(isDegenerateWorkerResult(wr({ output: 'x'.repeat(250) }))).toBe(true);
+      expect(isDegenerateWorkerResult(wr({ summary: 'Investigated and found no change needed.' }))).toBe(true);
       expect(isDegenerateWorkerResult(wr({
-        summary: 'Investigated — no change needed; the bug is already fixed on main, verified by reading auth.ts.',
+        noChangesReason: 'The bug is already fixed on main, verified in auth.ts.',
       }))).toBe(false);
     });
     it('is NOT degenerate when the worker failed, errored, or halted', () => {

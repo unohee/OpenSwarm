@@ -55,6 +55,24 @@ describe('parseWorkerOutput command backfill', () => {
     const result = adapter.parseWorkerOutput(raw);
     expect(result.commands).toEqual([]);
   });
+
+  it('preserves an explicit no-change justification', () => {
+    const result = adapter.parseWorkerOutput({
+      exitCode: 0,
+      stdout: '```json\n{"success":true,"noChangesReason":"Already fixed and verified."}\n```',
+      stderr: '', durationMs: 1, executedCommands: [],
+    });
+    expect(result.noChangesReason).toBe('Already fixed and verified.');
+  });
+
+  it('drops a non-string no-change justification', () => {
+    const result = adapter.parseWorkerOutput({
+      exitCode: 0,
+      stdout: '```json\n{"success":true,"noChangesReason":{"fake":"reason"}}\n```',
+      stderr: '', durationMs: 1, executedCommands: [],
+    });
+    expect(result.noChangesReason).toBeUndefined();
+  });
 });
 
 describe('selectDefaultCodexResponseModel', () => {

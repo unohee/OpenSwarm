@@ -38,6 +38,7 @@ export interface WorkerResult {
   confidence?: ConfidenceLevel; // Legacy quality/reliability of the result
   confidencePercent?: number;   // Agent self-reported 0-100
   haltReason?: string;          // Why the agent halted
+  noChangesReason?: string;     // Explicit justification for a successful no-edit outcome
   uncertaintySignals?: string[]; // Detected uncertainty phrases
   costInfo?: CostInfo;
 }
@@ -462,16 +463,13 @@ const UNCERTAINTY_WORDS = [
 ];
 
 /**
- * A degenerate no-op run: the worker reported success but changed 0 files, ran 0
- * commands, AND produced no substantive report (trivial summary AND output) — it
- * did nothing. Requiring an empty summary too spares legitimate no-edit outcomes
- * (analysis / "no change needed") whose value is in a real summary; only a pure
- * empty no-op is flagged. Callers escalate instead of re-revising to STUCK. (INT-2521)
+ * A successful zero-diff run must carry an explicit noChangesReason. Commands or
+ * a long narrative alone cannot prove the implementation task was already done.
+ * Callers escalate unsubstantiated no-ops instead of reporting false completion.
  */
 export function isDegenerateWorkerResult(r: WorkerResult): boolean {
-  return !!r.success && (r.filesChanged?.length ?? 0) === 0 && (r.commands?.length ?? 0) === 0
-    && !r.error && !r.haltReason
-    && (r.summary?.trim().length ?? 0) < 40 && (r.output?.trim().length ?? 0) < 100;
+  return !!r.success && (r.filesChanged?.length ?? 0) === 0
+    && !r.error && !r.haltReason && !r.noChangesReason?.trim();
 }
 
 /**

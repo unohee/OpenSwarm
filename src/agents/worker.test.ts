@@ -4,7 +4,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { WorkerResult } from './agentPair.js';
-import { formatWorkReport, formatWorkerGitChangeStatus, resolveWorkerBashTimeoutMs, WORKER_BASH_TIMEOUT_DEFAULT_MS, type WorkerOptions } from './worker.js';
+import { formatWorkReport, formatWorkerGitChangeStatus, reconcileWorkerFiles, resolveWorkerBashTimeoutMs, WORKER_BASH_TIMEOUT_DEFAULT_MS, type WorkerOptions } from './worker.js';
 
 describe('worker', () => {
   beforeEach(() => {
@@ -26,7 +26,22 @@ describe('worker', () => {
     });
 
     it('formats the no-change status', () => {
-      expect(formatWorkerGitChangeStatus([])).toBe('[Worker] No file changes detected by Git or LLM');
+      expect(formatWorkerGitChangeStatus([])).toBe('[Worker] No file changes detected by Git');
+    });
+  });
+
+  describe('reconcileWorkerFiles (INT-2609)', () => {
+    it('rejects Git changes outside planner fileScope', () => {
+      const result = reconcileWorkerFiles(
+        ['kyte_cli/core/exec_tools.py', 'worktree/other/web_tools.py'],
+        ['kyte_cli/core/exec_tools.py'],
+      );
+      expect(result.filesChanged).toEqual(['kyte_cli/core/exec_tools.py', 'worktree/other/web_tools.py']);
+      expect(result.outsideScope).toEqual(['worktree/other/web_tools.py']);
+    });
+
+    it('accepts files inside a declared directory scope', () => {
+      expect(reconcileWorkerFiles(['src/a.ts'], ['./src/']).outsideScope).toEqual([]);
     });
   });
 

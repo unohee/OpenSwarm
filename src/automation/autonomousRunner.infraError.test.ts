@@ -53,12 +53,13 @@ const result = (finalStatus: PipelineResult['finalStatus']): PipelineResult => (
 function mockTaskSource() {
   return {
     kind: 'local',
-    updateState: vi.fn(async () => {}),
+    updateState: vi.fn(async () => true),
     addComment: vi.fn(async () => {}),
     logStuck: vi.fn(async () => {}),
     logBlocked: vi.fn(async () => {}),
   } as unknown as ITaskSource & {
     updateState: ReturnType<typeof vi.fn>;
+    addComment: ReturnType<typeof vi.fn>;
     logStuck: ReturnType<typeof vi.fn>;
   };
 }
@@ -113,6 +114,39 @@ describe('AutonomousRunner infra_error handling (INT-2010)', () => {
     await runN(scheduler, 'failed', 4);
 
     expect(source.logStuck).toHaveBeenCalled();
+    expect(source.updateState).toHaveBeenCalledTimes(3); // retries only; terminal attempt is parked by logStuck
+  });
+
+  it('returns a retryable genuine failure to Todo immediately', async () => {
+    const source = mockTaskSource();
+    runnerExecution.setTaskSource(source);
+    const runner = new AutonomousRunner(cfg());
+    const scheduler = (runner as unknown as { scheduler: TaskScheduler }).scheduler;
+
+    await runN(scheduler, 'failed', 1);
+
+    expect(source.updateState).toHaveBeenCalledWith('ISSUE-1', 'Todo');
+  });
+
+  it('does not expose terminal failure synchronization as retryable Todo', async () => {
+    const source = mockTaskSource();
+    runnerExecution.setTaskSource(source);
+
+    await runnerExecution.syncFailureState(task(), 'terminal retries exhausted');
+
+    expect(source.updateState).not.toHaveBeenCalled();
+    expect(source.addComment).toHaveBeenCalled();
+  });
+
+  it('reports a refused Todo transition instead of claiming sync success', async () => {
+    const source = mockTaskSource();
+    source.updateState.mockResolvedValue(false);
+    runnerExecution.setTaskSource(source);
+
+    const synced = await runnerExecution.syncFailureState(task(), 'retryable failure', 'Todo');
+
+    expect(synced).toBe(false);
+    expect(source.updateState).toHaveBeenCalledWith('ISSUE-1', 'Todo');
   });
 
   it('records rate limits before the retry-hold early return', async () => {

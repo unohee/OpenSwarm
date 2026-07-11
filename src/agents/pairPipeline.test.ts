@@ -177,6 +177,18 @@ describe('PairPipeline model selection', () => {
     expect(runReviewer).not.toHaveBeenCalled();
   });
 
+  it('passes planner fileScope to the worker enforcement boundary', async () => {
+    const { PairPipeline } = await import('./pairPipeline.js');
+    const pipeline = new PairPipeline({
+      stages: ['worker'], maxIterations: 1,
+      roles: { worker: { enabled: true, timeoutMs: 0 } },
+    });
+
+    await pipeline.run(task({ fileScope: ['src/example.ts'] }), process.cwd());
+
+    expect(runWorker).toHaveBeenCalledWith(expect.objectContaining({ fileScope: ['src/example.ts'] }));
+  });
+
   it('falls back to role models when no jobProfile matches', async () => {
     const { PairPipeline } = await import('./pairPipeline.js');
     const pipeline = new PairPipeline({

@@ -353,6 +353,7 @@ function extractWorkerResultJson(text: string): WorkerResult | null {
         confidencePercent: typeof parsed.confidencePercent === 'number'
           ? parsed.confidencePercent : undefined,
         haltReason: parsed.haltReason || undefined,
+        noChangesReason: typeof parsed.noChangesReason === 'string' ? parsed.noChangesReason : undefined,
       };
     } catch {
       return null;
@@ -371,6 +372,7 @@ function extractWorkerResultJson(text: string): WorkerResult | null {
       confidencePercent: typeof parsed.confidencePercent === 'number'
         ? parsed.confidencePercent : undefined,
       haltReason: parsed.haltReason || undefined,
+      noChangesReason: typeof parsed.noChangesReason === 'string' ? parsed.noChangesReason : undefined,
     };
   } catch {
     return null;

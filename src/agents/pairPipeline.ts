@@ -265,8 +265,6 @@ export class PairPipeline extends EventEmitter {
     }
   }
 
-  // Stage Execution
-
   /**
    * Worker에 주입할 코드 컨텍스트 수집
    * Draft 분석이 있으면 재사용, 없으면 직접 수집
@@ -502,6 +500,7 @@ export class PairPipeline extends EventEmitter {
             // codex spark AND gpt-5.5 both read 30-37× and shipped 0 edits. Push the
             // worker to actually edit before concluding.
             nudgeMaxOnNoEdit: 3,
+            fileScope: context.task.fileScope,
             issueIdentifier: context.task.issueIdentifier || context.task.issueId,
             projectName: context.task.linearProject?.name,
             onLog,

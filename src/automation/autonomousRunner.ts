@@ -522,7 +522,7 @@ export class AutonomousRunner {
           this.saveTaskState();
 
           try {
-            await execution.syncFailureState(task, `Review rejected (${rejectionCount}/3): ${feedback}`);
+            await execution.syncFailureState(task, `Review rejected (${rejectionCount}/3): ${feedback}`, 'Todo');
             await getTaskSource()?.logBlocked(task.issueId, 'autonomous-runner',
               t('runner.reviewRejected', { feedback }) +
               `\n\n**Rejection count:** ${rejectionCount}/3 - Will retry automatically ${retryIn}.`
@@ -580,6 +580,7 @@ export class AutonomousRunner {
           const retryIn = formatRetryTime(nextRetryTime);
           console.log(`[Scheduler] Task failure count: ${count}/${AutonomousRunner.MAX_RETRY_COUNT} for ${taskCtx} — retry ${retryIn}`);
           this.saveTaskState();
+          await execution.syncFailureState(task, `Autonomous execution failed ${count}/${AutonomousRunner.MAX_RETRY_COUNT}: ${failureDetail}`, 'Todo');
         }
       }
 
@@ -1496,7 +1497,8 @@ export class AutonomousRunner {
           // Change to Blocked on review rejection
           await execution.syncFailureState(
             task,
-            `Review rejected: ${result.reviewResult?.feedback || t('common.fallback.noDescription')}`
+            `Review rejected: ${result.reviewResult?.feedback || t('common.fallback.noDescription')}`,
+            'Todo',
           );
           await getTaskSource()?.logBlocked(task.issueId, 'autonomous-runner',
             t('runner.reviewRejected', { feedback: result.reviewResult?.feedback || t('common.fallback.noDescription') })

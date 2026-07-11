@@ -208,6 +208,11 @@ If (and only if) you want to flag low confidence or a blocker, end with this JSO
 { "success": false, "confidencePercent": 40, "haltReason": "why you're stuck" }
 \`\`\`
 Otherwise no JSON is needed — finishing without an error IS the success signal.
+If no file change is genuinely required, end with explicit evidence instead:
+
+\`\`\`json
+{ "success": true, "noChangesReason": "why the current code already satisfies the task" }
+\`\`\`
 
 `;
   },

@@ -1164,14 +1164,26 @@ export async function reconcileCompletionState(task: TaskItem): Promise<void> {
   }
 }
 
-export async function syncFailureState(task: TaskItem, reason: string): Promise<void> {
-  if (!task.issueId) return;
-  const state = markTaskBlocked(task.issueId, reason, task.blockedBy || [], task.linearState);
+export async function syncFailureState(task: TaskItem, reason: string, retryState?: 'Todo'): Promise<boolean> {
+  if (!task.issueId) return false;
+  let stateSynced = retryState === undefined;
+  if (retryState) {
+    try {
+      stateSynced = await taskSource?.updateState(task.issueId, retryState) === true;
+      if (!stateSynced) console.warn(`[AutonomousRunner] Tracker refused ${retryState} for failed task ${task.issueId}`);
+    } catch (err) {
+      console.warn(`[AutonomousRunner] Failed to return failed task ${task.issueId} to ${retryState}:`, err);
+    }
+  }
+  const state = markTaskBlocked(
+    task.issueId, reason, task.blockedBy || [], stateSynced && retryState ? retryState : task.linearState,
+  );
   try {
     await taskSource?.addComment(task.issueId, buildTaskStateSyncComment(state, 'Task blocked'));
   } catch (err) {
     console.warn(`[AutonomousRunner] Failed to sync blocked state for ${task.issueId}:`, err);
   }
+  return stateSynced;
 }
 
 export async function syncCancellationState(task: TaskItem): Promise<void> {
