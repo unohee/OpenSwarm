@@ -542,6 +542,19 @@ describe('runFixVerifyLoop (INT-2443)', () => {
     expect(result.stopReason).toBe('time-budget');
   });
 
+  it('reports all-approved before consulting an expired time budget', async () => {
+    const clean: AuditRun = {
+      results: [{ area: area('src/a'), review: { decision: 'approve', feedback: '' } }],
+      summary: aggregateAuditResults([]),
+    };
+    const result = await runFixVerifyLoop(clean, '/repo', { concurrency: 1, maxDurationMs: 1 }, {
+      now: () => 10_000,
+    });
+    expect(result.rounds).toHaveLength(0);
+    expect(result.resolved).toBe(true);
+    expect(result.stopReason).toBe('all-approved');
+  });
+
   it('bails out with no-progress when a round edits nothing, and never re-reviews', async () => {
     let reviewed = 0;
     const result = await runFixVerifyLoop(initial(), '/repo', { concurrency: 1, maxRounds: 3 }, {

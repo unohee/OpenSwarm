@@ -319,7 +319,7 @@ program
   .option('--fallback <adapter>', 'For --max: retry usage-limited areas on this adapter (default: claude for codex)')
   .option('--no-fallback', 'For --max: disable the automatic usage-limit fallback')
   .option('--fix', 'For --max: apply reviewer fixes and re-review until every area approves (working tree only, no commit)')
-  .option('--fix-rounds <n>', 'For --max --fix: optional safety cap on fix → re-review rounds (default: no cap)', parsePositiveIntegerOption)
+  .option('--fix-rounds <n>', 'For --max --fix: optional round cap (default: until clean, with a two-hour safety budget)', parsePositiveIntegerOption)
   .option('--no-learn', 'For --max: do not record the audit findings into the repo knowledge memory')
   .action(async (opts: {
     path?: string; base?: string; issues?: string | boolean; issuesPerArea?: string | boolean; file?: string | boolean; adapter?: string; debug?: boolean;

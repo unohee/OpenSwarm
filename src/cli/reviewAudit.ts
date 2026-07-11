@@ -730,15 +730,15 @@ export async function runFixVerifyLoop(
   const unresolved = (r: AuditRun): number => r.results.filter((x) => x.review?.decision !== 'approve').length;
 
   for (let round = 1; round <= maxRounds; round++) {
-    if (now() - startedAt >= maxDurationMs) {
-      stopReason = 'time-budget';
-      break;
-    }
     const targets = fixTargets(run);
     if (!targets.length) {
       // Nothing left to fix. Clean if every area approves; otherwise the leftover
       // is an errored/unfixable area, not a success.
       stopReason = unresolved(run) === 0 ? 'all-approved' : 'no-progress';
+      break;
+    }
+    if (now() - startedAt >= maxDurationMs) {
+      stopReason = 'time-budget';
       break;
     }
     deps.onRoundStart?.(round, targets.length);
