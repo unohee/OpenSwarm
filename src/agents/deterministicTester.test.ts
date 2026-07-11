@@ -12,12 +12,12 @@ afterEach(async () => {
 });
 
 describe('deterministic verification trust inputs', () => {
-  it('detects package script mutation', async () => {
+  it('allows ordinary package script mutation because discovered bodies are pinned separately', async () => {
     root = await mkdtemp(join(tmpdir(), 'openswarm-verify-trust-'));
     await writeFile(join(root, 'package.json'), '{"scripts":{"test":"vitest"}}');
     const initial = await captureVerifyInputFingerprint(root);
     await writeFile(join(root, 'package.json'), '{"scripts":{"test":"true"}}');
-    expect(await captureVerifyInputFingerprint(root)).not.toBe(initial);
+    expect(await captureVerifyInputFingerprint(root)).toBe(initial);
 
   });
 
@@ -32,7 +32,8 @@ describe('deterministic verification trust inputs', () => {
   it('fails closed without invoking fallback when trusted inputs change', async () => {
     root = await mkdtemp(join(tmpdir(), 'openswarm-verify-trust-'));
     const trustedInputFingerprint = await captureVerifyInputFingerprint(root);
-    await writeFile(join(root, 'package.json'), '{"scripts":{"test":"true"}}');
+    await mkdir(join(root, '.openswarm'));
+    await writeFile(join(root, '.openswarm', 'verify.yaml'), 'version: 1\ncommands: []\n');
     const fallback = vi.fn();
 
     await expect(runTesterWithVerification({

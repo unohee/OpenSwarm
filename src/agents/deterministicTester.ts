@@ -10,10 +10,7 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-const VERIFY_INPUTS = [
-  '.openswarm/verify.yaml', 'package.json', 'tsconfig.json', 'pytest.ini',
-  'pyproject.toml', 'setup.cfg', 'Cargo.toml', 'go.mod',
-];
+const VERIFY_INPUTS = ['.openswarm/verify.yaml'];
 
 export async function captureVerifyInputFingerprint(projectPath: string): Promise<string> {
   const hash = createHash('sha256');
