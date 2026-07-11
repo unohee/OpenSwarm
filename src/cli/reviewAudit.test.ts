@@ -477,6 +477,39 @@ describe('runFixVerifyLoop (INT-2443)', () => {
     expect(fixed).toEqual(['src/b', 'src/b']);            // fixed twice, never touched src/a
   });
 
+  it('keeps fixing past three rounds by default until every area approves', async () => {
+    let reviews = 0;
+    const result = await runFixVerifyLoop(initial(), '/repo', { concurrency: 1 }, {
+      fix: async (a) => ({ success: true, filesChanged: a.files }),
+      review: async () => ({ decision: ++reviews >= 5 ? 'approve' : 'revise', feedback: '' }),
+    });
+    expect(result.rounds).toHaveLength(5);
+    expect(result.resolved).toBe(true);
+    expect(result.stopReason).toBe('all-approved');
+  });
+
+  it('runs a whole-audit confirmation and fixes findings discovered in a previously approved area', async () => {
+    const fixed: string[] = [];
+    let confirmationFoundRegression = false;
+    const result = await runFixVerifyLoop(initial(), '/repo', { concurrency: 1 }, {
+      fix: async (a) => {
+        fixed.push(a.label);
+        return { success: true, filesChanged: a.files };
+      },
+      review: async (a) => {
+        if (a.label === 'src/a' && !confirmationFoundRegression) {
+          confirmationFoundRegression = true;
+          return { decision: 'revise', feedback: '', issues: ['cross-area regression'] };
+        }
+        return { decision: 'approve', feedback: '' };
+      },
+    });
+    expect(fixed).toEqual(['src/b', 'src/a']);
+    expect(result.rounds).toHaveLength(2);
+    expect(result.resolved).toBe(true);
+    expect(result.stopReason).toBe('all-approved');
+  });
+
   it('stops at the round budget and reports the still-flagged area', async () => {
     const result = await runFixVerifyLoop(initial(), '/repo', { concurrency: 1, maxRounds: 2 }, {
       fix: async (a) => ({ success: true, filesChanged: a.files }),

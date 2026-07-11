@@ -61,7 +61,7 @@ export interface ReviewMaxOptions {
   noFallback?: boolean;
   /** Apply the reviewer's fixes to each non-approve area (working tree only). (INT-2249) */
   fix?: boolean;
-  /** For --fix: max fix → re-review rounds before giving up (default 3). (INT-2443) */
+  /** For --fix: optional fix → re-review round cap. Unset means continue until clean or blocked. */
   fixRounds?: number;
   /** Record the audit findings into repo knowledge (default true; --no-learn opts out). (INT-2268) */
   learn?: boolean;
@@ -243,8 +243,8 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
     console.warn(`  Retry after ${when}${resolveFallbackAdapter(opts) ? ' (fallback adapter also exhausted)' : ', or set `--fallback <adapter>`'}.`);
   }
 
-  // (3.5) --fix: iterate fix → re-review until every flagged area approves or the
-  //       round budget (--fix-rounds, default 3) runs out. Each round fixes the
+  // (3.5) --fix: iterate fix → re-review until every flagged area approves or an
+  //       explicitly requested --fix-rounds budget runs out. Each round fixes the
   //       currently-flagged areas, then re-reviews only the ones actually edited
   //       for a fresh verdict. Edits accumulate in the working tree — no commit —
   //       so the user reviews the diff first. (INT-2249 / INT-2443)
@@ -253,9 +253,14 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
     if (!targets.length) {
       console.log('\n--fix: nothing to apply (every area approved).');
     } else {
-      const maxRounds = positiveIntegerOption(opts.fixRounds, 3, '--fix-rounds');
+      const maxRounds = opts.fixRounds === undefined
+        ? undefined
+        : positiveIntegerOption(opts.fixRounds, opts.fixRounds, '--fix-rounds');
+      const roundBudget = maxRounds === undefined
+        ? 'until every area approves'
+        : `up to ${c.yellow(String(maxRounds))} round(s)`;
       console.log(
-        `\n${status.running('Fix → verify loop')} up to ${c.yellow(String(maxRounds))} round(s), ` +
+        `\n${status.running('Fix → verify loop')} ${roundBudget}, ` +
           `${c.yellow(String(targets.length))} area(s) flagged, ${concurrency} concurrent worker(s).`,
       );
       const loop = await runFixVerifyLoop(
@@ -266,7 +271,7 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
         { concurrency, adapter: opts.adapter as AdapterName | undefined, fixTimeoutMs: 900_000, maxRounds },
         {
           onRoundStart: (round, flagged) =>
-            console.log(`\n${c.bold(`Round ${round}/${maxRounds}`)} — fixing ${flagged} area(s)...`),
+            console.log(`\n${c.bold(`Round ${round}${maxRounds === undefined ? '' : `/${maxRounds}`}`)} — fixing ${flagged} area(s)...`),
           onFixProgress: (e) => {
             if (e.type === 'done') console.log(`  ${status.ok(`${e.label} — ${e.filesChanged} file(s) changed`)}`);
             else if (e.type === 'error') console.log(`  ${status.err(`${e.label} — ${e.error}`)}`);

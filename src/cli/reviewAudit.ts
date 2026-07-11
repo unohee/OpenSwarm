@@ -655,7 +655,7 @@ export interface RunFixVerifyLoopOptions {
   adapter?: AdapterName;
   /** Per-area fix-worker timeout (caller sets the long default). */
   fixTimeoutMs?: number;
-  /** Hard cap on fix → re-review rounds (default 3). */
+  /** Optional hard cap on fix → re-review rounds. Unset means run until clean or blocked. */
   maxRounds?: number;
   signal?: AbortSignal;
 }
@@ -691,8 +691,9 @@ export function mergeReReview(base: AuditRun, reReview: AuditRun): AuditRun {
 }
 
 /**
- * Iterate fix → re-review until every area approves or the round budget runs
- * out. Each round applies the reviewer's fixes to the currently-flagged areas,
+ * Iterate fix → re-review until every area approves or an explicit round budget
+ * runs out. Without a budget, continue until clean, no-progress, or rate-limit.
+ * Each round applies the reviewer's fixes to the currently-flagged areas,
  * then re-reviews ONLY the areas actually edited (an untouched flagged area
  * keeps its prior verdict — re-reviewing it would waste a subagent). Stops early
  * when a round edits nothing (workers can't progress) or a re-review hits a
@@ -705,11 +706,12 @@ export async function runFixVerifyLoop(
   opts: RunFixVerifyLoopOptions,
   deps: RunFixVerifyLoopDeps = {},
 ): Promise<FixVerifyResult> {
-  const maxRounds = opts.maxRounds && opts.maxRounds > 0 ? opts.maxRounds : 3;
+  const maxRounds = opts.maxRounds && opts.maxRounds > 0 ? opts.maxRounds : Number.POSITIVE_INFINITY;
   const reviewOpts: RunMaxReviewOptions = { concurrency: opts.concurrency, adapter: opts.adapter, signal: opts.signal };
   const fixOpts: RunAreaFixesOptions = { concurrency: opts.concurrency, adapter: opts.adapter, timeoutMs: opts.fixTimeoutMs, signal: opts.signal };
   const reviewDeps: RunMaxReviewDeps = { review: deps.review, onProgress: deps.onReviewProgress };
   const fixDeps: RunAreaFixesDeps = { fix: deps.fix, onProgress: deps.onFixProgress };
+  const allAreas = initial.results.map((result) => result.area);
 
   let run = initial;
   const rounds: FixVerifyRound[] = [];
@@ -748,7 +750,21 @@ export async function runFixVerifyLoop(
     const reReview = await runMaxReview(editedAreas, cwd, reviewOpts, reviewDeps);
     run = mergeReReview(run, reReview);
 
-    const remaining = unresolved(run);
+    let remaining = unresolved(run);
+
+    // A targeted re-review can only prove that the edited areas are clean. The
+    // edits may still regress callers or shared contracts in an area that was
+    // approved earlier. Before declaring convergence, run one fresh whole-audit
+    // confirmation. Any newly flagged area is merged back into `run` and becomes
+    // a target for the next fix round. (INT-2443 follow-up)
+    let confirmationRateLimit = false;
+    if (remaining === 0) {
+      const confirmation = await runMaxReview(allAreas, cwd, reviewOpts, reviewDeps);
+      run = mergeReReview(run, confirmation);
+      remaining = unresolved(run);
+      confirmationRateLimit = !!confirmation.rateLimit;
+    }
+
     const rec: FixVerifyRound = {
       round,
       flagged: targets.length,
@@ -760,7 +776,7 @@ export async function runFixVerifyLoop(
     rounds.push(rec);
     deps.onRoundEnd?.(rec);
 
-    if (reReview.rateLimit) { stopReason = 'rate-limit'; break; }
+    if (reReview.rateLimit || confirmationRateLimit) { stopReason = 'rate-limit'; break; }
     if (!remaining) { stopReason = 'all-approved'; break; }
     if (round === maxRounds) { stopReason = 'max-rounds'; break; }
   }
