@@ -31,7 +31,10 @@ describe('executePipeline open-PR preflight (INT-2568)', () => {
 
   it('returns before worktree creation without posting repeat-prone tracker comments', async () => {
     const addComment = vi.fn(async () => {});
-    setTaskSource({ kind: 'local', addComment } as unknown as ITaskSource);
+    const getExecutionComments = vi.fn(async () => [
+      { createdAt: '2026-07-07T12:47:00Z', body: 'human root cause: wrapper null-mData' },
+    ]);
+    setTaskSource({ kind: 'local', addComment, getExecutionComments } as unknown as ITaskSource);
     const task: TaskItem = {
       id: 'task-overlap', source: 'linear', issueId: 'issue-overlap', issueIdentifier: 'INT-overlap',
       title: 'Fix subtraction', priority: 3, createdAt: Date.now(),
@@ -48,5 +51,22 @@ describe('executePipeline open-PR preflight (INT-2568)', () => {
     expect(createWorktree).not.toHaveBeenCalled();
     expect(addComment).not.toHaveBeenCalled();
     expect(createWorktree).not.toHaveBeenCalled();
+    expect(runDraftAnalysis.mock.calls[0][0].taskDescription).toContain('wrapper null-mData');
+  });
+
+  it('continues with the original description when fresh comment lookup fails', async () => {
+    setTaskSource({
+      kind: 'local', addComment: vi.fn(),
+      getExecutionComments: vi.fn(async () => { throw new Error('Linear unavailable'); }),
+    } as unknown as ITaskSource);
+    const task: TaskItem = {
+      id: 'task-comment-fallback', source: 'linear', issueId: 'issue-comment-fallback', issueIdentifier: 'INT-comment-fallback',
+      title: 'Fallback task', description: 'original diagnosis', priority: 3, createdAt: Date.now(),
+    };
+    const ctx = { allowedProjects: ['/repo'], enableDraftAnalysis: true, enableDecomposition: false, worktreeMode: true } as ExecutionContext;
+
+    await executePipeline(ctx, task, '/repo');
+
+    expect(runDraftAnalysis.mock.calls[0][0].taskDescription).toBe('original diagnosis');
   });
 });

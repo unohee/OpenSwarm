@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { fileReviewerFollowups, rateLimitedPipelineResult } from './runnerExecution.js';
+import { fileReviewerFollowups, formatExecutionCommentContext, rateLimitedPipelineResult } from './runnerExecution.js';
 import type { ReviewResult } from '../agents/agentPair.js';
 import type { ITaskSource } from './taskSource.js';
 import { RateLimitError } from '../adapters/rateLimitError.js';
@@ -15,6 +15,33 @@ const review = (over: Partial<ReviewResult> = {}): ReviewResult => ({
     { type: 'refactor', title: 'extract helper' },
   ],
   ...over,
+});
+
+describe('execution issue-comment context (INT-2608)', () => {
+  it('keeps all human diagnoses while bounding repetitive automation comments', () => {
+    const comments = [
+      { createdAt: '2026-07-07T12:47:00Z', body: '근본 원인 확정: nih-plug AU wrapper null-mData 처리 누락' },
+      { createdAt: '2026-07-07T13:19:00Z', body: '수정 방향: wrapper.rs scratch buffer 배선' },
+      ...Array.from({ length: 8 }, (_, i) => ({
+        createdAt: `2026-07-08T0${i}:00:00Z`, body: `**Work complete**\nmitigation attempt ${i}\n\n_Worker audit log · 2026-07-08_`,
+      })),
+    ];
+    const context = formatExecutionCommentContext(comments);
+    expect(context).toContain('null-mData');
+    expect(context).toContain('scratch buffer');
+    expect(context).not.toContain('mitigation attempt 0');
+    expect(context).toContain('mitigation attempt 7');
+  });
+
+  it('reserves a bounded prompt for the newest human diagnosis', () => {
+    const context = formatExecutionCommentContext([
+      { createdAt: '2026-07-01T00:00:00Z', body: `old hypothesis ${'x'.repeat(200)}` },
+      { createdAt: '2026-07-02T00:00:00Z', body: 'new root cause: wrapper null-mData' },
+    ], 140);
+    expect(context).toContain('new root cause');
+    expect(context).not.toContain('old hypothesis');
+    expect(context.length).toBeLessThanOrEqual(140);
+  });
 });
 
 describe('fileReviewerFollowups (INT-1704)', () => {

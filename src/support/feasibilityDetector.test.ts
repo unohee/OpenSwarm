@@ -73,6 +73,17 @@ describe('shouldEarlyStuckForInfeasibility (INT-2521 ⑦)', () => {
     expect(shouldEarlyStuckForInfeasibility(INFEASIBLE, undefined).earlyStuck).toBe(false);
   });
 
+  it('short-circuits a precise external customer/device evidence gate on first rejection (INT-2608)', () => {
+    expect(shouldEarlyStuckForInfeasibility('Approval requires customer evidence; code changes cannot replace it.', '').earlyStuck).toBe(true);
+    expect(shouldEarlyStuckForInfeasibility('Missing customer diagnostic report from the affected host.', '').earlyStuck).toBe(true);
+    expect(shouldEarlyStuckForInfeasibility('Requires reproduction in Logic Pro on the affected AU host.', '').earlyStuck).toBe(true);
+  });
+
+  it('does not one-shot ordinary mentions of customer diagnostics or devices', () => {
+    expect(shouldEarlyStuckForInfeasibility('Added parser for customer diagnostic report.', '').earlyStuck).toBe(false);
+    expect(shouldEarlyStuckForInfeasibility('The real device reproduction harness now passes.', '').earlyStuck).toBe(false);
+  });
+
   it('never short-circuits when the PRIOR failure was unrelated (the false-positive to avoid)', () => {
     // A single (possibly false-positive) infeasibility marker that merely FOLLOWS an
     // ordinary failure must keep retrying — the prior failure was a different problem.

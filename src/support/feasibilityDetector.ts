@@ -64,6 +64,15 @@ const INFEASIBLE_MARKERS = [
   'no database available',
 ] as const;
 
+// These are intrinsically external acceptance gates. Re-running code in the same
+// sandbox cannot manufacture customer evidence or a physical-host reproduction,
+// so one precise rejection is enough (INT-2608).
+const ONE_SHOT_EXTERNAL_EVIDENCE_PATTERNS: Array<{ marker: string; pattern: RegExp }> = [
+  { marker: 'requires customer evidence', pattern: /(?:missing|requires?|required|awaiting|cannot obtain|unavailable).{0,48}customer (?:diagnostic report|evidence)|customer (?:diagnostic report|evidence).{0,48}(?:missing|requires?|required|awaiting|cannot obtain|unavailable)/i },
+  { marker: 'requires real device reproduction', pattern: /(?:requires?|required|missing|cannot verify without).{0,48}(?:real|physical|affected) (?:device|host) reproduction/i },
+  { marker: 'requires reproduction in logic pro', pattern: /requires? reproduction in logic pro/i },
+];
+
 export interface FeasibilityVerdict {
   /** True when the failure text asserts the DoD is unsatisfiable in the sandbox. */
   infeasible: boolean;
@@ -92,7 +101,7 @@ export interface EarlyStuckDecision extends FeasibilityVerdict {
 
 /**
  * Decide whether the runner should short-circuit a failing task to a needs-human
- * STUCK instead of burning the rest of its retry budget. True ONLY when the DECIDING
+ * STUCK instead of burning the rest of its retry budget. Normally true only when the DECIDING
  * failure AND the immediately preceding recorded failure BOTH assert infeasibility —
  * i.e. the task hit an environmental wall on two consecutive attempts. (The two
  * markers need not be identical: "no database available" then "requires human" are
@@ -100,12 +109,17 @@ export interface EarlyStuckDecision extends FeasibilityVerdict {
  * not that the wording repeated.) A lone infeasibility message — a first attempt, or a
  * one-off that merely follows an UNRELATED prior failure — is never trusted, so a
  * merely-hard task (which keeps making progress and won't stably emit the marker) is
- * not cut early. The verdict's `marker` is the current failure's marker, for the STUCK
- * diagnostic. Pure; `priorDetail` is '' / undefined on the first attempt → never
- * early-stuck. (INT-2521 ⑦)
+ * not cut early. The narrow INT-2608 exception is a rejection explicitly stating
+ * that required customer evidence or real-host reproduction is missing: another
+ * code retry cannot create that external artifact, so it may stop after one attempt.
+ * The verdict's `marker` is the current failure's marker, for the STUCK diagnostic.
+ * Pure. (INT-2521 ⑦, INT-2608)
  */
 export function shouldEarlyStuckForInfeasibility(currentDetail: unknown, priorDetail: unknown): EarlyStuckDecision {
   const current = detectInfeasibleDoD(currentDetail);
   const prior = detectInfeasibleDoD(priorDetail);
+  const text = String(currentDetail ?? '').toLowerCase();
+  const oneShot = ONE_SHOT_EXTERNAL_EVIDENCE_PATTERNS.find(({ pattern }) => pattern.test(text));
+  if (oneShot) return { infeasible: true, marker: oneShot.marker, earlyStuck: true };
   return { ...current, earlyStuck: current.infeasible && prior.infeasible };
 }

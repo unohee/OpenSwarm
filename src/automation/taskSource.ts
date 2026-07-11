@@ -47,6 +47,8 @@ export interface ITaskSource {
   updateState(issueId: string, state: TaskState): Promise<boolean>;
   updateDescription?(issueId: string, description: string): Promise<void>;
   addComment(issueId: string, body: string): Promise<void>;
+  /** Fresh tracker discussion for execution-time context; avoids stale discovery snapshots. */
+  getExecutionComments?(issueId: string): Promise<Array<{ body: string; createdAt: string }>>;
   createSubIssue(
     parentId: string,
     title: string,
@@ -82,6 +84,11 @@ export class LinearTaskSource implements ITaskSource {
   updateState(issueId: string, state: TaskState): Promise<boolean> { return linear.updateIssueState(issueId, state); }
   updateDescription(issueId: string, description: string): Promise<void> { return linear.updateIssueDescription(issueId, description); }
   addComment(issueId: string, body: string): Promise<void> { return linear.addComment(issueId, body); }
+  async getExecutionComments(issueId: string): Promise<Array<{ body: string; createdAt: string }>> {
+    const issue = await linear.getIssue(issueId);
+    if (!issue) throw new Error(`Could not refresh issue comments: ${issueId}`);
+    return issue.comments.map(({ body, createdAt }) => ({ body, createdAt }));
+  }
   createSubIssue(parentId: string, title: string, description: string, options?: { priority?: number; projectId?: string; estimatedMinutes?: number }): Promise<SubIssueResult> {
     return linear.createSubIssue(parentId, title, description, options);
   }
