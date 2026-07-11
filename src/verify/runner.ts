@@ -1,8 +1,8 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { access, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { access, cp, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { delimiter, join, resolve, sep } from 'node:path';
+import { delimiter, dirname, join, relative, resolve, sep } from 'node:path';
 import { isInfraError } from '../adapters/errorClassification.js';
 import type { VerifyCommand } from './manifest.js';
 
@@ -26,7 +26,7 @@ export interface RunVerifyOptions {
   projectPath: string;
   commands: VerifyCommand[];
   baseRef: string;
-  trustedPackageJson?: string;
+  trustedPackageJsonByDirectory?: Record<string, string>;
 }
 
 interface CommandResult {
@@ -120,11 +120,18 @@ async function runCommand(command: VerifyCommand, root: string, env: NodeJS.Proc
 async function runTrustedCommand(
   command: VerifyCommand,
   root: string,
-  trustedPackageJson?: string,
+  trustedPackageJsonByDirectory: Record<string, string> = {},
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<CommandResult> {
+  let directory = resolve(root, command.cwd ?? '.');
+  let trustedPackageJson: string | undefined;
+  while (directory === resolve(root) || directory.startsWith(`${resolve(root)}${sep}`)) {
+    trustedPackageJson = trustedPackageJsonByDirectory[relative(resolve(root), directory)];
+    if (trustedPackageJson !== undefined || directory === resolve(root)) break;
+    directory = dirname(directory);
+  }
   if (!trustedPackageJson) return await runCommand(command, root, env);
-  const packagePath = join(root, 'package.json');
+  const packagePath = join(directory, 'package.json');
   const current = await readFile(packagePath, 'utf8');
   try {
     const currentPackage = JSON.parse(current) as Record<string, unknown>;
@@ -136,6 +143,30 @@ async function runTrustedCommand(
   } finally {
     await writeFile(packagePath, current, 'utf8');
   }
+}
+
+async function createHeadSandbox(projectPath: string, commands: VerifyCommand[]): Promise<{ root: string; project: string }> {
+  const root = await mkdtemp(join(tmpdir(), 'openswarm-verify-head-'));
+  const project = join(root, 'worktree');
+  await cp(projectPath, project, {
+    recursive: true,
+    filter: (source) => {
+      const path = relative(projectPath, source);
+      return path === '' || !path.split(sep).some((segment) => segment === '.git' || segment === 'node_modules');
+    },
+  });
+  const dependencyDirs = new Set(['', ...commands.map((command) => command.cwd ?? '')]);
+  for (const directory of dependencyDirs) {
+    const source = join(projectPath, directory, 'node_modules');
+    const target = join(project, directory, 'node_modules');
+    try {
+      await access(source);
+      await symlink(source, target, process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  }
+  return { root, project };
 }
 
 async function git(projectPath: string, args: string[]): Promise<string> {
@@ -156,7 +187,7 @@ async function runAtBase(
   projectPath: string,
   baseRef: string,
   command: VerifyCommand,
-  trustedPackageJson?: string,
+  trustedPackageJsonByDirectory?: Record<string, string>,
 ): Promise<CommandResult> {
   let root: string | undefined;
   let worktreePath: string | undefined;
@@ -182,7 +213,7 @@ async function runAtBase(
     }
     const headBin = join(projectPath, 'node_modules', '.bin');
     const env = { ...process.env, PATH: `${headBin}${delimiter}${process.env.PATH ?? ''}` };
-    const result = await runTrustedCommand(command, worktreePath, trustedPackageJson, env);
+    const result = await runTrustedCommand(command, worktreePath, trustedPackageJsonByDirectory, env);
     return { ...result, baselineEnvironmentChanged: dependencyChanges };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -199,9 +230,11 @@ async function runAtBase(
 
 export async function runVerify(options: RunVerifyOptions): Promise<VerifyEvidence[]> {
   const evidence: VerifyEvidence[] = [];
+  const sandbox = await createHeadSandbox(options.projectPath, options.commands);
+  try {
   for (const command of options.commands) {
     const started = Date.now();
-    const head = await runTrustedCommand(command, options.projectPath, options.trustedPackageJson);
+    const head = await runTrustedCommand(command, sandbox.project, options.trustedPackageJsonByDirectory);
     if (head.status === 'pass') {
       evidence.push({
         command,
@@ -232,7 +265,9 @@ export async function runVerify(options: RunVerifyOptions): Promise<VerifyEviden
       continue;
     }
 
-    const base = await runAtBase(options.projectPath, options.baseRef, command, options.trustedPackageJson);
+    const base = await runAtBase(
+      options.projectPath, options.baseRef, command, options.trustedPackageJsonByDirectory,
+    );
     const rawOutputTail = Buffer.from(`[base]\n${base.output}\n[head]\n${head.output}`, 'utf8')
       .subarray(-OUTPUT_TAIL_BYTES)
       .toString('utf8');
@@ -247,4 +282,7 @@ export async function runVerify(options: RunVerifyOptions): Promise<VerifyEviden
     });
   }
   return evidence;
+  } finally {
+    await rm(sandbox.root, { recursive: true, force: true });
+  }
 }

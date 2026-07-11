@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { captureVerifyInputFingerprint, runTesterWithVerification } from './deterministicTester.js';
+import { captureVerifyInputFingerprint, loadTrustedVerifyPlan, runTesterWithVerification } from './deterministicTester.js';
 
 let root: string | undefined;
 
@@ -43,5 +43,20 @@ describe('deterministic verification trust inputs', () => {
       fallback,
     })).rejects.toThrow('verification inputs changed after worker execution');
     expect(fallback).not.toHaveBeenCalled();
+  });
+
+  it('captures the nearest package manifest for each command cwd', async () => {
+    root = await mkdtemp(join(tmpdir(), 'openswarm-verify-trust-'));
+    await mkdir(join(root, 'packages', 'api'), { recursive: true });
+    await mkdir(join(root, '.openswarm'));
+    const nestedPackage = '{"scripts":{"test":"vitest"}}';
+    await writeFile(join(root, 'packages', 'api', 'package.json'), nestedPackage);
+    await writeFile(join(root, '.openswarm', 'verify.yaml'), [
+      'version: 1', 'commands:', '  - name: api', '    run: npm test',
+      '    kind: test', '    cwd: packages/api',
+    ].join('\n'));
+
+    const plan = await loadTrustedVerifyPlan(root, { enabled: true, blockOnNewFailures: true, maxCommands: 4 });
+    expect(plan.packageJsonByDirectory).toEqual({ 'packages/api': nestedPackage });
   });
 });

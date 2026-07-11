@@ -180,7 +180,7 @@ export class PairPipeline extends EventEmitter {
     try {
       if (this.config.verify?.enabled) try {
         const plan = await loadTrustedVerifyPlan(projectPath, this.config.verify);
-        context.trustedVerifyCommands = plan.commands; context.trustedVerifyPackageJson = plan.packageJson;
+        context.trustedVerifyCommands = plan.commands; context.trustedVerifyPackageJsonByDirectory = plan.packageJsonByDirectory;
         context.trustedVerifyInputFingerprint = await captureVerifyInputFingerprint(projectPath);
       } catch (error) { context.trustedVerifyError = error; }
       const iterationResult = await this.runFullIterationLoop(context, stages);
@@ -391,7 +391,7 @@ export class PairPipeline extends EventEmitter {
     return await runTesterWithVerification({
       projectPath: context.projectPath,
       verify: this.config.verify,
-      trustedCommands: context.trustedVerifyCommands, trustedPackageJson: context.trustedVerifyPackageJson,
+      trustedCommands: context.trustedVerifyCommands, trustedPackageJsonByDirectory: context.trustedVerifyPackageJsonByDirectory,
       trustedInputFingerprint: context.trustedVerifyInputFingerprint,
       onInfra: (error) => console.warn(`[${context.taskPrefix}] Deterministic verify unavailable; falling back to LLM tester: ${error instanceof Error ? error.message : String(error)}`),
       fallback: () => testerAgent.runTester({

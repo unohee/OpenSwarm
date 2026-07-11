@@ -109,13 +109,35 @@ describe('runVerify', () => {
       projectPath: repo,
       commands: [verify('npm test --silent')],
       baseRef: 'HEAD',
-      trustedPackageJson,
+      trustedPackageJsonByDirectory: { '': trustedPackageJson },
     });
 
     expect(evidence.rawOutputTail).toContain('trusted-pre');
     expect(evidence.rawOutputTail).toContain('current-metadata');
     expect(evidence.rawOutputTail).toContain('trusted-post');
     expect(await readFile(join(repo, 'package.json'), 'utf8')).toBe(weakenedPackageJson);
+  });
+
+  it('pins scripts for a nested command cwd without mutating the source tree', async () => {
+    const packageDir = join(repo, 'packages', 'api');
+    await mkdir(packageDir, { recursive: true });
+    const trusted = JSON.stringify({ scripts: { test: 'echo nested-trusted' } });
+    await writeFile(join(packageDir, 'package.json'), trusted);
+    git('add', 'packages/api/package.json');
+    git('commit', '-m', 'trusted nested package');
+    const weakened = JSON.stringify({ workerMetadata: true, scripts: { test: 'true' } });
+    await writeFile(join(packageDir, 'package.json'), weakened);
+
+    const [evidence] = await runVerify({
+      projectPath: repo,
+      commands: [{ ...verify('npm test --silent'), cwd: 'packages/api' }],
+      baseRef: 'HEAD',
+      trustedPackageJsonByDirectory: { 'packages/api': trusted },
+    });
+
+    expect(evidence).toMatchObject({ headStatus: 'pass', newFailure: false });
+    expect(evidence.rawOutputTail).toContain('nested-trusted');
+    expect(await readFile(join(packageDir, 'package.json'), 'utf8')).toBe(weakened);
   });
 
   it('keeps a failure that also exists at base non-blocking', async () => {
