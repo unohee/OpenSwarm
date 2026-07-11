@@ -188,6 +188,16 @@ describe('runVerify', () => {
     expect(evidence.newFailure).toBe(true);
   });
 
+  it('detects an untracked nested dependency manifest', async () => {
+    await mkdir(join(repo, 'packages', 'new-app'), { recursive: true });
+    await writeFile(join(repo, 'packages', 'new-app', 'package.json'), '{"dependencies":{"fixture":"1.0.0"}}');
+
+    const [evidence] = await runVerify({
+      projectPath: repo, commands: [verify('echo same-failure; exit 1')], baseRef: 'HEAD',
+    });
+    expect(evidence).toMatchObject({ baseStatus: 'fail', headStatus: 'fail', newFailure: true });
+  });
+
   it('classifies command-not-found as infrastructure', async () => {
     const [evidence] = await runVerify({
       projectPath: repo,

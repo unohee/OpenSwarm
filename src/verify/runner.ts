@@ -163,7 +163,9 @@ async function runAtBase(
   try {
     const baseCommit = await git(projectPath, ['merge-base', 'HEAD', baseRef]);
     const changedFiles = await git(projectPath, ['diff', '--name-only', baseCommit, '--']);
-    const dependencyChanges = changedFiles.split('\n').some((file) => DEPENDENCY_INPUTS.has(file.split('/').pop() ?? ''));
+    const untrackedFiles = await git(projectPath, ['ls-files', '--others', '--exclude-standard']);
+    const dependencyChanges = `${changedFiles}\n${untrackedFiles}`.split('\n')
+      .some((file) => DEPENDENCY_INPUTS.has(file.split('/').pop() ?? ''));
     root = await mkdtemp(join(tmpdir(), 'openswarm-verify-base-'));
     worktreePath = join(root, 'worktree');
     await git(projectPath, ['worktree', 'add', '--detach', worktreePath, baseCommit]);
