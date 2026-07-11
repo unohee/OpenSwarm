@@ -26,13 +26,21 @@ export async function captureVerifyInputFingerprint(projectPath: string): Promis
   return hash.digest('hex');
 }
 
-export async function loadTrustedVerifyCommands(projectPath: string, config: VerifyConfig): Promise<VerifyCommand[]> {
-  if (!config.enabled) return [];
+export interface TrustedVerifyPlan {
+  commands: VerifyCommand[];
+  packageJson?: string;
+}
+
+export async function loadTrustedVerifyPlan(projectPath: string, config: VerifyConfig): Promise<TrustedVerifyPlan> {
+  if (!config.enabled) return { commands: [] };
   const loaded = await loadVerifyManifest(projectPath);
   // A checked-in manifest error is a task/configuration failure, not transient
   // infrastructure: fail closed instead of silently falling back to an LLM.
   if (loaded.error) throw new Error(`verify-config: ${loaded.error}`);
-  return (loaded.manifest?.commands ?? await discoverVerifyCommands(projectPath)).slice(0, config.maxCommands);
+  const commands = (loaded.manifest?.commands ?? await discoverVerifyCommands(projectPath)).slice(0, config.maxCommands);
+  const packageJson = loaded.manifest ? undefined
+    : await readFile(join(projectPath, 'package.json'), 'utf8').catch(() => undefined);
+  return { commands, packageJson };
 }
 
 /** Returns null only when the repository exposes no deterministic verify commands. */
@@ -40,15 +48,18 @@ export async function runDeterministicTester(
   projectPath: string,
   config: VerifyConfig,
   trustedCommands?: VerifyCommand[],
+  trustedPackageJson?: string,
 ): Promise<TesterResult | null> {
   if (!config.enabled) return null;
-  const commands = trustedCommands ?? await loadTrustedVerifyCommands(projectPath, config);
+  const plan = trustedCommands ? { commands: trustedCommands, packageJson: trustedPackageJson }
+    : await loadTrustedVerifyPlan(projectPath, config);
+  const commands = plan.commands;
   if (commands.length === 0) return null;
 
   const base = await resolveBaseRef(projectPath).catch((error) => {
     throw new Error(`verify-runner: failed to resolve base ref: ${error instanceof Error ? error.message : String(error)}`);
   });
-  const evidence = await runVerify({ projectPath, commands, baseRef: base.ref });
+  const evidence = await runVerify({ projectPath, commands, baseRef: base.ref, trustedPackageJson: plan.packageJson });
   const infra = evidence.find((item) => item.headStatus === 'infra'
     || (item.headStatus === 'fail' && item.baseStatus === 'infra'));
   if (infra) {
@@ -71,6 +82,7 @@ export async function runTesterWithVerification(options: {
   projectPath: string;
   verify?: VerifyConfig;
   trustedCommands?: VerifyCommand[];
+  trustedPackageJson?: string;
   trustedInputFingerprint?: string;
   fallback: () => Promise<TesterResult>;
   onInfra?: (error: unknown) => void;
@@ -81,7 +93,9 @@ export async function runTesterWithVerification(options: {
         && await captureVerifyInputFingerprint(options.projectPath) !== options.trustedInputFingerprint) {
         throw new Error('verify-config: verification inputs changed after worker execution');
       }
-      const deterministic = await runDeterministicTester(options.projectPath, options.verify, options.trustedCommands);
+      const deterministic = await runDeterministicTester(
+        options.projectPath, options.verify, options.trustedCommands, options.trustedPackageJson,
+      );
       if (deterministic) return deterministic;
     } catch (error) {
       if (!isInfraError(error)) throw error;

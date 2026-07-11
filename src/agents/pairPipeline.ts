@@ -49,7 +49,7 @@ import { StuckDetector, createStuckDetector } from '../support/stuckDetector.js'
 import { RateLimitError } from '../adapters/rateLimitError.js';
 import { isInfraError, isTimeoutError } from '../adapters/errorClassification.js';
 import { resolveAdapterDefaultModel } from './stageModelResolver.js';
-import { captureVerifyInputFingerprint, loadTrustedVerifyCommands, runTesterWithVerification } from './deterministicTester.js';
+import { captureVerifyInputFingerprint, loadTrustedVerifyPlan, runTesterWithVerification } from './deterministicTester.js';
 import { isClassifiedStageError, rethrowClassified, extractClassifiedStageResult, PipelineCancelledError } from './stageErrorClassification.js';
 import {
   isTesterCodeFile,
@@ -179,7 +179,8 @@ export class PairPipeline extends EventEmitter {
     };
     try {
       if (this.config.verify?.enabled) try {
-        context.trustedVerifyCommands = await loadTrustedVerifyCommands(projectPath, this.config.verify);
+        const plan = await loadTrustedVerifyPlan(projectPath, this.config.verify);
+        context.trustedVerifyCommands = plan.commands; context.trustedVerifyPackageJson = plan.packageJson;
         context.trustedVerifyInputFingerprint = await captureVerifyInputFingerprint(projectPath);
       } catch (error) { context.trustedVerifyError = error; }
       const iterationResult = await this.runFullIterationLoop(context, stages);
@@ -390,7 +391,7 @@ export class PairPipeline extends EventEmitter {
     return await runTesterWithVerification({
       projectPath: context.projectPath,
       verify: this.config.verify,
-      trustedCommands: context.trustedVerifyCommands,
+      trustedCommands: context.trustedVerifyCommands, trustedPackageJson: context.trustedVerifyPackageJson,
       trustedInputFingerprint: context.trustedVerifyInputFingerprint,
       onInfra: (error) => console.warn(`[${context.taskPrefix}] Deterministic verify unavailable; falling back to LLM tester: ${error instanceof Error ? error.message : String(error)}`),
       fallback: () => testerAgent.runTester({
@@ -402,7 +403,6 @@ export class PairPipeline extends EventEmitter {
       }),
     });
   }
-
   /** Run a single stage. */
   private async runStage(
     stage: PipelineStage,

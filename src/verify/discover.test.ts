@@ -22,8 +22,8 @@ describe('discoverVerifyCommands', () => {
   it('discovers Node typecheck and test scripts', async () => {
     const root = await fixture({ 'package.json': JSON.stringify({ scripts: { typecheck: 'tsc --noEmit', test: 'vitest run' } }) });
     expect(await discoverVerifyCommands(root)).toEqual([
-      { name: 'typecheck', run: 'PATH="$PWD/node_modules/.bin:$PATH" tsc --noEmit', kind: 'typecheck', timeoutMs: 300_000 },
-      { name: 'test', run: 'PATH="$PWD/node_modules/.bin:$PATH" vitest run', kind: 'test', timeoutMs: 300_000 },
+      { name: 'typecheck', run: 'npm run typecheck', kind: 'typecheck', timeoutMs: 300_000 },
+      { name: 'test', run: 'npm run test', kind: 'test', timeoutMs: 300_000 },
     ]);
   });
 
@@ -69,9 +69,6 @@ describe('discoverVerifyCommands', () => {
   it('discovers this OpenSwarm checkout without executing commands', async () => {
     const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
     const commands = await discoverVerifyCommands(repo);
-    expect(commands.map((item) => item.run)).toEqual(expect.arrayContaining([
-      expect.stringContaining('tsc --noEmit'),
-      expect.stringContaining('vitest'),
-    ]));
+    expect(commands.map((item) => item.run)).toEqual(expect.arrayContaining(['npm run typecheck', 'npm run test']));
   });
 });

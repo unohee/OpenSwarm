@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { access, mkdtemp, rm, symlink } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, join, resolve } from 'node:path';
 import { isInfraError } from '../adapters/errorClassification.js';
@@ -20,6 +20,7 @@ export interface RunVerifyOptions {
   projectPath: string;
   commands: VerifyCommand[];
   baseRef: string;
+  trustedPackageJson?: string;
 }
 
 interface CommandResult {
@@ -97,6 +98,23 @@ async function runCommand(command: VerifyCommand, root: string, env: NodeJS.Proc
   });
 }
 
+async function runTrustedCommand(
+  command: VerifyCommand,
+  root: string,
+  trustedPackageJson?: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<CommandResult> {
+  if (!trustedPackageJson || !command.run.startsWith('npm run ')) return await runCommand(command, root, env);
+  const packagePath = join(root, 'package.json');
+  const current = await readFile(packagePath, 'utf8');
+  try {
+    await writeFile(packagePath, trustedPackageJson, 'utf8');
+    return await runCommand(command, root, env);
+  } finally {
+    await writeFile(packagePath, current, 'utf8');
+  }
+}
+
 async function git(projectPath: string, args: string[]): Promise<string> {
   return await new Promise((resolveResult, reject) => {
     const child = spawn('git', ['-C', projectPath, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -115,6 +133,7 @@ async function runAtBase(
   projectPath: string,
   baseRef: string,
   command: VerifyCommand,
+  trustedPackageJson?: string,
 ): Promise<CommandResult> {
   let root: string | undefined;
   let worktreePath: string | undefined;
@@ -136,7 +155,7 @@ async function runAtBase(
     }
     const headBin = join(projectPath, 'node_modules', '.bin');
     const env = { ...process.env, PATH: `${headBin}${delimiter}${process.env.PATH ?? ''}` };
-    return await runCommand(command, worktreePath, env);
+    return await runTrustedCommand(command, worktreePath, trustedPackageJson, env);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return { status: 'infra', output: message.slice(-OUTPUT_TAIL_BYTES) };
@@ -154,7 +173,7 @@ export async function runVerify(options: RunVerifyOptions): Promise<VerifyEviden
   const evidence: VerifyEvidence[] = [];
   for (const command of options.commands) {
     const started = Date.now();
-    const head = await runCommand(command, options.projectPath);
+    const head = await runTrustedCommand(command, options.projectPath, options.trustedPackageJson);
     if (head.status === 'pass') {
       evidence.push({
         command,
@@ -178,7 +197,7 @@ export async function runVerify(options: RunVerifyOptions): Promise<VerifyEviden
       continue;
     }
 
-    const base = await runAtBase(options.projectPath, options.baseRef, command);
+    const base = await runAtBase(options.projectPath, options.baseRef, command, options.trustedPackageJson);
     const rawOutputTail = Buffer.from(`[base]\n${base.output}\n[head]\n${head.output}`, 'utf8')
       .subarray(-OUTPUT_TAIL_BYTES)
       .toString('utf8');

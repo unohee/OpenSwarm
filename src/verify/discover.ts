@@ -16,13 +16,6 @@ function command(name: string, run: string, kind: VerifyCommand['kind']): Verify
   return { name, run, kind, timeoutMs: DEFAULT_TIMEOUT_MS };
 }
 
-function npmScript(name: string, body: string, kind: VerifyCommand['kind']): VerifyCommand {
-  // Capture the script body before the worker runs. Calling `npm run <name>`
-  // later would re-read a worker-modified package.json and let it weaken the
-  // verification gate. Preserve the normal local binary lookup explicitly.
-  return command(name, `PATH="$PWD/node_modules/.bin:$PATH" ${body}`, kind);
-}
-
 export async function discoverVerifyCommands(projectPath: string): Promise<VerifyCommand[]> {
   const commands: VerifyCommand[] = [];
 
@@ -40,7 +33,7 @@ export async function discoverVerifyCommands(projectPath: string): Promise<Verif
     }
   }
   if (typeof scripts.typecheck === 'string' && scripts.typecheck.trim()) {
-    commands.push(npmScript('typecheck', scripts.typecheck, 'typecheck'));
+    commands.push(command('typecheck', 'npm run typecheck', 'typecheck'));
   } else if (await exists(join(projectPath, 'tsconfig.json'))) {
     commands.push(command('typecheck', 'npx tsc --noEmit', 'typecheck'));
   }
@@ -49,7 +42,7 @@ export async function discoverVerifyCommands(projectPath: string): Promise<Verif
     && scripts.test.trim()
     && !scripts.test.includes('Error: no test specified')
   ) {
-    commands.push(npmScript('test', scripts.test, 'test'));
+    commands.push(command('test', 'npm run test', 'test'));
   }
 
   // Python: require an explicit pytest configuration signal.

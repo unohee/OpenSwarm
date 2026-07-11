@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -89,6 +89,29 @@ describe('runVerify', () => {
     });
 
     expect(evidence).toMatchObject({ headStatus: 'fail', baseStatus: 'pass', newFailure: true });
+  });
+
+  it('preserves trusted npm lifecycle scripts and restores the worker package', async () => {
+    const trustedPackageJson = JSON.stringify({
+      scripts: { pretest: 'echo trusted-pre', test: 'echo trusted-test', posttest: 'echo trusted-post' },
+    });
+    await writeFile(join(repo, 'package.json'), trustedPackageJson, 'utf8');
+    git('add', 'package.json');
+    git('commit', '-m', 'trusted npm scripts');
+    const weakenedPackageJson = JSON.stringify({ scripts: { test: 'true' } });
+    await writeFile(join(repo, 'package.json'), weakenedPackageJson, 'utf8');
+
+    const [evidence] = await runVerify({
+      projectPath: repo,
+      commands: [verify('npm run test --silent')],
+      baseRef: 'HEAD',
+      trustedPackageJson,
+    });
+
+    expect(evidence.rawOutputTail).toContain('trusted-pre');
+    expect(evidence.rawOutputTail).toContain('trusted-test');
+    expect(evidence.rawOutputTail).toContain('trusted-post');
+    expect(await readFile(join(repo, 'package.json'), 'utf8')).toBe(weakenedPackageJson);
   });
 
   it('keeps a failure that also exists at base non-blocking', async () => {
