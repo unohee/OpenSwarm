@@ -549,6 +549,7 @@ describe('PairPipeline coverage extension', () => {
       filesChanged: [],
       commands: [],
       output: 'Investigation complete: existing behavior already satisfies the request in full detail.',
+      noChangesReason: 'Current implementation already satisfies the task; no code edit is required.',
       confidencePercent: 90,
     });
 

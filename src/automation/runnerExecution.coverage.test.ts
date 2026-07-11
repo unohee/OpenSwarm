@@ -1282,7 +1282,7 @@ describe('syncFailureState / syncCancellationState / syncSuccessState', () => {
   it('syncFailureState tolerates an addComment failure', async () => {
     (taskSourceMock.addComment as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('linear down'));
 
-    await expect(syncFailureState(task(), 'blocked reason')).resolves.toBeUndefined();
+    await expect(syncFailureState(task(), 'blocked reason')).resolves.toBe(true);
     expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('Failed to sync blocked state'), expect.any(Error));
   });
 
