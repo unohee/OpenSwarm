@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -164,6 +164,21 @@ describe('runVerify', () => {
     expect(evidence.headStatus).toBe('pass');
     expect(execFileSync('git', ['-C', linked, 'status', '--porcelain=v1'], { encoding: 'utf8' })).toBe(before);
     expect(await readFile(join(linked, 'README.md'), 'utf8')).toBe('base\n');
+  });
+
+  it('mirrors tracked deletions and renames into the head sandbox', async () => {
+    await writeFile(join(repo, 'old-name.txt'), 'tracked\n');
+    git('add', 'old-name.txt');
+    git('commit', '-m', 'tracked file');
+    await unlink(join(repo, 'old-name.txt'));
+    await writeFile(join(repo, 'new-name.txt'), 'tracked\n');
+
+    const [evidence] = await runVerify({
+      projectPath: repo,
+      commands: [verify('test ! -e old-name.txt && test -e new-name.txt')],
+      baseRef: 'HEAD',
+    });
+    expect(evidence).toMatchObject({ headStatus: 'pass', newFailure: false });
   });
 
   it('keeps a failure that also exists at base non-blocking', async () => {

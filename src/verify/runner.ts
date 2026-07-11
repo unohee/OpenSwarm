@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { access, cp, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { access, cp, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, relative, resolve, sep } from 'node:path';
 import { isInfraError } from '../adapters/errorClassification.js';
@@ -152,6 +152,11 @@ async function createHeadSandbox(projectPath: string, commands: VerifyCommand[])
     const headCommit = await git(projectPath, ['rev-parse', 'HEAD']);
     await git(projectPath, ['clone', '--quiet', '--no-hardlinks', '--no-checkout', projectPath, project]);
     await git(project, ['checkout', '--quiet', '--detach', headCommit]);
+    // Mirror the source working tree exactly, including deletions and renames,
+    // while retaining only the sandbox's independent Git metadata.
+    for (const entry of await readdir(project)) {
+      if (entry !== '.git') await rm(join(project, entry), { recursive: true, force: true });
+    }
     await cp(projectPath, project, {
       recursive: true,
       force: true,
