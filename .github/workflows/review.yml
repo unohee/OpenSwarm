@@ -4,10 +4,13 @@ name: OpenSwarm Review
 # the daemon's own swarm/* branches) and posts the verdict as a PR comment under
 # the openswarm-review[bot] identity. (INT-2552)
 #
-# Requires (set up once, outside this file):
+# Optional preferred identity (set up once, outside this file):
 #   - GitHub App `openswarm-review` (webhook disabled, no callback URL) with
 #     Pull requests: Read & write, Contents: Read, Checks: Read & write.
 #   - Repo secrets OPENSWARM_REVIEW_APP_ID / OPENSWARM_REVIEW_APP_PRIVATE_KEY.
+#     Until these exist (or during key rotation), the job falls back to the
+#     scoped GITHUB_TOKEN and comments as github-actions[bot].
+# Required execution host:
 #   - A self-hosted runner labeled `openswarm-review` with an already-authenticated
 #     claude/codex CLI (same credentials the daemon itself uses) — the review step
 #     below does not perform its own CLI login.
@@ -45,6 +48,7 @@ jobs:
 
       - name: Generate openswarm-review[bot] token
         id: app-token
+        continue-on-error: true
         uses: actions/create-github-app-token@v1
         with:
           app-id: ${{ secrets.OPENSWARM_REVIEW_APP_ID }}
@@ -65,14 +69,20 @@ jobs:
       - name: Post review comment
         if: always()
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          # App identity wins when configured. GITHUB_TOKEN keeps the review
+          # gate operational during bootstrap or App-key rotation.
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
         run: |
           {
-            echo "### 🤖 OpenSwarm Review"
+            echo "### OpenSwarm Review"
             echo
             echo '```'
             # Strip ANSI codes — the CLI colors for terminals, not markdown.
-            sed -E 's/\x1b\[[0-9;]*m//g' review-output.txt
+            if [ -f review-output.txt ]; then
+              sed -E 's/\x1b\[[0-9;]*m//g' review-output.txt
+            else
+              echo "Review command did not produce output. Inspect the preceding workflow steps."
+            fi
             echo '```'
           } > comment-body.md
           gh pr comment "${{ github.event.pull_request.number }}" --body-file comment-body.md
