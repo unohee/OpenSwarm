@@ -843,13 +843,13 @@ export async function runFixVerifyLoop(
       run = mergeReReview(run, reReview);
       run = await applyVerificationGate(run, new Set(targets.map((target) => target.area.label)));
       const remaining = unresolved(run);
-      const freshByLabel = new Map(reReview.results.map((result) => [result.area.label, result]));
+      const gatedByLabel = new Map(run.results.map((result) => [result.area.label, result]));
       const rec: FixVerifyRound = {
         round,
         flagged: targets.length,
         edited: 0,
         filesChanged: [],
-        resolved: targets.filter((target) => freshByLabel.get(target.area.label)?.review?.decision === 'approve').length,
+        resolved: targets.filter((target) => gatedByLabel.get(target.area.label)?.review?.decision === 'approve').length,
         remaining,
       };
       rounds.push(rec);
@@ -878,14 +878,14 @@ export async function runFixVerifyLoop(
     run = await applyVerificationGate(run, new Set(edited.map((fix) => fix.label)));
 
     const remaining = unresolved(run);
-    const freshByLabel = new Map(reReview.results.map((result) => [result.area.label, result]));
+    const gatedByLabel = new Map(run.results.map((result) => [result.area.label, result]));
 
     const rec: FixVerifyRound = {
       round,
       flagged: targets.length,
       edited: edited.length,
       filesChanged: edited.flatMap((f) => f.filesChanged),
-      resolved: targets.filter((target) => freshByLabel.get(target.area.label)?.review?.decision === 'approve').length,
+      resolved: targets.filter((target) => gatedByLabel.get(target.area.label)?.review?.decision === 'approve').length,
       remaining,
     };
     rounds.push(rec);

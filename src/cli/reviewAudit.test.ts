@@ -510,6 +510,7 @@ describe('runFixVerifyLoop (INT-2443)', () => {
     expect(fixes).toBe(2);
     expect(verifies).toBe(2);
     expect(result.rounds).toHaveLength(2);
+    expect(result.rounds.map((round) => round.resolved)).toEqual([0, 1]);
     expect(result.resolved).toBe(true);
     expect(result.stopReason).toBe('all-approved');
   });
