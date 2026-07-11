@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -154,6 +154,18 @@ describe('runVerify', () => {
       baseRef: 'HEAD',
     });
     expect(evidence).toMatchObject({ headStatus: 'infra', baseStatus: 'skipped', newFailure: false });
+  });
+
+  it('fails closed when a verify cwd symlink escapes the project', async () => {
+    const outside = join(root, 'outside');
+    await mkdir(outside);
+    await symlink(outside, join(repo, 'escape'));
+    const command = { ...verify('echo escaped'), cwd: 'escape' };
+
+    const [evidence] = await runVerify({ projectPath: repo, commands: [command], baseRef: 'HEAD' });
+
+    expect(evidence).toMatchObject({ headStatus: 'fail', baseStatus: 'skipped', newFailure: true });
+    expect(evidence.rawOutputTail).toContain('[security] verify cwd escapes project root');
   });
 
   it('classifies a timeout as infrastructure', async () => {

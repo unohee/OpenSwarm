@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
-import { access, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { delimiter, join, resolve } from 'node:path';
+import { delimiter, join, resolve, sep } from 'node:path';
 import { isInfraError } from '../adapters/errorClassification.js';
 import type { VerifyCommand } from './manifest.js';
 
@@ -42,7 +42,17 @@ function appendTail(current: Buffer, chunk: Buffer): Buffer {
 }
 
 async function runCommand(command: VerifyCommand, root: string, env: NodeJS.ProcessEnv = process.env): Promise<CommandResult> {
-  const cwd = command.cwd ? resolve(root, command.cwd) : root;
+  const candidate = command.cwd ? resolve(root, command.cwd) : root;
+  let cwd: string;
+  try {
+    const [realRoot, realCwd] = await Promise.all([realpath(root), realpath(candidate)]);
+    if (realCwd !== realRoot && !realCwd.startsWith(`${realRoot}${sep}`)) {
+      return { status: 'fail', output: `[security] verify cwd escapes project root: ${command.cwd ?? '.'}` };
+    }
+    cwd = realCwd;
+  } catch (error) {
+    return { status: 'infra', output: error instanceof Error ? error.message : String(error) };
+  }
   const shell = process.env.SHELL || '/bin/sh';
   return await new Promise((resolveResult) => {
     let output: Buffer = Buffer.alloc(0);
@@ -197,6 +207,13 @@ export async function runVerify(options: RunVerifyOptions): Promise<VerifyEviden
         newFailure: false,
         rawOutputTail: head.output,
         durationMs: Date.now() - started,
+      });
+      continue;
+    }
+    if (head.output.startsWith('[security]')) {
+      evidence.push({
+        command, baseStatus: 'skipped', headStatus: 'fail', newFailure: true,
+        rawOutputTail: head.output, durationMs: Date.now() - started,
       });
       continue;
     }

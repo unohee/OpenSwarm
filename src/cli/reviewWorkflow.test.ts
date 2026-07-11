@@ -27,4 +27,10 @@ describe('OpenSwarm review workflow bootstrap (INT-2552)', () => {
     expect(review?.run).toContain('decision=${decision:-UNKNOWN}');
     expect(gate?.if).toContain("steps.review.outputs.decision != 'APPROVE'");
   });
+
+  it('isolates review-run test state without losing Codex credentials', () => {
+    const review = steps.find((step) => step.name === 'Run openswarm review');
+    expect(review?.run).toContain('CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"');
+    expect(review?.run).toContain('HOME="$review_home"');
+  });
 });

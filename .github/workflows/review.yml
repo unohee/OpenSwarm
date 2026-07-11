@@ -63,6 +63,10 @@ jobs:
       - name: Run openswarm review
         id: review
         run: |
+          review_home="$RUNNER_TEMP/openswarm-review-home"
+          mkdir -p "$review_home"
+          export CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
+          export HOME="$review_home"
           set +e
           node dist/cli.js review --base "origin/${{ github.event.pull_request.base.ref }}" > review-output.txt 2>&1
           command_exit_code=$?
