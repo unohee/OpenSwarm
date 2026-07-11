@@ -149,11 +149,15 @@ async function createHeadSandbox(projectPath: string, commands: VerifyCommand[])
   const root = await mkdtemp(join(tmpdir(), 'openswarm-verify-head-'));
   const project = join(root, 'worktree');
   try {
+    const headCommit = await git(projectPath, ['rev-parse', 'HEAD']);
+    await git(projectPath, ['clone', '--quiet', '--no-hardlinks', '--no-checkout', projectPath, project]);
+    await git(project, ['checkout', '--quiet', '--detach', headCommit]);
     await cp(projectPath, project, {
       recursive: true,
+      force: true,
       filter: (source) => {
         const path = relative(projectPath, source);
-        return path === '' || !path.split(sep).some((segment) => segment === 'node_modules');
+        return path === '' || !path.split(sep).some((segment) => segment === '.git' || segment === 'node_modules');
       },
     });
     const dependencyDirs = new Set(['', ...commands.map((command) => command.cwd ?? '')]);

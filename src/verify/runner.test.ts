@@ -150,6 +150,22 @@ describe('runVerify', () => {
     expect(evidence.rawOutputTail).toContain('true');
   });
 
+  it('does not share the Git index when the source is a linked worktree', async () => {
+    const linked = join(root, 'linked');
+    git('worktree', 'add', '-q', '-b', 'linked-fixture', linked, 'HEAD');
+    const before = execFileSync('git', ['-C', linked, 'status', '--porcelain=v1'], { encoding: 'utf8' });
+
+    const [evidence] = await runVerify({
+      projectPath: linked,
+      commands: [verify('printf sandbox > README.md; git add README.md')],
+      baseRef: 'HEAD',
+    });
+
+    expect(evidence.headStatus).toBe('pass');
+    expect(execFileSync('git', ['-C', linked, 'status', '--porcelain=v1'], { encoding: 'utf8' })).toBe(before);
+    expect(await readFile(join(linked, 'README.md'), 'utf8')).toBe('base\n');
+  });
+
   it('keeps a failure that also exists at base non-blocking', async () => {
     await writeFile(join(repo, 'broken'), 'yes\n', 'utf8');
     git('add', 'broken');
