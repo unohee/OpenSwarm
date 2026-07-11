@@ -22,7 +22,7 @@ vi.mock('../automation/runnerExecution.js', () => ({
   fileReviewerFollowups: (...args: unknown[]) => fileReviewerFollowupsMock(...args),
 }));
 
-const { filePerAreaFollowups, filePmSynthesizedIssues } = await import('./reviewMaxCommand.js');
+const { filePerAreaFollowups, filePmSynthesizedIssues, reviewMaxResultFailed } = await import('./reviewMaxCommand.js');
 
 function makeRun(actions: ReviewResult['recommendedActions']): AuditRun {
   const review: ReviewResult = { decision: 'revise', feedback: 'x', recommendedActions: actions };
@@ -36,6 +36,18 @@ beforeEach(() => {
   vi.clearAllMocks();
   ensureTaskSourceMock.mockResolvedValue({ createTask: vi.fn(), createSubIssue: vi.fn() });
   resolveIssueFromBranchMock.mockReturnValue(undefined);
+});
+
+describe('reviewMaxResultFailed', () => {
+  it('fails closed when --fix leaves a revise verdict unresolved', () => {
+    expect(reviewMaxResultFailed({ decision: 'revise', resolved: false }, true)).toBe(true);
+    expect(reviewMaxResultFailed({ decision: 'approve', resolved: true }, true)).toBe(false);
+  });
+
+  it('preserves report-only review semantics without --fix', () => {
+    expect(reviewMaxResultFailed({ decision: 'revise' }, false)).toBe(false);
+    expect(reviewMaxResultFailed({ decision: 'reject' }, false)).toBe(true);
+  });
 });
 
 describe('filePerAreaFollowups (INT-2599)', () => {

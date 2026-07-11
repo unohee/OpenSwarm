@@ -328,7 +328,7 @@ program
   }) => {
     try {
       if (opts.max) {
-        const { runReviewMaxCommand } = await import('./cli/reviewMaxCommand.js');
+        const { runReviewMaxCommand, reviewMaxResultFailed } = await import('./cli/reviewMaxCommand.js');
         const result = await runReviewMaxCommand({
           path: opts.path,
           concurrency: opts.concurrency,
@@ -348,7 +348,7 @@ program
           fixRounds: opts.fixRounds,
           learn: opts.learn,
         });
-        if (result && result.decision === 'reject') process.exitCode = 1;
+        if (reviewMaxResultFailed(result, !!opts.fix)) process.exitCode = 1;
         return;
       }
       const { runReviewCommand } = await import('./cli/reviewCommand.js');

@@ -494,6 +494,38 @@ describe('runFixVerifyLoop (INT-2443)', () => {
     expect(result.stopReason).toBe('all-approved');
   });
 
+  it('does not complete on LLM approval until deterministic verification passes', async () => {
+    let verifies = 0;
+    let fixes = 0;
+    const result = await runFixVerifyLoop(initial(), '/repo', { concurrency: 1, maxRounds: 3 }, {
+      fix: async (a) => {
+        fixes++;
+        return { success: true, filesChanged: a.files };
+      },
+      review: async () => ({ decision: 'approve', feedback: '' }),
+      verify: async () => ++verifies >= 2
+        ? { success: true }
+        : { success: false, failedTests: ['test'], output: 'new test failure' },
+    });
+    expect(fixes).toBe(2);
+    expect(verifies).toBe(2);
+    expect(result.rounds).toHaveLength(2);
+    expect(result.resolved).toBe(true);
+    expect(result.stopReason).toBe('all-approved');
+  });
+
+  it('fails closed when deterministic verification never passes', async () => {
+    const result = await runFixVerifyLoop(initial(), '/repo', { concurrency: 1, maxRounds: 2 }, {
+      fix: async (a) => ({ success: true, filesChanged: a.files }),
+      review: async () => ({ decision: 'approve', feedback: '' }),
+      verify: async () => ({ success: false, failedTests: ['test'], output: 'still failing' }),
+    });
+    expect(result.rounds).toHaveLength(2);
+    expect(result.resolved).toBe(false);
+    expect(result.stopReason).toBe('max-rounds');
+    expect(result.finalRun.summary.issues.join('\n')).toContain('Deterministic verification failed');
+  });
+
   it('re-reviews the whole audit each round and fixes findings discovered in a previously approved area', async () => {
     const fixed: string[] = [];
     let confirmationFoundRegression = false;
@@ -564,16 +596,50 @@ describe('runFixVerifyLoop (INT-2443)', () => {
     expect(result.stopReason).toBe('all-approved');
   });
 
-  it('bails out with no-progress when a round edits nothing, and never re-reviews', async () => {
+  it('re-reviews after a no-edit fix and accepts a finding that is already cleared', async () => {
     let reviewed = 0;
     const result = await runFixVerifyLoop(initial(), '/repo', { concurrency: 1, maxRounds: 3 }, {
       fix: async () => ({ success: true, filesChanged: [] }), // worker touched nothing
       review: async () => { reviewed++; return { decision: 'approve', feedback: '' }; },
     });
     expect(result.rounds).toHaveLength(1);
+    expect(result.stopReason).toBe('all-approved');
+    expect(result.resolved).toBe(true);
+    expect(reviewed).toBe(2); // whole surface: src/a + src/b
+  });
+
+  it('reports no-progress only after a no-edit whole review repeats identical findings', async () => {
+    const result = await runFixVerifyLoop(initial(), '/repo', { concurrency: 1, maxRounds: 3 }, {
+      fix: async () => ({ success: true, filesChanged: [] }),
+      review: async (a) => a.label === 'src/b'
+        ? { decision: 'revise', feedback: '', issues: ['bug'] }
+        : { decision: 'approve', feedback: '' },
+    });
+    expect(result.rounds).toHaveLength(1);
     expect(result.stopReason).toBe('no-progress');
     expect(result.resolved).toBe(false);
-    expect(reviewed).toBe(0); // re-review skipped — no edits to verify
+  });
+
+  it('retries a no-edit worker when the whole review provides a changed diagnosis', async () => {
+    let fixes = 0;
+    const result = await runFixVerifyLoop(initial(), '/repo', { concurrency: 1, maxRounds: 3 }, {
+      fix: async (a) => {
+        fixes++;
+        return fixes === 1
+          ? { success: true, filesChanged: [] }
+          : { success: true, filesChanged: a.files };
+      },
+      review: async (a) => {
+        if (a.label === 'src/a') return { decision: 'approve', feedback: '' };
+        return fixes === 1
+          ? { decision: 'revise', feedback: '', issues: ['more actionable diagnosis'] }
+          : { decision: 'approve', feedback: '' };
+      },
+    });
+    expect(fixes).toBe(2);
+    expect(result.rounds).toHaveLength(2);
+    expect(result.stopReason).toBe('all-approved');
+    expect(result.resolved).toBe(true);
   });
 
   it('stops when a re-review hits a usage limit, and stays unresolved', async () => {

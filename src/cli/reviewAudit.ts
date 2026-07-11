@@ -520,6 +520,7 @@ export interface RunAreaFixesOptions {
   concurrency: number;
   adapter?: AdapterName;
   timeoutMs?: number;
+  reasoningEffort?: 'low' | 'medium' | 'high';
   signal?: AbortSignal;
 }
 
@@ -573,6 +574,7 @@ async function defaultFixArea(
     projectPath: cwd,
     adapterName: opts.adapter,
     timeoutMs: opts.timeoutMs,
+    reasoningEffort: opts.reasoningEffort,
     nudgeMaxOnNoEdit: 1,
     signal: opts.signal,
     onLog,
@@ -675,6 +677,8 @@ export interface RunFixVerifyLoopDeps {
   onRoundEnd?: (r: FixVerifyRound) => void;
   /** Injectable clock for deterministic wall-clock budget tests. */
   now?: () => number;
+  /** Deterministic repository verification captured before workers edit files. */
+  verify?: () => Promise<{ success: boolean; output?: string; failedTests?: string[] } | null>;
 }
 
 class FixLoopTimeBudgetError extends Error {
@@ -743,7 +747,13 @@ export async function runFixVerifyLoop(
   const budgetSignal = AbortSignal.timeout(maxDurationMs);
   const phaseSignal = opts.signal ? AbortSignal.any([opts.signal, budgetSignal]) : budgetSignal;
   const reviewOpts: RunMaxReviewOptions = { concurrency: opts.concurrency, adapter: opts.adapter, signal: phaseSignal };
-  const fixOpts: RunAreaFixesOptions = { concurrency: opts.concurrency, adapter: opts.adapter, timeoutMs: opts.fixTimeoutMs, signal: phaseSignal };
+  const fixOpts: RunAreaFixesOptions = {
+    concurrency: opts.concurrency,
+    adapter: opts.adapter,
+    timeoutMs: opts.fixTimeoutMs,
+    reasoningEffort: 'high',
+    signal: phaseSignal,
+  };
   const reviewDeps: RunMaxReviewDeps = { review: deps.review, onProgress: deps.onReviewProgress };
   const fixDeps: RunAreaFixesDeps = { fix: deps.fix, onProgress: deps.onFixProgress };
   const allAreas = initial.results.map((result) => result.area);
@@ -756,6 +766,36 @@ export async function runFixVerifyLoop(
   // crashed is NOT resolved) — unlike fixTargets, which only counts non-approve
   // areas that still carry review findings worth another fix pass.
   const unresolved = (r: AuditRun): number => r.results.filter((x) => x.review?.decision !== 'approve').length;
+  const findingSignature = (r: AuditRun): string => JSON.stringify(r.results.map((result) => ({
+    label: result.area.label,
+    decision: result.review?.decision ?? 'error',
+    issues: result.review?.issues ?? [],
+    actions: result.review?.recommendedActions ?? [],
+  })));
+  const applyVerificationGate = async (current: AuditRun, targetLabels: Set<string>): Promise<AuditRun> => {
+    if (!deps.verify || unresolved(current) !== 0) return current;
+    const verification = await withinFixLoopBudget(deps.verify(), budgetSignal);
+    if (!verification || verification.success) return current;
+
+    const issue = [
+      `Deterministic verification failed: ${(verification.failedTests ?? []).join(', ') || 'repository checks'}`,
+      verification.output?.trim(),
+    ].filter(Boolean).join('\n');
+    const fallbackLabel = current.results[0]?.area.label;
+    const labels = targetLabels.size > 0 ? targetLabels : new Set(fallbackLabel ? [fallbackLabel] : []);
+    const results = current.results.map((result) => labels.has(result.area.label)
+      ? {
+          ...result,
+          review: {
+            decision: 'revise' as const,
+            feedback: 'LLM review approved, but deterministic verification still fails.',
+            issues: [issue],
+            recommendedActions: [{ type: 'fix', title: 'Make deterministic repository checks pass', location: result.area.dir }],
+          },
+        }
+      : result);
+    return { ...current, results, summary: aggregateAuditResults(results) };
+  };
 
   for (let round = 1; round <= maxRounds; round++) {
     const targets = fixTargets(run);
@@ -785,11 +825,40 @@ export async function runFixVerifyLoop(
     for (const f of edited) for (const p of f.filesChanged) allFiles.add(p);
 
     if (!edited.length) {
-      const rec: FixVerifyRound = { round, flagged: targets.length, edited: 0, filesChanged: [], resolved: 0, remaining: unresolved(run) };
+      // A no-edit worker report is not proof that the finding is unfixable. The
+      // finding may already have been resolved by another area's overlapping
+      // change, or a fresh reviewer may provide a more actionable diagnosis.
+      // Re-review the whole surface once before declaring no progress.
+      const before = findingSignature(run);
+      let reReview: AuditRun;
+      try {
+        reReview = await withinFixLoopBudget(runMaxReview(allAreas, cwd, reviewOpts, reviewDeps), budgetSignal);
+      } catch (error) {
+        if (error instanceof FixLoopTimeBudgetError) {
+          stopReason = 'time-budget';
+          break;
+        }
+        throw error;
+      }
+      run = mergeReReview(run, reReview);
+      run = await applyVerificationGate(run, new Set(targets.map((target) => target.area.label)));
+      const remaining = unresolved(run);
+      const freshByLabel = new Map(reReview.results.map((result) => [result.area.label, result]));
+      const rec: FixVerifyRound = {
+        round,
+        flagged: targets.length,
+        edited: 0,
+        filesChanged: [],
+        resolved: targets.filter((target) => freshByLabel.get(target.area.label)?.review?.decision === 'approve').length,
+        remaining,
+      };
       rounds.push(rec);
       deps.onRoundEnd?.(rec);
-      stopReason = 'no-progress';
-      break;
+      if (reReview.rateLimit) { stopReason = 'rate-limit'; break; }
+      if (!remaining) { stopReason = 'all-approved'; break; }
+      if (findingSignature(run) === before) { stopReason = 'no-progress'; break; }
+      if (round === maxRounds) { stopReason = 'max-rounds'; break; }
+      continue;
     }
 
     // Re-review the entire surface. Fixes are scoped by directory but can still
@@ -806,6 +875,7 @@ export async function runFixVerifyLoop(
       throw error;
     }
     run = mergeReReview(run, reReview);
+    run = await applyVerificationGate(run, new Set(edited.map((fix) => fix.label)));
 
     const remaining = unresolved(run);
     const freshByLabel = new Map(reReview.results.map((result) => [result.area.label, result]));

@@ -33,6 +33,8 @@ import { resolveIssueFromBranch, ensureTaskSource, ensureProjectMapping } from '
 import { synthesizeAuditIssues } from './auditPM.js';
 import { c, status } from '../support/colors.js';
 import type { AdapterName } from '../adapters/types.js';
+import { loadConfig } from '../core/config.js';
+import { loadTrustedVerifyPlan, runDeterministicTester } from '../agents/deterministicTester.js';
 
 export interface ReviewMaxOptions {
   /** Project path (default cwd). */
@@ -65,6 +67,18 @@ export interface ReviewMaxOptions {
   fixRounds?: number;
   /** Record the audit findings into repo knowledge (default true; --no-learn opts out). (INT-2268) */
   learn?: boolean;
+}
+
+export interface ReviewMaxCommandResult {
+  decision: string;
+  /** For --fix, true only when every area has a fresh approve verdict. */
+  resolved?: boolean;
+}
+
+/** `--fix` must fail closed on revise/error, not only on an aggregate reject. */
+export function reviewMaxResultFailed(result: ReviewMaxCommandResult | null, fix: boolean): boolean {
+  if (!result) return false;
+  return result.decision === 'reject' || (fix && result.resolved !== true);
 }
 
 /**
@@ -160,7 +174,7 @@ export async function filePerAreaFollowups(cwd: string, fileIssue: string | bool
  * null when there's nothing to audit / the user declined). exit code is set to 1
  * by the caller on a reject verdict.
  */
-export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<{ decision: string } | null> {
+export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<ReviewMaxCommandResult | null> {
   const cwd = opts.path ?? process.cwd();
   const concurrency = positiveIntegerOption(opts.concurrency, 4, '--concurrency');
   const maxFilesPerArea = positiveIntegerOption(opts.maxFilesPerArea, 12, '--max-files-per-area');
@@ -190,6 +204,16 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
     console.log('Aborted.');
     return null;
   }
+
+  // Capture deterministic commands and npm script contents before any fix worker
+  // can edit them. LLM approval alone is not completion evidence: the fix must
+  // also leave the repository's real checks without new failures.
+  const verifyConfig = loadConfig().autonomous?.verify ?? {
+    enabled: true,
+    blockOnNewFailures: true,
+    maxCommands: 4,
+  };
+  const trustedVerifyPlan = opts.fix ? await loadTrustedVerifyPlan(cwd, verifyConfig) : undefined;
 
   // Live board → stderr so the final report on stdout stays pipe-clean.
   const events = new EventEmitter();
@@ -276,6 +300,21 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
           maxDurationMs: 2 * 60 * 60 * 1000,
         },
         {
+          verify: trustedVerifyPlan && trustedVerifyPlan.commands.length > 0
+            ? async () => {
+                const result = await runDeterministicTester(
+                  cwd,
+                  verifyConfig,
+                  trustedVerifyPlan.commands,
+                  trustedVerifyPlan.packageJsonByDirectory,
+                );
+                return result && {
+                  success: result.success,
+                  output: result.output,
+                  failedTests: result.failedTests,
+                };
+              }
+            : undefined,
           onRoundStart: (round, flagged) =>
             console.log(`\n${c.bold(`Round ${round}${maxRounds === undefined ? '' : `/${maxRounds}`}`)} — fixing ${flagged} area(s)...`),
           onFixProgress: (e) => {
@@ -353,7 +392,10 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
     }
   }
 
-  return { decision: run.summary.decision };
+  return {
+    decision: run.summary.decision,
+    resolved: opts.fix ? run.results.every((result) => result.review?.decision === 'approve') : undefined,
+  };
 }
 
 /**
