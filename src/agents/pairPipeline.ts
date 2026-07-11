@@ -49,7 +49,7 @@ import { StuckDetector, createStuckDetector } from '../support/stuckDetector.js'
 import { RateLimitError } from '../adapters/rateLimitError.js';
 import { isInfraError, isTimeoutError } from '../adapters/errorClassification.js';
 import { resolveAdapterDefaultModel } from './stageModelResolver.js';
-import { loadTrustedVerifyCommands, runTesterWithVerification } from './deterministicTester.js';
+import { captureVerifyInputFingerprint, loadTrustedVerifyCommands, runTesterWithVerification } from './deterministicTester.js';
 import { isClassifiedStageError, rethrowClassified, extractClassifiedStageResult, PipelineCancelledError } from './stageErrorClassification.js';
 import {
   isTesterCodeFile,
@@ -180,13 +180,13 @@ export class PairPipeline extends EventEmitter {
     try {
       if (this.config.verify?.enabled) try {
         context.trustedVerifyCommands = await loadTrustedVerifyCommands(projectPath, this.config.verify);
+        context.trustedVerifyInputFingerprint = await captureVerifyInputFingerprint(projectPath);
       } catch (error) { context.trustedVerifyError = error; }
       const iterationResult = await this.runFullIterationLoop(context, stages);
 
       if (!iterationResult.success) {
         return this.buildResult(context, stages, startTime);
       }
-
       // Run Documenter after all stages pass
       if (this.hasStage('documenter') && context.workerResult?.success) {
         if (this.config.skipDocumenterIfNoChange && !context.workerResult.filesChanged?.length) {
@@ -391,6 +391,7 @@ export class PairPipeline extends EventEmitter {
       projectPath: context.projectPath,
       verify: this.config.verify,
       trustedCommands: context.trustedVerifyCommands,
+      trustedInputFingerprint: context.trustedVerifyInputFingerprint,
       onInfra: (error) => console.warn(`[${context.taskPrefix}] Deterministic verify unavailable; falling back to LLM tester: ${error instanceof Error ? error.message : String(error)}`),
       fallback: () => testerAgent.runTester({
         taskTitle: context.task.title, taskDescription: context.task.description || '',
@@ -423,7 +424,6 @@ export class PairPipeline extends EventEmitter {
     if (this.config.verbose) {
       this.emit('log', { line: `[verbose] Stage: ${stage} | model: ${stageModel ?? 'default'} | iteration: ${context.currentIteration}` });
     }
-
     try {
       let result: WorkerResult | ReviewResult | TesterResult | DocumenterResult | AuditorResult | SkillDocumenterResult;
 

@@ -6,6 +6,28 @@ import type { TesterResult } from './tester.js';
 import type { VerifyConfig } from '../core/types.js';
 import type { VerifyCommand } from '../verify/manifest.js';
 import { isInfraError } from '../adapters/errorClassification.js';
+import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+
+const VERIFY_INPUTS = [
+  '.openswarm/verify.yaml', 'package.json', 'tsconfig.json', 'pytest.ini',
+  'pyproject.toml', 'setup.cfg', 'Cargo.toml', 'go.mod',
+];
+
+export async function captureVerifyInputFingerprint(projectPath: string): Promise<string> {
+  const hash = createHash('sha256');
+  for (const relativePath of VERIFY_INPUTS) {
+    hash.update(relativePath).update('\0');
+    try { hash.update(await readFile(join(projectPath, relativePath))); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      hash.update('<missing>');
+    }
+    hash.update('\0');
+  }
+  return hash.digest('hex');
+}
 
 export async function loadTrustedVerifyCommands(projectPath: string, config: VerifyConfig): Promise<VerifyCommand[]> {
   if (!config.enabled) return [];
@@ -52,11 +74,16 @@ export async function runTesterWithVerification(options: {
   projectPath: string;
   verify?: VerifyConfig;
   trustedCommands?: VerifyCommand[];
+  trustedInputFingerprint?: string;
   fallback: () => Promise<TesterResult>;
   onInfra?: (error: unknown) => void;
 }): Promise<TesterResult> {
   if (options.verify?.enabled) {
     try {
+      if (options.trustedInputFingerprint
+        && await captureVerifyInputFingerprint(options.projectPath) !== options.trustedInputFingerprint) {
+        throw new Error('verify-config: verification inputs changed after worker execution');
+      }
       const deterministic = await runDeterministicTester(options.projectPath, options.verify, options.trustedCommands);
       if (deterministic) return deterministic;
     } catch (error) {

@@ -117,6 +117,7 @@ export interface PipelineContext {
   validationNudged?: boolean;
   /** Commands captured before the worker runs, preventing self-modification of the verification gate. */
   trustedVerifyCommands?: VerifyCommand[];
+  trustedVerifyInputFingerprint?: string;
   /** Deferred capture error so invalid manifests retain tester-stage failure semantics. */
   trustedVerifyError?: unknown;
 }
