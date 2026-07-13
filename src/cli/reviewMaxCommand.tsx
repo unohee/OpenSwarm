@@ -34,7 +34,25 @@ import { synthesizeAuditIssues } from './auditPM.js';
 import { c, status } from '../support/colors.js';
 import type { AdapterName } from '../adapters/types.js';
 import { loadConfig } from '../core/config.js';
+import type { VerifyConfig } from '../core/types.js';
 import { loadTrustedVerifyPlan, runDeterministicTester } from '../agents/deterministicTester.js';
+
+/**
+ * Best-effort verify config: `review --max` must still run in a repo with no —
+ * or an invalid — OpenSwarm config, so fall back to the built-in defaults
+ * instead of letting config discovery abort the audit. (INT-2762)
+ */
+export function loadVerifyConfigBestEffort(): VerifyConfig {
+  const defaults: VerifyConfig = { enabled: true, blockOnNewFailures: true, maxCommands: 4 };
+  try {
+    return loadConfig().autonomous?.verify ?? defaults;
+  } catch (err) {
+    // Warn so a configured verify policy never vanishes silently (reviewer gate).
+    const reason = err instanceof Error ? err.message.split('\n')[0] : String(err);
+    console.log(status.warn(`[Config] Verify policy using built-in defaults — ${reason}`));
+    return defaults;
+  }
+}
 
 export interface ReviewMaxOptions {
   /** Project path (default cwd). */
@@ -208,11 +226,7 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
   // Capture deterministic commands and npm script contents before any fix worker
   // can edit them. LLM approval alone is not completion evidence: the fix must
   // also leave the repository's real checks without new failures.
-  const verifyConfig = loadConfig().autonomous?.verify ?? {
-    enabled: true,
-    blockOnNewFailures: true,
-    maxCommands: 4,
-  };
+  const verifyConfig = loadVerifyConfigBestEffort();
   const trustedVerifyPlan = opts.fix ? await loadTrustedVerifyPlan(cwd, verifyConfig) : undefined;
 
   // Live board → stderr so the final report on stdout stays pipe-clean.

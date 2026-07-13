@@ -17,7 +17,9 @@ const CONFIG_FILENAMES = ['config.yaml', 'config.yml', 'config.json'] as const;
 
 // Directories searched for config, in priority order.
 // 1. $OPENSWARM_CONFIG — explicit file path (highest priority, handled separately).
-// 2. process.cwd() — project-local overrides (existing behavior).
+// 2. process.cwd() — project-local overrides. Generic filenames here (config.json/
+//    yaml) are commonly owned by the repo's own app, so cwd candidates must pass
+//    looksLikeOpenSwarmConfig before they shadow the user-level configs. (INT-2762)
 // 3. ~/.config/openswarm — XDG-style user config (preferred daemon location).
 // 4. ~/.openswarm — legacy home fallback.
 function getConfigSearchDirs(): string[] {
@@ -489,11 +491,26 @@ export function expandPath(path: string, resolveRelative = false): string {
 // Config Loading
 
 /**
+ * True when a project-local candidate looks like an OpenSwarm config.
+ * Requires the one top-level key the schema mandates — an `agents` array —
+ * so a repo's own config.json (any other app's settings) never shadows the
+ * real user-level config. Unparseable files are treated as foreign. (INT-2762)
+ */
+function looksLikeOpenSwarmConfig(path: string): boolean {
+  try {
+    const parsed = parseConfigFile(path);
+    return typeof parsed === 'object' && parsed !== null && Array.isArray((parsed as Record<string, unknown>).agents);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Find configuration file.
  *
  * Resolution order:
  *   1. $OPENSWARM_CONFIG env var (explicit file path override)
- *   2. ./config.{yaml,yml,json}           (project-local)
+ *   2. ./config.{yaml,yml,json}           (project-local; must look like an OpenSwarm config)
  *   3. ~/.config/openswarm/config.{…}     (XDG user config)
  *   4. ~/.openswarm/config.{…}            (legacy home fallback)
  */
@@ -507,8 +524,16 @@ export function findConfigFile(): string | null {
     throw new Error(`OPENSWARM_CONFIG points to a file that does not exist: ${envOverride}`);
   }
 
-  for (const path of getConfigSearchPaths()) {
-    if (existsSync(path)) {
+  const dirs = getConfigSearchDirs();
+  for (let i = 0; i < dirs.length; i++) {
+    const projectLocal = i === 0; // getConfigSearchDirs() lists process.cwd() first
+    for (const name of CONFIG_FILENAMES) {
+      const path = join(dirs[i], name);
+      if (!existsSync(path)) continue;
+      if (projectLocal && !looksLikeOpenSwarmConfig(path)) {
+        console.log(status.warn(`[Config] Ignoring ${path} — not an OpenSwarm config (no top-level "agents" list)`));
+        continue;
+      }
       return path;
     }
   }

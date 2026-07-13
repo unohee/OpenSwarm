@@ -22,7 +22,14 @@ vi.mock('../automation/runnerExecution.js', () => ({
   fileReviewerFollowups: (...args: unknown[]) => fileReviewerFollowupsMock(...args),
 }));
 
-const { filePerAreaFollowups, filePmSynthesizedIssues, reviewMaxResultFailed } = await import('./reviewMaxCommand.js');
+const loadConfigMock = vi.fn();
+vi.mock('../core/config.js', async () => {
+  const actual = await vi.importActual<typeof import('../core/config.js')>('../core/config.js');
+  return { ...actual, loadConfig: (...args: unknown[]) => loadConfigMock(...args) };
+});
+
+const { filePerAreaFollowups, filePmSynthesizedIssues, reviewMaxResultFailed, loadVerifyConfigBestEffort } =
+  await import('./reviewMaxCommand.js');
 
 function makeRun(actions: ReviewResult['recommendedActions']): AuditRun {
   const review: ReviewResult = { decision: 'revise', feedback: 'x', recommendedActions: actions };
@@ -36,6 +43,34 @@ beforeEach(() => {
   vi.clearAllMocks();
   ensureTaskSourceMock.mockResolvedValue({ createTask: vi.fn(), createSubIssue: vi.fn() });
   resolveIssueFromBranchMock.mockReturnValue(undefined);
+});
+
+describe('loadVerifyConfigBestEffort (INT-2762)', () => {
+  const defaults = { enabled: true, blockOnNewFailures: true, maxCommands: 4 };
+
+  it('falls back to the built-in defaults when config discovery throws', () => {
+    // Regression: a repo whose own config.json shadows the OpenSwarm config used
+    // to abort `review --max --fix` right after the cost gate.
+    loadConfigMock.mockImplementation(() => {
+      throw new Error('Config validation failed:\n  - agents: Invalid input: expected array, received undefined');
+    });
+
+    expect(loadVerifyConfigBestEffort()).toEqual(defaults);
+  });
+
+  it('uses autonomous.verify when a valid config loads', () => {
+    loadConfigMock.mockReturnValue({
+      autonomous: { verify: { enabled: false, blockOnNewFailures: false, maxCommands: 2 } },
+    });
+
+    expect(loadVerifyConfigBestEffort()).toEqual({ enabled: false, blockOnNewFailures: false, maxCommands: 2 });
+  });
+
+  it('falls back to the defaults when the config has no verify block', () => {
+    loadConfigMock.mockReturnValue({ autonomous: {} });
+
+    expect(loadVerifyConfigBestEffort()).toEqual(defaults);
+  });
 });
 
 describe('reviewMaxResultFailed', () => {

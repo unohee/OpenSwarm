@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
+import { join } from 'node:path';
 import {
+  findConfigFile,
   loadConfig,
   validateConfig,
   createAgentSession,
@@ -277,6 +279,59 @@ agents:
       } catch {
         // Might fail due to YAML parsing or validation
       }
+    });
+  });
+
+  // ============================================
+  // Config File Discovery
+  // ============================================
+
+  describe('findConfigFile project-local sniff (INT-2762)', () => {
+    const cwdYaml = join(process.cwd(), 'config.yaml');
+    const cwdJson = join(process.cwd(), 'config.json');
+    const xdgYaml = join(homedir(), '.config', 'openswarm', 'config.yaml');
+    const openswarmYaml = 'agents:\n  - name: main\n    projectPath: /tmp/project\n';
+    let savedEnvOverride: string | undefined;
+
+    beforeEach(() => {
+      savedEnvOverride = process.env.OPENSWARM_CONFIG;
+      delete process.env.OPENSWARM_CONFIG;
+    });
+
+    afterEach(() => {
+      if (savedEnvOverride !== undefined) process.env.OPENSWARM_CONFIG = savedEnvOverride;
+    });
+
+    it('skips a foreign cwd config.json and falls through to the user config', () => {
+      vi.mocked(existsSync).mockImplementation((p: fs.PathLike) => String(p) === cwdJson || String(p) === xdgYaml);
+      vi.mocked(readFileSync).mockImplementation((p: fs.PathOrFileDescriptor) =>
+        String(p) === cwdJson ? JSON.stringify({ kis_api: {}, discord: {} }) : openswarmYaml,
+      );
+
+      expect(findConfigFile()).toBe(xdgYaml);
+    });
+
+    it('keeps a cwd config that has a top-level agents array', () => {
+      vi.mocked(existsSync).mockImplementation((p: fs.PathLike) => String(p) === cwdYaml);
+      vi.mocked(readFileSync).mockReturnValue(openswarmYaml);
+
+      expect(findConfigFile()).toBe(cwdYaml);
+    });
+
+    it('returns null when only a foreign cwd config exists', () => {
+      vi.mocked(existsSync).mockImplementation((p: fs.PathLike) => String(p) === cwdJson);
+      vi.mocked(readFileSync).mockReturnValue(JSON.stringify({ some_app: true }));
+
+      expect(findConfigFile()).toBeNull();
+    });
+
+    it('treats an unparseable cwd config as foreign instead of crashing discovery', () => {
+      vi.mocked(existsSync).mockImplementation((p: fs.PathLike) => String(p) === cwdJson || String(p) === xdgYaml);
+      vi.mocked(readFileSync).mockImplementation((p: fs.PathOrFileDescriptor) =>
+        String(p) === cwdJson ? '{not json' : openswarmYaml,
+      );
+
+      expect(findConfigFile()).toBe(xdgYaml);
     });
   });
 
