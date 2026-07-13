@@ -534,10 +534,11 @@ the CLI (fire-and-forget with a short timeout, and failures are silently ignored
 Full version history lives in **[CHANGELOG.md](CHANGELOG.md)** and the
 [GitHub Releases](https://github.com/unohee/OpenSwarm/releases) page.
 
-Latest — **v0.17.5**: a repeating reviewer now triggers a one-shot worker
-escalation (higher model and/or `high` effort) before the session gives up —
-on top of v0.17.4's cross-session feedback persistence and fan-out
-dirty-promotion fix, and v0.17.3's duplicate-daemon prevention. See
+Latest — **v0.17.6**: config discovery no longer lets a repo's own
+`config.json` shadow the real OpenSwarm config (which crashed
+`review --max --fix` in such repos), max-fix runs iterate until the
+re-review verifiably approves, and the INT-2521 stability wave stops
+infra errors from masquerading as STUCK/quality rejects. See
 CHANGELOG.md for the rest.
 
 ---

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.17.6 — 2026-07-13
+
+### Fixed
+
+- **Foreign project-local configs no longer hijack discovery or crash `review --max --fix`** — a repo's own `config.json` (any other app's settings) used to shadow `~/.config/openswarm/config.yaml` via the cwd search path and abort a max review right after the cost gate with `agents: expected array, received undefined`. Discovery now requires a top-level `agents` array before claiming a cwd `config.{yaml,yml,json}` (foreign or unparseable files are skipped with a notice), and the `review --max` verify-policy read falls back to built-in defaults with a warning instead of aborting. (INT-2762, #294)
+- **`review --max --fix` completion is verified** — fix runs keep iterating until the re-review fully approves, and completion requires verified evidence instead of a first-pass approve. (#292, #293)
+- **STUCK false-positive wave closed out (INT-2521)** — infra failures (adapter/CLI errors, git snapshot/diff failures, tester crashes, reviewer parse failures, worktree creation, ENOSPC full disk) are classified and retried as infrastructure instead of masquerading as quality rejects or fake passes; wall-clock timeouts now cover every stage, git op, and task; failed worktrees are preserved for resume with a 7-day sweep. (#256–#270, rolled up in #290)
+- **Daemon/worktree correctness** — single-instance guard + atomic state-file writes (INT-2570), the repo's real remote/default branch is resolved instead of hardcoded `origin/main` (INT-2545), duplicate Linear-issue PRs are drafted with a warning (INT-2544), and fan-out winner promotion copies files instead of `git apply` (a 79% production failure rate). (#234)
+
+### Added
+
+- **`review --base <ref>` committed-diff mode** — review the commits ahead of a base ref instead of the working tree (for CI on checked-out PR branches), plus a CI review workflow scaffold. (INT-2552)
+- **GPT-5.6 (sol/terra/luna) in the Codex OAuth model catalog.** (#274)
+- **Provider parity** — consolidated usage-limit detection across providers (INT-2520) and cost/token/duration parity for loop adapters with planner model pinning. (INT-2508, INT-2509)
+
 ## 0.17.5 — 2026-07-05
 
 ### Added
