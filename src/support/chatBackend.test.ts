@@ -14,7 +14,7 @@ describe('curatedModels (INT-1961)', () => {
   });
 
   it('always yields at least the default for every provider', () => {
-    for (const p of ['codex', 'codex-responses', 'gpt', 'local', 'lmstudio', 'openrouter'] as const) {
+    for (const p of ['codex', 'codex-responses', 'gpt', 'local', 'lmstudio', 'openrouter', 'atlascloud'] as const) {
       const m = curatedModels(p);
       expect(m).toContain(getDefaultChatModel(p));
     }

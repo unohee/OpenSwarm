@@ -10,7 +10,7 @@ import type { CostInfo } from '../support/costTracker.js';
 // Re-export for convenience
 export type { WorkerResult, ReviewResult };
 
-export type AdapterName = 'codex' | 'codex-responses' | 'gpt' | 'local' | 'lmstudio' | 'openrouter' | 'claude';
+export type AdapterName = 'codex' | 'codex-responses' | 'gpt' | 'local' | 'lmstudio' | 'openrouter' | 'atlascloud' | 'claude';
 
 /**
  * Raw result from a CLI process execution

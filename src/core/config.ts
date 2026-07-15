@@ -43,7 +43,7 @@ function getConfigSearchPaths(): string[] {
 
 const DEFAULT_HEARTBEAT_INTERVAL = 30 * 60 * 1000; // 30 minutes
 const DEFAULT_GITHUB_CHECK_INTERVAL = 5 * 60 * 1000; // 5 minutes
-const AdapterNameSchema = z.enum(['codex', 'codex-responses', 'gpt', 'local', 'lmstudio', 'openrouter', 'claude']);
+const AdapterNameSchema = z.enum(['codex', 'codex-responses', 'gpt', 'local', 'lmstudio', 'openrouter', 'atlascloud', 'claude']);
 
 // Zod Schemas
 
@@ -793,9 +793,10 @@ export function generateSampleConfig(): string {
 # Environment variables use \${VAR_NAME} or \${VAR_NAME:-default} format
 
 # Default CLI adapter for worker/reviewer stages
-# Options: codex, openrouter, lmstudio, local, gpt
+# Options: codex, openrouter, atlascloud, lmstudio, local, gpt
 # - codex:      OpenAI Codex via PKCE login (openswarm auth login --provider codex)
 # - openrouter: OpenRouter API key (OPENROUTER_API_KEY env var or openswarm auth login --provider openrouter)
+# - atlascloud: Atlas Cloud API key (ATLASCLOUD_API_KEY env var)
 # - lmstudio:   LM Studio local server (set LMSTUDIO_BASE_URL / LMSTUDIO_MODEL)
 # - local:      Ollama local models (ollama pull <model>)
 # - gpt:        OpenAI Chat API via OAuth (openswarm auth login --provider gpt)

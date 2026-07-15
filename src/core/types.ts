@@ -116,7 +116,7 @@ export type McpConfig = {
  */
 export type SwarmConfig = {
   /** Default CLI adapter */
-  adapter?: 'codex' | 'codex-responses' | 'gpt' | 'local' | 'lmstudio' | 'openrouter' | 'claude';
+  adapter?: 'codex' | 'codex-responses' | 'gpt' | 'local' | 'lmstudio' | 'openrouter' | 'atlascloud' | 'claude';
   /** UI language: 'en' | 'ko' (default: 'en') */
   language: 'en' | 'ko';
   /** Discord bot token */
@@ -282,7 +282,7 @@ export type ModelConfig = {
 /**
  * Per-role configuration
  */
-export type AgentAdapterName = 'codex' | 'codex-responses' | 'gpt' | 'local' | 'lmstudio' | 'openrouter' | 'claude';
+export type AgentAdapterName = 'codex' | 'codex-responses' | 'gpt' | 'local' | 'lmstudio' | 'openrouter' | 'atlascloud' | 'claude';
 
 export type WorkerFanoutCandidateConfig = {
   /** Stable display/id for logs and scoring. */

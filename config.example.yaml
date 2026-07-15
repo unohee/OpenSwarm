@@ -3,11 +3,12 @@
 # Copy this file to config.yaml to use
 
 # Default CLI adapter for worker/reviewer stages
-# Options: claude, codex, gpt, local, lmstudio, openrouter
+# Options: claude, codex, gpt, local, lmstudio, openrouter, atlascloud
 # For GPT: run `openswarm auth login --provider gpt`
 #   (uses the public Codex OAuth client by default — no extra config needed)
 # For OpenRouter: run `openswarm auth login --provider openrouter`
 #   (PKCE browser flow → stores a sk-or-* API key; falls back to manual paste)
+# For Atlas Cloud: set ATLASCLOUD_API_KEY
 # For local: start Ollama, LMStudio, or llama.cpp server
 # For lmstudio: start LM Studio Local Server (default http://localhost:1234)
 #   Optional env: LMSTUDIO_BASE_URL, LMSTUDIO_MODEL, LMSTUDIO_API_KEY

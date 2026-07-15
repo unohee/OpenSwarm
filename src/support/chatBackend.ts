@@ -79,6 +79,12 @@ export const CHAT_MODEL_ALIASES: Record<AdapterName, Record<string, string>> = {
     kimi: 'moonshotai/kimi-k2',
     glm: 'z-ai/glm-4.6',
   },
+  atlascloud: {
+    deepseek: 'deepseek-ai/deepseek-v4-pro',
+    'deepseek-v4': 'deepseek-ai/deepseek-v4-pro',
+    qwen: 'qwen/qwen3.5-flash',
+    'qwen-flash': 'qwen/qwen3.5-flash',
+  },
   claude: {
     // `claude -p --model <alias>` takes version-robust aliases directly.
     sonnet: 'sonnet',
@@ -104,6 +110,7 @@ export function getDefaultChatModel(provider: AdapterName): string {
   if (provider === 'local') return 'gemma3:4b';
   if (provider === 'lmstudio') return process.env.LMSTUDIO_MODEL ?? 'local-model';
   if (provider === 'openrouter') return 'openai/gpt-5';
+  if (provider === 'atlascloud') return 'deepseek-ai/deepseek-v4-pro';
   return 'gpt-5-codex';
 }
 
@@ -406,4 +413,3 @@ function extractCodexChatResponse(stdout: string): string {
   }
   return lastMessage;
 }
-

@@ -21,6 +21,7 @@ export { GptCliAdapter } from './gpt.js';
 export { LocalModelAdapter } from './local.js';
 export { LmStudioAdapter } from './lmstudio.js';
 export { OpenRouterCliAdapter } from './openrouter.js';
+export { AtlasCloudCliAdapter } from './atlascloud.js';
 export { ClaudeCliAdapter } from './claude.js';
 export { registerProcess, getProcess, getAllProcesses, killProcess, startHealthChecker, stopHealthChecker } from './processRegistry.js';
 
@@ -30,6 +31,7 @@ import { GptCliAdapter } from './gpt.js';
 import { LocalModelAdapter } from './local.js';
 import { LmStudioAdapter } from './lmstudio.js';
 import { OpenRouterCliAdapter } from './openrouter.js';
+import { AtlasCloudCliAdapter } from './atlascloud.js';
 import { ClaudeCliAdapter } from './claude.js';
 import type { AdapterName, CliAdapter } from './types.js';
 
@@ -40,6 +42,7 @@ const adapters: Record<string, CliAdapter> = {
   local: new LocalModelAdapter(),
   lmstudio: new LmStudioAdapter(),
   openrouter: new OpenRouterCliAdapter(),
+  atlascloud: new AtlasCloudCliAdapter(),
   // claude -p CLI delegate — opt-in fallback (Anthropic hasn't blocked it). Offered
   // by `openswarm init` and the dashboard provider switch, so it must be registered.
   claude: new ClaudeCliAdapter(),

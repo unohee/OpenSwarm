@@ -21,7 +21,7 @@ import { type LinearCredential } from '../linear/index.js';
 import { pickAndSaveLinearMapping } from './linearMapping.js';
 import { banner } from '../support/banner.js';
 
-type ProviderId = 'codex-responses' | 'openrouter' | 'gpt' | 'lmstudio' | 'local' | 'codex' | 'claude';
+type ProviderId = 'codex-responses' | 'openrouter' | 'atlascloud' | 'gpt' | 'lmstudio' | 'local' | 'codex' | 'claude';
 type TaskBackend = 'linear' | 'local';
 type NotifyChannel = 'none' | 'discord' | 'slack' | 'telegram' | 'webhook';
 
@@ -29,6 +29,7 @@ const PROVIDER_CHOICES: { name: string; value: ProviderId; description: string }
   { name: 'codex-responses', value: 'codex-responses', description: 'ChatGPT subscription (OAuth) — Codex models, native loop' },
   { name: 'codex', value: 'codex', description: 'External codex CLI (delegated)' },
   { name: 'openrouter', value: 'openrouter', description: 'OpenRouter API key or OAuth (any model)' },
+  { name: 'atlascloud', value: 'atlascloud', description: 'Atlas Cloud API key (OpenAI-compatible models)' },
   { name: 'gpt', value: 'gpt', description: 'OpenAI ChatGPT OAuth (chat/completions)' },
   { name: 'claude', value: 'claude', description: 'Claude Code CLI (claude -p) — opt-in fallback' },
   { name: 'lmstudio', value: 'lmstudio', description: 'Local LM Studio server (no account)' },

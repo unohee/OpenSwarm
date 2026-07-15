@@ -7,7 +7,7 @@ import type { ExecutorResult } from '../orchestration/workflow.js';
 import type { BacklogGroomingConfig, DefaultRolesConfig, ProjectAgentConfig, JobProfile, VerifyConfig } from '../core/types.js';
 
 export interface AutonomousConfig {
-  defaultAdapter?: 'codex' | 'codex-responses' | 'gpt' | 'local' | 'lmstudio' | 'openrouter' | 'claude';
+  defaultAdapter?: 'codex' | 'codex-responses' | 'gpt' | 'local' | 'lmstudio' | 'openrouter' | 'atlascloud' | 'claude';
   linearTeamId: string;
   allowedProjects: string[];
   heartbeatSchedule: string;
