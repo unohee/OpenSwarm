@@ -16,6 +16,12 @@ OpenSwarm orchestrates multiple AI agents as autonomous code workers. It picks u
 
 **Verified on real GitHub issues**: the agentic harness solves SWE-bench Lite instances graded by the official harness. Hybrid mode — a frontier model diagnoses read-only, a lightweight model implements with a verification loop — resolved **3/3 attempted instances** that every single lightweight model had failed, at a fraction of frontier-only cost. Workers also **learn each repository over time**: task outcomes are stored as per-repo knowledge and recalled into future prompts. ([benchmark rubric & results](benchmarks/RUBRIC.md))
 
+## Sponsors
+
+OpenSwarm is proudly supported by **[Atlas Cloud](https://www.atlascloud.ai)** — an enterprise AI infrastructure platform serving fast, stable LLM, image, and video APIs (partnered with OpenRouter and SGLang).
+
+As an **official provider sponsor**, Atlas Cloud ships as the built-in `atlascloud` adapter (OpenAI-compatible Chat Completions, `ATLASCLOUD_API_KEY`) and provides ongoing monthly API credits that keep the project's autonomous runs going. To run OpenSwarm on Atlas Cloud, grab a key at [atlascloud.ai](https://www.atlascloud.ai/console/api-keys), set `ATLASCLOUD_API_KEY`, and select `adapter: atlascloud`.
+
 ## Quick Start
 
 ```bash
@@ -170,10 +176,10 @@ DISCORD_CHANNEL_ID=your-channel-id
 ### CLI Adapter (Provider)
 
 ```yaml
-adapter: codex   # one of: codex · codex-responses · gpt · openrouter · lmstudio · local  (default: codex)
+adapter: codex   # one of: codex · codex-responses · gpt · openrouter · atlascloud · lmstudio · local  (default: codex)
 ```
 
-`adapter` accepts one of the six values below (validated by Zod). For a ChatGPT subscription, `codex-responses` is the smoothest first-run choice — it runs OpenSwarm's native loop over the Responses API with no extra binary. Switch at runtime via Discord, e.g. `!provider codex-responses` / `!provider openrouter`.
+`adapter` accepts one of the seven values below (validated by Zod). For a ChatGPT subscription, `codex-responses` is the smoothest first-run choice — it runs OpenSwarm's native loop over the Responses API with no extra binary. Switch at runtime via Discord, e.g. `!provider codex-responses` / `!provider openrouter`.
 
 | Adapter | Backend | Models | Auth |
 |---------|---------|--------|------|
@@ -181,6 +187,7 @@ adapter: codex   # one of: codex · codex-responses · gpt · openrouter · lmst
 | `codex` | OpenAI Codex CLI (delegated) | gpt-5-codex (default), o3, o4-mini | ChatGPT OAuth / `codex` CLI auth |
 | `gpt` | OpenAI Chat API | gpt-4o (default), o3, … | OAuth PKCE |
 | `openrouter` | OpenRouter API (native agentic loop) | any OpenRouter model — gpt-5, gemini-2.5, deepseek, glm, qwen, … | `OPENROUTER_API_KEY` or OAuth PKCE |
+| `atlascloud` | Atlas Cloud API (native agentic loop) · [sponsor](#sponsors) | Atlas models — deepseek-v4-pro (default), qwen3.5-flash, … | `ATLASCLOUD_API_KEY` |
 | `lmstudio` | LM Studio (OpenAI-compatible, local) | loaded LM Studio model (`LMSTUDIO_MODEL`) | None |
 | `local` | Ollama (local, auto-detected) | gemma, llama, qwen, mistral, … | None |
 
@@ -422,7 +429,7 @@ and the harness defects the benchmark uncovered.
 | Command | Description |
 |---------|-------------|
 | `!ci` | GitHub CI failure status |
-| `!provider <codex\|codex-responses\|openrouter\|gpt\|lmstudio\|local>` | Switch CLI provider at runtime |
+| `!provider <codex\|codex-responses\|openrouter\|gpt\|atlascloud\|lmstudio\|local>` | Switch CLI provider at runtime |
 | `!codex` | Recent session records |
 | `!memory search "<query>"` | Search cognitive memory |
 | `!help` | Full command reference |
