@@ -1,4 +1,6 @@
-# OpenSwarm
+<h1 align="center">
+  <img src="https://raw.githubusercontent.com/unohee/OpenSwarm/main/assets/openswarm_hero.png" alt="OpenSwarm" width="480" />
+</h1>
 
 [![Sponsored by Atlas Cloud](https://img.shields.io/badge/⚡_Sponsored_by-Atlas_Cloud-4F46E5?labelColor=0B1120)](https://www.atlascloud.ai)
 [![npm version](https://img.shields.io/npm/v/@intrect/openswarm.svg)](https://www.npmjs.com/package/@intrect/openswarm)
