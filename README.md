@@ -1,5 +1,6 @@
 # OpenSwarm
 
+[![Sponsored by Atlas Cloud](https://img.shields.io/badge/⚡_Sponsored_by-Atlas_Cloud-4F46E5?labelColor=0B1120)](https://www.atlascloud.ai)
 [![npm version](https://img.shields.io/npm/v/@intrect/openswarm.svg)](https://www.npmjs.com/package/@intrect/openswarm)
 [![npm downloads](https://img.shields.io/npm/dm/@intrect/openswarm.svg)](https://www.npmjs.com/package/@intrect/openswarm)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
