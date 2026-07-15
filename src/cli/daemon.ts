@@ -7,7 +7,7 @@
 // and exits the parent. `openswarm stop` reads the PID file and sends SIGTERM.
 // `openswarm status` reports running/stopped plus port 3847 health.
 
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -19,6 +19,8 @@ const LOG_DIR = join(STATE_DIR, 'logs');
 const PID_FILE = join(STATE_DIR, 'openswarm.pid');
 const LOG_FILE = join(LOG_DIR, 'openswarm.log');
 const DAEMON_PORT = 3847;
+/** launchd service label the install script (scripts/install-service.sh) bootstraps. */
+const LAUNCHD_LABEL = 'com.intrect.openswarm';
 
 export interface DaemonStatus {
   running: boolean;
@@ -187,6 +189,79 @@ export async function stopDaemon(timeoutMs = 10_000): Promise<boolean> {
   );
 }
 
+/** Outcome of trying to stop a launchd-managed daemon via `launchctl bootout`. */
+export interface ExternalStopResult {
+  /**
+   * - 'stopped'      — booted out and the API port went quiet.
+   * - 'not-managed'  — launchctl has no job under our label; the running daemon
+   *                    was started some other way (e.g. `node dist/index.js`).
+   * - 'unsupported'  — not macOS, so launchctl can't be driven.
+   * - 'failed'       — bootout errored, or the port kept answering past the timeout.
+   */
+  outcome: 'stopped' | 'not-managed' | 'unsupported' | 'failed';
+  detail?: string;
+}
+
+/** Run `launchctl <args>`, resolving the exit code and stderr instead of throwing. */
+function runLaunchctl(args: string[], timeoutMs = 5000): Promise<{ ok: boolean; code: number | null; stderr: string }> {
+  return new Promise((resolve) => {
+    execFile('launchctl', args, { timeout: timeoutMs }, (err, _stdout, stderr) => {
+      const errCode = (err as { code?: unknown } | null)?.code;
+      resolve({
+        ok: !err,
+        code: typeof errCode === 'number' ? errCode : null,
+        stderr: (stderr ?? '').toString().trim(),
+      });
+    });
+  });
+}
+
+/**
+ * Stop a launchd-managed daemon (no PID file) by booting its job out of the
+ * user's GUI domain. This is the counterpart of the `launchctl bootstrap` the
+ * install script runs.
+ *
+ * `bootout` (not `stop`/`kill`) because the plist's KeepAlive is `Crashed: true`:
+ * a `launchctl stop` that ends in a non-zero exit would be respawned, whereas
+ * booting the job out unloads it so it can't come back until the plist is
+ * re-bootstrapped (at next login, since it lives in ~/Library/LaunchAgents).
+ * The daemon handles SIGTERM with a graceful shutdown (src/index.ts), which is
+ * exactly the signal bootout delivers.
+ *
+ * Callers should only reach here after `stopDaemon()` returned false AND
+ * `probeDaemonPort()` confirmed a daemon is actually serving.
+ */
+export async function stopExternalDaemon(timeoutMs = 10_000): Promise<ExternalStopResult> {
+  if (process.platform !== 'darwin') {
+    return { outcome: 'unsupported', detail: `launchctl is macOS-only (platform: ${process.platform})` };
+  }
+  const uid = typeof process.getuid === 'function' ? process.getuid() : undefined;
+  if (uid === undefined) {
+    return { outcome: 'unsupported', detail: 'could not resolve current uid' };
+  }
+
+  const target = `gui/${uid}/${LAUNCHD_LABEL}`;
+  const res = await runLaunchctl(['bootout', target]);
+
+  if (!res.ok) {
+    // bootout exits 3 / "No such process" when our label isn't loaded — the
+    // running daemon isn't this launchd job, so there's nothing for us to unload.
+    if (res.code === 3 || /no such process|could not find/i.test(res.stderr)) {
+      return { outcome: 'not-managed', detail: res.stderr || 'launchctl reported no such service' };
+    }
+    return { outcome: 'failed', detail: res.stderr || `launchctl bootout exited ${res.code}` };
+  }
+
+  // launchctl returns before the process has fully exited, so wait for the API
+  // port to stop answering before declaring the daemon dead.
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!(await probeDaemonPort())) return { outcome: 'stopped' };
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  return { outcome: 'failed', detail: `daemon still answering port ${DAEMON_PORT} after ${timeoutMs}ms` };
+}
+
 /**
  * Read the last `lines` lines of the daemon log. Used by `openswarm start` to
  * show why the daemon exited when it dies during startup.
@@ -230,3 +305,4 @@ export async function getDaemonStatusFull(): Promise<DaemonStatus> {
 }
 
 export const DAEMON_PATHS = { STATE_DIR, LOG_DIR, PID_FILE, LOG_FILE } as const;
+export { LAUNCHD_LABEL };

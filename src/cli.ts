@@ -466,22 +466,38 @@ program
   .option('-t, --timeout <ms>', 'Max time to wait for graceful shutdown (default 10000)', '10000')
   .action(async (opts: { timeout: string }) => {
     const timeoutMs = parseInt(opts.timeout, 10);
-    const { stopDaemon, probeDaemonPort } = await import('./cli/daemon.js');
+    const effectiveTimeout = Number.isFinite(timeoutMs) ? timeoutMs : 10_000;
+    const { stopDaemon, probeDaemonPort, stopExternalDaemon, LAUNCHD_LABEL } = await import('./cli/daemon.js');
     try {
-      const stopped = await stopDaemon(Number.isFinite(timeoutMs) ? timeoutMs : 10_000);
-      if (!stopped) {
-        // No PID file — but an externally managed (launchd) daemon may still be
-        // serving. Point at the right lever instead of a misleading "not running".
-        if (await probeDaemonPort()) {
-          console.log('OpenSwarm is running but externally managed (no PID file — e.g. launchd).');
-          console.log('  stop: launchctl bootout gui/$UID/com.intrect.openswarm');
-          console.log('  restart: launchctl kickstart -k gui/$UID/com.intrect.openswarm');
-          return;
-        }
-        console.log('OpenSwarm is not running.');
+      const stopped = await stopDaemon(effectiveTimeout);
+      if (stopped) {
+        console.log('OpenSwarm stopped.');
         return;
       }
-      console.log('OpenSwarm stopped.');
+      // No PID file — an externally managed (launchd) daemon may still be serving.
+      // Drive `launchctl bootout` ourselves instead of leaving the user to do it.
+      if (await probeDaemonPort()) {
+        const result = await stopExternalDaemon(effectiveTimeout);
+        if (result.outcome === 'stopped') {
+          console.log('OpenSwarm stopped (launchd service booted out).');
+          console.log('  It will start again at next login; restart now with:');
+          console.log(`  launchctl kickstart -k gui/$UID/${LAUNCHD_LABEL}`);
+          return;
+        }
+        // Couldn't stop it automatically — fall back to actionable guidance.
+        console.log('OpenSwarm is running but externally managed (no PID file — e.g. launchd).');
+        if (result.outcome === 'failed') {
+          console.log(`  Automatic bootout failed (${result.detail}). Stop it manually:`);
+        } else if (result.outcome === 'not-managed') {
+          console.log(`  No launchd job under ${LAUNCHD_LABEL}; it was started another way. Stop it manually:`);
+        } else {
+          console.log('  Stop it manually:');
+        }
+        console.log(`  stop: launchctl bootout gui/$UID/${LAUNCHD_LABEL}`);
+        console.log(`  restart: launchctl kickstart -k gui/$UID/${LAUNCHD_LABEL}`);
+        return;
+      }
+      console.log('OpenSwarm is not running.');
     } catch (err) {
       console.error(`Failed to stop: ${(err as Error).message}`);
       process.exit(1);

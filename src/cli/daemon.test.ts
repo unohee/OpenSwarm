@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { execFile } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -10,6 +11,37 @@ vi.mock('node:os', async () => {
   const actual = await vi.importActual<typeof import('node:os')>('node:os');
   return { ...actual, homedir: () => TEST_HOME };
 });
+
+// Mock only execFile so stopExternalDaemon never spawns a real `launchctl`
+// (which could stop the developer's actual daemon). spawn stays real for the
+// startDaemon tests.
+vi.mock('node:child_process', async () => {
+  const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process');
+  return { ...actual, execFile: vi.fn() };
+});
+
+type ExecFileCb = (err: (Error & { code?: number }) | null, stdout: string, stderr: string) => void;
+
+/** Make the mocked execFile invoke its callback with the given launchctl result. */
+function stubExecFile(err: (Error & { code?: number }) | null, stderr = ''): void {
+  vi.mocked(execFile).mockImplementation(((..._args: unknown[]) => {
+    const cb = _args[_args.length - 1] as ExecFileCb;
+    cb(err, '', stderr);
+    return {} as ReturnType<typeof execFile>;
+  }) as unknown as typeof execFile);
+}
+
+const ORIG_PLATFORM = process.platform;
+const ORIG_GETUID = process.getuid;
+
+/** Force process.platform / getuid so the launchctl path is host-independent. */
+function setPlatform(platform: NodeJS.Platform, uid: number | undefined): void {
+  Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+  Object.defineProperty(process, 'getuid', {
+    value: uid === undefined ? undefined : () => uid,
+    configurable: true,
+  });
+}
 
 // No real sockets: probeDaemonPort goes through global fetch, which each test
 // stubs. This keeps the suite runnable in sandboxes that forbid listen().
@@ -27,6 +59,9 @@ beforeAll(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.mocked(execFile).mockReset();
+  Object.defineProperty(process, 'platform', { value: ORIG_PLATFORM, configurable: true });
+  Object.defineProperty(process, 'getuid', { value: ORIG_GETUID, configurable: true });
   rmSync(PID_FILE, { force: true });
 });
 
@@ -111,5 +146,66 @@ describe('startDaemon duplicate prevention (INT-2473)', () => {
     const fetchFn = stubFetch(async () => new Response('{}', { status: 200 }));
     await expect(startDaemon()).rejects.toThrow(/already running \(pid/);
     expect(fetchFn).not.toHaveBeenCalled();
+  });
+});
+
+describe('stopExternalDaemon (launchd bootout)', () => {
+  it('boots out the launchd job and reports stopped once the port goes quiet', async () => {
+    const { stopExternalDaemon } = await import('./daemon.js');
+    setPlatform('darwin', 501);
+    stubExecFile(null); // bootout succeeds
+    stubFetch(async () => {
+      throw new TypeError('fetch failed: ECONNREFUSED'); // port is dead now
+    });
+    const res = await stopExternalDaemon(1000);
+    expect(res.outcome).toBe('stopped');
+    expect(vi.mocked(execFile)).toHaveBeenCalledWith(
+      'launchctl',
+      ['bootout', 'gui/501/com.intrect.openswarm'],
+      expect.anything(),
+      expect.any(Function),
+    );
+  });
+
+  it('reports not-managed when launchctl has no job under our label', async () => {
+    const { stopExternalDaemon } = await import('./daemon.js');
+    setPlatform('darwin', 501);
+    stubExecFile(Object.assign(new Error('bootout'), { code: 3 }), 'Boot-out failed: 3: No such process');
+    const res = await stopExternalDaemon(1000);
+    expect(res.outcome).toBe('not-managed');
+  });
+
+  it('reports failed on an unexpected launchctl error', async () => {
+    const { stopExternalDaemon } = await import('./daemon.js');
+    setPlatform('darwin', 501);
+    stubExecFile(Object.assign(new Error('bootout'), { code: 1 }), 'Operation not permitted');
+    const res = await stopExternalDaemon(1000);
+    expect(res.outcome).toBe('failed');
+    expect(res.detail).toContain('Operation not permitted');
+  });
+
+  it('reports failed when the port keeps answering after bootout', async () => {
+    const { stopExternalDaemon } = await import('./daemon.js');
+    setPlatform('darwin', 501);
+    stubExecFile(null); // bootout "succeeds" but the process never dies
+    stubFetch(async () => new Response('{}', { status: 200 }));
+    const res = await stopExternalDaemon(300);
+    expect(res.outcome).toBe('failed');
+  });
+
+  it('reports unsupported off macOS without touching launchctl', async () => {
+    const { stopExternalDaemon } = await import('./daemon.js');
+    setPlatform('win32', 501);
+    const res = await stopExternalDaemon(1000);
+    expect(res.outcome).toBe('unsupported');
+    expect(vi.mocked(execFile)).not.toHaveBeenCalled();
+  });
+
+  it('reports unsupported when the platform has no getuid', async () => {
+    const { stopExternalDaemon } = await import('./daemon.js');
+    setPlatform('darwin', undefined);
+    const res = await stopExternalDaemon(1000);
+    expect(res.outcome).toBe('unsupported');
+    expect(vi.mocked(execFile)).not.toHaveBeenCalled();
   });
 });
