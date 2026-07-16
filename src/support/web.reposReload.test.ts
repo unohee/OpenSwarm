@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+import { homedir } from 'node:os';
 import { applyReposConfig } from './web.js';
 import type { AutonomousRunner } from '../automation/autonomousRunner.js';
 
@@ -64,6 +65,25 @@ describe('applyReposConfig — repos.json → runner reconciliation', () => {
     );
     expect(runner.getEnabledProjects()).not.toContain('/dev/vega-agent');
     expect(runner._allowed()).not.toContain('/dev/vega-agent');
+  });
+
+  it('INT-2799: denylists the tilde form so config.yaml raw allowedProjects is caught', () => {
+    // config.ts loads allowedProjects WITHOUT expandPath, so config-defined repos
+    // land in the runner as the tilde form (`~/dev/vega-agent`) even though the
+    // dashboard toggle disables an absolute path. The disable must denylist BOTH
+    // forms (via pathDenylistVariants) or the raw tilde path slips the filter and
+    // the project revives. Here the persisted denylist holds only the tilde form
+    // (as the disable handler now records) and reconcile must still strip it.
+    const home = homedir();
+    const tilde = '~/dev/vega-agent';
+    const abs = `${home}/dev/vega-agent`;
+    runner = makeRunner([], [tilde]); // config.yaml raw (tilde) form in allowedProjects
+    applyReposConfig(
+      runner as unknown as AutonomousRunner,
+      cfg({ enabled: [abs], removedConfigPaths: [tilde, abs] }),
+    );
+    expect(runner._allowed()).not.toContain(tilde);
+    expect(runner.getEnabledProjects()).not.toContain(abs);
   });
 
   it('pre-seeds the name→path cache for pinned and enabled repos', () => {

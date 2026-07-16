@@ -313,6 +313,24 @@ function syncSet(set: Set<string>, values: string[]): void {
 }
 
 /**
+ * INT-2799: the removedConfigPaths denylist is matched by raw string equality in
+ * applyReposConfig, but the same repo reaches it in two forms — config.yaml's
+ * allowedProjects load raw (tilde `~/dev/x`; config.ts:expandPath is NOT applied
+ * there), while repos.json.enabled and dashboard toggle paths are absolute. A
+ * single-format entry misses the other form, so a config-defined project slips the
+ * filter and revives on restart. Return both variants so add (disable) and delete
+ * (enable/pin) cover every form — this also fixes the re-enable trap where only the
+ * absolute form was cleared and the lingering tilde form kept the repo denied.
+ */
+function pathDenylistVariants(p: string): string[] {
+  const home = homedir();
+  const variants = new Set<string>([p]);
+  if (p.startsWith('~')) variants.add(home + p.slice(1));
+  if (p.startsWith(home + '/')) variants.add('~' + p.slice(home.length));
+  return [...variants];
+}
+
+/**
  * Re-read ~/.claude/openswarm-repos.json and apply it to the in-memory registry
  * + runner. The file is the source of truth: the in-memory pinned/basePaths/
  * denylist Sets are refilled in place (endpoints close over those refs), and the
@@ -581,9 +599,9 @@ export async function startWebServer(port: number = 3847): Promise<void> {
           const { projectPath } = JSON.parse(body) as { projectPath: string };
           if (typeof projectPath === 'string' && projectPath) {
             pinnedProjects.add(projectPath);
-            // R6: an explicit pin is a deliberate re-enable — clear the denylist so it isn't
-            // skipped again by setWebRunner on the next restart.
-            removedConfigPaths.delete(projectPath);
+            // R6: an explicit pin is a deliberate re-enable — clear the denylist (both path
+            // forms — INT-2799) so it isn't skipped again by setWebRunner on the next restart.
+            for (const v of pathDenylistVariants(projectPath)) removedConfigPaths.delete(v);
             saveReposConfig();
             // Seed path cache so Linear project name matches immediately
             const name = projectPath.split('/').pop();
@@ -619,7 +637,8 @@ export async function startWebServer(port: number = 3847): Promise<void> {
           const { projectPath, enabled } = JSON.parse(body) as { projectPath: string; enabled: boolean };
           if (typeof projectPath === 'string' && typeof enabled === 'boolean') {
             if (enabled) {
-              removedConfigPaths.delete(projectPath); // R6: explicit enable clears the denylist
+              // R6: explicit enable clears the denylist (both path forms — INT-2799).
+              for (const v of pathDenylistVariants(projectPath)) removedConfigPaths.delete(v);
               runnerRef?.enableProject(projectPath);
             } else {
               // INT-2799: a soft-disable must survive a daemon restart. disableProject
@@ -627,9 +646,9 @@ export async function startWebServer(port: number = 3847): Promise<void> {
               // reconcileRepos re-enables from repos.json.enabled and config.yaml re-allows
               // via allowedProjects, so a config-defined project (e.g. vega-agent) revives.
               // Add it to removedConfigPaths — the hard R6 denylist reconcile filters on
-              // (applyReposConfig lines ~334/345) — so it stays disabled across restarts.
-              // enable (above) clears the denylist, keeping the two paths symmetric.
-              removedConfigPaths.add(projectPath);
+              // (applyReposConfig lines ~334/345) — in both tilde+absolute forms so the
+              // config.yaml raw path is caught too. enable (above) clears both, symmetric.
+              for (const v of pathDenylistVariants(projectPath)) removedConfigPaths.add(v);
               runnerRef?.disableProject(projectPath);
             }
             saveReposConfig();
