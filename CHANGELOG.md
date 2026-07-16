@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.17.7 — 2026-07-16
+
+### Added
+
+- **Atlas Cloud provider adapter** — a new LLM adapter for Atlas Cloud, now featured as an official provider sponsor. (#297, #298)
+
+### Fixed
+
+- **`openswarm stop` actually stops a launchd-managed daemon** — when the daemon is externally managed (launchd, no PID file), stop used to only print a `launchctl bootout` hint and leave the daemon running. It now runs the bootout itself and waits for the port to close, falling back to the manual hint only if that fails. (INT-2798, #296)
+- **Dashboard project disable survives a daemon restart** — a soft-disable only cleared the in-memory enabled set, so on restart reconcile re-enabled config-defined projects and a repo (e.g. a `config.yaml` project) revived and resumed work. Disable now records the project in the hard `removedConfigPaths` denylist in **both** tilde and absolute path forms — `config.yaml` loads `allowedProjects` raw (tilde) while the dashboard sends an absolute path — and enable/pin clear both. (INT-2799, #301, #302)
+- **Failed-session partial work is committed before the worktree is preserved** — a preserved worktree kept its work uncommitted, so a manual directory cleanup lost it silently (a finished 700+ line implementation was nearly lost). It's now captured as a WIP commit on the swarm branch before the resume marker is written — surviving directory removal as a recoverable ref — without polluting history with the internal marker file. (INT-2729, #301)
+- **Lance memory writes no longer collide under `review --max`** — up to 16 reviewer subagents (separate processes sharing one on-disk table) overran Lance's optimistic-concurrency retry budget with `Too many concurrent writers`. The dead per-search `lastAccessed` write was removed, and every remaining memory write (add/update/delete) now retries genuine commit conflicts with jittered exponential backoff. (INT-2817, #303, #304)
+
 ## 0.17.6 — 2026-07-13
 
 ### Fixed

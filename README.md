@@ -544,12 +544,11 @@ the CLI (fire-and-forget with a short timeout, and failures are silently ignored
 Full version history lives in **[CHANGELOG.md](CHANGELOG.md)** and the
 [GitHub Releases](https://github.com/unohee/OpenSwarm/releases) page.
 
-Latest — **v0.17.6**: config discovery no longer lets a repo's own
-`config.json` shadow the real OpenSwarm config (which crashed
-`review --max --fix` in such repos), max-fix runs iterate until the
-re-review verifiably approves, and the INT-2521 stability wave stops
-infra errors from masquerading as STUCK/quality rejects. See
-CHANGELOG.md for the rest.
+Latest — **v0.17.7**: `openswarm stop` now actually stops a launchd-managed
+daemon, a dashboard project disable survives a daemon restart, failed-session
+partial work is committed to its branch before the worktree is preserved, and
+Lance memory writes retry instead of colliding under `review --max`. Adds the
+Atlas Cloud provider adapter. See CHANGELOG.md for the rest.
 
 ---
 
