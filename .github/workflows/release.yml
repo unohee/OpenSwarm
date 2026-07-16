@@ -70,11 +70,23 @@ jobs:
       - if: steps.ver.outputs.exists == 'false'
         run: npm test
 
+      # Each mutating step below is idempotent. The `exists` gate is resolved once
+      # at job start, but publish only runs ~2min later (after lint/build/test), so
+      # a manual release (npmrc-token publish + `gh release create`) landing in that
+      # window used to E403 the job even though the release actually succeeded — a
+      # recurring failure (INT-2665, and again on v0.17.7). Re-checking right before
+      # each mutation lets a raced-but-complete release finish green.
       - name: Publish to npm
         if: steps.ver.outputs.exists == 'false'
-        run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          if npm view "@intrect/openswarm@$VERSION" version >/dev/null 2>&1; then
+            echo "@intrect/openswarm@$VERSION already on npm — skipping publish."
+          else
+            npm publish --access public
+          fi
 
       - name: Tag and GitHub release
         if: steps.ver.outputs.exists == 'false'
@@ -82,9 +94,17 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.ver.outputs.version }}
         run: |
-          git tag "v$VERSION"
-          git push origin "v$VERSION"
-          # Extract this version's CHANGELOG section for the release notes.
-          NOTES=$(awk -v v="## $VERSION" '$0 ~ "^"v" " {f=1; next} /^## / {f=0} f' CHANGELOG.md)
-          if [ -z "$NOTES" ]; then NOTES="Release v$VERSION"; fi
-          gh release create "v$VERSION" --title "v$VERSION" --notes "$NOTES"
+          if git rev-parse "v$VERSION" >/dev/null 2>&1; then
+            echo "v$VERSION already tagged — skipping tag."
+          else
+            git tag "v$VERSION"
+            git push origin "v$VERSION"
+          fi
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "GitHub release v$VERSION already exists — skipping."
+          else
+            # Extract this version's CHANGELOG section for the release notes.
+            NOTES=$(awk -v v="## $VERSION" '$0 ~ "^"v" " {f=1; next} /^## / {f=0} f' CHANGELOG.md)
+            if [ -z "$NOTES" ]; then NOTES="Release v$VERSION"; fi
+            gh release create "v$VERSION" --title "v$VERSION" --notes "$NOTES"
+          fi
