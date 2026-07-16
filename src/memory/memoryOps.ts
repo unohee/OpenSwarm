@@ -15,6 +15,7 @@ import {
   calculateFreshness,
   safeParseMetadata,
   logWork,
+  withMemoryWriteRetry,
   type MemoryType,
   type MemorySearchResult,
   type CognitiveMemoryRecord,
@@ -42,12 +43,15 @@ async function loadMemoryById(table: MemoryTable, id: string): Promise<any | nul
 async function updateMemoryRecord(table: MemoryTable, record: any): Promise<void> {
   const normalized = normalizeRecords([record])[0];
   const { id, ...values } = normalized;
-  await table.update({ where: idPredicate(id), values: values as Record<string, any> });
+  await withMemoryWriteRetry(
+    () => table.update({ where: idPredicate(id), values: values as Record<string, any> }),
+    'updateMemoryRecord',
+  );
 }
 
 async function deleteMemoryIds(table: MemoryTable, ids: string[]): Promise<void> {
   if (ids.length === 0) return;
-  await table.delete(idsPredicate(ids));
+  await withMemoryWriteRetry(() => table.delete(idsPredicate(ids)), 'deleteMemoryIds');
 }
 
 /**

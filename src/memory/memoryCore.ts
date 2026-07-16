@@ -193,6 +193,41 @@ export function getDb(): Connection | null { return db; }
 export function getTable(): Table | null { return table; }
 export function setTable(t: Table | null): void { table = t; }
 
+/**
+ * Retry a Lance write (add/update/delete) on optimistic-concurrency conflict.
+ *
+ * Lance commits are optimistic: concurrent writers race for the table version and
+ * the losers must re-commit. Its built-in retry budget is small (~2 attempts over
+ * 30s), so `openswarm review --max` — which fans out up to 16 reviewer subagents,
+ * each a SEPARATE process sharing this one on-disk table — blew straight past it
+ * ("Too many concurrent writers"). A single in-process mutex can't help across
+ * processes, so we retry at the application layer with exponential backoff + full
+ * jitter to desynchronize the competing writers. Appends and predicated
+ * update/delete are safe to re-run: Lance re-commits against the latest version on
+ * each attempt, so a retry is not a double-apply.
+ */
+export async function withMemoryWriteRetry<T>(op: () => Promise<T>, label = 'write'): Promise<T> {
+  const MAX_ATTEMPTS = 8;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await op();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Keep this matcher tight to genuine optimistic-concurrency conflicts. "Too
+      // many concurrent writers" is already covered by "concurrent writers"; a bare
+      // "too many" would wrongly retry unrelated validation/cardinality errors.
+      const retryable = /concurrent writers|commit conflict|version conflict|retry_timeout/i.test(msg);
+      if (!retryable || attempt >= MAX_ATTEMPTS) throw err;
+      // Full jitter over an exponentially growing (capped) window so 16 racing
+      // writers don't back off in lockstep and immediately re-collide.
+      const cap = Math.min(2000, 50 * 2 ** attempt);
+      const delay = 25 + Math.floor(Math.random() * cap);
+      console.warn(`[Memory] ${label} contended (attempt ${attempt}/${MAX_ATTEMPTS}) — retrying in ${delay}ms`);
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+}
+
 async function hasLegacySchemaColumns(t: Table): Promise<boolean> {
   const schema = await t.schema();
   return schema.fields.some(field => LEGACY_SCHEMA_COLUMNS.has(field.name));
@@ -631,7 +666,7 @@ export async function saveMemory(
     expiresAt,
   };
 
-  await table.add([record]);
+  await withMemoryWriteRetry(() => table!.add([record]), `saveMemory(${type})`);
   console.log(`${status.ok(`[Memory] saved ${type}`)} ${c.yellow(`importance: ${importance.toFixed(2)}`)} ${c.dim('repo:')} ${c.cyan(repo)} ${c.dim('title:')} ${title}`);
   return id;
 }
@@ -687,7 +722,7 @@ export async function saveCognitiveMemory(
     expiresAt: PERMANENT_EXPIRY,
   };
 
-  await table.add([record]);
+  await withMemoryWriteRetry(() => table!.add([record]), `saveCognitiveMemory(${type})`);
   console.log(`${status.ok(`[Memory] saved cognitive ${type}`)} ${c.yellow(`importance: ${importance.toFixed(2)}`)} ${content.slice(0, 50)}...`);
   return id;
 }
@@ -707,7 +742,7 @@ export async function deleteMemoriesByDerivedFrom(derivedFrom: string): Promise<
   const ids = rows.filter((r) => r.derivedFrom === derivedFrom).map((r) => String(r.id));
   if (ids.length === 0) return 0;
   const list = ids.map((id) => `'${id.replace(/'/g, "''")}'`).join(', ');
-  await table.delete(`id IN (${list})`);
+  await withMemoryWriteRetry(() => table!.delete(`id IN (${list})`), 'deleteMemoriesByDerivedFrom');
   return ids.length;
 }
 
