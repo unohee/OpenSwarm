@@ -903,7 +903,16 @@ export async function searchMemorySafe(
       .sort((a, b) => b.hybridScore - a.hybridScore)
       .slice(0, limit);
 
-    updateAccessTime(scored.map(s => s.record.id)).catch((e) => console.warn('[Memory] Failed to update access time:', e));
+    // NOTE: we deliberately do NOT write a `lastAccessed` timestamp back here.
+    // Every search used to fire a Lance `table.update()` commit, but `lastAccessed`
+    // feeds nothing — retrieval recency uses `createdAt` (access-frequency/decay was
+    // removed, see calculateFreshness below), and no CLI reads the field. Under
+    // `openswarm review --max` (up to 16 concurrent reviewer subagents each searching
+    // memory) those per-search commits collided on Lance's optimistic-concurrency
+    // limit → "Too many concurrent writers … [Memory] Failed to update access time".
+    // Dropping a write with no read consumer removes the contention entirely. The
+    // schema field remains (set at record creation) so decay can be reintroduced with
+    // a batched/serialized writer if ever needed.
 
     const formatted: MemorySearchResult[] = scored.map(({ record: r, similarity, recency, importance, hybridScore }) => ({
       id: r.id,
@@ -952,16 +961,3 @@ export async function searchMemory(
   return result.memories;
 }
 
-/**
- * Update last_accessed timestamp for retrieved memories
- */
-async function updateAccessTime(ids: string[]): Promise<void> {
-  if (!table || ids.length === 0) return;
-
-  const uniqueIds = [...new Set(ids)];
-  const quotedIds = uniqueIds.map(id => `'${String(id).replace(/'/g, "''")}'`).join(', ');
-  await table.update({
-    where: `id IN (${quotedIds})`,
-    values: { lastAccessed: Date.now() },
-  });
-}
