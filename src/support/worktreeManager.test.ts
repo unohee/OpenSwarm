@@ -227,6 +227,27 @@ describe('preserveWorktree → createWorktree resume roundtrip (INT-2503)', () =
     expect(existsSync(join(resumed.worktreePath, '.openswarm-preserved'))).toBe(false);
   });
 
+  it('INT-2729: commits the dirty work to the branch so it survives dir removal', async () => {
+    const info = await createWorktree(repo, 'INT-9', 'swarm/INT-9-test');
+    writeFileSync(join(info.worktreePath, 'app.py'), 'base\npartial-impl\n');
+    writeFileSync(join(info.worktreePath, 'newmod.py'), 'wip\n');
+
+    expect(await preserveWorktree(info, 'session did not succeed')).toBe(true);
+
+    // The work is now a reachable commit on the swarm branch — verifiable from the
+    // main repo without the worktree dir. Simulate the manual cleanup that lost
+    // STO-1351 and confirm the commit (and its content) is still recoverable.
+    const log = git(repo, 'log', '--format=%s', 'swarm/INT-9-test').toString();
+    expect(log).toContain('wip: preserved partial work (auto, session did not succeed)');
+    execFileSync('git', ['-C', repo, 'worktree', 'remove', '--force', info.worktreePath], { stdio: 'pipe' });
+    expect(existsSync(info.worktreePath)).toBe(false);
+    expect(git(repo, 'show', 'swarm/INT-9-test:newmod.py').toString()).toBe('wip\n');
+    expect(git(repo, 'show', 'swarm/INT-9-test:app.py').toString()).toBe('base\npartial-impl\n');
+    // The internal preserve marker is control metadata, not user work — it must NOT
+    // be committed into the recovered branch (would pollute history / later PRs).
+    expect(() => git(repo, 'show', 'swarm/INT-9-test:.openswarm-preserved')).toThrow();
+  });
+
   it('removes a clean worktree instead of preserving it', async () => {
     const info = await createWorktree(repo, 'INT-9', 'swarm/INT-9-test');
     expect(await preserveWorktree(info, 'test failure')).toBe(false);

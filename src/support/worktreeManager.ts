@@ -272,6 +272,30 @@ export async function preserveWorktree(info: WorktreeInfo, reason: string): Prom
     return false;
   }
   const fileCount = dirty === null ? 0 : dirty.split('\n').filter(Boolean).length;
+  // INT-2729: the marker keeps the *directory* around for resume, but the partial
+  // work stays UNCOMMITTED — a manual cleanup of the worktree dir (e.g. a migration
+  // sweep) then loses it silently, even for a substantial, finished implementation
+  // (observed live: STO-1351, a 700+ line service preserved 7 days with zero commits,
+  // nearly lost). Capture the dirty work as a WIP commit on the swarm branch now, so
+  // it survives dir removal as a reachable git ref a human (or the retry) can recover.
+  // This runs BEFORE the marker is written so `git add -A` never stages the internal
+  // `.openswarm-preserved` control file into user history. Best-effort and silent: a
+  // commit failure just leaves the marker (written below) as the sole protection, as
+  // before. NEVER throw — same preserve path the INT-2521 ENOSPC guard exists for.
+  // Only meaningful when git status actually reported dirty files.
+  if (dirty !== null && fileCount > 0) {
+    try {
+      await git(worktreePath, 'add', '-A');
+      await git(
+        worktreePath,
+        '-c', 'user.email=swarm@openswarm.local', '-c', 'user.name=OpenSwarm',
+        'commit', '--no-verify', '-m', `wip: preserved partial work (auto, ${reason})`,
+      );
+      console.log(`[Worktree] WIP committed to ${info.branchName} before preserve: ${worktreePath}`);
+    } catch (err) {
+      console.warn(`[Worktree] WIP commit before preserve failed (marker still protects the tree): ${worktreePath}`, err instanceof Error ? err.message : err);
+    }
+  }
   // The resume marker is the ONLY thing that protects this tree from the next
   // createWorktree() recreate (which deletes the branch + worktree, ~L286/L299) and
   // the heartbeat orphan-sweep (pruneWorktrees drops marker-less trees). So if we
