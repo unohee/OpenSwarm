@@ -622,6 +622,14 @@ export async function startWebServer(port: number = 3847): Promise<void> {
               removedConfigPaths.delete(projectPath); // R6: explicit enable clears the denylist
               runnerRef?.enableProject(projectPath);
             } else {
+              // INT-2799: a soft-disable must survive a daemon restart. disableProject
+              // only clears the in-memory enabled set + project-selection file; on restart
+              // reconcileRepos re-enables from repos.json.enabled and config.yaml re-allows
+              // via allowedProjects, so a config-defined project (e.g. vega-agent) revives.
+              // Add it to removedConfigPaths — the hard R6 denylist reconcile filters on
+              // (applyReposConfig lines ~334/345) — so it stays disabled across restarts.
+              // enable (above) clears the denylist, keeping the two paths symmetric.
+              removedConfigPaths.add(projectPath);
               runnerRef?.disableProject(projectPath);
             }
             saveReposConfig();

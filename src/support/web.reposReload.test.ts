@@ -52,6 +52,20 @@ describe('applyReposConfig — repos.json → runner reconciliation', () => {
     expect(runner._allowed()).not.toContain('/dev/WAVE');
   });
 
+  it('INT-2799: a denylisted config project is stripped from allowedProjects on restart', () => {
+    // Simulates a daemon restart after a dashboard soft-disable: config.yaml
+    // re-provides the project in allowedProjects (initialAllowed), but the
+    // disable recorded it in removedConfigPaths. Reconcile must strip it from
+    // both enabled and allowed so a config-defined project can't revive.
+    runner = makeRunner([], ['/dev/vega-agent']);
+    applyReposConfig(
+      runner as unknown as AutonomousRunner,
+      cfg({ enabled: ['/dev/vega-agent'], removedConfigPaths: ['/dev/vega-agent'] }),
+    );
+    expect(runner.getEnabledProjects()).not.toContain('/dev/vega-agent');
+    expect(runner._allowed()).not.toContain('/dev/vega-agent');
+  });
+
   it('pre-seeds the name→path cache for pinned and enabled repos', () => {
     applyReposConfig(
       runner as unknown as AutonomousRunner,
