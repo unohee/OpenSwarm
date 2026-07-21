@@ -79,7 +79,9 @@ describe('DurableRunCoordinator', () => {
         issueId: 'FLOW', branchName: 'swarm/FLOW',
         worktreePath: '/repo/worktree/FLOW', originalPath: '/repo',
       })).toBe(true);
+      expect(await hooks.onStage('worker')).toBe(true);
       expect(await hooks.onStage('reviewer')).toBe(true);
+      expect(await hooks.onStage('tester')).toBe(true);
       expect(await hooks.beforePublish()).toBe(true);
       expect(await hooks.onPublication('https://github.test/pr/1', 'abc123')).toBe(true);
       return { ...result(), prUrl: 'https://github.test/pr/1' };
@@ -100,6 +102,135 @@ describe('DurableRunCoordinator', () => {
       headSha: 'abc123',
     });
     expect(coordinator.getProtectedWorktreePaths('/repo')).toEqual(new Set(['/repo/worktree/FLOW']));
+    coordinator.close();
+  });
+
+  it('renews a live execution lease before it can expire', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const path = dbPath();
+    const ledger = new RunLedger(path);
+    const coordinator = new DurableRunCoordinator({
+      mode: 'primary', ledger, instanceId: 'renew-owner', leaseMs: 3_000,
+    });
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const running = coordinator.execute(task('RENEW-LEASE'), '/repo', async (_hooks, signal) => {
+      expect(signal.aborted).toBe(false);
+      await held;
+      return result();
+    });
+    await Promise.resolve();
+
+    expect(ledger.getRun('RENEW-LEASE')?.leaseExpiresAt).toBe(4_000);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(ledger.getRun('RENEW-LEASE')?.leaseExpiresAt).toBe(5_000);
+
+    release();
+    await expect(running).resolves.toMatchObject({ success: true, finalStatus: 'approved' });
+    expect(ledger.getRun('RENEW-LEASE')?.state).toBe('DONE');
+    coordinator.close();
+    ledger.close();
+  });
+
+  it('fails closed when ledger ownership reads and exit acknowledgement both fail transiently', async () => {
+    const path = dbPath();
+    const ledger = new RunLedger(path);
+    const coordinator = new DurableRunCoordinator({
+      mode: 'primary', ledger, instanceId: 'unreadable-ledger', leaseMs: 3_000,
+    });
+    const ownershipProbe = vi.spyOn(ledger, 'isClaimCurrent').mockImplementation(() => {
+      throw new Error('sqlite read failed');
+    });
+    const exitAck = vi.spyOn(ledger, 'confirmExecutorExit').mockImplementation(() => {
+      throw new Error('sqlite writer busy');
+    });
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const fenced = await coordinator.execute(task('LEDGER-READ-FAIL'), '/repo', async () => result());
+    expect(fenced).toMatchObject({
+      success: false,
+      finalStatus: 'infra_error',
+      failureSignal: 'timeout',
+    });
+    expect(warning).toHaveBeenCalledWith(
+      expect.stringContaining('Executor-exit acknowledgement deferred'),
+      expect.any(Error),
+    );
+    expect(ledger.getRun('LEDGER-READ-FAIL')).toMatchObject({
+      state: 'EXECUTING',
+      ownerInstanceId: 'unreadable-ledger',
+    });
+
+    ownershipProbe.mockRestore();
+    exitAck.mockRestore();
+    warning.mockRestore();
+    expect(coordinator.reconcile(Date.now() + 4_000)).toHaveLength(1);
+    expect(ledger.getRun('LEDGER-READ-FAIL')).toMatchObject({
+      state: 'NEEDS_RECONCILE',
+      ownerInstanceId: undefined,
+      leaseToken: undefined,
+    });
+    coordinator.close();
+    ledger.close();
+  });
+
+  it('fences a lease-renewal loser and releases ownership only after reconciliation', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const path = dbPath();
+    const ledger = new RunLedger(path);
+    const coordinator = new DurableRunCoordinator({
+      mode: 'primary', ledger, instanceId: 'renew-loser', leaseMs: 3_000,
+    });
+    vi.spyOn(ledger, 'renewLease').mockReturnValue(null);
+    let release!: () => void;
+    let leaseSignal!: AbortSignal;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const running = coordinator.execute(task('LOSE-LEASE'), '/repo', async (_hooks, signal) => {
+      leaseSignal = signal;
+      await held;
+      return result();
+    });
+    await Promise.resolve();
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(leaseSignal.aborted).toBe(true);
+    release();
+    await expect(running).resolves.toMatchObject({
+      success: false,
+      finalStatus: 'infra_error',
+      failureSignal: 'timeout',
+    });
+    expect(ledger.getRun('LOSE-LEASE')).toMatchObject({
+      state: 'EXECUTING',
+      ownerInstanceId: 'renew-loser',
+    });
+
+    vi.setSystemTime(5_000);
+    expect(coordinator.reconcile(5_000)).toHaveLength(1);
+    expect(ledger.getRun('LOSE-LEASE')).toMatchObject({
+      state: 'NEEDS_RECONCILE',
+      ownerInstanceId: undefined,
+      leaseToken: undefined,
+    });
+    coordinator.close();
+    ledger.close();
+  });
+
+  it('records executor throws as retryable failures before rethrowing', async () => {
+    const coordinator = new DurableRunCoordinator({
+      mode: 'primary', dbPath: dbPath(), instanceId: 'throw-owner',
+    });
+
+    await expect(coordinator.execute(task('EXECUTOR-THROW'), '/repo', async () => {
+      throw new Error('worker crashed');
+    })).rejects.toThrow('worker crashed');
+    expect(coordinator.getRun('EXECUTOR-THROW')).toMatchObject({
+      state: 'RETRY_AT',
+      lastErrorCode: 'executor_throw',
+      lastErrorMessage: 'worker crashed',
+    });
     coordinator.close();
   });
 
@@ -171,6 +302,63 @@ describe('DurableRunCoordinator', () => {
     expect(delivered).toEqual(['SYNC:1']);
     expect(coordinator.getRun('SYNC')?.state).toBe('DONE');
     coordinator.close();
+  });
+
+  it('renews an outbox lease while a slow delivery is still in flight', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const path = dbPath();
+    const ledger = new RunLedger(path);
+    const coordinator = new DurableRunCoordinator({
+      mode: 'primary', ledger, instanceId: 'outbox-renewer',
+    });
+    await coordinator.execute(task('OUTBOX-RENEW'), '/repo', async () => result(), {
+      successEffect: (_pipeline, claim) => ({
+        kind: 'tracker.complete', dedupeKey: `OUTBOX-RENEW:${claim.attemptNo}`, payload: {},
+      }),
+    });
+    const renewSpy = vi.spyOn(ledger, 'renewEffectLease');
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const draining = coordinator.drainOutbox(async () => held, { maxEffects: 1, leaseMs: 3_000 });
+    await Promise.resolve();
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(renewSpy).toHaveBeenCalledOnce();
+    release();
+    await expect(draining).resolves.toEqual({ applied: 1, retried: 0, dead: 0 });
+    expect(coordinator.getRun('OUTBOX-RENEW')?.state).toBe('DONE');
+    coordinator.close();
+    ledger.close();
+  });
+
+  it('does not acknowledge a delivery after losing its outbox lease', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const path = dbPath();
+    const ledger = new RunLedger(path);
+    const coordinator = new DurableRunCoordinator({
+      mode: 'primary', ledger, instanceId: 'outbox-loser',
+    });
+    await coordinator.execute(task('OUTBOX-LOSE'), '/repo', async () => result(), {
+      successEffect: (_pipeline, claim) => ({
+        kind: 'tracker.complete', dedupeKey: `OUTBOX-LOSE:${claim.attemptNo}`, payload: {},
+      }),
+    });
+    vi.spyOn(ledger, 'renewEffectLease').mockReturnValue(null);
+    const ackSpy = vi.spyOn(ledger, 'ackEffectAndFinalizeRun');
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const draining = coordinator.drainOutbox(async () => held, { maxEffects: 1, leaseMs: 3_000 });
+    await Promise.resolve();
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    release();
+    await expect(draining).resolves.toEqual({ applied: 0, retried: 0, dead: 0 });
+    expect(ackSpy).not.toHaveBeenCalled();
+    expect(coordinator.getRun('OUTBOX-LOSE')?.state).toBe('SYNC_PENDING');
+    coordinator.close();
+    ledger.close();
   });
 
   it('keeps cancellation fenced until tracker synchronization is acknowledged', async () => {
@@ -321,6 +509,27 @@ describe('DurableRunCoordinator', () => {
     shadow.close();
   });
 
+  it('off mode exposes inert durability hooks without creating local state', async () => {
+    const coordinator = new DurableRunCoordinator({ mode: 'off', instanceId: 'off' });
+    const pipeline = await coordinator.execute(task('OFF'), '/repo', async (hooks, signal) => {
+      expect(signal.aborted).toBe(false);
+      expect(await hooks.onWorktree({
+        issueId: 'OFF', branchName: 'swarm/OFF', worktreePath: '/repo/OFF', originalPath: '/repo',
+      })).toBe(true);
+      expect(await hooks.onStage('worker')).toBe(true);
+      expect(await hooks.beforePublish()).toBe(true);
+      expect(await hooks.onPublication('https://github.test/pr/off')).toBe(true);
+      return result();
+    });
+
+    expect(pipeline.success).toBe(true);
+    expect(coordinator.getRun('OFF')).toBeNull();
+    expect(coordinator.markNeedsHuman('OFF', 'unused')).toBe(false);
+    expect(coordinator.reconcile()).toEqual([]);
+    coordinator.close();
+    coordinator.close();
+  });
+
   it('shadow mode cannot deliver another coordinator\'s shared outbox effect', async () => {
     const path = dbPath();
     const primary = new DurableRunCoordinator({ mode: 'primary', dbPath: path, instanceId: 'primary' });
@@ -405,5 +614,50 @@ describe('DurableRunCoordinator', () => {
     expect(ledger.markReady('DEAD-OWNER', 4_002)).toBe(true);
     replacement.close();
     ledger.close();
+  });
+
+  it('uses the default PID probe to retain live owners and release dead owners', () => {
+    const livePath = dbPath();
+    const liveLedger = new RunLedger(livePath);
+    liveLedger.registerRun({ issueId: 'LIVE-PID', source: 'linear', projectPath: '/live-repo' }, 1_000);
+    const liveClaim = liveLedger.claimRun('LIVE-PID', {
+      ownerInstanceId: `${process.pid}-live-owner`, leaseMs: 3_000, now: 1_000,
+    })!;
+    expect(liveLedger.transition(liveClaim, 'EXECUTING', {}, 1_100)).toBe(true);
+    const liveReplacement = new DurableRunCoordinator({
+      mode: 'primary', ledger: liveLedger, instanceId: 'live-replacement',
+    });
+
+    expect(liveReplacement.reconcile(4_001)).toHaveLength(1);
+    expect(liveLedger.getRun('LIVE-PID')).toMatchObject({
+      state: 'NEEDS_RECONCILE',
+      ownerInstanceId: `${process.pid}-live-owner`,
+    });
+    liveReplacement.close();
+    liveLedger.close();
+
+    const deadPath = dbPath();
+    const deadLedger = new RunLedger(deadPath);
+    deadLedger.registerRun({ issueId: 'DEAD-PID', source: 'linear', projectPath: '/dead-repo' }, 1_000);
+    const deadClaim = deadLedger.claimRun('DEAD-PID', {
+      ownerInstanceId: '999999-dead-owner', leaseMs: 3_000, now: 1_000,
+    })!;
+    expect(deadLedger.transition(deadClaim, 'EXECUTING', {}, 1_100)).toBe(true);
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => {
+      throw Object.assign(new Error('missing process'), { code: 'ESRCH' });
+    });
+    const deadReplacement = new DurableRunCoordinator({
+      mode: 'primary', ledger: deadLedger, instanceId: 'dead-replacement',
+    });
+
+    expect(deadReplacement.reconcile(4_001)).toHaveLength(1);
+    expect(deadLedger.getRun('DEAD-PID')).toMatchObject({
+      state: 'NEEDS_RECONCILE',
+      ownerInstanceId: undefined,
+      leaseToken: undefined,
+    });
+    kill.mockRestore();
+    deadReplacement.close();
+    deadLedger.close();
   });
 });

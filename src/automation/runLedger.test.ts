@@ -225,6 +225,24 @@ describe('RunLedger claim and fencing races', () => {
     ledger.close();
   });
 
+  it('atomically reconciles and releases an expired owner when its executor exit is confirmed', () => {
+    const ledger = new RunLedger(createDbPath());
+    register(ledger, 'RACE-CONFIRM-EXPIRED');
+    const stale = claim(ledger, 'RACE-CONFIRM-EXPIRED', 'old-owner', 2_000);
+    expect(ledger.transition(stale, 'EXECUTING', {}, 2_100)).toBe(true);
+
+    // The exit callback may win the race with the periodic reconciliation pass.
+    // It must park the expired generation before clearing its ownership token.
+    expect(ledger.confirmExecutorExit(stale, 3_001)).toBe(true);
+    expect(ledger.getRun('RACE-CONFIRM-EXPIRED')).toMatchObject({
+      state: 'NEEDS_RECONCILE',
+      ownerInstanceId: undefined,
+      leaseToken: undefined,
+      lastErrorCode: 'lease_expired',
+    });
+    ledger.close();
+  });
+
   it('lets explicit same-repository parallel capacity account for a reconciliation slot', () => {
     const ledger = new RunLedger(createDbPath());
     register(ledger, 'RECONCILE-SLOT', '/parallel-repo');
@@ -340,6 +358,60 @@ describe('RunLedger claim and fencing races', () => {
 
     expect(ledger.claimRun('FAIL-2', {
       ownerInstanceId: 'daemon', leaseMs: 1_000, now: 2_200,
+      maxFailuresPerHour: 1,
+    })).toBeNull();
+    expect(ledger.getMetrics(2_200).openCircuits).toBe(1);
+    ledger.close();
+  });
+
+  it('opens a repository circuit when the daily cost budget is exhausted', () => {
+    const ledger = new RunLedger(createDbPath());
+    register(ledger, 'COST-1', '/cost-repo');
+    register(ledger, 'COST-2', '/cost-repo');
+    const first = claim(ledger, 'COST-1', 'daemon', 2_000);
+    expect(ledger.recordAttemptResult(first, {
+      success: true,
+      finalStatus: 'approved',
+      costUsd: 1.25,
+    }, 2_100)).toBe(true);
+    expect(ledger.transition(first, 'CANCELLED', {}, 2_101)).toBe(true);
+
+    expect(ledger.claimRun('COST-2', {
+      ownerInstanceId: 'daemon',
+      leaseMs: 1_000,
+      now: 2_200,
+      maxCostUsdPerDay: 1,
+      circuitCooldownMs: 60_000,
+    })).toBeNull();
+    expect(ledger.getMetrics(2_200).openCircuits).toBe(1);
+
+    // Expired circuits are removed in the same admission transaction, so a
+    // stale budget row cannot permanently stop unrelated future work.
+    register(ledger, 'COST-3', '/cost-repo');
+    expect(ledger.claimRun('COST-3', {
+      ownerInstanceId: 'daemon',
+      leaseMs: 1_000,
+      now: 62_201,
+    })).not.toBeNull();
+    expect(ledger.getMetrics(62_201).openCircuits).toBe(0);
+    ledger.close();
+  });
+
+  it('rebuilds a failure circuit from durable attempts after a coordinator restart', () => {
+    const ledger = new RunLedger(createDbPath());
+    register(ledger, 'FAIL-REBUILD-1', '/failure-rebuild-repo');
+    register(ledger, 'FAIL-REBUILD-2', '/failure-rebuild-repo');
+    const first = claim(ledger, 'FAIL-REBUILD-1', 'old-daemon', 2_000);
+    expect(ledger.recordAttemptResult(first, {
+      success: false,
+      finalStatus: 'infra_error',
+    }, 2_100)).toBe(true);
+    expect(ledger.transition(first, 'RETRY_AT', { retryAt: 9_000 }, 2_101)).toBe(true);
+
+    expect(ledger.claimRun('FAIL-REBUILD-2', {
+      ownerInstanceId: 'new-daemon',
+      leaseMs: 1_000,
+      now: 2_200,
       maxFailuresPerHour: 1,
     })).toBeNull();
     expect(ledger.getMetrics(2_200).openCircuits).toBe(1);
@@ -470,6 +542,23 @@ describe('RunLedger durable outbox races', () => {
     ledger.close();
   });
 
+  it('rejects transition and outbox publication after the execution lease expires', () => {
+    const ledger = new RunLedger(createDbPath());
+    register(ledger, 'OUT-STALE-COMMIT');
+    const stale = claim(ledger, 'OUT-STALE-COMMIT', 'executor', 2_000);
+    expect(ledger.transition(stale, 'EXECUTING', {}, 2_050)).toBe(true);
+
+    expect(ledger.transition(stale, 'VERIFYING', {}, 3_001)).toBe(false);
+    expect(ledger.commitRunForSync(stale, {
+      kind: 'tracker.complete',
+      dedupeKey: 'OUT-STALE-COMMIT:1',
+      payload: { shouldNotExist: true },
+    }, {}, 3_001)).toBe(false);
+    expect(ledger.getEffectByDedupeKey('OUT-STALE-COMMIT:1')).toBeNull();
+    expect(ledger.getRun('OUT-STALE-COMMIT')?.state).toBe('EXECUTING');
+    ledger.close();
+  });
+
   it('finalizes a cancellation only after the current-attempt effect is acknowledged', () => {
     const ledger = new RunLedger(createDbPath());
     register(ledger, 'OUT-CANCEL');
@@ -584,6 +673,23 @@ describe('RunLedger durable outbox races', () => {
     expect(replacement.leaseEpoch).toBe(stale.leaseEpoch + 1);
     expect(ledger.ackEffect(stale, 3_102)).toBe(false);
     expect(ledger.ackEffect(replacement, 3_102)).toBe(true);
+    ledger.close();
+  });
+
+  it('renews only the current outbox delivery generation', () => {
+    const ledger = new RunLedger(createDbPath());
+    prepareSyncRun(ledger, 'OUT-RENEW');
+    const delivery = ledger.claimNextEffect('sender', 100, 3_000)!;
+
+    const renewed = ledger.renewEffectLease(delivery, 500, 3_050);
+    expect(renewed).toMatchObject({
+      id: delivery.id,
+      leaseEpoch: delivery.leaseEpoch,
+      leaseExpiresAt: 3_550,
+      updatedAt: 3_050,
+    });
+    expect(ledger.renewEffectLease(delivery, 500, 3_551)).toBeNull();
+    expect(ledger.ackEffect(delivery, 3_552)).toBe(false);
     ledger.close();
   });
 
