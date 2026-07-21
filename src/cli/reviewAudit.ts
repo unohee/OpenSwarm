@@ -404,6 +404,8 @@ export interface RunMaxReviewOptions {
   adapter?: AdapterName;
   /** Abort the whole audit (Ctrl+C) — propagated to every subagent. */
   signal?: AbortSignal;
+  /** Repository-local prior review log context, keyed by deterministic area label. */
+  priorReviewContextByArea?: Readonly<Record<string, string>>;
 }
 
 export interface RunMaxReviewDeps {
@@ -440,6 +442,7 @@ async function defaultReviewArea(
     projectPath: cwd,
     adapterName: opts.adapter as never,
     signal: opts.signal,
+    priorReviewContext: opts.priorReviewContextByArea?.[area.label],
     onLog,
   });
 }
@@ -575,9 +578,9 @@ export function buildFixTaskDescription(unit: FixUnit, context: FixRepositoryCon
       ? `Required verification:\n${context.verificationCommands.map((command) => `- ${command}`).join('\n')}`
       : 'No deterministic verification command was discovered; report this limitation and do not invent one.',
     '',
-    context.dependencyGraphAvailable
+    unit.dependencyGraphBacked
       ? 'The supporting scope above comes from the repository dependency graph. Inspect callers/contracts before editing.'
-      : 'No dependency graph is available. Conservatively inspect real imports/callers before editing.',
+      : 'The dependency graph is unavailable or incomplete for these targets. This is one repository-wide serial fix unit; inspect real imports/callers before editing.',
     'Supporting edits to listed callers, shared contracts, tests, and manifests are allowed when required by the root cause. Do not change unrelated code.',
     'Do not replace a missing dependency with a stub, copied package, or locally invented API. Report an environment blocker instead.',
   ]
@@ -670,6 +673,7 @@ export async function runAreaFixes(
     projectPath: cwd,
     items: units,
     concurrency,
+    signal: opts.signal,
     run: async (unit, sandbox, onLog) => {
       deps.onProgress?.({ type: 'start', label: unit.label, done, total });
       return deps.worker
@@ -736,6 +740,8 @@ export interface RunFixVerifyLoopOptions {
   maxDurationMs?: number;
   signal?: AbortSignal;
   repositoryContext?: FixRepositoryContext;
+  /** Prior repository review logs forwarded to each full re-review. */
+  priorReviewContextByArea?: Readonly<Record<string, string>>;
 }
 
 export interface RunFixVerifyLoopDeps {
@@ -822,7 +828,12 @@ export async function runFixVerifyLoop(
   const startedAt = now();
   const budgetSignal = AbortSignal.timeout(maxDurationMs);
   const phaseSignal = opts.signal ? AbortSignal.any([opts.signal, budgetSignal]) : budgetSignal;
-  const reviewOpts: RunMaxReviewOptions = { concurrency: opts.concurrency, adapter: opts.adapter, signal: phaseSignal };
+  const reviewOpts: RunMaxReviewOptions = {
+    concurrency: opts.concurrency,
+    adapter: opts.adapter,
+    signal: phaseSignal,
+    priorReviewContextByArea: opts.priorReviewContextByArea,
+  };
   const fixOpts: RunAreaFixesOptions = {
     concurrency: opts.concurrency,
     adapter: opts.adapter,
@@ -967,7 +978,15 @@ export async function runFixVerifyLoop(
         throw error;
       }
       run = mergeReReview(run, reReview);
-      run = await applyVerificationGate(run, new Set(targets.map((target) => target.area.label)));
+      try {
+        run = await applyVerificationGate(run, new Set(targets.map((target) => target.area.label)));
+      } catch (error) {
+        if (error instanceof FixLoopTimeBudgetError) {
+          stopReason = 'time-budget';
+          break;
+        }
+        throw error;
+      }
       const remaining = unresolved(run);
       const gatedByLabel = new Map(run.results.map((result) => [result.area.label, result]));
       const rec: FixVerifyRound = {
@@ -1001,7 +1020,15 @@ export async function runFixVerifyLoop(
       throw error;
     }
     run = mergeReReview(run, reReview);
-    run = await applyVerificationGate(run, new Set(edited.flatMap((fix) => fix.targetLabels)));
+    try {
+      run = await applyVerificationGate(run, new Set(edited.flatMap((fix) => fix.targetLabels)));
+    } catch (error) {
+      if (error instanceof FixLoopTimeBudgetError) {
+        stopReason = 'time-budget';
+        break;
+      }
+      throw error;
+    }
 
     const remaining = unresolved(run);
     const gatedByLabel = new Map(run.results.map((result) => [result.area.label, result]));

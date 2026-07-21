@@ -8,6 +8,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import {
   captureBaselinePatch,
   cloneSandbox,
+  createSharedPathSnapshot,
   promoteValidatedFiles,
   sandboxChangedFiles,
   seedBaseline,
@@ -59,16 +60,28 @@ export async function runIsolatedFixBatch<T extends IsolatedFixItem>(options: {
   projectPath: string;
   items: T[];
   concurrency: number;
+  signal?: AbortSignal;
   run: (item: T, sandbox: string, onLog: (line: string) => void) => Promise<{ success: boolean; error?: string }>;
   onLog?: (item: T, line: string) => void;
 }): Promise<Array<IsolatedFixResult<T>>> {
   if (options.items.length === 0) return [];
+  options.signal?.throwIfAborted();
   // Every sandbox starts from the exact same dirty candidate state. A failed
   // snapshot must abort rather than silently run against stale HEAD.
   const baseline = await captureBaselinePatch(options.projectPath);
   const root = await mkdtemp(join(tmpdir(), 'openswarm-fix-units-'));
   const knownEntries = new Set<string>();
   try {
+    // Build one sanitized dependency/data snapshot for the whole batch. Each
+    // worker still receives an independent filesystem clone, but large trees
+    // are scanned for external symlinks only once instead of once per worker.
+    const snapshotEntry = 'shared-path-snapshot';
+    knownEntries.add(snapshotEntry);
+    const sharedPathSnapshot = await createSharedPathSnapshot(
+      options.projectPath,
+      join(root, snapshotEntry),
+    );
+    options.signal?.throwIfAborted();
     const settled = await runPool(
       options.items,
       options.concurrency,
@@ -79,9 +92,21 @@ export async function runIsolatedFixBatch<T extends IsolatedFixItem>(options: {
         let sandbox = '';
         let linkedSharedPaths: string[] = [];
         try {
-          ({ sandbox, linkedSharedPaths } = await cloneSandbox(options.projectPath, root, id, 'link'));
+          options.signal?.throwIfAborted();
+          // Copy ignored dependencies/data into each worker sandbox. Symlinking is
+          // faster, but install/build tools can then mutate the original repo's
+          // node_modules, virtualenv, caches, or configured data invisibly.
+          ({ sandbox, linkedSharedPaths } = await cloneSandbox(
+            options.projectPath,
+            root,
+            id,
+            'copy',
+            sharedPathSnapshot,
+          ));
           await seedBaseline(sandbox, root, id, baseline);
+          options.signal?.throwIfAborted();
           const worker = await options.run(item, sandbox, (line) => options.onLog?.(item, line));
+          options.signal?.throwIfAborted();
           const files = await sandboxChangedFiles(sandbox, linkedSharedPaths);
           const outside = files.filter((file) => !pathWithinScope(file, item.allowedPaths));
           if (outside.length > 0) {
@@ -104,6 +129,7 @@ export async function runIsolatedFixBatch<T extends IsolatedFixItem>(options: {
         }
       },
     );
+    options.signal?.throwIfAborted();
 
     const runs = settled.map((entry, index): SandboxRun<T> => entry.value ?? ({
       item: options.items[index], sandbox: '', linkedSharedPaths: [], success: false, filesChanged: [],
@@ -129,11 +155,14 @@ export async function runIsolatedFixBatch<T extends IsolatedFixItem>(options: {
     for (const run of runs) {
       if (!run.success || !run.sandbox) continue;
       try {
+        options.signal?.throwIfAborted();
+        const abortIfNeeded = () => options.signal?.throwIfAborted();
         const promoted = await promoteValidatedFiles(
           options.projectPath,
           run.sandbox,
           run.filesChanged,
           run.linkedSharedPaths,
+          { beforeRemove: abortIfNeeded, beforeWrite: abortIfNeeded },
         );
         if (promoted.length === 0) {
           run.success = false;

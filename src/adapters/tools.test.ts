@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { TOOL_DEFINITIONS, executeTool, createReadCache, ToolCall, buildBashToolEnv } from './tools.js';
+import { TOOL_DEFINITIONS, executeTool, createReadCache, ToolCall, buildBashToolEnv, validatePath } from './tools.js';
 import { homedir } from 'node:os';
 
 // search_memory loads the memory core lazily; stub the shared helper so the tool
@@ -347,6 +347,15 @@ describe('Safety guards (isCommandBlocked via bash)', () => {
 // ──────────────────────────────────────────────
 
 describe('Path validation', () => {
+  it('accepts project files when cwd is relative', () => {
+    expect(validatePath('package.json', '.')).toBe(path.resolve('package.json'));
+  });
+
+  it('does not accept a sibling whose name only shares the project prefix', () => {
+    expect(() => validatePath('/workspace/repository-evil/secret', '/workspace/repository'))
+      .toThrow('outside the project root');
+  });
+
   it('rejects paths outside cwd and /tmp', async () => {
     const result = await executeTool(
       makeCall('read_file', { path: '/etc/passwd' }),

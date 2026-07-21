@@ -460,6 +460,8 @@ export interface PromptTemplates {
     completionCriteria?: string[];
     /** Pre-rendered deterministic harness evidence; empty when verification is unavailable. */
     verificationEvidence?: string;
+    /** Repository-local results from earlier review commands, rendered as untrusted data. */
+    priorReviewContext?: string;
     /**
      * 'change' (default): review a worker's diff against requirements — the pair
      * pipeline. 'audit': evaluate existing files with no diff/worker — the

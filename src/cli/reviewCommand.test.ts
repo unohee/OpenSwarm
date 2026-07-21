@@ -204,6 +204,17 @@ describe('runReviewCommand (INT-1955)', () => {
     expect(review).not.toHaveBeenCalled();
   });
 
+  it('does not review repository-local OpenSwarm logs as user code', async () => {
+    const review = vi.fn();
+    const out = await runReviewCommand({}, {
+      getChangedFiles: async () => ['.openswarm/review-history/old.json', '.openswarm/audit/audit-old.md'],
+      review,
+      log: () => {},
+    });
+    expect(out).toBeNull();
+    expect(review).not.toHaveBeenCalled();
+  });
+
   it('runs the reviewer over changed files and prints the verdict', async () => {
     const logs: string[] = [];
     const review = vi.fn(async () => ({ decision: 'approve', feedback: 'ok' }) as ReviewResult);
@@ -303,6 +314,47 @@ describe('runReviewCommand (INT-1955)', () => {
       },
     );
     expect(fileFollowups).not.toHaveBeenCalled();
+  });
+
+  it('forwards prior review logs, suppresses unchanged duplicate follow-ups, and saves the deduped result', async () => {
+    const review = vi.fn(async () => ({
+      decision: 'revise',
+      feedback: 'still present',
+      issues: ['x.ts is still broken'],
+      recommendedActions: [{ type: 'bug', title: 'Fix X', location: 'x.ts:9' }],
+    }) as ReviewResult);
+    const saveHistory = vi.fn(async () => undefined);
+    const logs: string[] = [];
+
+    const result = await runReviewCommand({}, {
+      getChangedFiles: async () => ['x.ts'],
+      loadHistory: async () => ({
+        context: '[2026-07-20] prior review: Fix X',
+        currentHashes: { 'x.ts': 'file:same' },
+        records: [{
+          version: 1 as const,
+          createdAt: '2026-07-20T00:00:00.000Z',
+          kind: 'direct' as const,
+          files: ['x.ts'],
+          fileHashes: { 'x.ts': 'file:same' },
+          review: {
+            decision: 'revise' as const,
+            feedback: 'first pass',
+            recommendedActions: [{ type: 'bug', title: 'Fix X', location: 'x.ts:1' }],
+          },
+        }],
+      }),
+      review,
+      saveHistory,
+      startProgress: () => null,
+      log: (line) => logs.push(line),
+    });
+
+    expect(review.mock.calls[0]?.[3]).toBe('[2026-07-20] prior review: Fix X');
+    expect(result?.issues).toEqual(['x.ts is still broken']);
+    expect(result?.recommendedActions).toEqual([]);
+    expect(saveHistory).toHaveBeenCalledWith(process.cwd(), ['x.ts'], result, undefined);
+    expect(logs.join('\n')).toContain('Suppressed 1 duplicate follow-up');
   });
 });
 

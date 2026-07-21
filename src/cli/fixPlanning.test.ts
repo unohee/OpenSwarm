@@ -1,10 +1,11 @@
+import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../knowledge/index.js', () => ({
-  getGraph: vi.fn().mockResolvedValue(null),
+  scanProject: vi.fn().mockRejectedValue(new Error('graph unavailable')),
   toProjectSlug: (path: string) => path,
 }));
 vi.mock('../memory/repoKnowledge.js', () => ({
@@ -55,6 +56,23 @@ describe('buildFixRepositoryContext', () => {
     const ready = await buildFixRepositoryContext(root, plan, 'fix review issue');
     expect(ready.preflight).toEqual({ ready: true, issues: [] });
   });
+
+  it('discovers tracked nested ecosystem manifests and scans the exact worktree', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'openswarm-fix-context-rust-'));
+    roots.push(root);
+    await mkdir(join(root, 'crates', 'core'), { recursive: true });
+    await writeFile(join(root, 'Cargo.toml'), '[workspace]\nmembers = ["crates/core"]\n');
+    await writeFile(join(root, 'Cargo.lock'), '# lock\n');
+    await writeFile(join(root, 'crates', 'core', 'Cargo.toml'), '[package]\nname = "core"\nversion = "0.1.0"\n');
+    execFileSync('git', ['init', '-q'], { cwd: root });
+    execFileSync('git', ['add', '-A'], { cwd: root });
+
+    const result = await buildFixRepositoryContext(root, undefined, 'fix rust review issue');
+
+    expect(result.manifests).toEqual(['Cargo.lock', 'Cargo.toml', 'crates/core/Cargo.toml']);
+    const { scanProject } = await import('../knowledge/index.js');
+    expect(scanProject).toHaveBeenCalledWith(root, root);
+  });
 });
 
 describe('planFixUnits', () => {
@@ -81,7 +99,7 @@ describe('planFixUnits', () => {
     expect(related.targetLabels.sort()).toEqual(['app/a', 'app/b']);
     expect(related.dependencyFiles).toContain('packages/app/src/caller.ts');
     expect(related.testFiles).toContain('packages/app/src/a.test.ts');
-    expect(related.manifestFiles).toEqual(['packages/app/package.json']);
+    expect(related.manifestFiles).toEqual(['package.json', 'packages/app/package.json']);
     expect(related.allowedPaths).toContain('packages/app/src/caller.ts');
   });
 
@@ -89,9 +107,64 @@ describe('planFixUnits', () => {
     const units = planFixUnits([
       { area: { label: 'a', dir: 'src/a', files: ['src/a/x.ts'] }, review: { decision: 'revise', feedback: '' } },
       { area: { label: 'b', dir: 'src/b', files: ['src/b/y.ts'] }, review: { decision: 'revise', feedback: '' } },
-    ], context());
+    ], context({
+      dependencyMap: {
+        'src/a/x.ts': { imports: [], dependents: [], tests: [] },
+        'src/b/y.ts': { imports: [], dependents: [], tests: [] },
+      },
+    }));
     expect(units).toHaveLength(2);
     expect(pathWithinScope('src/a/new.test.ts', ['src/a'])).toBe(true);
     expect(pathWithinScope('src/ab/escape.ts', ['src/a'])).toBe(false);
+  });
+
+  it('merges targets connected through transitive callers/imports and scopes the full closure', () => {
+    const units = planFixUnits([
+      { area: { label: 'entry', dir: 'src/entry', files: ['src/entry.ts'] }, review: { decision: 'revise', feedback: '' } },
+      { area: { label: 'leaf', dir: 'src/leaf', files: ['src/leaf.ts'] }, review: { decision: 'revise', feedback: '' } },
+    ], context({
+      dependencyMap: {
+        'src/entry.ts': { imports: ['src/middle.ts'], dependents: [], tests: [] },
+        'src/middle.ts': { imports: ['src/leaf.ts'], dependents: ['src/entry.ts'], tests: [] },
+        'src/leaf.ts': { imports: [], dependents: ['src/middle.ts', 'src/deep-caller.ts'], tests: ['test/leaf.test.ts'] },
+        'src/deep-caller.ts': { imports: ['src/leaf.ts'], dependents: [], tests: [] },
+        'test/leaf.test.ts': { imports: ['src/leaf.ts'], dependents: [], tests: [] },
+      },
+    }));
+
+    expect(units).toHaveLength(1);
+    expect(units[0].targetLabels.sort()).toEqual(['entry', 'leaf']);
+    expect(units[0].dependencyFiles).toEqual(expect.arrayContaining(['src/middle.ts', 'src/deep-caller.ts']));
+    expect(units[0].testFiles).toContain('test/leaf.test.ts');
+    expect(units[0].allowedPaths).toEqual(expect.arrayContaining(['src/middle.ts', 'src/deep-caller.ts', 'test']));
+  });
+
+  it('uses one repository-wide unit when the graph is missing or only partially covers targets', () => {
+    const units = planFixUnits([
+      { area: { label: 'a', dir: 'src/a', files: ['src/a/x.rs'] }, review: { decision: 'revise', feedback: '' } },
+      { area: { label: 'b', dir: 'src/b', files: ['src/b/y.rs'] }, review: { decision: 'revise', feedback: '' } },
+    ], context({ dependencyGraphAvailable: true, dependencyMap: {} }));
+
+    expect(units).toHaveLength(1);
+    expect(units[0].dependencyGraphBacked).toBe(false);
+    expect(units[0].allowedPaths).toEqual(['.']);
+    expect(pathWithinScope('src/shared/contract.rs', units[0].allowedPaths)).toBe(true);
+    expect(pathWithinScope('../escape.rs', units[0].allowedPaths)).toBe(false);
+  });
+
+  it('scopes root source files exactly and keeps manifest plus lockfile atomic', () => {
+    const [unit] = planFixUnits([
+      { area: { label: '.', dir: '.', files: ['main.js'] }, review: { decision: 'revise', feedback: '' } },
+    ], context({
+      manifests: ['package-lock.json', 'package.json'],
+      dependencyMap: { 'main.js': { imports: [], dependents: [], tests: [] } },
+    }));
+
+    expect(unit.allowedPaths).not.toContain('.');
+    expect(unit.manifestFiles).toEqual(['package-lock.json', 'package.json']);
+    expect(pathWithinScope('main.js', unit.allowedPaths)).toBe(true);
+    expect(pathWithinScope('package.json', unit.allowedPaths)).toBe(true);
+    expect(pathWithinScope('package-lock.json', unit.allowedPaths)).toBe(true);
+    expect(pathWithinScope('unrelated.js', unit.allowedPaths)).toBe(false);
   });
 });

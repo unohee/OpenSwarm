@@ -2,11 +2,12 @@
 // OpenSwarm - repository-aware fix planning
 // ============================================
 
+import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import type { ReviewResult } from '../agents/agentPair.js';
 import type { TrustedVerifyPlan } from '../agents/deterministicTester.js';
-import { getGraph, toProjectSlug } from '../knowledge/index.js';
+import { scanProject, toProjectSlug } from '../knowledge/index.js';
 import { recallRepoKnowledge, repoKey, type RepoMemoryBrief } from '../memory/repoKnowledge.js';
 import { loadRepoMetadata } from '../support/repoMetadata.js';
 import { resolveSharedPaths } from '../support/worktreeManager.js';
@@ -43,6 +44,8 @@ export interface FixUnit {
   dependencyFiles: string[];
   testFiles: string[];
   manifestFiles: string[];
+  /** True only when every primary file was covered by a fresh dependency graph. */
+  dependencyGraphBacked: boolean;
   /** Exact files or directories the worker may change. */
   allowedPaths: string[];
 }
@@ -53,6 +56,51 @@ interface PackageManifest {
   dependencies?: unknown;
   devDependencies?: unknown;
   optionalDependencies?: unknown;
+}
+
+type ManifestFamily = 'node' | 'python' | 'rust' | 'go';
+
+const ROOT_MANIFEST_NAMES = [
+  'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'yarn.lock',
+  'package-lock.json', 'npm-shrinkwrap.json', 'bun.lock', 'bun.lockb',
+  'pyproject.toml', 'requirements.txt', 'uv.lock', 'poetry.lock', 'Pipfile', 'Pipfile.lock',
+  'Cargo.toml', 'Cargo.lock', 'go.mod', 'go.sum', 'go.work', 'go.work.sum',
+] as const;
+
+function manifestFamily(path: string): ManifestFamily | undefined {
+  const name = basename(path);
+  if (name === 'package.json' || name === 'pnpm-lock.yaml' || name === 'pnpm-workspace.yaml'
+    || name === 'yarn.lock' || name === 'package-lock.json' || name === 'npm-shrinkwrap.json'
+    || name === 'bun.lock' || name === 'bun.lockb') return 'node';
+  if (name === 'pyproject.toml' || /^requirements(?:[-_.].*)?\.txt$/i.test(name)
+    || name === 'uv.lock' || name === 'poetry.lock' || name === 'Pipfile' || name === 'Pipfile.lock') return 'python';
+  if (name === 'Cargo.toml' || name === 'Cargo.lock') return 'rust';
+  if (name === 'go.mod' || name === 'go.sum' || name === 'go.work' || name === 'go.work.sum') return 'go';
+  return undefined;
+}
+
+function sourceFamily(path: string): ManifestFamily | undefined {
+  const extension = extname(path).toLowerCase();
+  if (['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'].includes(extension)) return 'node';
+  if (extension === '.py' || extension === '.pyw') return 'python';
+  if (extension === '.rs') return 'rust';
+  if (extension === '.go') return 'go';
+  return undefined;
+}
+
+function trackedManifestFiles(projectPath: string): string[] {
+  try {
+    return execFileSync('git', ['ls-files', '-z'], {
+      cwd: projectPath,
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+      .split('\0')
+      .filter((path) => path && manifestFamily(path));
+  } catch {
+    return [];
+  }
 }
 
 function readPackageManifest(projectPath: string): PackageManifest | null {
@@ -105,12 +153,8 @@ export async function buildFixRepositoryContext(
   const packageManager = detectPackageManager(projectPath, pkg);
   const workspaces = readWorkspaces(pkg);
   const manifests = new Set<string>();
-  const rootManifestNames = [
-    'package.json', 'pnpm-lock.yaml', 'yarn.lock', 'package-lock.json', 'bun.lock', 'bun.lockb',
-    'pyproject.toml', 'requirements.txt', 'uv.lock', 'poetry.lock',
-    'Cargo.toml', 'Cargo.lock', 'go.mod', 'go.sum',
-  ];
-  for (const name of rootManifestNames) if (existsSync(join(projectPath, name))) manifests.add(name);
+  for (const name of ROOT_MANIFEST_NAMES) if (existsSync(join(projectPath, name))) manifests.add(name);
+  for (const path of trackedManifestFiles(projectPath)) manifests.add(path);
   for (const directory of Object.keys(plan?.packageJsonByDirectory ?? {})) {
     manifests.add(directory ? join(directory, 'package.json') : 'package.json');
   }
@@ -136,18 +180,18 @@ export async function buildFixRepositoryContext(
   const dependencyMap: Record<string, FixDependencyMapEntry> = {};
   let dependencyGraphAvailable = false;
   try {
-    const graph = await getGraph(toProjectSlug(canonicalRoot));
-    if (graph) {
-      dependencyGraphAvailable = true;
-      for (const node of graph.getAllNodes()) {
-        if (node.type !== 'module' && node.type !== 'test_file') continue;
-        dependencyMap[node.id] = {
-          imports: graph.getImports(node.id).map((item) => item.id),
-          dependents: graph.getDependents(node.id).map((item) => item.id),
-          tests: graph.getTests(node.id).map((item) => item.id),
-        };
-      }
+    // Fix planning must describe the exact audit worktree, not a possibly stale
+    // graph persisted for another branch or an older canonical checkout.
+    const graph = await scanProject(projectPath, toProjectSlug(canonicalRoot));
+    for (const node of graph.getAllNodes()) {
+      if (node.type !== 'module' && node.type !== 'test_file') continue;
+      dependencyMap[node.id] = {
+        imports: graph.getImports(node.id).map((item) => item.id),
+        dependents: graph.getDependents(node.id).map((item) => item.id),
+        tests: graph.getTests(node.id).map((item) => item.id),
+      };
     }
+    dependencyGraphAvailable = Object.keys(dependencyMap).length > 0;
   } catch {
     dependencyGraphAvailable = false;
   }
@@ -188,39 +232,105 @@ class DisjointSet {
   }
 }
 
-function nearestManifests(files: string[], manifests: string[]): string[] {
+function relevantManifests(files: string[], manifests: string[]): string[] {
   const selected = new Set<string>();
   for (const file of files) {
-    let best: string | undefined;
-    for (const manifest of manifests) {
+    const family = sourceFamily(file);
+    const candidates = manifests.filter((manifest) => {
       const directory = dirname(manifest);
-      if (directory === '.' || file === directory || file.startsWith(`${directory}/`)) {
-        if (!best || directory.length > dirname(best).length) best = manifest;
-      }
-    }
-    if (best) selected.add(best);
+      const ancestor = directory === '.' || file === directory || file.startsWith(`${directory}/`);
+      return ancestor && (!family || manifestFamily(manifest) === family);
+    });
+    // A nested package manifest and its workspace-root lock/config files are one
+    // dependency contract. Include every ancestor manifest in the same ecosystem,
+    // rather than arbitrarily selecting one filename from the nearest directory.
+    for (const manifest of candidates) selected.add(manifest);
   }
   return [...selected];
+}
+
+function scopedDirectory(directory: string, files: string[]): string[] {
+  return directory === '.' ? files : [directory];
+}
+
+function dependencyClosure(
+  files: Iterable<string>,
+  dependencyMap: Record<string, FixDependencyMapEntry>,
+): { related: Set<string>; tests: Set<string> } {
+  const related = new Set(files);
+  const tests = new Set<string>();
+  const queue = [...related];
+  for (let index = 0; index < queue.length; index++) {
+    const entry = dependencyMap[queue[index]];
+    if (!entry) continue;
+    for (const test of entry.tests) tests.add(test);
+    for (const neighbor of [...entry.imports, ...entry.dependents, ...entry.tests]) {
+      if (related.has(neighbor)) continue;
+      related.add(neighbor);
+      queue.push(neighbor);
+    }
+  }
+  return { related, tests };
+}
+
+function buildFixUnit(
+  members: FixPlanningTarget[],
+  context: FixRepositoryContext,
+  dependencyGraphBacked: boolean,
+): FixUnit {
+  const primary = new Set(members.flatMap((member) => member.area.files));
+  const dependencies = new Set<string>();
+  const tests = new Set<string>();
+  if (dependencyGraphBacked) {
+    const closure = dependencyClosure(primary, context.dependencyMap);
+    for (const test of closure.tests) if (!primary.has(test)) tests.add(test);
+    for (const related of closure.related) {
+      if (!primary.has(related) && !tests.has(related)) dependencies.add(related);
+    }
+  }
+  const manifestFiles = relevantManifests([...primary, ...dependencies], context.manifests);
+  const allowed = dependencyGraphBacked
+    ? new Set<string>([
+        ...members.flatMap((member) => scopedDirectory(member.area.dir, member.area.files)),
+        ...dependencies,
+        ...[...tests].flatMap((file) => scopedDirectory(dirname(file), [file])),
+        ...manifestFiles,
+      ])
+    // No/partial graph means independence and closure are unproven. Use one
+    // repository-wide sandbox worker instead of several falsely isolated workers.
+    : new Set<string>(['.']);
+  const labels = members.map((member) => member.area.label);
+  return {
+    label: labels.length === 1 ? labels[0] : `${labels[0]} +${labels.length - 1} related`,
+    targetLabels: labels,
+    targets: members,
+    primaryFiles: [...primary].sort(),
+    dependencyFiles: [...dependencies].sort(),
+    testFiles: [...tests].sort(),
+    manifestFiles: manifestFiles.sort(),
+    dependencyGraphBacked,
+    allowedPaths: [...allowed].filter(Boolean).sort(),
+  };
 }
 
 /** Merge related audit areas into fix units; independent components may run in parallel. */
 export function planFixUnits(targets: FixPlanningTarget[], context: FixRepositoryContext): FixUnit[] {
   if (targets.length === 0) return [];
+  const graphCoversTargets = context.dependencyGraphAvailable && targets.every((target) =>
+    target.area.files.every((file) => context.dependencyMap[file] !== undefined));
+  if (!graphCoversTargets) return [buildFixUnit(targets, context, false)];
+
   const sets = new DisjointSet(targets.length);
-  const owner = new Map<string, number>();
-  targets.forEach((target, index) => target.area.files.forEach((file) => owner.set(file, index)));
+  const closures = targets.map((target) =>
+    dependencyClosure(target.area.files, context.dependencyMap).related);
 
   targets.forEach((target, index) => {
     targets.forEach((other, otherIndex) => {
-      if (index < otherIndex && target.area.dir === other.area.dir) sets.union(index, otherIndex);
+      if (index >= otherIndex) return;
+      const sameDirectory = target.area.dir === other.area.dir;
+      const connected = [...closures[index]].some((file) => closures[otherIndex].has(file));
+      if (sameDirectory || connected) sets.union(index, otherIndex);
     });
-    for (const file of target.area.files) {
-      const entry = context.dependencyMap[file];
-      for (const related of [...(entry?.imports ?? []), ...(entry?.dependents ?? []), ...(entry?.tests ?? [])]) {
-        const relatedOwner = owner.get(related);
-        if (relatedOwner !== undefined) sets.union(index, relatedOwner);
-      }
-    }
   });
 
   const components = new Map<number, FixPlanningTarget[]>();
@@ -231,36 +341,7 @@ export function planFixUnits(targets: FixPlanningTarget[], context: FixRepositor
     components.set(root, list);
   });
 
-  return [...components.values()].map((members) => {
-    const primary = new Set(members.flatMap((member) => member.area.files));
-    const dependencies = new Set<string>();
-    const tests = new Set<string>();
-    for (const file of primary) {
-      const entry = context.dependencyMap[file];
-      for (const related of [...(entry?.imports ?? []), ...(entry?.dependents ?? [])]) {
-        if (!primary.has(related)) dependencies.add(related);
-      }
-      for (const test of entry?.tests ?? []) if (!primary.has(test)) tests.add(test);
-    }
-    const manifestFiles = nearestManifests([...primary, ...dependencies], context.manifests);
-    const allowed = new Set<string>([
-      ...members.map((member) => member.area.dir),
-      ...dependencies,
-      ...[...tests].map((file) => dirname(file)),
-      ...manifestFiles,
-    ]);
-    const labels = members.map((member) => member.area.label);
-    return {
-      label: labels.length === 1 ? labels[0] : `${labels[0]} +${labels.length - 1} related`,
-      targetLabels: labels,
-      targets: members,
-      primaryFiles: [...primary].sort(),
-      dependencyFiles: [...dependencies].sort(),
-      testFiles: [...tests].sort(),
-      manifestFiles: manifestFiles.sort(),
-      allowedPaths: [...allowed].filter(Boolean).sort(),
-    };
-  });
+  return [...components.values()].map((members) => buildFixUnit(members, context, true));
 }
 
 export function workerContextForFixUnit(unit: FixUnit, context: FixRepositoryContext) {
@@ -279,7 +360,7 @@ export function workerContextForFixUnit(unit: FixUnit, context: FixRepositoryCon
       manifests: context.manifests,
       verificationCommands: context.verificationCommands,
       sharedPaths: context.sharedPaths,
-      dependencyGraphAvailable: context.dependencyGraphAvailable,
+      dependencyGraphAvailable: unit.dependencyGraphBacked,
     },
   };
 }
@@ -287,8 +368,11 @@ export function workerContextForFixUnit(unit: FixUnit, context: FixRepositoryCon
 /** Keep path checks platform-safe and reject sibling-prefix tricks. */
 export function pathWithinScope(file: string, allowedPaths: string[]): boolean {
   const normalized = file.replaceAll('\\', '/').replace(/^\.\//, '');
+  if (!normalized || isAbsolute(normalized) || /^[A-Za-z]:\//.test(normalized)
+    || normalized.split('/').includes('..')) return false;
   return allowedPaths.some((allowed) => {
     const scope = allowed.replaceAll('\\', '/').replace(/^\.\//, '').replace(/\/$/, '');
+    if (scope === '.') return true;
     return normalized === scope || normalized.startsWith(`${scope}/`);
   });
 }

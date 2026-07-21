@@ -46,7 +46,14 @@ vi.mock('../support/worktreeManager.js', async () => {
   };
 });
 
-const { filePerAreaFollowups, filePmSynthesizedIssues, reviewMaxResultFailed, loadVerifyConfigBestEffort, shipAuditWorktree } =
+const {
+  filePerAreaFollowups,
+  filePmSynthesizedIssues,
+  reviewMaxResultFailed,
+  loadVerifyConfigBestEffort,
+  dedupeAuditRunHistory,
+  shipAuditWorktree,
+} =
   await import('./reviewMaxCommand.js');
 
 function makeRun(actions: ReviewResult['recommendedActions']): AuditRun {
@@ -101,6 +108,40 @@ describe('reviewMaxResultFailed', () => {
   it('preserves report-only review semantics without --fix', () => {
     expect(reviewMaxResultFailed({ decision: 'revise' }, false)).toBe(false);
     expect(reviewMaxResultFailed({ decision: 'reject' }, false)).toBe(true);
+  });
+});
+
+describe('dedupeAuditRunHistory', () => {
+  it('removes unchanged repeated area follow-ups and rebuilds the aggregate summary', () => {
+    const original = makeRun([{ type: 'bug', title: 'Fix it', location: 'src/a.ts:9' }]);
+    original.results[0]!.review!.issues = ['still broken'];
+    const loaded = {
+      legacyExcerpts: [],
+      records: [{
+        version: 1 as const,
+        createdAt: '2026-07-20T00:00:00.000Z',
+        kind: 'max' as const,
+        files: ['src/a.ts'],
+        fileHashes: { 'src/a.ts': 'file:same' },
+        areas: [{
+          label: 'src',
+          files: ['src/a.ts'],
+          review: {
+            decision: 'revise' as const,
+            feedback: 'first pass',
+            recommendedActions: [{ type: 'bug', title: 'Fix it', location: 'src/a.ts:1' }],
+          },
+        }],
+      }],
+    };
+
+    const result = dedupeAuditRunHistory(original, loaded, { 'src/a.ts': 'file:same' });
+
+    expect(result.removed).toBe(1);
+    expect(result.run.results[0]?.review?.issues).toEqual(['still broken']);
+    expect(result.run.results[0]?.review?.recommendedActions).toEqual([]);
+    expect(result.run.summary.recommendedActions).toEqual([]);
+    expect(result.run.summary.issues).toEqual(['[src] still broken']);
   });
 });
 

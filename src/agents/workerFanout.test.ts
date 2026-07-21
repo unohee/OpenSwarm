@@ -1,7 +1,7 @@
 import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { WorkerOptions } from './worker.js';
@@ -26,6 +26,28 @@ const baseWorkerOptions = {
   model: 'gpt-5.4-mini',
   timeoutMs: 0,
 } as unknown as WorkerOptions;
+
+describe('captureBaselinePatch', () => {
+  it('tolerates an ignored shared dependency path that is absent from the temporary index', async () => {
+    const repo = await mkdtemp(path.join(tmpdir(), 'osw-fanout-ignored-shared-'));
+    try {
+      await writeFile(path.join(repo, '.gitignore'), 'node_modules/\n', 'utf8');
+      await writeFile(path.join(repo, 'README.md'), 'base\n', 'utf8');
+      initRepo(repo);
+      await mkdir(path.join(repo, 'node_modules', 'pkg'), { recursive: true });
+      await writeFile(path.join(repo, 'node_modules', 'pkg', 'index.js'), 'ignored\n', 'utf8');
+      await writeFile(path.join(repo, 'README.md'), 'base\ndirty\n', 'utf8');
+
+      const { captureBaselinePatch } = await import('./workerFanout.js');
+      const patch = await captureBaselinePatch(repo);
+
+      expect(patch).toContain('README.md');
+      expect(patch).not.toContain('node_modules');
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('runWorkerFanout on a dirty worktree', () => {
   beforeEach(() => {

@@ -38,6 +38,8 @@ export interface ReviewerOptions {
   guardWarnings?: string[];
   /** Deterministic command evidence produced by the harness tester. */
   verificationEvidence?: VerifyEvidence[];
+  /** Relevant repository-local logs from earlier review commands. */
+  priorReviewContext?: string;
   /**
    * 'change' (default): review a worker's diff. 'audit': evaluate existing files
    * with no diff/worker (the `review --max` codebase audit). (INT-2006)
@@ -118,6 +120,7 @@ export function buildReviewerPrompt(options: ReviewerOptions): string {
       taskDescription: options.taskDescription,
       workerReport: `- **Files under audit (${files.length}):** ${filesSummary}`,
       mode: 'audit',
+      priorReviewContext: options.priorReviewContext,
     });
   }
 
@@ -130,6 +133,7 @@ export function buildReviewerPrompt(options: ReviewerOptions): string {
       taskDescription: options.taskDescription,
       workerReport: `- **Files changed (${files.length}):** ${filesSummary}`,
       mode: 'direct',
+      priorReviewContext: options.priorReviewContext,
     });
   }
 
@@ -156,6 +160,7 @@ ${guardSection}`;
     workerReport,
     completionCriteria: options.completionCriteria,
     verificationEvidence: renderVerifyEvidence(options.verificationEvidence ?? []),
+    priorReviewContext: options.priorReviewContext,
   });
 }
 
