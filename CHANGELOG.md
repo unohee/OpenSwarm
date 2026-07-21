@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.18.1 — 2026-07-21
+
+### Fixed
+
+- **A 429 is no longer read as a spent usage limit** — every HTTP adapter promoted any 429 to a rate limit, but providers also 429 for short-window throttling (concurrency, requests/min). `review --max` runs 4-16 subagents at once, and one area reporting a limit makes the audit skip every remaining area, so a routine throttle reported `Codex usage limit hit` and fell back to claude on an account with quota to spare. A 429 is now only a limit when the response proves it — a quota signature in the body, or `x-codex-primary-used-percent` at 100 — and a throttle is waited out and retried instead: `Retry-After` when the server sends one (capped at 120s), otherwise a 5s/15s/40s backoff with jitter so concurrent subagents don't retry in lockstep. The wait is abortable and the budget is per API call; a 429 that survives it fails that one call as an infra error rather than the whole run as a limit. Applies to codex-responses, gpt, openrouter, atlascloud and local — the last of which has no quota at all, so its 429 (busy queue, model still loading) used to pause the scheduler for nothing. A spent quota still fails fast exactly as before, and a 402 still needs a credit signature in the body to count. (INT-2907, INT-2909)
+
 ## 0.18.0 — 2026-07-21
 
 ### Changed
