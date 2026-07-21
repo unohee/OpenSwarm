@@ -17,6 +17,7 @@ import { t } from '../locale/index.js';
 import { AuthProfileStore, ensureValidToken } from '../auth/index.js';
 import { getCodexModelIds } from './codexModels.js';
 import { codexMcpConfigFlags } from './memoryMcp.js';
+import { parseReviewerResult } from './resultParsing.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -117,7 +118,9 @@ export class CodexCliAdapter implements CliAdapter {
 
   parseReviewerOutput(raw: CliRunResult): ReviewResult {
     const resultText = extractCodexMessageText(raw.stdout);
-    return extractReviewerResultJson(resultText) || extractReviewerFromText(resultText);
+    // Event extraction is Codex-specific; reviewer parsing and the empty-output
+    // contract belong to the shared parser used by every in-process adapter.
+    return parseReviewerResult(resultText);
   }
 }
 
@@ -187,6 +190,7 @@ function extractCodexExecutedCommands(output: string): string[] {
 
 function extractCodexMessageText(output: string): string {
   let lastMessage = '';
+  let sawStructuredEvent = false;
 
   for (const line of output.split('\n')) {
     const trimmed = line.trim();
@@ -194,6 +198,7 @@ function extractCodexMessageText(output: string): string {
 
     try {
       const event = JSON.parse(trimmed);
+      if (typeof event?.type === 'string') sawStructuredEvent = true;
       if (
         event.type === 'item.completed' &&
         event.item?.type === 'agent_message' &&
@@ -206,7 +211,10 @@ function extractCodexMessageText(output: string): string {
     }
   }
 
-  return lastMessage || output;
+  // Keep the legacy plain-text fallback only when stdout was not a Codex event
+  // stream. Returning reasoning/tool NDJSON as if it were the final message makes
+  // a reasoning-only run look non-empty and fabricates a reviewer verdict. (INT-2879)
+  return lastMessage || (sawStructuredEvent ? '' : output);
 }
 
 function emitCodexStreamEvent(line: string, onLog: (line: string) => void): void {
@@ -443,110 +451,6 @@ function extractErrorMessage(text: string): string {
     return lines[0].slice(0, 200);
   }
   return 'Unknown error';
-}
-
-function extractReviewerResultJson(text: string): ReviewResult | null {
-  const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
-  if (!jsonMatch) {
-    const objMatch = text.match(/\{\s*"decision"\s*:/);
-    if (!objMatch) return null;
-
-    const startIdx = objMatch.index!;
-    let depth = 0;
-    let endIdx = startIdx;
-
-    for (let i = startIdx; i < text.length; i++) {
-      if (text[i] === '{') depth++;
-      if (text[i] === '}') {
-        depth--;
-        if (depth === 0) {
-          endIdx = i + 1;
-          break;
-        }
-      }
-    }
-
-    try {
-      return normalizeReviewResult(JSON.parse(text.slice(startIdx, endIdx)));
-    } catch {
-      return null;
-    }
-  }
-
-  try {
-    return normalizeReviewResult(JSON.parse(jsonMatch[1]));
-  } catch {
-    return null;
-  }
-}
-
-function extractReviewerFromText(text: string): ReviewResult {
-  // Prefer the reviewer's EXPLICIT verdict over scattered keyword matching — a
-  // task about "reject"/"approve" makes prose matching misclassify a revise as a
-  // reject and kill it. Default to the safe, retryable 'revise'. (INT-2485)
-  const explicit = text.match(
-    /\bdecision\b\s*[:=-]?\s*["'`]?\s*(approve[d]?|reject(?:ed)?|revis(?:e|ion)|request[- ]?changes)/i,
-  );
-  let decision: ReviewResult['decision'] = 'revise';
-  if (explicit) {
-    const verdict = explicit[1].toLowerCase();
-    decision = verdict.startsWith('approv') ? 'approve' : verdict.startsWith('reject') ? 'reject' : 'revise';
-  }
-
-  return {
-    decision,
-    feedback: extractSummary(text),
-    issues: extractBulletsAfter(text, /issues?:/i),
-    suggestions: extractBulletsAfter(text, /suggestions?:/i),
-  };
-}
-
-function normalizeReviewResult(parsed: Record<string, unknown>): ReviewResult {
-  const decision = parsed.decision === 'approve' || parsed.decision === 'reject'
-    ? parsed.decision
-    : 'revise';
-
-  return {
-    decision,
-    feedback: typeof parsed.feedback === 'string' ? parsed.feedback : t('common.fallback.noSummary'),
-    issues: Array.isArray(parsed.issues)
-      ? parsed.issues.filter((v): v is string => typeof v === 'string')
-      : [],
-    suggestions: Array.isArray(parsed.suggestions)
-      ? parsed.suggestions.filter((v): v is string => typeof v === 'string')
-      : [],
-    recommendedActions: Array.isArray(parsed.recommendedActions)
-      ? parsed.recommendedActions
-          .filter((a): a is Record<string, unknown> => !!a && typeof a === 'object')
-          .map((a) => ({
-            type: typeof a.type === 'string' && a.type ? a.type : 'follow-up',
-            title: typeof a.title === 'string' ? a.title.trim() : '',
-            location: typeof a.location === 'string' ? a.location : undefined,
-          }))
-          .filter((a) => a.title.length > 0)
-      : undefined,
-  };
-}
-
-function extractBulletsAfter(text: string, heading: RegExp): string[] {
-  const lines = text.split('\n');
-  const start = lines.findIndex((line) => heading.test(line));
-  if (start < 0) return [];
-
-  const items: string[] = [];
-  for (const line of lines.slice(start + 1)) {
-    const trimmed = line.trim();
-    if (!trimmed) {
-      if (items.length > 0) break;
-      continue;
-    }
-    if (!trimmed.startsWith('-') && !trimmed.startsWith('*')) {
-      if (items.length > 0) break;
-      continue;
-    }
-    items.push(trimmed.replace(/^[-*]\s*/, ''));
-  }
-  return items;
 }
 
 function truncate(s: string, max: number): string {

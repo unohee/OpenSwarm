@@ -441,7 +441,11 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
         });
         continue;
       }
-      finalText = assistantMsg.content ?? '';
+      // A whitespace-only no-tools response is not a user-visible final answer.
+      // Normalize it to empty so the final-answer recovery below retries instead
+      // of returning an effectively blank success. (INT-2879)
+      const content = assistantMsg.content;
+      finalText = typeof content === 'string' && content.trim() ? content : '';
       break;
     }
 
@@ -538,42 +542,63 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
   }
 
   // Final answer turn — maxTurns/타임아웃으로 끊겼는데 모델이 최종 텍스트를 못 낸 경우,
-  // 도구 없이 마지막 1회 호출로 결론을 강제한다. 이게 없으면 진단·분석형 작업이
+  // 도구 없이 호출해 결론을 강제한다. 이게 없으면 진단·분석형 작업이
   // 끝까지 도구만 호출하다 빈 결과("(no summary)")로 끝난다 — SWE 하이브리드 진단
   // 단계에서 발견된 결함.
-  // Note: an empty-string finalText ('') intentionally triggers this too — an
-  // empty final answer is worthless, so the one extra call to salvage a real
-  // conclusion is the whole point, not an accidental cost (INT-1442 part 3).
+  // 첫 salvage가 reasoning-only 응답처럼 사용자에게 보이는 content를 하나도 내지
+  // 않으면 딱 한 번 재시도한다. 두 번 모두 비면 성공/REVISE로 위장하지 않고 실패로
+  // 올려 보내 reviewer/worker 호출자가 명시적으로 처리하게 한다. (INT-1442, INT-2879)
   if (!finalText && apiCallCount > 0) {
-    onLog?.('▸ Final answer turn (no tools) — loop ended without a final message');
+    const maxFinalAnswerAttempts = 2;
     messages.push({
       role: 'user',
       content:
         "You've reached this turn's step limit, so stop calling tools now. Using everything " +
-        'above, write your final answer as plain text — what you accomplished, the key result, ' +
-        'and anything still left to do. Do not mention step/tool limits or "budget" to the user.',
+        'above, write a non-empty final answer now. Follow the output format requested in the ' +
+        'original task exactly. Do not mention step/tool limits or "budget" to the user.',
     });
-    try {
-      const response = await callApi(messages, []);
-      if (response.usage) {
-        totalTokens += response.usage.prompt_tokens + response.usage.completion_tokens;
-        inputTokens += response.usage.prompt_tokens;
-        outputTokens += response.usage.completion_tokens;
-        cachedTokens += response.usage.cached_tokens ?? 0;
+
+    for (let attempt = 1; attempt <= maxFinalAnswerAttempts && !finalText; attempt++) {
+      if (attempt === 1) {
+        onLog?.('▸ Final answer turn (no tools) — loop ended without a final message');
+      } else {
+        onLog?.('↻ Final answer was empty — retrying once (no tools)');
+        messages.push({
+          role: 'user',
+          content:
+            'Your previous final-answer attempt returned no user-visible text. Respond now with ' +
+            'the complete, non-empty final answer in the exact format requested by the original task.',
+        });
       }
-      apiCallCount++;
-      finalText = response.choices?.[0]?.message?.content ?? '';
-    } catch (err) {
-      // A rate limit on the salvage call must still propagate — swallowing it
-      // here would return an empty result the scheduler reads as a plain failure
-      // instead of pausing. Mirror the main call path: preserve a typed
-      // RateLimitError, then re-detect an untyped one from the message. (INT-2519)
-      if (err instanceof RateLimitError) throw err;
-      const msg = err instanceof Error ? err.message : String(err);
-      const rl = detectRateLimit('', msg);
-      if (rl) throw rl;
-      if (isInfraError(err)) throw err; // infra on the salvage call → infra_error, not fake result (INT-2520)
-      onLog?.(`✖ Final answer turn failed: ${msg}`);
+
+      try {
+        const response = await callApi(messages, []);
+        if (response.usage) {
+          totalTokens += response.usage.prompt_tokens + response.usage.completion_tokens;
+          inputTokens += response.usage.prompt_tokens;
+          outputTokens += response.usage.completion_tokens;
+          cachedTokens += response.usage.cached_tokens ?? 0;
+        }
+        apiCallCount++;
+        const content = response.choices?.[0]?.message?.content;
+        finalText = typeof content === 'string' && content.trim() ? content : '';
+      } catch (err) {
+        // A rate limit on a salvage call must still propagate — swallowing it
+        // here would return an empty result the scheduler reads as a plain failure
+        // instead of pausing. Mirror the main call path: preserve a typed
+        // RateLimitError, then re-detect an untyped one from the message. (INT-2519)
+        if (err instanceof RateLimitError) throw err;
+        const msg = err instanceof Error ? err.message : String(err);
+        const rl = detectRateLimit('', msg);
+        if (rl) throw rl;
+        if (isInfraError(err)) throw err; // infra on salvage → infra_error, not fake result (INT-2520)
+        onLog?.(`✖ Final answer turn failed (${attempt}/${maxFinalAnswerAttempts}): ${msg}`);
+      }
+    }
+
+    if (!finalText) {
+      onLog?.('✖ Final answer remained empty after one retry');
+      throw new Error('Agentic loop produced no final message after one retry');
     }
   }
 

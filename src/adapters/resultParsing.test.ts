@@ -23,6 +23,18 @@ describe('parseReviewerResult text-fallback decision (INT-2485 false-reject)', (
   it('defaults to the safe revise when no explicit verdict is present', () => {
     expect(parseReviewerResult('The code rejects invalid input and approves valid tokens.').decision).toBe('revise');
   });
+
+  it('rejects an empty result instead of fabricating a finding-less REVISE', () => {
+    expect(() => parseReviewerResult('  \n ')).toThrow('Reviewer output was empty');
+  });
+
+  it('preserves issues and suggestions from plain-text fallback output', () => {
+    const result = parseReviewerResult(
+      'Decision: revise\nNeeds work.\nIssues:\n- Missing retry test\nSuggestions:\n- Add boundary coverage',
+    );
+    expect(result.issues).toEqual(['Missing retry test']);
+    expect(result.suggestions).toEqual(['Add boundary coverage']);
+  });
 });
 
 describe('parseReviewerResult recommendedActions (INT-1954)', () => {

@@ -126,6 +126,21 @@ describe('CodexCliAdapter', () => {
     expect(result.suggestions).toEqual(['Add unit test']);
   });
 
+  it('rejects reasoning-only reviewer output instead of fabricating REVISE', () => {
+    const raw = {
+      exitCode: 0,
+      stdout: [
+        '{"type":"turn.started"}',
+        '{"type":"item.completed","item":{"type":"reasoning","text":"Summarizing findings"}}',
+        '{"type":"turn.completed"}',
+      ].join('\n'),
+      stderr: '',
+      durationMs: 1,
+    };
+
+    expect(() => adapter.parseReviewerOutput(raw)).toThrow('Reviewer output was empty');
+  });
+
   it('streams agent messages into live log lines', () => {
     const logs: string[] = [];
     const remainder = adapter.parseStreamingChunk?.([

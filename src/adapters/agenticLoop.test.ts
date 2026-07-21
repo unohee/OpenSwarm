@@ -220,6 +220,76 @@ describe('runAgenticLoop timeout contract', () => {
   });
 });
 
+describe('runAgenticLoop final-answer recovery (INT-2879)', () => {
+  it('routes a whitespace-only ordinary final response through recovery', async () => {
+    const logs: string[] = [];
+    let calls = 0;
+    const callApi = async () => {
+      calls++;
+      return calls === 1 ? finalResp(' \n ') : finalResp('Decision: approve\nNo findings.');
+    };
+
+    const result = await runAgenticLoop({
+      prompt: 'review the change',
+      cwd: process.cwd(),
+      model: 'test',
+      callApi,
+      webTools: false,
+      maxTurns: 1,
+      onLog: (line) => logs.push(line),
+    });
+
+    expect(calls).toBe(2);
+    expect(result.text).toContain('Decision: approve');
+    expect(logs).toContain('▸ Final answer turn (no tools) — loop ended without a final message');
+  });
+
+  it('retries once when the first no-tools final answer is empty', async () => {
+    const logs: string[] = [];
+    let calls = 0;
+    const callApi = async (_messages: ChatMessage[], tools: unknown[]) => {
+      calls++;
+      if (tools.length > 0) return toolCallResp('c1', 'read_file', { path: 'missing.ts' });
+      return calls === 2 ? finalResp('   ') : finalResp('Decision: revise\nFix the missing edge-case test.');
+    };
+
+    const result = await runAgenticLoop({
+      prompt: 'review the change',
+      cwd: process.cwd(),
+      model: 'test',
+      callApi: callApi as never,
+      webTools: false,
+      maxTurns: 0,
+      onLog: (line) => logs.push(line),
+    });
+
+    expect(calls).toBe(3);
+    expect(result.text).toContain('Fix the missing edge-case test.');
+    expect(logs).toContain('↻ Final answer was empty — retrying once (no tools)');
+  });
+
+  it('fails explicitly when the retry is also reasoning-only/empty', async () => {
+    let calls = 0;
+    const callApi = async (_messages: ChatMessage[], tools: unknown[]) => {
+      calls++;
+      if (tools.length > 0) return toolCallResp('c1', 'read_file', { path: 'missing.ts' });
+      return finalResp(calls === 2 ? '' : ' \n ');
+    };
+
+    await expect(
+      runAgenticLoop({
+        prompt: 'review the change',
+        cwd: process.cwd(),
+        model: 'test',
+        callApi: callApi as never,
+        webTools: false,
+        maxTurns: 0,
+      }),
+    ).rejects.toThrow('Agentic loop produced no final message after one retry');
+    expect(calls).toBe(3);
+  });
+});
+
 describe('runAgenticLoop tool exposure options', () => {
   it('hides search_memory when memoryTools=false without disabling file tools', async () => {
     let toolNames: string[] = [];

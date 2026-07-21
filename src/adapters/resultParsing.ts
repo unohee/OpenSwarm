@@ -119,9 +119,31 @@ function extractReviewerFromText(text: string): ReviewResult {
   return {
     decision,
     feedback: extractSummary(text),
-    issues: [],
-    suggestions: [],
+    issues: extractBulletsAfter(text, /issues?:/i),
+    suggestions: extractBulletsAfter(text, /suggestions?:/i),
   };
+}
+
+/** Preserve structured findings from plain-text reviewer fallbacks. */
+function extractBulletsAfter(text: string, heading: RegExp): string[] {
+  const lines = text.split('\n');
+  const start = lines.findIndex((line) => heading.test(line));
+  if (start < 0) return [];
+
+  const items: string[] = [];
+  for (const line of lines.slice(start + 1)) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      if (items.length > 0) break;
+      continue;
+    }
+    if (!trimmed.startsWith('-') && !trimmed.startsWith('*')) {
+      if (items.length > 0) break;
+      continue;
+    }
+    items.push(trimmed.replace(/^[-*]\s*/, ''));
+  }
+  return items;
 }
 
 /** Brace-balanced scan for the JSON object containing `marker`. */
@@ -172,5 +194,11 @@ export function parseWorkerResult(text: string): WorkerResult {
 
 /** JSON-first with text fallback — the canonical reviewer-output parse. */
 export function parseReviewerResult(text: string): ReviewResult {
+  // An empty reviewer result is a harness failure, not a quality verdict. Falling
+  // through to the safe text default would fabricate REVISE with no findings and
+  // leave the user with an unactionable gate result. (INT-2879)
+  if (!text.trim()) {
+    throw new Error('Reviewer output was empty: no final message or verdict');
+  }
   return extractReviewerResultJson(text) ?? extractReviewerFromText(text);
 }
