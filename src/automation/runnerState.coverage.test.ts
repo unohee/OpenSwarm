@@ -151,9 +151,11 @@ describe('runnerState persistence and helpers', () => {
     expect(mod.getDecompositionDepth('root')).toBe(0);
     mod.registerDecomposition('root', undefined, ['child-1', 'child-2']);
     mod.registerDecomposition('child-1', 'root', ['grandchild']);
+    mod.registerDecomposition('root', undefined, ['child-1', 'child-2']);
     expect(mod.getDecompositionDepth('child-1')).toBe(1);
-    expect(mod.getDecompositionDepth('grandchild')).toBe(1);
-    expect(mod.getChildrenCount('root')).toBe(1);
+    expect(mod.getDecompositionDepth('grandchild')).toBe(2);
+    expect(mod.getChildrenCount('root')).toBe(2);
+    expect(mod.getChildrenCount('child-1')).toBe(1);
     expect(mod.getDailyCreationCount()).toBe(3);
     expect(mod.canCreateMoreIssues(4)).toBe(true);
     expect(mod.canCreateMoreIssues(3)).toBe(false);

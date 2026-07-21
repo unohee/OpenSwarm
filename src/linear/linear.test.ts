@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { parseBlockerIdentifiers } from './linear.js';
+import { effectCommentId, parseBlockerIdentifiers } from './linear.js';
+
+describe('effectCommentId', () => {
+  it('derives a stable, marker-specific UUIDv4 for Linear uniqueness', () => {
+    const first = effectCommentId('complete:issue-1:attempt:1');
+    expect(first).toBe(effectCommentId('complete:issue-1:attempt:1'));
+    expect(first).not.toBe(effectCommentId('complete:issue-1:attempt:2'));
+    expect(first).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  });
+});
 
 // INT-1809: the KYTE team writes dependencies as description prose ("블로커: …")
 // rather than structured Linear relations, so the text parser is the high-value path.

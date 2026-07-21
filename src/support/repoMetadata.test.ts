@@ -54,6 +54,25 @@ describe('loadRepoMetadata', () => {
     expect(meta?.checks).toEqual({ lint: 'ruff check .', test: 'pytest -x' });
   });
 
+  it('parses and defaults repository automation admission policy', async () => {
+    writeFileSync(
+      join(dir, REPO_METADATA_FILENAME),
+      JSON.stringify({
+        schemaVersion: 1,
+        automation: { maxConcurrent: 2, maxCostUsdPerDay: 5 },
+      }),
+    );
+    const meta = await loadRepoMetadata(dir);
+    expect(meta?.automation).toEqual({
+      enabled: true,
+      maxConcurrent: 2,
+      maxAttemptsPerHour: 12,
+      maxFailuresPerHour: 6,
+      maxCostUsdPerDay: 5,
+      circuitCooldownMinutes: 60,
+    });
+  });
+
   it('throws RepoMetadataError on invalid JSON', async () => {
     writeFileSync(join(dir, REPO_METADATA_FILENAME), '{ not json');
     await expect(loadRepoMetadata(dir)).rejects.toBeInstanceOf(RepoMetadataError);

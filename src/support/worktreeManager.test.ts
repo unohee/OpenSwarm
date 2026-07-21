@@ -3,6 +3,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import Database from 'better-sqlite3';
 import { createWorktree, preserveWorktree, removePreservedWorktreeAt, removeWorktree, resolveSharedPaths, computeFileOverlaps, formatOverlapReport, findOpenPRFileOverlaps, resolveBaseRef, commitAndCreatePR, type WorktreeInfo } from './worktreeManager.js';
 
 describe('open PR planned-file preflight (INT-2568)', () => {
@@ -286,15 +287,16 @@ describe('preserveWorktree → createWorktree resume roundtrip (INT-2503)', () =
     expect(readFileSync(join(info.worktreePath, 'app.py'), 'utf8')).toBe('base\nreal-partial-work\n');
   });
 
-  it('recreates fresh when the preserved branch does not match', async () => {
+  it('quarantines preserved work when the requested branch does not match', async () => {
     const info = await createWorktree(repo, 'INT-9', 'swarm/INT-9-test');
     writeFileSync(join(info.worktreePath, 'app.py'), 'base\nstale-work\n');
     await preserveWorktree(info, 'test failure');
 
-    // Task title changed → different branch → preserved tree is stale; recreate.
-    const recreated = await createWorktree(repo, 'INT-9', 'swarm/INT-9-renamed');
-    expect(recreated.branchName).toBe('swarm/INT-9-renamed');
-    expect(readFileSync(join(recreated.worktreePath, 'app.py'), 'utf8')).toBe('base\n');
+    // Task title changed → different branch. This is not proof that the old work
+    // is disposable, so recovery must stop instead of force-deleting it.
+    await expect(createWorktree(repo, 'INT-9', 'swarm/INT-9-renamed'))
+      .rejects.toThrow(/requires reconciliation/i);
+    expect(readFileSync(join(info.worktreePath, 'app.py'), 'utf8')).toBe('base\nstale-work\n');
   });
 });
 
@@ -386,6 +388,38 @@ describe('removePreservedWorktreeAt (INT-2506)', () => {
     // The partial work survives on the branch for human inspection.
     const show = execFileSync('git', ['-C', repo, 'show', 'swarm/INT-9-test:app.py'], { encoding: 'utf8' });
     expect(show).toBe('base\npartial\n');
+  });
+
+  it('does not apply a stale terminal cleanup after another owner resumed the tree', async () => {
+    const info = await createWorktree(repo, 'INT-9', 'swarm/INT-9-test');
+    writeFileSync(join(info.worktreePath, 'app.py'), 'base\npartial\n');
+    await preserveWorktree(info, 'retryable failure');
+
+    const resumed = await createWorktree(repo, 'INT-9', 'swarm/INT-9-test');
+    await removePreservedWorktreeAt(info.worktreePath);
+
+    expect(existsSync(resumed.worktreePath)).toBe(true);
+    expect(readFileSync(join(resumed.worktreePath, 'app.py'), 'utf8')).toBe('base\npartial\n');
+    await removeWorktree(resumed);
+  });
+
+  it('fails closed while another connection owns the issue lifecycle lock', async () => {
+    const info = await createWorktree(repo, 'INT-9', 'swarm/INT-9-test');
+    writeFileSync(join(info.worktreePath, 'app.py'), 'base\npartial\n');
+    await preserveWorktree(info, 'retryable failure');
+    const lockPath = join(repo, '.git', 'openswarm', 'worktree-lifecycle-locks', 'INT-9.db');
+    const competingOwner = new Database(lockPath, { timeout: 0 });
+    competingOwner.exec('BEGIN IMMEDIATE');
+    try {
+      await expect(removePreservedWorktreeAt(info.worktreePath)).rejects.toThrow(/lifecycle is busy/i);
+      expect(existsSync(info.worktreePath)).toBe(true);
+    } finally {
+      competingOwner.exec('ROLLBACK');
+      competingOwner.close();
+    }
+
+    await removePreservedWorktreeAt(info.worktreePath);
+    expect(existsSync(info.worktreePath)).toBe(false);
   });
 
   it('no-ops on paths that are not managed worktrees', async () => {

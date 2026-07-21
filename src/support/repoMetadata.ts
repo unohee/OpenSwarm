@@ -52,6 +52,21 @@ const RepoMetadataSchema = z.object({
       bashTimeoutMs: z.number().int().positive().optional(),
     })
     .optional(),
+  /** Fail-closed autonomous admission and spend policy for this repository. */
+  automation: z.object({
+    /** Explicit kill switch for issue-driven execution in this repository. */
+    enabled: z.boolean().default(true),
+    /** Same-repository active leases. Default one; raise only with isolated worktrees. */
+    maxConcurrent: z.number().int().min(1).max(10).default(1),
+    /** Rolling attempt budget. */
+    maxAttemptsPerHour: z.number().int().min(1).max(100).default(12),
+    /** Rolling unsuccessful-attempt circuit breaker threshold. */
+    maxFailuresPerHour: z.number().int().min(1).max(100).default(6),
+    /** Optional daily model-cost ceiling. */
+    maxCostUsdPerDay: z.number().positive().optional(),
+    /** How long an admission circuit remains open before reevaluation. */
+    circuitCooldownMinutes: z.number().int().min(1).max(24 * 60).default(60),
+  }).optional(),
   /** Free-form notes the swarm should keep in mind. */
   notes: z.string().optional(),
 });

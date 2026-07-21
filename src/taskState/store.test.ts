@@ -281,12 +281,19 @@ describe('task state store', () => {
     );
 
     const hydrated = hydrateTaskStateFromComments('ISSUE-9', [
-      { body: older, createdAt: '2026-03-18T00:00:00.000Z' },
-      { body: latest, createdAt: '2026-03-18T01:00:00.000Z' },
+      { body: older, createdAt: '2026-03-18T00:00:00.000Z', source: 'openswarm' },
+      { body: latest, createdAt: '2026-03-18T01:00:00.000Z', source: 'openswarm' },
     ]);
 
     expect(hydrated?.execution.status).toBe('done');
     expect(hydrated?.linearState).toBe('Done');
+  });
+
+  it('does not grant execution authority to an authorless copied sync comment', () => {
+    const body = buildTaskStateSyncComment(taskState('ISSUE-COPY', 'done', 'Done'), 'Task completed');
+    expect(hydrateTaskStateFromComments('ISSUE-COPY', [
+      { body, createdAt: '2026-03-18T01:00:00.000Z' },
+    ])).toBeUndefined();
   });
 
   it('ignores untrusted or mismatched task-state sync comments', () => {

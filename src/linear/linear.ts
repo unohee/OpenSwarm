@@ -3,6 +3,7 @@
 // ============================================
 
 import { LinearClient } from '@linear/sdk';
+import { createHash } from 'node:crypto';
 import type { LinearIssueInfo, LinearProjectInfo } from '../core/types.js';
 import { formatAutomationComment, type CommentSection } from './format.js';
 import { setLinearClient } from './projectUpdater.js';
@@ -772,15 +773,41 @@ export async function updateIssueDescription(issueId: string, description: strin
  */
 export async function addComment(
   issueId: string,
-  body: string
+  body: string,
+  commentId?: string,
 ): Promise<void> {
   if (!isLinearInitialized()) return;
   const linear = getClient();
 
-  await linear.createComment({
-    issueId,
-    body,
-  });
+  try {
+    await linear.createComment({
+      id: commentId,
+      issueId,
+      body,
+    });
+  } catch (error) {
+    if (commentId) {
+      try {
+        const existing = await linear.comment({ id: commentId });
+        const existingIssue = await existing.issue;
+        if (existingIssue?.id === issueId && existing.body === body) return;
+      } catch {
+        // Preserve the original create error if artifact reconciliation fails.
+      }
+    }
+    throw error;
+  }
+}
+
+/** Stable UUIDv4-shaped Linear comment id for an outbox idempotency key. Linear
+ * enforces comment-id uniqueness, making concurrent stale deliveries converge
+ * remotely as well as locally. */
+export function effectCommentId(marker: string): string {
+  const bytes = createHash('sha256').update(`openswarm-effect:${marker}`).digest().subarray(0, 16);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 /** Log a HALT event (low confidence) as a comment on a Linear issue */
@@ -1024,6 +1051,7 @@ export async function logPairComplete(
       failedTests?: string[];
     };
     remainingWork?: string;
+    idempotencyMarker?: string;
   }
 ): Promise<void> {
   const durationStr = stats.duration < 60
@@ -1067,7 +1095,7 @@ export async function logPairComplete(
       : ['(none)'],
   });
 
-  await addComment(issueId, formatAutomationComment({
+  const comment = formatAutomationComment({
     heading: 'Task complete',
     summary: stats.workerSummary?.trim() || undefined,
     sections,
@@ -1078,8 +1106,10 @@ export async function logPairComplete(
       Files: stats.filesChanged.length,
     },
     attribution: 'Worker/Reviewer/Tester pipeline',
-  }));
-  await updateIssueState(issueId, 'Done');
+  }) + (stats.idempotencyMarker ? `\n\n<!-- openswarm-effect:${stats.idempotencyMarker} -->` : '');
+  await addComment(issueId, comment, stats.idempotencyMarker ? effectCommentId(stats.idempotencyMarker) : undefined);
+  const accepted = await updateIssueState(issueId, 'Done');
+  if (!accepted) throw new Error(`Linear refused Done transition for ${issueId}`);
 }
 
 /**
@@ -1194,6 +1224,8 @@ export async function createSubIssue(
     labels?: string[];
     projectId?: string;
     estimatedMinutes?: number;
+    /** Stable UUID v4 for crash-safe decomposition retries. */
+    idempotencyId?: string;
   }
 ): Promise<LinearIssueInfo | { error: string }> {
   if (!isLinearInitialized()) return { error: 'Linear not configured' };
@@ -1222,6 +1254,7 @@ export async function createSubIssue(
     }
 
     const issuePayload = await linear.createIssue({
+      id: options?.idempotencyId,
       teamId: subIssueTeamId,
       parentId,  // Link to parent issue
       title,
@@ -1250,6 +1283,33 @@ export async function createSubIssue(
       comments: [],
     };
   } catch (error) {
+    if (options?.idempotencyId) {
+      try {
+        const existing = await linear.issue(options.idempotencyId);
+        const existingParent = await existing.parent;
+        if (
+          existingParent?.id === parentId
+          && existing.title === title
+          && (existing.description ?? '') === description
+        ) {
+          const stateName = (await existing.state)?.name ?? 'Unknown';
+          console.warn(`[Linear] Recovered idempotent sub-issue create: ${existing.identifier}`);
+          return {
+            id: existing.id,
+            identifier: existing.identifier,
+            title: existing.title,
+            description: existing.description ?? undefined,
+            state: stateName,
+            priority: existing.priority,
+            labels: options?.labels || [],
+            comments: [],
+          };
+        }
+        console.error(`[Linear] Idempotent child collision for ${options.idempotencyId}: existing artifact does not match the requested plan`);
+      } catch {
+        // Preserve the original create error when no matching artifact exists.
+      }
+    }
     console.error('[Linear] createSubIssue error:', error);
     return { error: error instanceof Error ? error.message : String(error) };
   }
@@ -1261,7 +1321,8 @@ export async function createSubIssue(
 export async function markAsDecomposed(
   issueId: string,
   subIssueCount: number,
-  totalMinutes: number
+  totalMinutes: number,
+  idempotencyMarker?: string,
 ): Promise<void> {
   const body = formatAutomationComment({
     heading: 'Decomposed into sub-issues',
@@ -1273,14 +1334,13 @@ export async function markAsDecomposed(
     attribution: 'Planner agent',
   });
 
-  await addComment(issueId, body);
+  await addComment(issueId, body, idempotencyMarker ? effectCommentId(idempotencyMarker) : undefined);
 
-  // Keep parent issue active until all child issues complete.
-  try {
-    await updateIssueState(issueId, 'In Progress');
-  } catch (err) {
-    console.warn('[Linear] Failed to mark decomposed parent as In Progress:', err);
-  }
+  // Keep parent issue active until all child issues complete. A false return is
+  // a real partial-effect failure (comment exists, state did not move), so let
+  // the idempotent decomposition retry reconcile it.
+  const accepted = await updateIssueState(issueId, 'In Progress');
+  if (!accepted) throw new Error(`Linear refused decomposed parent transition for ${issueId}`);
 
   // Add label (if decomposed label exists)
   try {

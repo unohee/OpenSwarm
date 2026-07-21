@@ -5,8 +5,10 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import Database from 'better-sqlite3';
 import { registerOwnedPR } from '../automation/prOwnership.js';
 import { runConventionalCommitGuard } from '../agents/pipelineGuards.js';
 import { loadRepoMetadata } from './repoMetadata.js';
@@ -80,6 +82,8 @@ export interface WorktreeInfo {
   /** Original repository path */
   originalPath: string;
   issueId: string;
+  /** Unique ownership token for this process generation's active marker. */
+  activeMarkerToken?: string;
 }
 
 // Branch & Path Utilities
@@ -208,8 +212,137 @@ async function linkSharedPaths(repoPath: string, worktreePath: string): Promise<
  * them; a successful run still removes the worktree as before.
  */
 const PRESERVE_MARKER = '.openswarm-preserved';
+const ACTIVE_MARKER_DIR = 'openswarm/active-worktrees';
+const LIFECYCLE_LOCK_DIR = 'openswarm/worktree-lifecycle-locks';
 /** Preserved trees older than this are abandoned (task STUCK or issue closed) — swept. */
 const PRESERVE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+export interface ActiveWorktreeMarker {
+  issueId: string;
+  branchName: string;
+  worktreePath: string;
+  originalPath: string;
+  ownerPid: number;
+  /** Missing only on legacy single-file markers written before token fencing. */
+  ownerToken?: string;
+  createdAt: string;
+}
+
+async function activeMarkerDirectory(repoPath: string): Promise<string> {
+  const commonRaw = (await git(repoPath, 'rev-parse', '--git-common-dir')).trim();
+  const commonDir = isAbsolute(commonRaw) ? commonRaw : resolve(repoPath, commonRaw);
+  return join(commonDir, ACTIVE_MARKER_DIR);
+}
+
+async function activeMarkerPath(repoPath: string, issueId: string, ownerToken: string): Promise<string> {
+  if (!/^[A-Za-z0-9._-]+$/.test(issueId) || issueId === '.' || issueId === '..') {
+    throw new Error(`Invalid active marker issueId path segment: ${issueId}`);
+  }
+  return join(await activeMarkerDirectory(repoPath), issueId, `${ownerToken}.json`);
+}
+
+async function withWorktreeLifecycleLock<T>(
+  repoPath: string,
+  issueId: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  if (!/^[A-Za-z0-9._-]+$/.test(issueId) || issueId === '.' || issueId === '..') {
+    throw new Error(`Invalid worktree lifecycle issueId path segment: ${issueId}`);
+  }
+  const markerDirectory = await activeMarkerDirectory(repoPath);
+  const commonDirectory = resolve(markerDirectory, '..', '..');
+  const lockDirectory = join(commonDirectory, LIFECYCLE_LOCK_DIR);
+  mkdirSync(lockDirectory, { recursive: true, mode: 0o700 });
+  const lockPath = join(lockDirectory, `${issueId}.db`);
+  const lockDb = new Database(lockPath, { timeout: 0 });
+  chmodSync(lockPath, 0o600);
+  try {
+    lockDb.exec('BEGIN IMMEDIATE');
+  } catch (error) {
+    lockDb.close();
+    if ((error as { code?: string }).code?.startsWith('SQLITE_BUSY')) {
+      throw new Error(`Worktree lifecycle is busy for ${issueId}`, { cause: error });
+    }
+    throw error;
+  }
+
+  try {
+    return await operation();
+  } finally {
+    try { lockDb.exec('ROLLBACK'); } finally { lockDb.close(); }
+  }
+}
+
+async function writeActiveWorktreeMarker(info: WorktreeInfo): Promise<string> {
+  const ownerToken = randomUUID();
+  const markerPath = await activeMarkerPath(info.originalPath, info.issueId, ownerToken);
+  mkdirSync(dirname(markerPath), { recursive: true, mode: 0o700 });
+  const marker: ActiveWorktreeMarker = {
+    ...info,
+    ownerPid: process.pid,
+    ownerToken,
+    createdAt: new Date().toISOString(),
+  };
+  const tempPath = `${markerPath}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(tempPath, JSON.stringify(marker, null, 2), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    renameSync(tempPath, markerPath);
+  } catch (error) {
+    try { rmSync(tempPath, { force: true }); } catch { /* best-effort temp cleanup */ }
+    throw error;
+  }
+  return ownerToken;
+}
+
+async function readActiveWorktreeMarkers(
+  repoPath: string,
+  worktreePath: string,
+): Promise<{ markers: ActiveWorktreeMarker[]; unreadable: boolean }> {
+  const issueId = basename(worktreePath.replace(/\/+$/, ''));
+  const directory = await activeMarkerDirectory(repoPath);
+  const markerPaths: string[] = [];
+  try {
+    markerPaths.push(...readdirSync(join(directory, issueId))
+      .filter((name) => name.endsWith('.json'))
+      .map((name) => join(directory, issueId, name)));
+  } catch { /* no tokenized markers */ }
+  // Backward compatibility with the pre-token single-file marker.
+  const legacyPath = join(directory, `${issueId}.json`);
+  if (existsSync(legacyPath)) markerPaths.push(legacyPath);
+
+  const markers: ActiveWorktreeMarker[] = [];
+  let unreadable = false;
+  for (const markerPath of markerPaths) {
+    try {
+      const marker = JSON.parse(readFileSync(markerPath, 'utf8')) as ActiveWorktreeMarker;
+      if (
+        marker.issueId !== issueId
+        || marker.worktreePath !== worktreePath
+        || !Number.isSafeInteger(marker.ownerPid)
+      ) {
+        unreadable = true;
+        continue;
+      }
+      markers.push(marker);
+    } catch {
+      unreadable = true;
+    }
+  }
+  markers.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  return { markers, unreadable };
+}
+
+async function clearActiveWorktreeMarker(info: WorktreeInfo): Promise<void> {
+  // A tokenless WorktreeInfo cannot prove which process generation owns a
+  // marker. Fail closed instead of deleting a newer owner's marker.
+  if (!info.activeMarkerToken) return;
+  try {
+    const markerPath = await activeMarkerPath(info.originalPath, info.issueId, info.activeMarkerToken);
+    rmSync(markerPath, { force: true });
+  } catch (error) {
+    console.warn(`[Worktree] Failed to clear active marker for ${info.worktreePath}:`, error);
+  }
+}
 
 function preserveMarkerAgeMs(worktreePath: string): number | null {
   try {
@@ -217,8 +350,51 @@ function preserveMarkerAgeMs(worktreePath: string): number | null {
     const at = raw.at ? Date.parse(raw.at) : NaN;
     return Number.isFinite(at) ? Date.now() - at : null;
   } catch {
-    return null; // unreadable marker → treat as expired (swept)
+    return null; // unreadable marker → retain for manual/durable reconciliation
   }
+}
+
+export type WorktreeRecoveryStatus =
+  | { state: 'missing'; worktreePath: string }
+  | { state: 'preserved'; worktreePath: string }
+  | { state: 'active_owner'; worktreePath: string; marker: ActiveWorktreeMarker }
+  | { state: 'orphaned'; worktreePath: string; marker: ActiveWorktreeMarker }
+  | { state: 'ambiguous'; worktreePath: string };
+
+function processAppearsAlive(pid: number): boolean {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return true;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
+}
+
+/** Fail-closed recovery evidence for an expired run. A live marker owner may
+ * still be writing after losing its lease, so only a preserved tree or a dead
+ * owner is safe to resume automatically. */
+export async function inspectWorktreeRecovery(
+  repoPath: string,
+  issueId: string,
+  recordedPath?: string,
+): Promise<WorktreeRecoveryStatus> {
+  const worktreePath = recordedPath
+    ? assertManagedWorktreePath(repoPath, recordedPath)
+    : resolveWorktreePath(repoPath, issueId);
+  if (!existsSync(worktreePath)) return { state: 'missing', worktreePath };
+  const active = await readActiveWorktreeMarkers(repoPath, worktreePath);
+  const liveMarker = active.markers.find((marker) => processAppearsAlive(marker.ownerPid));
+  if (liveMarker) return { state: 'active_owner', worktreePath, marker: liveMarker };
+  if (existsSync(join(worktreePath, PRESERVE_MARKER))) {
+    return preserveMarkerAgeMs(worktreePath) === null
+      ? { state: 'ambiguous', worktreePath }
+      : { state: 'preserved', worktreePath };
+  }
+  if (active.unreadable) return { state: 'ambiguous', worktreePath };
+  const marker = active.markers[0];
+  if (!marker) return { state: 'ambiguous', worktreePath };
+  return { state: 'orphaned', worktreePath, marker };
 }
 
 /**
@@ -228,7 +404,7 @@ function preserveMarkerAgeMs(worktreePath: string): number | null {
  * and by the age sweep. Accepts the worktree path itself — the repo root is the
  * segment before `/worktree/<id>`. No-op for paths that don't match. (INT-2506)
  */
-export async function removePreservedWorktreeAt(worktreePath: string): Promise<void> {
+async function removePreservedWorktreeAtUnlocked(worktreePath: string): Promise<void> {
   const m = worktreePath.replace(/\/+$/, '').match(/^(.*)\/worktree\/[^/]+$/);
   if (!m || !existsSync(worktreePath)) return;
   const repoRoot = m[1];
@@ -245,6 +421,20 @@ export async function removePreservedWorktreeAt(worktreePath: string): Promise<v
     rmSync(worktreePath, { recursive: true, force: true });
   });
   console.log(`[Worktree] Removed preserved worktree: ${worktreePath}`);
+}
+
+export async function removePreservedWorktreeAt(worktreePath: string): Promise<void> {
+  const normalized = worktreePath.replace(/\/+$/, '');
+  const match = normalized.match(/^(.*)\/worktree\/([^/]+)$/);
+  if (!match || !existsSync(normalized)) return;
+  await withWorktreeLifecycleLock(match[1], match[2], async () => {
+    // The cleanup request may have been queued while an operator reopened the
+    // issue. Re-check ownership under the lock; a resumed worker publishes its
+    // active marker before releasing this same lock.
+    const active = await readActiveWorktreeMarkers(match[1], normalized);
+    if (active.unreadable || active.markers.some((marker) => processAppearsAlive(marker.ownerPid))) return;
+    await removePreservedWorktreeAtUnlocked(normalized);
+  });
 }
 
 /**
@@ -296,16 +486,13 @@ export async function preserveWorktree(info: WorktreeInfo, reason: string): Prom
       console.warn(`[Worktree] WIP commit before preserve failed (marker still protects the tree): ${worktreePath}`, err instanceof Error ? err.message : err);
     }
   }
-  // The resume marker is the ONLY thing that protects this tree from the next
-  // createWorktree() recreate (which deletes the branch + worktree, ~L286/L299) and
-  // the heartbeat orphan-sweep (pruneWorktrees drops marker-less trees). So if we
-  // can't write it, we CANNOT honestly claim the work is preserved. Two rules here:
+  // The resume marker lets the next attempt consume this work. The independent
+  // active marker in git's common metadata also protects the tree if this write
+  // fails halfway through (for example ENOSPC).
   //   1. Never throw. An unguarded writeFileSync threw ENOSPC straight through
   //      executePipeline and crashed the whole daemon under a full disk (observed
   //      live: disk 100% → runner crash-loop). (INT-2521)
-  //   2. Don't lie. Best-effort remove the tree to reclaim space — which is exactly
-  //      what helps when the disk is full — and report NOT preserved. ENOSPC is an
-  //      infra error, so the task retries fresh from origin/main once space frees.
+  //   2. Never delete unconfirmed work just to reclaim space.
   const markerPath = join(worktreePath, PRESERVE_MARKER);
   try {
     writeFileSync(
@@ -314,15 +501,13 @@ export async function preserveWorktree(info: WorktreeInfo, reason: string): Prom
       'utf8',
     );
   } catch (err) {
-    console.warn(`[Worktree] Preserve-marker write failed — cannot preserve, reclaiming space: ${worktreePath}`, err instanceof Error ? err.message : err);
-    // A failed write can leave a truncated marker behind. Drop it first so a later
-    // createWorktree()/prune doesn't treat the corpse as a real preserved tree, THEN
-    // best-effort remove the whole worktree to reclaim space. Both are best-effort —
-    // neither may throw (that is the very crash this guard exists to prevent).
-    try { rmSync(markerPath, { force: true }); } catch { /* read-only/ENOSPC — leave it; prune treats an unreadable marker as sweepable */ }
-    await removeWorktree(info).catch((e) => console.warn(`[Worktree] Cleanup after failed preserve also failed: ${worktreePath}`, e instanceof Error ? e.message : e));
+    console.warn(`[Worktree] Preserve-marker write failed — quarantining active tree: ${worktreePath}`, err instanceof Error ? err.message : err);
+    // A failed write can leave a truncated marker. Drop that file, but keep the
+    // active marker and worktree for durable reconciliation.
+    try { rmSync(markerPath, { force: true }); } catch { /* read-only/ENOSPC — active marker still keeps it quarantined */ }
     return false;
   }
+  await clearActiveWorktreeMarker(info);
   const label = dirty === null ? 'git status unavailable — preserved to be safe' : `${fileCount} dirty files`;
   console.log(`[Worktree] Preserved for retry (${label}, ${reason}): ${worktreePath}`);
   return true;
@@ -338,6 +523,7 @@ export async function createWorktree(
   baseRefOverride?: string,
 ): Promise<WorktreeInfo> {
   const worktreePath = resolveWorktreePath(repoPath, issueId);
+  return withWorktreeLifecycleLock(repoPath, issueId, async () => {
 
   // Retry of a preserved failure: RESUME from the previous attempt's partial
   // work (and its build caches) instead of wiping it (INT-2503). Consume the
@@ -346,53 +532,66 @@ export async function createWorktree(
     const valid = await git(worktreePath, 'status', '--porcelain').then(() => true).catch(() => false);
     const branch = await git(worktreePath, 'rev-parse', '--abbrev-ref', 'HEAD').then((b) => b.trim()).catch(() => '');
     if (valid && branch === branchName) {
-      rmSync(join(worktreePath, PRESERVE_MARKER), { force: true });
+      const resumed: WorktreeInfo = { worktreePath, branchName, originalPath: repoPath, issueId };
+      resumed.activeMarkerToken = await writeActiveWorktreeMarker(resumed);
+      try {
+        // Acquire the new generation's ownership marker before consuming the
+        // preserve marker. A crash between these operations then leaves at
+        // least one recoverable owner/preserve proof instead of an unmarked gap.
+        rmSync(join(worktreePath, PRESERVE_MARKER), { force: true });
+      } catch (error) {
+        await clearActiveWorktreeMarker(resumed);
+        throw error;
+      }
       console.log(`[Worktree] Resuming preserved worktree: ${worktreePath} (branch: ${branchName})`);
-      return { worktreePath, branchName, originalPath: repoPath, issueId };
+      return resumed;
     }
-    console.warn(`[Worktree] Preserved worktree invalid (valid=${valid}, branch=${branch}) — recreating: ${worktreePath}`);
+    throw new Error(`Preserved worktree requires reconciliation (valid=${valid}, branch=${branch}): ${worktreePath}`);
   }
 
-  // Clean up existing worktree (retry case)
+  // Crash recovery: never delete an existing tree before the durable reconciler
+  // has inspected it. A valid tree on the expected branch is safe to resume even
+  // when the process died before it could write the preserve marker.
   if (existsSync(worktreePath)) {
-    await git(repoPath, 'worktree', 'remove', '--force', worktreePath).catch((e) => console.warn(`[Worktree] Failed to remove existing worktree: ${worktreePath}`, e));
-    rmSync(worktreePath, { recursive: true, force: true });
-    // A broken worktree .git pointer can make `worktree remove` fail while its
-    // admin entry remains registered. Prune after the direct-removal fallback
-    // so the old branch is no longer considered in use and retry can recreate it.
-    await git(repoPath, 'worktree', 'prune').catch((e) =>
-      console.warn(`[Worktree] Failed to prune stale worktree metadata: ${worktreePath}`, e)
-    );
+    const valid = await git(worktreePath, 'status', '--porcelain').then(() => true).catch(() => false);
+    const branch = await git(worktreePath, 'rev-parse', '--abbrev-ref', 'HEAD').then((b) => b.trim()).catch(() => '');
+    if (!valid || branch !== branchName) {
+      throw new Error(`Existing worktree requires reconciliation (valid=${valid}, branch=${branch}): ${worktreePath}`);
+    }
+    const resumed: WorktreeInfo = { worktreePath, branchName, originalPath: repoPath, issueId };
+    resumed.activeMarkerToken = await writeActiveWorktreeMarker(resumed);
+    console.log(`[Worktree] Resuming crash-recovered worktree: ${worktreePath} (branch: ${branchName})`);
+    return resumed;
   }
 
-  // Always create fresh branch from latest main to avoid conflicts
-  // Delete existing branch if it exists (force clean state)
+  // A previous attempt may have removed its worktree while keeping a WIP branch.
+  // Resume that branch; never force-delete recoverable commits.
   const branchExists = await git(repoPath, 'branch', '--list', branchName)
     .then((out) => out.trim().length > 0)
     .catch((e) => { console.warn(`[Worktree] Branch check failed for ${branchName}:`, e); return false; });
 
+  let baseRef = branchName;
   if (branchExists) {
-    // Delete old branch to start fresh
-    await git(repoPath, 'branch', '-D', branchName).catch((e) =>
-      console.warn(`[Worktree] Failed to delete old branch ${branchName}:`, e)
-    );
+    await git(repoPath, 'worktree', 'add', worktreePath, branchName);
+  } else {
+    // Resolve the repo's real base ref (remote + default branch) — NOT hardcoded
+    // origin/main, which fataled on master-default / non-origin repos. (INT-2545)
+    baseRef = baseRefOverride ?? '';
+    if (!baseRef) {
+      const base = await resolveBaseRef(repoPath);
+      await git(repoPath, 'fetch', base.remote, base.branch).catch((e) =>
+        console.warn(`[Worktree] Failed to fetch ${base.ref}:`, e)
+      );
+      baseRef = base.ref;
+    }
+    await git(repoPath, 'worktree', 'add', '-b', branchName, worktreePath, baseRef);
   }
-
-  // Resolve the repo's real base ref (remote + default branch) — NOT hardcoded
-  // origin/main, which fataled on master-default / non-origin repos and blocked every
-  // task in them. (INT-2545)
-  let baseRef = baseRefOverride;
-  if (!baseRef) {
-    const base = await resolveBaseRef(repoPath);
-    await git(repoPath, 'fetch', base.remote, base.branch).catch((e) =>
-      console.warn(`[Worktree] Failed to fetch ${base.ref}:`, e)
-    );
-    baseRef = base.ref;
-  }
-
-  // Create fresh worktree from the resolved base ref
-  await git(repoPath, 'worktree', 'add', '-b', branchName, worktreePath, baseRef);
   console.log(`[Worktree] Created: ${worktreePath} (branch: ${branchName}, base: ${baseRef})`);
+
+  const info: WorktreeInfo = { worktreePath, branchName, originalPath: repoPath, issueId };
+  // Written before dependency setup or worker invocation. A crash anywhere after
+  // `git worktree add` is therefore recoverable.
+  info.activeMarkerToken = await writeActiveWorktreeMarker(info);
 
   // Share the original repo's gitignored deps/data into the fresh worktree so the
   // worker can actually install / run tests / verify against real data. (INT-2415)
@@ -404,7 +603,8 @@ export async function createWorktree(
   // guardLfsFilterCorruption defends against below. (INT-2430)
   await ensureLfsSmudged(worktreePath);
 
-  return { worktreePath, branchName, originalPath: repoPath, issueId };
+  return info;
+  });
 }
 
 /** True if the worktree's .gitattributes declares any LFS-filtered path. */
@@ -450,6 +650,40 @@ export interface FileOverlap {
 export interface OpenPRFileOverlap extends FileOverlap {
   number: number;
   url: string;
+}
+
+export interface BranchPullRequest {
+  url: string;
+  state: 'OPEN' | 'CLOSED' | 'MERGED';
+  isDraft: boolean;
+  headSha?: string;
+}
+
+/** Artifact-truth lookup used by crash reconciliation. Throws when GitHub is
+ * unavailable so callers keep the run fail-closed instead of assuming no PR. */
+export async function findPullRequestForBranch(
+  repoPath: string,
+  branchName: string,
+): Promise<BranchPullRequest | null> {
+  const raw = await gh(
+    repoPath,
+    'pr', 'list', '--head', branchName, '--state', 'all', '--limit', '10',
+    '--json', 'url,state,isDraft,headRefOid',
+  );
+  const rows = JSON.parse(raw) as Array<{
+    url?: string;
+    state?: string;
+    isDraft?: boolean;
+    headRefOid?: string;
+  }>;
+  const row = rows.find((candidate) => candidate.url && ['OPEN', 'CLOSED', 'MERGED'].includes(candidate.state ?? ''));
+  if (!row?.url || !row.state) return null;
+  return {
+    url: row.url,
+    state: row.state as BranchPullRequest['state'],
+    isDraft: row.isDraft ?? false,
+    headSha: row.headRefOid,
+  };
 }
 
 /**
@@ -678,6 +912,14 @@ async function buildFileOverlapSection(worktreePath: string, selfBranch: string)
   }
 }
 
+async function findOpenPullRequestUrl(worktreePath: string, branchName: string): Promise<string> {
+  return (await gh(
+    worktreePath,
+    'pr', 'list', '--head', branchName, '--state', 'open',
+    '--json', 'url', '--jq', '.[0].url',
+  )).trim();
+}
+
 /** Commit changes + push + gh pr create */
 export async function commitAndCreatePR(
   info: WorktreeInfo,
@@ -732,12 +974,12 @@ export async function commitAndCreatePR(
   console.log(`[Worktree] Pushed branch ${branchName}`);
 
   // If PR already exists, just return the URL
-  const existing = await gh(worktreePath, 'pr', 'list', '--head', branchName, '--state', 'open', '--json', 'url', '--jq', '.[0].url')
+  const existing = await findOpenPullRequestUrl(worktreePath, branchName)
     .catch((e) => { console.warn(`[Worktree] PR list check failed for ${branchName}:`, e); return ''; });
 
-  if (existing.trim()) {
-    console.log(`[Worktree] PR already exists: ${existing.trim()}`);
-    return existing.trim();
+  if (existing) {
+    console.log(`[Worktree] PR already exists: ${existing}`);
+    return existing;
   }
 
   // Compute file overlap vs other in-flight work (advisory; never blocks). (INT-2392)
@@ -771,10 +1013,21 @@ export async function commitAndCreatePR(
 
   const createArgs = ['pr', 'create', '--head', branchName, '--base', base.branch, '--title', title, '--body', prBody];
   if (duplicates.length > 0) createArgs.push('--draft');
-  const prUrl = await gh(worktreePath, ...createArgs);
-
-  const url = prUrl.trim();
-  console.log(`[Worktree] PR created: ${url}`);
+  let url: string;
+  try {
+    url = (await gh(worktreePath, ...createArgs)).trim();
+    console.log(`[Worktree] PR created: ${url}`);
+  } catch (createError) {
+    // Two daemon generations (or a manual operator and the daemon) can both
+    // observe "no PR" before either creates it. GitHub accepts one create and
+    // rejects the loser. Re-read artifact truth before treating that loser as a
+    // publication failure; this also covers a client disconnect after GitHub
+    // accepted the request but before `gh` returned the URL.
+    const racedUrl = await findOpenPullRequestUrl(worktreePath, branchName).catch(() => '');
+    if (!racedUrl) throw createError;
+    url = racedUrl;
+    console.warn(`[Worktree] PR create raced with another publisher; using existing PR: ${url}`);
+  }
 
   // Register PR ownership for conflict auto-resolution
   const prNumberMatch = url.match(/\/pull\/(\d+)/);
@@ -896,19 +1149,25 @@ export async function removeWorktree(info: WorktreeInfo): Promise<void> {
     rmSync(worktreePath, { recursive: true, force: true });
     console.log(`[Worktree] Force removed: ${worktreePath}`);
   }
+  await clearActiveWorktreeMarker(info);
 }
 
 /** Clean up dangling worktrees.
  *
  * `git worktree prune` only drops metadata for worktrees whose directory is already gone. A
  * daemon that was hard-killed or crashed mid-run never ran the `finally` cleanup, so its
- * `{repo}/worktree/<issueId>` directories survive as orphans (INT-1810 R4). On start nothing
- * is in flight, so force-remove every one of our own worktree dirs.
+ * `{repo}/worktree/<issueId>` directories survive as orphans (INT-1810 R4). A
+ * restart does not prove they are disposable: they may contain work written
+ * immediately before the crash.
  *
  * `activeWorktreePaths` are the worktrees of currently-running tasks — never swept. Pass an
- * empty set at startup (remove all); pass the live set when sweeping per-heartbeat so an
- * in-flight task's worktree is preserved. */
-export async function pruneWorktrees(repoPath: string, activeWorktreePaths: Set<string> = new Set()): Promise<void> {
+ * `provenOrphanPaths` must come from durable reconciliation (expired fenced
+ * lease + no live owner/artifact requiring recovery). Unknown trees are kept. */
+export async function pruneWorktrees(
+  repoPath: string,
+  activeWorktreePaths: Set<string> = new Set(),
+  provenOrphanPaths: Set<string> = new Set(),
+): Promise<void> {
   await git(repoPath, 'worktree', 'prune').catch((e) => console.warn(`[Worktree] Prune failed for ${repoPath}:`, e));
   try {
     const out = await git(repoPath, 'worktree', 'list', '--porcelain');
@@ -920,20 +1179,61 @@ export async function pruneWorktrees(repoPath: string, activeWorktreePaths: Set<
       .filter((p) => p.startsWith(prefix))
       .filter((p) => !activeWorktreePaths.has(p)); // keep worktrees of running tasks
     for (const p of candidates) {
-      // Preserved failed-session worktrees carry the retry's partial work — they
-      // survive restarts and sweeps (INT-2503) until they age out (abandoned:
-      // task went STUCK or the issue was closed). Expired ones get their work
-      // committed to the branch, then removed (INT-2506).
-      if (existsSync(join(p, PRESERVE_MARKER))) {
-        const age = preserveMarkerAgeMs(p);
-        if (age !== null && age <= PRESERVE_MAX_AGE_MS) continue; // still fresh — keep
-        console.log(`[Worktree] Preserved worktree expired (${age === null ? 'unreadable marker' : Math.round(age / 3_600_000) + 'h'}) — sweeping: ${p}`);
-        await removePreservedWorktreeAt(p).catch((e) => console.warn(`[Worktree] Expired-preserve sweep failed for ${p}:`, e));
-        continue;
+      try {
+        await withWorktreeLifecycleLock(repoPath, basename(p), async () => {
+          // Revalidate ownership only after acquiring the same lock used by
+          // create/resume. This closes the last check-to-delete window: a new
+          // owner either writes its marker first (and is retained), or waits
+          // until this proven-orphan cleanup has finished.
+          const active = await readActiveWorktreeMarkers(repoPath, p);
+          const liveMarker = active.markers.find((candidate) => processAppearsAlive(candidate.ownerPid));
+          if (liveMarker) {
+            console.log(`[Worktree] Retaining live owner ${liveMarker.ownerPid}: ${p}`);
+            return;
+          }
+          if (active.unreadable) {
+            console.warn(`[Worktree] Active marker unreadable/racing — retaining for reconciliation: ${p}`);
+            return;
+          }
+          const marker = active.markers[0] ?? null;
+
+          // Preserved failed-session worktrees carry the retry's partial work — they
+          // survive restarts and sweeps (INT-2503) until they age out (abandoned:
+          // task went STUCK or the issue was closed). Expired ones get their work
+          // committed to the branch, then removed (INT-2506).
+          if (existsSync(join(p, PRESERVE_MARKER))) {
+            const age = preserveMarkerAgeMs(p);
+            if (age === null) {
+              console.warn(`[Worktree] Preserve marker unreadable — retaining for reconciliation: ${p}`);
+              return;
+            }
+            if (age <= PRESERVE_MAX_AGE_MS) return; // still fresh — keep
+            console.log(`[Worktree] Preserved worktree expired (${Math.round(age / 3_600_000)}h) — sweeping: ${p}`);
+            await removePreservedWorktreeAtUnlocked(p)
+              .catch((e) => console.warn(`[Worktree] Expired-preserve sweep failed for ${p}:`, e));
+            return;
+          }
+
+          if (!provenOrphanPaths.has(p)) {
+            console.log(`[Worktree] Retaining unproven ${marker ? 'crash-recovery' : 'legacy'} worktree: ${p}`);
+            return;
+          }
+
+          const branchName = marker?.branchName
+            ?? await git(p, 'rev-parse', '--abbrev-ref', 'HEAD').then((value) => value.trim()).catch(() => 'unknown');
+          const info: WorktreeInfo = {
+            worktreePath: p,
+            branchName,
+            originalPath: repoPath,
+            issueId: marker?.issueId ?? basename(p),
+          };
+          await preserveWorktree(info, 'reconciler proved lease orphan')
+            .then((preserved) => console.log(`[Worktree] Reconciled orphan worktree (${preserved ? 'preserved' : 'clean removal'}): ${p}`))
+            .catch((e) => console.warn(`[Worktree] Orphan reconciliation failed for ${p}:`, e));
+        });
+      } catch (error) {
+        console.warn(`[Worktree] Lifecycle busy/unavailable — retaining for reconciliation: ${p}`, error);
       }
-      await git(repoPath, 'worktree', 'remove', '--force', p)
-        .then(() => console.log(`[Worktree] Swept orphan worktree: ${p}`))
-        .catch((e) => console.warn(`[Worktree] Orphan sweep failed for ${p}:`, e));
     }
   } catch (e) {
     console.warn(`[Worktree] Orphan sweep skipped for ${repoPath}:`, e);

@@ -45,6 +45,14 @@ export interface AutonomousConfig {
   /** Cooldown between task completions in ms (default: 1800000 = 30min) */
   interTaskCooldownMs?: number;
   jobProfiles?: JobProfile[];
+  /** Durable execution ledger rollout mode. Production default: primary. */
+  automationLedgerMode?: 'off' | 'shadow' | 'primary';
+  /** Override ~/.openswarm/automation.db (primarily tests/operations). */
+  automationDbPath?: string;
+  /** Fenced execution lease duration; renewed at one third of this interval. */
+  automationLeaseMs?: number;
+  /** Grace period for real executor exit during service shutdown. */
+  shutdownGraceMs?: number;
 }
 
 export interface RunnerState {

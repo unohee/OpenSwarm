@@ -521,6 +521,11 @@ export type AutonomousStartupConfig = {
   maxConcurrentTasks?: number;
   /** Max concurrent tasks from the same project when same-project parallelism is enabled. */
   maxConcurrentPerProject?: number;
+  /** Durable execution ledger rollout mode. */
+  automationLedgerMode?: 'off' | 'shadow' | 'primary';
+  automationDbPath?: string;
+  automationLeaseMs?: number;
+  shutdownGraceMs?: number;
   /** Default role configuration */
   defaultRoles?: DefaultRolesConfig;
   /** Per-project agent configuration */

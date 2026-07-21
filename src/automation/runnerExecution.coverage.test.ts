@@ -43,6 +43,7 @@ const plannerFormatPlannerResult = vi.fn();
 const buildBranchName = vi.fn();
 const createWorktree = vi.fn();
 const commitAndCreatePR = vi.fn();
+const findOpenPRFileOverlaps = vi.fn();
 const preserveWorktree = vi.fn();
 const removeWorktree = vi.fn();
 const broadcastEvent = vi.fn();
@@ -97,6 +98,7 @@ vi.mock('../support/worktreeManager.js', () => ({
   buildBranchName,
   createWorktree,
   commitAndCreatePR,
+  findOpenPRFileOverlaps,
   preserveWorktree,
   removeWorktree,
 }));
@@ -149,34 +151,16 @@ vi.mock('fs/promises', () => ({ stat: fsStat }));
 // used by `pairPipeline.coverage.test.ts` for the same reason.
 let executePipeline: typeof import('./runnerExecution.js')['executePipeline'];
 let setTaskSource: typeof import('./runnerExecution.js')['setTaskSource'];
-let getTaskSource: typeof import('./runnerExecution.js')['getTaskSource'];
-let setNotifier: typeof import('./runnerExecution.js')['setNotifier'];
-let reportToDiscordModuleFn: typeof import('./runnerExecution.js')['reportToDiscord'];
-let fetchLinearTasks: typeof import('./runnerExecution.js')['fetchLinearTasks'];
-let resolveProjectPath: typeof import('./runnerExecution.js')['resolveProjectPath'];
-let isValidProjectPath: typeof import('./runnerExecution.js')['isValidProjectPath'];
 let reportExecutionResult: typeof import('./runnerExecution.js')['reportExecutionResult'];
 let reconcileCompletionState: typeof import('./runnerExecution.js')['reconcileCompletionState'];
-let syncFailureState: typeof import('./runnerExecution.js')['syncFailureState'];
-let syncCancellationState: typeof import('./runnerExecution.js')['syncCancellationState'];
-let syncSuccessState: typeof import('./runnerExecution.js')['syncSuccessState'];
 let requestApproval: typeof import('./runnerExecution.js')['requestApproval'];
 
 beforeAll(async () => {
   const mod = await import('./runnerExecution.js');
   executePipeline = mod.executePipeline;
   setTaskSource = mod.setTaskSource;
-  getTaskSource = mod.getTaskSource;
-  setNotifier = mod.setNotifier;
-  reportToDiscordModuleFn = mod.reportToDiscord;
-  fetchLinearTasks = mod.fetchLinearTasks;
-  resolveProjectPath = mod.resolveProjectPath;
-  isValidProjectPath = mod.isValidProjectPath;
   reportExecutionResult = mod.reportExecutionResult;
   reconcileCompletionState = mod.reconcileCompletionState;
-  syncFailureState = mod.syncFailureState;
-  syncCancellationState = mod.syncCancellationState;
-  syncSuccessState = mod.syncSuccessState;
   requestApproval = mod.requestApproval;
 });
 
@@ -315,6 +299,8 @@ describe('runnerExecution.ts coverage extension', () => {
     plannerFormatPlannerResult.mockReturnValue('planner result summary');
 
     buildBranchName.mockReturnValue('swarm/INT-100-fix-the-flaky-retry-logic');
+    commitAndCreatePR.mockResolvedValue('https://github.com/org/repo/pull/1');
+    findOpenPRFileOverlaps.mockResolvedValue([]);
     removeWorktree.mockResolvedValue(undefined);
     preserveWorktree.mockResolvedValue(true);
     analyzeIssue.mockResolvedValue(null);
@@ -533,16 +519,23 @@ describe('runnerExecution.ts coverage extension', () => {
       // The real pipeline must never run for a successfully decomposed task.
       expect(createPipelineFromConfig).not.toHaveBeenCalled();
       expect(taskSourceMock.createSubIssue).toHaveBeenCalledTimes(2);
+      const decompositionCalls = (taskSourceMock.createSubIssue as ReturnType<typeof vi.fn>).mock.calls;
+      const firstId = decompositionCalls[0][3]?.idempotencyId;
+      const secondId = decompositionCalls[1][3]?.idempotencyId;
+      expect(firstId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+      expect(secondId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+      expect(firstId).not.toBe(secondId);
       expect(registerDecomposition).toHaveBeenCalledWith('issue-1', undefined, ['sub-1', 'sub-2']);
       expect(markTaskDecomposed).toHaveBeenCalled();
       expect(scheduleNextHeartbeat).toHaveBeenCalledTimes(1);
       // Sub 1 has no dependencies → moved straight to Todo; Sub 2 depends on
       // Sub 1 (now resolvable via the per-call id) → kept in Backlog.
       expect(taskSourceMock.updateState).toHaveBeenCalledWith('sub-1', 'Todo');
+      expect(taskSourceMock.updateState).toHaveBeenCalledWith('sub-2', 'Backlog');
       expect(console.log).toHaveBeenCalledWith(expect.stringContaining('Keeping INT-102 in Backlog until dependencies resolve'));
     });
 
-    it('tolerates a failure initializing one sub-issue state without aborting the rest', async () => {
+    it('fails closed when one sub-issue state cannot be initialized', async () => {
       plannerNeedsDecomposition.mockReturnValue(true);
       plannerRunPlanner.mockResolvedValue({
         success: true,
@@ -560,12 +553,14 @@ describe('runnerExecution.ts coverage extension', () => {
       );
       (taskSourceMock.updateState as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('linear down'));
 
-      const result = await executePipeline(makeCtx({ enableDecomposition: true }), task(), '/repo');
-
-      expect(result.finalStatus).toBe('decomposed');
-      expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('Failed to initialize'), expect.any(Error));
-      // Both sub-issues were still created despite the first one's state-init failing.
+      await expect(executePipeline(makeCtx({ enableDecomposition: true }), task(), '/repo'))
+        .rejects.toThrow('linear down');
+      // Both deterministic children exist, so the next attempt can recover them
+      // and retry state initialization without creating duplicates.
       expect(taskSourceMock.createSubIssue).toHaveBeenCalledTimes(2);
+      expect(taskSourceMock.markAsDecomposed).not.toHaveBeenCalled();
+      expect(registerDecomposition).not.toHaveBeenCalled();
+      expect(createPipelineFromConfig).not.toHaveBeenCalled();
     });
 
     it('auto-moves the task to Backlog and skips decomposition once the depth limit is reached', async () => {
@@ -602,6 +597,31 @@ describe('runnerExecution.ts coverage extension', () => {
       expect(taskSourceMock.addComment).toHaveBeenCalledWith('issue-1', expect.stringContaining('too many sub-issues'));
     });
 
+    it('reconciles an interrupted In Progress decomposition despite child and daily gates', async () => {
+      plannerNeedsDecomposition.mockReturnValue(true);
+      getChildrenCount.mockReturnValue(5);
+      canCreateMoreIssues.mockReturnValue(false);
+      plannerRunPlanner.mockResolvedValue({
+        success: true,
+        originalIssue: 'issue-1',
+        needsDecomposition: true,
+        subTasks: [{ title: 'Existing child', description: 'resume', estimatedMinutes: 10, priority: 2 }],
+        totalEstimatedMinutes: 10,
+      });
+
+      const result = await executePipeline(
+        makeCtx({ enableDecomposition: true }),
+        task({ linearState: 'In Progress' }),
+        '/repo',
+      );
+
+      expect(result.finalStatus).toBe('decomposed');
+      expect(plannerRunPlanner).toHaveBeenCalledTimes(1);
+      expect(taskSourceMock.createSubIssue).toHaveBeenCalledTimes(1);
+      expect(taskSourceMock.updateState).not.toHaveBeenCalledWith('issue-1', 'Backlog');
+      expect(console.log).toHaveBeenCalledWith(expect.stringContaining('Reconciling 5 existing child'));
+    });
+
     it('does not auto-backlog on limit breach when decompositionAutoBacklog is disabled', async () => {
       plannerNeedsDecomposition.mockReturnValue(true);
       getDecompositionDepth.mockReturnValue(9);
@@ -635,7 +655,7 @@ describe('runnerExecution.ts coverage extension', () => {
       expect(taskSourceMock.createSubIssue).not.toHaveBeenCalled();
     });
 
-    it('reports zero created sub-issues as a decompose failure and falls back to direct execution', async () => {
+    it('fails closed when no sub-issue can be created instead of executing the parent directly', async () => {
       plannerNeedsDecomposition.mockReturnValue(true);
       plannerRunPlanner.mockResolvedValue({
         success: true, originalIssue: 'issue-1', needsDecomposition: true,
@@ -643,12 +663,10 @@ describe('runnerExecution.ts coverage extension', () => {
         totalEstimatedMinutes: 10,
       });
       (taskSourceMock.createSubIssue as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ error: 'Linear rejected the sub-issue' });
-      createPipelineFromConfig.mockReturnValue(makeFakePipeline(pipelineResult()));
-
-      const result = await executePipeline(makeCtx({ enableDecomposition: true }), task(), '/repo');
-
-      expect(result.finalStatus).toBe('approved'); // decomposeTask returned false → direct execution
-      expect(console.error).toHaveBeenCalledWith(expect.stringContaining('No sub-issues created'));
+      await expect(executePipeline(makeCtx({ enableDecomposition: true }), task(), '/repo'))
+        .rejects.toThrow(/Incomplete decomposition/);
+      expect(createPipelineFromConfig).not.toHaveBeenCalled();
+      expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Incomplete sub-issue creation'));
     });
 
     it('surfaces the planner onLog stream and tolerates a KG impact-analysis failure', async () => {
@@ -700,6 +718,26 @@ describe('runnerExecution.ts coverage extension', () => {
       expect(createPipelineFromConfig).not.toHaveBeenCalled();
     });
 
+    it('preserves an acquired worktree when durable attachment throws during setup', async () => {
+      createWorktree.mockResolvedValue(worktreeInfoFixture());
+      const durability = {
+        onWorktree: vi.fn(async () => { throw new Error('sqlite busy'); }),
+        onStage: vi.fn(async () => true),
+        beforePublish: vi.fn(async () => true),
+        onPublication: vi.fn(async () => true),
+      };
+
+      const result = await executePipeline(makeCtx({ worktreeMode: true, durability }), task(), '/repo');
+
+      expect(result).toMatchObject({ success: false, finalStatus: 'infra_error' });
+      expect(createPipelineFromConfig).not.toHaveBeenCalled();
+      expect(preserveWorktree).toHaveBeenCalledWith(
+        expect.objectContaining({ issueId: 'issue-1' }),
+        'worktree setup or durable attachment failed',
+      );
+      expect(removeWorktree).not.toHaveBeenCalled();
+    });
+
     it('preserves the worktree when the pipeline result is not successful', async () => {
       createWorktree.mockResolvedValue(worktreeInfoFixture());
       createPipelineFromConfig.mockReturnValue(
@@ -713,7 +751,7 @@ describe('runnerExecution.ts coverage extension', () => {
       expect(removeWorktree).not.toHaveBeenCalled();
     });
 
-    it('logs an unexpected-state reason and still removes the worktree when success is true but finalStatus is not approved', async () => {
+    it('preserves the worktree when success is true but finalStatus is not approved', async () => {
       createWorktree.mockResolvedValue(worktreeInfoFixture());
       createPipelineFromConfig.mockReturnValue(
         makeFakePipeline(pipelineResult({ success: true, finalStatus: 'cancelled' })),
@@ -724,20 +762,56 @@ describe('runnerExecution.ts coverage extension', () => {
       expect(result.success).toBe(true);
       expect(commitAndCreatePR).not.toHaveBeenCalled();
       expect(console.log).toHaveBeenCalledWith(expect.stringContaining('Unexpected state'));
-      expect(removeWorktree).toHaveBeenCalledTimes(1);
+      expect(preserveWorktree).toHaveBeenCalledTimes(1);
+      expect(removeWorktree).not.toHaveBeenCalled();
     });
 
-    it('tolerates a PR-creation failure (logs it, keeps the run a success)', async () => {
+    it('keeps a PR-creation failure retryable instead of reporting false success', async () => {
       createWorktree.mockResolvedValue(worktreeInfoFixture());
       commitAndCreatePR.mockRejectedValue(new Error('gh pr create failed'));
       createPipelineFromConfig.mockReturnValue(makeFakePipeline(pipelineResult()));
 
       const result = await executePipeline(makeCtx({ worktreeMode: true }), task(), '/repo');
 
-      expect(result.success).toBe(true);
+      expect(result.success).toBe(false);
+      expect(result.finalStatus).toBe('infra_error');
       expect(result.prUrl).toBeUndefined();
       expect(console.error).toHaveBeenCalledWith('[Worktree] PR creation failed:', expect.any(Error));
-      expect(removeWorktree).toHaveBeenCalledTimes(1);
+      expect(preserveWorktree).toHaveBeenCalledTimes(1);
+    });
+
+    it('treats a rejected publication attachment as fenced and preserves the published worktree', async () => {
+      const durability = {
+        onWorktree: vi.fn(async () => true),
+        onStage: vi.fn(async () => true),
+        beforePublish: vi.fn(async () => true),
+        onPublication: vi.fn(async () => false),
+      };
+      createWorktree.mockResolvedValue(worktreeInfoFixture());
+      createPipelineFromConfig.mockReturnValue(makeFakePipeline(pipelineResult()));
+
+      const result = await executePipeline(makeCtx({ worktreeMode: true, durability }), task(), '/repo');
+
+      expect(result).toMatchObject({ success: false, finalStatus: 'infra_error' });
+      expect(result.prUrl).toBe('https://github.com/org/repo/pull/1');
+      expect(preserveWorktree).toHaveBeenCalledTimes(1);
+      expect(removeWorktree).not.toHaveBeenCalled();
+    });
+
+    it('preserves partial work when the pipeline throws unexpectedly', async () => {
+      createWorktree.mockResolvedValue(worktreeInfoFixture());
+      const fp = new EventEmitter() as EventEmitter & { run: ReturnType<typeof vi.fn> };
+      fp.run = vi.fn(async () => { throw new Error('adapter process crashed'); });
+      createPipelineFromConfig.mockReturnValue(fp);
+
+      await expect(executePipeline(makeCtx({ worktreeMode: true }), task(), '/repo'))
+        .rejects.toThrow('adapter process crashed');
+
+      expect(preserveWorktree).toHaveBeenCalledWith(
+        expect.objectContaining({ issueId: 'issue-1' }),
+        'session did not succeed',
+      );
+      expect(removeWorktree).not.toHaveBeenCalled();
     });
 
     it('tolerates a worktree cleanup failure without throwing', async () => {
@@ -755,6 +829,81 @@ describe('runnerExecution.ts coverage extension', () => {
   // ============================================
 
   describe('pipeline event handlers', () => {
+    it('does not resolve until async event side effects have settled', async () => {
+      let releaseComment!: () => void;
+      const pendingComment = new Promise<void>((resolve) => { releaseComment = resolve; });
+      (taskSourceMock.addComment as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce(undefined)
+        .mockReturnValueOnce(pendingComment);
+
+      const fp = new EventEmitter() as EventEmitter & { run: ReturnType<typeof vi.fn> };
+      fp.run = vi.fn(async () => {
+        fp.emit('stage:complete', {
+          stage: 'worker',
+          result: {
+            success: true,
+            duration: 1000,
+            result: { success: true, summary: 'done', filesChanged: [], commands: [], output: '', confidencePercent: 90 },
+          },
+          context: { currentIteration: 1 },
+        });
+        // Deliberately return without a microtask flush. EventEmitter itself
+        // never awaits the async listener work.
+        return pipelineResult();
+      });
+      createPipelineFromConfig.mockReturnValue(fp);
+
+      let settled = false;
+      const execution = executePipeline(makeCtx(), task(), '/repo').then((result) => {
+        settled = true;
+        return result;
+      });
+      await flush();
+
+      expect(taskSourceMock.addComment).toHaveBeenCalledTimes(2);
+      expect(settled).toBe(false);
+
+      releaseComment();
+      const result = await execution;
+      expect(result.finalStatus).toBe('approved');
+      expect(settled).toBe(true);
+    });
+
+    it('aborts publication and preserves the worktree when a durable stage fence rejects', async () => {
+      let rejectFence!: (allowed: boolean) => void;
+      const stageFence = new Promise<boolean>((resolve) => { rejectFence = resolve; });
+      const durability = {
+        onWorktree: vi.fn(async () => true),
+        onStage: vi.fn(() => stageFence),
+        beforePublish: vi.fn(async () => true),
+        onPublication: vi.fn(async () => true),
+      };
+      createWorktree.mockResolvedValue(worktreeInfoFixture());
+      const fp = makeFakePipeline(pipelineResult(), [
+        ['stage:start', { stage: 'worker', context: { currentIteration: 1 }, model: 'worker-model' }],
+      ]);
+      createPipelineFromConfig.mockReturnValue(fp);
+
+      const execution = executePipeline(makeCtx({ worktreeMode: true, durability }), task(), '/repo');
+      await flush();
+      expect(durability.onStage).toHaveBeenCalledWith('worker');
+      expect(commitAndCreatePR).not.toHaveBeenCalled();
+
+      rejectFence(false);
+      const result = await execution;
+
+      expect(result).toMatchObject({ success: false, finalStatus: 'infra_error' });
+      expect(commitAndCreatePR).not.toHaveBeenCalled();
+      expect(preserveWorktree).toHaveBeenCalledTimes(1);
+      expect(removeWorktree).not.toHaveBeenCalled();
+      const runOptions = fp.run.mock.calls[0][2] as { signal: AbortSignal };
+      expect(runOptions.signal.aborted).toBe(true);
+      expect(console.warn).toHaveBeenCalledWith(
+        expect.stringContaining('Durable stage transition failed'),
+        expect.any(Error),
+      );
+    });
+
     it('posts a worker-start audit comment only for the worker stage on a task with an issueId', async () => {
       createPipelineFromConfig.mockReturnValue(makeFakePipeline(pipelineResult(), [
         ['stage:start', {
@@ -1269,322 +1418,5 @@ describe('reconcileCompletionState', () => {
 
     await expect(reconcileCompletionState(task())).resolves.toBeUndefined();
     expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('Failed to complete parent task'), expect.any(Error));
-  });
-});
-
-describe('syncFailureState / syncCancellationState / syncSuccessState', () => {
-  let taskSourceMock: ITaskSource;
-
-  beforeEach(() => {
-    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    markTaskBlocked.mockReturnValue({ issueId: 'issue-1' });
-    markTaskBacklog.mockReturnValue({ issueId: 'issue-1' });
-    markTaskDone.mockReturnValue({ issueId: 'issue-1' });
-    buildTaskStateSyncComment.mockReturnValue('sync comment');
-    taskSourceMock = makeTaskSource();
-    setTaskSource(taskSourceMock);
-  });
-
-  afterEach(() => {
-    vi.restoreAllMocks();
-    vi.clearAllMocks();
-  });
-
-  it('syncFailureState no-ops without an issueId', async () => {
-    await syncFailureState(task({ issueId: undefined }), 'blocked reason');
-    expect(markTaskBlocked).not.toHaveBeenCalled();
-  });
-
-  it('syncFailureState marks the task blocked and comments', async () => {
-    await syncFailureState(task({ blockedBy: ['dep-1'] }), 'blocked reason');
-
-    expect(markTaskBlocked).toHaveBeenCalledWith('issue-1', 'blocked reason', ['dep-1'], undefined);
-    expect(taskSourceMock.addComment).toHaveBeenCalledWith('issue-1', 'sync comment');
-  });
-
-  it('syncFailureState tolerates an addComment failure', async () => {
-    (taskSourceMock.addComment as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('linear down'));
-
-    await expect(syncFailureState(task(), 'blocked reason')).resolves.toBe(true);
-    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('Failed to sync blocked state'), expect.any(Error));
-  });
-
-  it('syncCancellationState no-ops without an issueId', async () => {
-    await syncCancellationState(task({ issueId: undefined }));
-    expect(markTaskBacklog).not.toHaveBeenCalled();
-  });
-
-  it('syncCancellationState moves the task to Backlog and comments', async () => {
-    await syncCancellationState(task());
-
-    expect(taskSourceMock.updateState).toHaveBeenCalledWith('issue-1', 'Backlog');
-    expect(taskSourceMock.addComment).toHaveBeenCalledWith('issue-1', 'sync comment');
-  });
-
-  it('syncCancellationState tolerates an updateState failure and still tries the comment', async () => {
-    (taskSourceMock.updateState as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('linear down'));
-
-    await syncCancellationState(task());
-
-    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('Failed to move cancelled task'), expect.any(Error));
-    expect(taskSourceMock.addComment).toHaveBeenCalledWith('issue-1', 'sync comment');
-  });
-
-  it('syncCancellationState tolerates an addComment failure', async () => {
-    (taskSourceMock.addComment as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('linear down'));
-
-    await expect(syncCancellationState(task())).resolves.toBeUndefined();
-    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('Failed to sync cancelled state'), expect.any(Error));
-  });
-
-  it('syncSuccessState no-ops without an issueId', async () => {
-    await syncSuccessState(task({ issueId: undefined }), 90);
-    expect(markTaskDone).not.toHaveBeenCalled();
-  });
-
-  it('syncSuccessState marks the task done and comments with confidence', async () => {
-    await syncSuccessState(task(), 92);
-
-    expect(markTaskDone).toHaveBeenCalledWith('issue-1', expect.objectContaining({ confidence: 92 }));
-    expect(taskSourceMock.addComment).toHaveBeenCalledWith('issue-1', 'sync comment');
-  });
-
-  it('syncSuccessState tolerates an addComment failure', async () => {
-    (taskSourceMock.addComment as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('linear down'));
-
-    await expect(syncSuccessState(task(), 92)).resolves.toBeUndefined();
-    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('Failed to sync success state'), expect.any(Error));
-  });
-});
-
-// ============================================
-// setNotifier / reportToDiscord (module-level notifier singleton)
-// ============================================
-//
-// NOTE on ordering: the `notifier` module singleton has no public reset — once
-// `setNotifier()` is called it stays set for the rest of this test file. These
-// two tests must run in this order (the default, since vitest runs `it`s
-// within a describe sequentially): "no notifier registered" first, then
-// "registers a notifier". No other describe in this file calls setNotifier.
-describe('setNotifier / reportToDiscord (module notifier singleton)', () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  it('logs instead of notifying when no notifier has been registered yet', async () => {
-    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
-
-    await reportToDiscordModuleFn('hello from OpenSwarm');
-
-    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('No notifier'), 'hello from OpenSwarm');
-  });
-
-  it('registers a notifier and routes subsequent messages through it', async () => {
-    vi.spyOn(console, 'log').mockImplementation(() => undefined);
-    const notify = vi.fn(async () => {});
-
-    setNotifier({ notify });
-    await reportToDiscordModuleFn('now routed');
-
-    expect(notify).toHaveBeenCalledWith('now routed');
-  });
-});
-
-// ============================================
-// getTaskSource / fetchLinearTasks
-// ============================================
-
-describe('getTaskSource / fetchLinearTasks', () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-    vi.clearAllMocks();
-  });
-
-  it('getTaskSource returns the currently registered task source', () => {
-    const src = makeTaskSource();
-    setTaskSource(src);
-
-    expect(getTaskSource()).toBe(src);
-  });
-
-  it('fetchLinearTasks returns tasks from the registered source', async () => {
-    const tasks = [task()];
-    setTaskSource(makeTaskSource({ fetchTasks: vi.fn(async () => tasks) }));
-
-    const result = await fetchLinearTasks();
-
-    expect(result.tasks).toBe(tasks);
-    expect(result.error).toBeUndefined();
-  });
-
-  it('fetchLinearTasks surfaces a fetch failure as an error string, and logs recovery on the next success', async () => {
-    vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    vi.spyOn(console, 'log').mockImplementation(() => undefined);
-    const fetchTasks = vi.fn()
-      .mockRejectedValueOnce(new Error('linear API down'))
-      .mockResolvedValueOnce([]);
-    setTaskSource(makeTaskSource({ fetchTasks }));
-
-    const failed = await fetchLinearTasks();
-    expect(failed.tasks).toEqual([]);
-    expect(failed.error).toBe('linear API down');
-
-    const recovered = await fetchLinearTasks();
-    expect(recovered.error).toBeUndefined();
-    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('recovered after 1 failures'));
-  });
-});
-
-// ============================================
-// resolveProjectPath / isValidProjectPath
-// ============================================
-//
-// These use the real priority ladder (openswarm.json mapping → allowedProjects
-// basename → ~/dev/{name} → ~/dev/{name.toLowerCase()} → ~/dev/tools/{name} →
-// fuzzy projectMapper), with `fs/promises`, repoMetadata.js, and
-// projectMapper.js all mocked so no test touches the real filesystem or $HOME.
-
-describe('resolveProjectPath / isValidProjectPath', () => {
-  /** Builds an `fs.stat` implementation: `dirs` maps a directory path to the
-   *  marker files (e.g. '.git') that exist directly under it. Any other path
-   *  rejects with ENOENT, matching real fs.stat behavior for a missing path. */
-  function makeFsStatImpl(dirs: Record<string, string[]>) {
-    return async (p: string) => {
-      const norm = String(p);
-      if (norm in dirs) return { isDirectory: () => true, isFile: () => false };
-      for (const [dir, markers] of Object.entries(dirs)) {
-        if (markers.some((m) => norm === `${dir}/${m}`)) return { isDirectory: () => false, isFile: () => true };
-      }
-      throw Object.assign(new Error(`ENOENT: no such file or directory, stat '${norm}'`), { code: 'ENOENT' });
-    };
-  }
-
-  let originalHome: string | undefined;
-
-  beforeEach(() => {
-    vi.spyOn(console, 'log').mockImplementation(() => undefined);
-    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    originalHome = process.env.HOME;
-    process.env.HOME = '/home/testuser';
-    loadRepoMetadata.mockReset();
-    mapLinearProject.mockReset();
-    fsStat.mockReset();
-    // Default: nothing exists anywhere (every priority falls through).
-    fsStat.mockImplementation(makeFsStatImpl({}));
-    loadRepoMetadata.mockResolvedValue(null);
-    mapLinearProject.mockResolvedValue(null);
-  });
-
-  afterEach(() => {
-    process.env.HOME = originalHome;
-    vi.restoreAllMocks();
-    vi.clearAllMocks();
-  });
-
-  it('returns null immediately when the task has no Linear project info', async () => {
-    const result = await resolveProjectPath(makeCtx(), task({ linearProject: undefined }));
-
-    expect(result).toBeNull();
-    expect(loadRepoMetadata).not.toHaveBeenCalled();
-  });
-
-  it('resolves via the openswarm.json mapping when a repo declares this Linear project', async () => {
-    loadRepoMetadata.mockResolvedValueOnce({ linear: { projectId: 'proj-1' } });
-    fsStat.mockImplementation(makeFsStatImpl({ '/home/dev/repoA': ['.git'] }));
-    const ctx = makeCtx({ allowedProjects: ['/home/dev/repoA'] });
-
-    const result = await resolveProjectPath(ctx, task({ linearProject: { id: 'proj-1', name: 'OpenSwarm' } }));
-
-    expect(result).toBe('/home/dev/repoA');
-  });
-
-  it('tolerates an unreadable openswarm.json and falls through to the next priority', async () => {
-    loadRepoMetadata.mockRejectedValueOnce(new Error('EACCES'));
-    fsStat.mockImplementation(makeFsStatImpl({ '/home/dev/OpenSwarm': ['.git'] }));
-    const ctx = makeCtx({ allowedProjects: ['/home/dev/OpenSwarm'] });
-
-    const result = await resolveProjectPath(ctx, task({ linearProject: { id: 'proj-1', name: 'OpenSwarm' } }));
-
-    expect(result).toBe('/home/dev/OpenSwarm');
-    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('openswarm.json unreadable'));
-  });
-
-  it('falls through to an exact (case-insensitive) basename match in allowedProjects', async () => {
-    fsStat.mockImplementation(makeFsStatImpl({ '/home/dev/openswarm-repo': ['package.json'] }));
-    const ctx = makeCtx({ allowedProjects: ['/home/dev/openswarm-repo'] });
-
-    const result = await resolveProjectPath(
-      ctx,
-      task({ linearProject: { id: 'proj-1', name: 'openswarm-repo' } }),
-    );
-
-    expect(result).toBe('/home/dev/openswarm-repo');
-  });
-
-  it('falls through to the direct ~/dev/{name} path', async () => {
-    fsStat.mockImplementation(makeFsStatImpl({ '/home/testuser/dev/OpenSwarm': ['.git'] }));
-
-    const result = await resolveProjectPath(makeCtx(), task({ linearProject: { id: 'proj-1', name: 'OpenSwarm' } }));
-
-    expect(result).toBe('/home/testuser/dev/OpenSwarm');
-  });
-
-  it('falls through to the lowercase ~/dev/{name} path when the exact-case path does not exist', async () => {
-    fsStat.mockImplementation(makeFsStatImpl({ '/home/testuser/dev/openswarm': ['.git'] }));
-
-    const result = await resolveProjectPath(makeCtx(), task({ linearProject: { id: 'proj-1', name: 'OpenSwarm' } }));
-
-    expect(result).toBe('/home/testuser/dev/openswarm');
-  });
-
-  it('falls through to the ~/dev/tools/{name} path', async () => {
-    fsStat.mockImplementation(makeFsStatImpl({ '/home/testuser/dev/tools/pykis': ['pyproject.toml'] }));
-
-    const result = await resolveProjectPath(makeCtx(), task({ linearProject: { id: 'proj-1', name: 'pykis' } }));
-
-    expect(result).toBe('/home/testuser/dev/tools/pykis');
-  });
-
-  it('falls through to the fuzzy projectMapper match as a last resort', async () => {
-    mapLinearProject.mockResolvedValueOnce('/some/fuzzy/match');
-
-    const result = await resolveProjectPath(makeCtx(), task({ linearProject: { id: 'proj-1', name: 'Unmatched Project' } }));
-
-    expect(result).toBe('/some/fuzzy/match');
-    expect(mapLinearProject).toHaveBeenCalledWith('proj-1', 'Unmatched Project', []);
-  });
-
-  it('returns null when every priority fails to resolve a path', async () => {
-    const result = await resolveProjectPath(makeCtx(), task({ linearProject: { id: 'proj-1', name: 'Nowhere' } }));
-
-    expect(result).toBeNull();
-    expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Failed to resolve project path'));
-  });
-
-  it('isValidProjectPath returns false for a path that is not a directory', async () => {
-    fsStat.mockImplementation(async () => ({ isDirectory: () => false }));
-
-    await expect(isValidProjectPath('/some/file.txt')).resolves.toBe(false);
-  });
-
-  it('isValidProjectPath returns false when fs.stat throws (path does not exist)', async () => {
-    fsStat.mockImplementation(async () => { throw new Error('ENOENT'); });
-
-    await expect(isValidProjectPath('/does/not/exist')).resolves.toBe(false);
-  });
-
-  it('isValidProjectPath returns true on the second marker check when the first marker is absent', async () => {
-    // '.git' is absent but 'package.json' exists — exercises the loop's
-    // continue-then-succeed path.
-    fsStat.mockImplementation(makeFsStatImpl({ '/repo/node-project': ['package.json'] }));
-
-    await expect(isValidProjectPath('/repo/node-project')).resolves.toBe(true);
-  });
-
-  it('isValidProjectPath returns false when the directory has none of the marker files', async () => {
-    fsStat.mockImplementation(makeFsStatImpl({ '/repo/empty-dir': [] }));
-
-    await expect(isValidProjectPath('/repo/empty-dir')).resolves.toBe(false);
   });
 });

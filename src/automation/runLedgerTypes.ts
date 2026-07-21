@@ -1,0 +1,188 @@
+export const AUTOMATION_SCHEMA_VERSION = 2;
+
+export const RUN_STATES = [
+  'DISCOVERED',
+  'READY',
+  'CLAIMED',
+  'EXECUTING',
+  'VERIFYING',
+  'PUBLISHING',
+  'SYNC_PENDING',
+  'DONE',
+  'RETRY_AT',
+  'WAITING_EXTERNAL',
+  'NEEDS_SPEC',
+  'NEEDS_ENV',
+  'NEEDS_HUMAN',
+  'NEEDS_RECONCILE',
+  'DECOMPOSED',
+  'CANCELLED',
+] as const;
+
+export type RunState = (typeof RUN_STATES)[number];
+export type RunLedgerMode = 'off' | 'shadow' | 'primary';
+export type EffectStatus = 'pending' | 'in_flight' | 'applied' | 'dead';
+
+export const ACTIVE_LEASE_STATES: readonly RunState[] = [
+  'CLAIMED',
+  'EXECUTING',
+  'VERIFYING',
+  'PUBLISHING',
+];
+
+// NEEDS_RECONCILE is deliberately excluded. Artifact truth (PR/worktree/branch)
+// must be checked before a crashed run can return to READY.
+export const CLAIMABLE_STATES: readonly RunState[] = ['READY', 'RETRY_AT'];
+
+export const ALLOWED_TRANSITIONS: Readonly<Record<RunState, readonly RunState[]>> = {
+  DISCOVERED: ['READY', 'NEEDS_SPEC', 'NEEDS_ENV', 'CANCELLED'],
+  READY: ['CLAIMED', 'RETRY_AT', 'WAITING_EXTERNAL', 'NEEDS_SPEC', 'NEEDS_ENV', 'NEEDS_HUMAN', 'CANCELLED'],
+  CLAIMED: ['EXECUTING', 'RETRY_AT', 'NEEDS_RECONCILE', 'CANCELLED'],
+  EXECUTING: ['VERIFYING', 'PUBLISHING', 'SYNC_PENDING', 'RETRY_AT', 'WAITING_EXTERNAL', 'NEEDS_SPEC', 'NEEDS_ENV', 'NEEDS_HUMAN', 'NEEDS_RECONCILE', 'DECOMPOSED', 'CANCELLED'],
+  VERIFYING: ['PUBLISHING', 'SYNC_PENDING', 'RETRY_AT', 'NEEDS_SPEC', 'NEEDS_ENV', 'NEEDS_HUMAN', 'NEEDS_RECONCILE', 'CANCELLED'],
+  PUBLISHING: ['SYNC_PENDING', 'RETRY_AT', 'WAITING_EXTERNAL', 'NEEDS_RECONCILE', 'NEEDS_HUMAN', 'CANCELLED'],
+  SYNC_PENDING: ['DONE', 'RETRY_AT', 'WAITING_EXTERNAL', 'NEEDS_RECONCILE', 'NEEDS_HUMAN', 'CANCELLED'],
+  DONE: ['READY'],
+  RETRY_AT: ['CLAIMED', 'READY', 'RETRY_AT', 'NEEDS_RECONCILE', 'CANCELLED'],
+  WAITING_EXTERNAL: ['READY', 'SYNC_PENDING', 'NEEDS_RECONCILE', 'NEEDS_HUMAN', 'CANCELLED'],
+  NEEDS_SPEC: ['READY', 'NEEDS_HUMAN', 'CANCELLED'],
+  NEEDS_ENV: ['READY', 'NEEDS_HUMAN', 'CANCELLED'],
+  NEEDS_HUMAN: ['READY', 'SYNC_PENDING', 'NEEDS_RECONCILE', 'CANCELLED'],
+  NEEDS_RECONCILE: ['READY', 'SYNC_PENDING', 'NEEDS_HUMAN', 'CANCELLED'],
+  DECOMPOSED: ['READY'],
+  CANCELLED: ['READY'],
+};
+
+export interface RegisterRunInput {
+  issueId: string;
+  source: string;
+  identifier?: string;
+  title?: string;
+  projectPath: string;
+  metadata?: unknown;
+  ready?: boolean;
+}
+
+export interface ImportRunInput extends RegisterRunInput {
+  state: 'DISCOVERED' | 'READY' | 'RETRY_AT' | 'NEEDS_RECONCILE' | 'NEEDS_HUMAN' | 'DONE' | 'DECOMPOSED' | 'CANCELLED';
+  retryAt?: number;
+  branchName?: string;
+  worktreePath?: string;
+  errorCode?: string;
+  errorMessage?: string;
+}
+
+export interface RunRecord {
+  issueId: string;
+  source: string;
+  identifier?: string;
+  title?: string;
+  projectPath: string;
+  state: RunState;
+  stateVersion: number;
+  attemptNo: number;
+  ownerInstanceId?: string;
+  leaseToken?: string;
+  leaseEpoch: number;
+  leaseExpiresAt?: number;
+  retryAt?: number;
+  branchName?: string;
+  worktreePath?: string;
+  prUrl?: string;
+  headSha?: string;
+  lastErrorCode?: string;
+  lastErrorMessage?: string;
+  discoveredAt: number;
+  startedAt?: number;
+  updatedAt: number;
+  completedAt?: number;
+  metadata?: unknown;
+}
+
+export interface RunClaim {
+  issueId: string;
+  ownerInstanceId: string;
+  leaseToken: string;
+  leaseEpoch: number;
+  attemptNo: number;
+  leaseExpiresAt: number;
+}
+
+export interface ClaimOptions {
+  ownerInstanceId: string;
+  leaseMs: number;
+  now?: number;
+  /** Atomic repository admission cap. Defaults to one active run per repository. */
+  maxActiveForProject?: number;
+  maxAttemptsPerHour?: number;
+  maxFailuresPerHour?: number;
+  maxCostUsdPerDay?: number;
+  circuitCooldownMs?: number;
+}
+
+export interface TransitionPatch {
+  retryAt?: number | null;
+  branchName?: string | null;
+  worktreePath?: string | null;
+  prUrl?: string | null;
+  headSha?: string | null;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+  metadata?: unknown;
+  eventData?: unknown;
+}
+
+export interface AttemptResultInput {
+  success: boolean;
+  finalStatus: string;
+  costUsd?: number;
+  result?: unknown;
+  maxFailuresPerHour?: number;
+  circuitCooldownMs?: number;
+}
+
+export interface EffectInput {
+  kind: string;
+  dedupeKey: string;
+  payload: unknown;
+  availableAt?: number;
+}
+
+export interface EffectRecord {
+  id: number;
+  issueId: string;
+  attemptNo: number;
+  kind: string;
+  dedupeKey: string;
+  payload: unknown;
+  status: EffectStatus;
+  attempts: number;
+  availableAt: number;
+  ownerInstanceId?: string;
+  deliveryToken?: string;
+  leaseEpoch: number;
+  leaseExpiresAt?: number;
+  lastError?: string;
+  createdAt: number;
+  updatedAt: number;
+  appliedAt?: number;
+}
+
+export interface EffectClaim extends EffectRecord {
+  ownerInstanceId: string;
+  deliveryToken: string;
+  leaseExpiresAt: number;
+}
+
+export interface LedgerMetrics {
+  byState: Record<string, number>;
+  effectsByStatus: Record<string, number>;
+  expiredActiveLeases: number;
+  oldestPendingEffectAgeMs: number;
+  openCircuits: number;
+}
+
+export interface RunLedgerOptions {
+  /** Operations override; production defaults to five seconds. */
+  busyTimeoutMs?: number;
+}

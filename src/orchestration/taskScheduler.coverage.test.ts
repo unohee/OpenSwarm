@@ -148,42 +148,44 @@ describe('TaskScheduler.handleTaskComplete branches', () => {
     expect(sched.getStats().failed).toBe(1);
   });
 
-  it("no-ops when a stale run settles for a task id already reused by a newer run", async () => {
-    // startTask has no dedup guard of its own (enqueue's isTaskQueued/isTaskRunning
-    // check is the only gate, and it's bypassable by calling startTask directly,
-    // e.g. via a requeue race). Once a newer run overwrites the runningTasks map
-    // entry for the same id, the stale run settling afterwards must be a no-op —
-    // this exercises handleTaskComplete's `if (!running) return` guard.
+  it('does not count a decomposed parent as a completed implementation', async () => {
     const sched = new TaskScheduler({ maxConcurrent: 4, worktreeMode: true });
-    const stale = deferredExecutor();
-    const fresh = deferredExecutor();
-    sched.startTask(task('dup'), '/repo', stale.exec);
-    sched.startTask(task('dup'), '/repo', fresh.exec); // overwrites the map entry
-
-    fresh.resolve(okResult());
+    const d = deferredExecutor();
+    const events: string[] = [];
+    sched.on('decomposed', () => events.push('decomposed'));
+    sched.on('completed', () => events.push('completed'));
+    sched.startTask(task('parent'), '/repo', d.exec);
+    d.resolve({ ...okResult(), finalStatus: 'decomposed' });
     await flush();
-    expect(sched.getStats().completed).toBe(1);
 
-    stale.resolve(okResult());
-    await flush();
-    expect(sched.getStats().completed).toBe(1); // unchanged — guard returned early
+    expect(events).toEqual(['decomposed']);
+    expect(sched.getStats()).toMatchObject({ completed: 0, failed: 0 });
   });
 
-  it("no-ops when a stale run rejects for a task id already reused by a newer run", async () => {
-    // Same race as above but exercising handleTaskError's `if (!running) return` guard.
+  it("refuses to overwrite a running generation with the same task id", async () => {
     const sched = new TaskScheduler({ maxConcurrent: 4, worktreeMode: true });
-    const stale = deferredExecutor();
-    const fresh = deferredExecutor();
-    sched.startTask(task('dup'), '/repo', stale.exec);
-    sched.startTask(task('dup'), '/repo', fresh.exec);
+    const current = deferredExecutor();
+    const replacement = deferredExecutor();
+    expect(sched.startTask(task('dup'), '/repo', current.exec)).toBe(true);
+    expect(sched.startTask(task('dup'), '/repo', replacement.exec)).toBe(false);
 
-    fresh.resolve(okResult());
+    current.resolve(okResult());
     await flush();
     expect(sched.getStats().completed).toBe(1);
+    expect(replacement.wasAborted()).toBe(false);
+  });
 
-    stale.reject(new Error('stale hang'));
+  it("allows a task id to be reused only after its prior generation exits", async () => {
+    const sched = new TaskScheduler({ maxConcurrent: 4, worktreeMode: true });
+    const first = deferredExecutor();
+    const second = deferredExecutor();
+    expect(sched.startTask(task('dup'), '/repo', first.exec)).toBe(true);
+    first.reject(new Error('first failed'));
     await flush();
-    expect(sched.getStats().failed).toBe(0); // unchanged — guard returned early
+    expect(sched.startTask(task('dup'), '/repo', second.exec)).toBe(true);
+    second.resolve(okResult());
+    await flush();
+    expect(sched.getStats()).toMatchObject({ failed: 1, completed: 1 });
   });
 });
 
@@ -202,30 +204,97 @@ describe('TaskScheduler error emission when listeners exist', () => {
   });
 });
 
-describe('TaskScheduler hard watchdog vs a reused task id (INT-2521 edge case)', () => {
-  it("a stale watchdog no-ops once its id has already been removed by another run's watchdog", async () => {
+describe('TaskScheduler hard watchdog fencing (INT-2521)', () => {
+  it("quarantines the repository until an abort-ignoring executor really exits", async () => {
     vi.useFakeTimers();
     try {
-      const sched = new TaskScheduler({ maxConcurrent: 4, worktreeMode: true });
-      const stale = deferredExecutor(); // never settles — simulates a genuine hang
-      const fresh = deferredExecutor(); // also never settles on its own
-      sched.startTask(task('dup'), '/repo', stale.exec);
-      sched.startTask(task('dup'), '/repo', fresh.exec); // overwrites the map entry; schedules its own watchdog
+      const sched = new TaskScheduler({ maxConcurrent: 4, worktreeMode: true, hardTaskTimeoutMs: 100 });
+      const hung = deferredExecutor();
+      sched.startTask(task('hung'), '/repo', hung.exec);
+      await vi.advanceTimersByTimeAsync(101);
 
-      await vi.advanceTimersByTimeAsync(60 * 60_000 + 1_000);
-
-      // Stale's watchdog fires first: `runningTasks.has('dup')` is still true
-      // (mapped to fresh's run), so it proceeds — aborting stale's signal and
-      // rejecting stale's promise, which handleTaskError misattributes to the
-      // still-mapped 'dup' entry and deletes it.
-      expect(stale.wasAborted()).toBe(true);
-      expect(sched.isTaskRunning('dup')).toBe(false);
+      expect(hung.wasAborted()).toBe(true);
+      expect(sched.isTaskRunning('hung')).toBe(false); // logical slot reclaimed
       expect(sched.getStats().failed).toBe(1);
+      expect(sched.getStats().quarantined).toBe(1);
 
-      // Fresh's watchdog fires next: by then 'dup' is already gone from the map,
-      // so its `if (!this.runningTasks.has(task.id)) return;` guard returns early
-      // — fresh's own hang is never aborted by its own watchdog.
-      expect(fresh.wasAborted()).toBe(false);
+      const replacement = deferredExecutor();
+      expect(sched.startTask(task('replacement'), '/repo', replacement.exec)).toBe(false);
+
+      hung.resolve(okResult()); // old process finally acknowledges cancellation
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sched.getStats().quarantined).toBe(0);
+      expect(sched.startTask(task('replacement'), '/repo', replacement.exec)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps a same-project quarantine until every timed-out executor exits', async () => {
+    vi.useFakeTimers();
+    try {
+      const sched = new TaskScheduler({
+        maxConcurrent: 3,
+        worktreeMode: true,
+        allowSameProjectConcurrent: true,
+        maxConcurrentPerProject: 2,
+        hardTaskTimeoutMs: 100,
+      });
+      const first = deferredExecutor();
+      const second = deferredExecutor();
+      expect(sched.startTask(task('hung-a'), '/repo', first.exec)).toBe(true);
+      expect(sched.startTask(task('hung-b'), '/repo', second.exec)).toBe(true);
+      await vi.advanceTimersByTimeAsync(101);
+      expect(sched.getStats().quarantined).toBe(2);
+
+      first.resolve(okResult());
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sched.getStats().quarantined).toBe(1);
+      expect(sched.startTask(task('replacement'), '/repo', pendingExecutor())).toBe(false);
+
+      second.resolve(okResult());
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sched.getStats().quarantined).toBe(0);
+      expect(sched.startTask(task('replacement'), '/repo', pendingExecutor())).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('TaskScheduler graceful shutdown races', () => {
+  it('suppresses slotFreed scheduling while shutdown races task completion', async () => {
+    const sched = new TaskScheduler({ maxConcurrent: 1, worktreeMode: true });
+    const d = deferredExecutor();
+    const slotFreed = vi.fn();
+    sched.on('slotFreed', slotFreed);
+    sched.startTask(task('running'), '/repo', d.exec);
+
+    const stopping = sched.shutdown(1_000);
+    expect(d.wasAborted()).toBe(true);
+    d.resolve({ success: false, finalStatus: 'cancelled' } as PipelineResult);
+
+    await expect(stopping).resolves.toMatchObject({ drained: true, remaining: 0 });
+    expect(slotFreed).not.toHaveBeenCalled();
+    expect(sched.enqueue(task('late'), '/other')).toBe(false);
+    expect(sched.startTask(task('late'), '/other', pendingExecutor())).toBe(false);
+  });
+
+  it('returns a bounded non-drained result when an executor ignores abort', async () => {
+    vi.useFakeTimers();
+    try {
+      const sched = new TaskScheduler({ maxConcurrent: 1, worktreeMode: true });
+      const d = deferredExecutor();
+      sched.startTask(task('hung'), '/repo', d.exec);
+      const stopping = sched.shutdown(100);
+      await vi.advanceTimersByTimeAsync(101);
+      await expect(stopping).resolves.toMatchObject({ drained: false, remaining: 1 });
+      expect(d.wasAborted()).toBe(true);
+      expect(sched.getUnsettledExecutorCount()).toBe(1);
+      d.resolve({ success: false, finalStatus: 'cancelled' } as PipelineResult);
+      await vi.advanceTimersByTimeAsync(0);
+      await expect(sched.waitForExecutorExit()).resolves.toBeUndefined();
+      expect(sched.getUnsettledExecutorCount()).toBe(0);
     } finally {
       vi.useRealTimers();
     }

@@ -896,7 +896,7 @@ export async function handleAuto(msg: Message, args: string[]): Promise<void> {
 
   // !auto stop - Stop
   if (subCommand === 'stop') {
-    autonomous.stopAutonomous();
+    void autonomous.stopAutonomous();
     await msg.reply(`⏹️ ${t('discord.auto.stopped')}`);
     return;
   }

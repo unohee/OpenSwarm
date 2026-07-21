@@ -1,0 +1,735 @@
+import { afterEach, describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { RunLedger, type RunClaim } from './runLedger.js';
+import Database from 'better-sqlite3';
+
+const roots: string[] = [];
+const execFileAsync = promisify(execFile);
+
+function createDbPath(): string {
+  const root = mkdtempSync(join(tmpdir(), 'openswarm-run-ledger-'));
+  roots.push(root);
+  return join(root, 'automation.db');
+}
+
+function register(ledger: RunLedger, issueId: string, projectPath = '/repo'): void {
+  ledger.registerRun({
+    issueId,
+    source: 'linear',
+    identifier: issueId,
+    title: `Task ${issueId}`,
+    projectPath,
+  }, 1_000);
+}
+
+function claim(ledger: RunLedger, issueId: string, owner: string, now = 2_000, maxActiveForProject = 1): RunClaim {
+  const result = ledger.claimRun(issueId, {
+    ownerInstanceId: owner,
+    leaseMs: 1_000,
+    maxActiveForProject,
+    now,
+  });
+  expect(result).not.toBeNull();
+  return result!;
+}
+
+afterEach(() => {
+  for (const root of roots.splice(0)) {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+describe('RunLedger state machine', () => {
+  it('does not rewind a run when discovery sees the same issue again', () => {
+    const ledger = new RunLedger(createDbPath());
+    register(ledger, 'INT-1');
+    const first = claim(ledger, 'INT-1', 'daemon-a');
+    expect(ledger.transition(first, 'EXECUTING', {}, 2_100)).toBe(true);
+
+    ledger.registerRun({
+      issueId: 'INT-1', source: 'linear', identifier: 'INT-1',
+      title: 'Updated title', projectPath: '/repo',
+    }, 2_200);
+
+    expect(ledger.getRun('INT-1')).toMatchObject({
+      state: 'EXECUTING',
+      title: 'Updated title',
+      attemptNo: 1,
+      leaseEpoch: 1,
+    });
+    ledger.close();
+  });
+
+  it('rejects an illegal state transition', () => {
+    const ledger = new RunLedger(createDbPath());
+    register(ledger, 'INT-2');
+    const runClaim = claim(ledger, 'INT-2', 'daemon-a');
+
+    expect(ledger.transition(runClaim, 'DONE', {}, 2_100)).toBe(false);
+    expect(ledger.getRun('INT-2')?.state).toBe('CLAIMED');
+    ledger.close();
+  });
+
+  it('protects worktrees until a run reaches a terminal state', () => {
+    const ledger = new RunLedger(createDbPath());
+    register(ledger, 'INT-3');
+    const runClaim = claim(ledger, 'INT-3', 'daemon-a');
+    expect(ledger.attachWorktree(runClaim, '/repo/worktree/INT-3', 'swarm/INT-3', 2_100)).toBe(true);
+    expect(ledger.getProtectedWorktreePaths('/repo')).toEqual(new Set(['/repo/worktree/INT-3']));
+
+    expect(ledger.transition(runClaim, 'CANCELLED', {}, 2_200)).toBe(true);
+    expect(ledger.getProtectedWorktreePaths('/repo')).toEqual(new Set());
+    ledger.close();
+  });
+
+  it.each(['DONE', 'DECOMPOSED', 'CANCELLED'] as const)('allows an explicit operator reopen from %s', (terminal) => {
+    const ledger = new RunLedger(createDbPath());
+    register(ledger, `REOPEN-${terminal}`);
+    const runClaim = claim(ledger, `REOPEN-${terminal}`, 'daemon');
+    if (terminal === 'DONE') {
+      expect(ledger.transition(runClaim, 'EXECUTING', {}, 2_050)).toBe(true);
+      expect(ledger.transition(runClaim, 'SYNC_PENDING', {}, 2_100)).toBe(true);
+      expect(ledger.finalizeSyncedRun(`REOPEN-${terminal}`, 2_200)).toBe(true);
+    } else if (terminal === 'DECOMPOSED') {
+      expect(ledger.transition(runClaim, 'EXECUTING', {}, 2_050)).toBe(true);
+      expect(ledger.transition(runClaim, terminal, {}, 2_100)).toBe(true);
+    } else {
+      expect(ledger.transition(runClaim, terminal, {}, 2_100)).toBe(true);
+    }
+    expect(ledger.markReady(`REOPEN-${terminal}`, 2_300)).toBe(true);
+    expect(ledger.getRun(`REOPEN-${terminal}`)?.state).toBe('READY');
+    ledger.close();
+  });
+});
+
+describe('RunLedger claim and fencing races', () => {
+  it('allows exactly one winner when two daemon connections claim one issue', async () => {
+    const dbPath = createDbPath();
+    const first = new RunLedger(dbPath);
+    const second = new RunLedger(dbPath);
+    register(first, 'RACE-1');
+
+    // Promise.all models two independent heartbeat callbacks. The correctness
+    // comes from the SQLite CAS, not from process-local queue inspection.
+    const results = await Promise.all([
+      Promise.resolve().then(() => first.claimRun('RACE-1', { ownerInstanceId: 'a', leaseMs: 1_000, now: 2_000 })),
+      Promise.resolve().then(() => second.claimRun('RACE-1', { ownerInstanceId: 'b', leaseMs: 1_000, now: 2_000 })),
+    ]);
+
+    expect(results.filter(Boolean)).toHaveLength(1);
+    expect(first.getRun('RACE-1')).toMatchObject({ state: 'CLAIMED', attemptNo: 1, leaseEpoch: 1 });
+    first.close();
+    second.close();
+  });
+
+  it('backs off an unclaimed candidate without mutating a concurrent winner', () => {
+    const dbPath = createDbPath();
+    const first = new RunLedger(dbPath);
+    const second = new RunLedger(dbPath);
+    register(first, 'DEFER-FREE');
+    register(first, 'DEFER-OWNED');
+    const owned = claim(first, 'DEFER-OWNED', 'winner');
+
+    expect(second.deferUnclaimedRun('DEFER-FREE', 5_000, 'repo busy', 2_000)).toBe(true);
+    expect(second.getRun('DEFER-FREE')).toMatchObject({ state: 'RETRY_AT', retryAt: 5_000 });
+    expect(second.deferUnclaimedRun('DEFER-OWNED', 5_000, 'lost race', 2_000)).toBe(false);
+    expect(second.getRun('DEFER-OWNED')).toMatchObject({
+      state: 'CLAIMED', leaseToken: owned.leaseToken, leaseEpoch: owned.leaseEpoch,
+    });
+    first.close();
+    second.close();
+  });
+
+  it('enforces repository admission atomically across daemon connections', async () => {
+    const dbPath = createDbPath();
+    const first = new RunLedger(dbPath);
+    const second = new RunLedger(dbPath);
+    register(first, 'RACE-2A', '/same-repo');
+    register(first, 'RACE-2B', '/same-repo');
+
+    const results = await Promise.all([
+      Promise.resolve().then(() => first.claimRun('RACE-2A', { ownerInstanceId: 'a', leaseMs: 1_000, now: 2_000 })),
+      Promise.resolve().then(() => second.claimRun('RACE-2B', { ownerInstanceId: 'b', leaseMs: 1_000, now: 2_000 })),
+    ]);
+
+    expect(results.filter(Boolean)).toHaveLength(1);
+    expect(first.listRuns(['CLAIMED'])).toHaveLength(1);
+    first.close();
+    second.close();
+  });
+
+  it('rejects a late callback after lease expiry and replacement', () => {
+    const dbPath = createDbPath();
+    const oldDaemon = new RunLedger(dbPath);
+    const newDaemon = new RunLedger(dbPath);
+    register(oldDaemon, 'RACE-3');
+    const stale = claim(oldDaemon, 'RACE-3', 'old', 2_000);
+    expect(oldDaemon.transition(stale, 'EXECUTING', {}, 2_100)).toBe(true);
+
+    expect(newDaemon.reconcileExpiredLeases(3_001)).toHaveLength(1);
+    expect(newDaemon.claimRun('RACE-3', {
+      ownerInstanceId: 'new', leaseMs: 1_000, now: 3_002,
+    })).toBeNull(); // artifact reconciliation must explicitly return it to READY
+    expect(newDaemon.markReady('RACE-3', 3_002)).toBe(false); // executor exit is still unconfirmed
+    expect(newDaemon.confirmExecutorExit(stale, 3_002)).toBe(true);
+    expect(newDaemon.markReady('RACE-3', 3_002)).toBe(true);
+    const replacement = claim(newDaemon, 'RACE-3', 'new', 3_002);
+
+    expect(oldDaemon.transition(stale, 'VERIFYING', {}, 3_003)).toBe(false);
+    expect(newDaemon.transition(replacement, 'EXECUTING', {}, 3_003)).toBe(true);
+    expect(newDaemon.getRun('RACE-3')).toMatchObject({
+      ownerInstanceId: 'new', leaseEpoch: 2, attemptNo: 2, state: 'EXECUTING',
+    });
+    oldDaemon.close();
+    newDaemon.close();
+  });
+
+  it('does not resurrect an already-expired lease through renewal', () => {
+    const ledger = new RunLedger(createDbPath());
+    register(ledger, 'RACE-4');
+    const stale = claim(ledger, 'RACE-4', 'daemon-a', 2_000);
+
+    expect(ledger.renewLease(stale, 1_000, 3_001)).toBeNull();
+    expect(ledger.reconcileExpiredLeases(3_001)).toHaveLength(1);
+    expect(ledger.getRun('RACE-4')?.state).toBe('NEEDS_RECONCILE');
+    ledger.close();
+  });
+
+  it('atomically parks an expired owner and blocks overlap until reconciliation clears it', () => {
+    const ledger = new RunLedger(createDbPath());
+    register(ledger, 'RACE-EXPIRED-A', '/same-repo');
+    register(ledger, 'RACE-EXPIRED-B', '/same-repo');
+    const stale = claim(ledger, 'RACE-EXPIRED-A', 'old', 2_000);
+
+    expect(ledger.claimRun('RACE-EXPIRED-B', {
+      ownerInstanceId: 'new', leaseMs: 1_000, now: 3_001,
+    })).toBeNull();
+    expect(ledger.getRun('RACE-EXPIRED-A')).toMatchObject({
+      state: 'NEEDS_RECONCILE',
+      lastErrorCode: 'lease_expired',
+    });
+    expect(ledger.claimRun('RACE-EXPIRED-B', {
+      ownerInstanceId: 'new', leaseMs: 1_000, now: 3_002,
+    })).toBeNull();
+
+    expect(ledger.markReady('RACE-EXPIRED-A', 3_003)).toBe(false);
+    expect(ledger.confirmExecutorExit(stale, 3_003)).toBe(true);
+    expect(ledger.markReady('RACE-EXPIRED-A', 3_003)).toBe(true);
+    expect(ledger.claimRun('RACE-EXPIRED-B', {
+      ownerInstanceId: 'new', leaseMs: 1_000, now: 3_004,
+    })).not.toBeNull();
+    ledger.close();
+  });
+
+  it('atomically reconciles and releases an expired owner when its executor exit is confirmed', () => {
+    const ledger = new RunLedger(createDbPath());
+    register(ledger, 'RACE-CONFIRM-EXPIRED');
+    const stale = claim(ledger, 'RACE-CONFIRM-EXPIRED', 'old-owner', 2_000);
+    expect(ledger.transition(stale, 'EXECUTING', {}, 2_100)).toBe(true);
+
+    // The exit callback may win the race with the periodic reconciliation pass.
+    // It must park the expired generation before clearing its ownership token.
+    expect(ledger.confirmExecutorExit(stale, 3_001)).toBe(true);
+    expect(ledger.getRun('RACE-CONFIRM-EXPIRED')).toMatchObject({
+      state: 'NEEDS_RECONCILE',
+      ownerInstanceId: undefined,
+      leaseToken: undefined,
+      lastErrorCode: 'lease_expired',
+    });
+    ledger.close();
+  });
+
+  it('lets explicit same-repository parallel capacity account for a reconciliation slot', () => {
+    const ledger = new RunLedger(createDbPath());
+    register(ledger, 'RECONCILE-SLOT', '/parallel-repo');
+    register(ledger, 'PARALLEL-WORK', '/parallel-repo');
+    const stale = claim(ledger, 'RECONCILE-SLOT', 'old', 2_000);
+    expect(ledger.transition(stale, 'NEEDS_RECONCILE', {}, 2_100)).toBe(true);
+
+    expect(ledger.claimRun('PARALLEL-WORK', {
+      ownerInstanceId: 'new', leaseMs: 1_000, now: 2_200,
+      maxActiveForProject: 2,
+    })).not.toBeNull();
+    ledger.close();
+  });
+
+  it('records an attempt result only once for a lease generation', () => {
+    const ledger = new RunLedger(createDbPath());
+    register(ledger, 'RACE-RESULT');
+    const runClaim = claim(ledger, 'RACE-RESULT', 'daemon');
+    expect(ledger.recordAttemptResult(runClaim, { success: true, finalStatus: 'approved' }, 2_100)).toBe(true);
+    expect(ledger.recordAttemptResult(runClaim, { success: false, finalStatus: 'failed' }, 2_101)).toBe(false);
+    ledger.close();
+  });
+
+  it('serializes admission across real OS processes sharing one database', async () => {
+    const path = createDbPath();
+    const issueIds = Array.from({ length: 8 }, (_, index) => `PROC-${index}`);
+
+    const tsxCli = resolve('node_modules/tsx/dist/cli.mjs');
+    const fixture = resolve('src/automation/runLedgerClaimProcess.fixture.ts');
+    const results = await Promise.all(issueIds.map((issueId, index) =>
+      execFileAsync(process.execPath, [tsxCli, fixture, path, issueId, `owner-${index}`, '2000']),
+    ));
+
+    expect(results.filter(({ stdout }) => stdout.trim() === 'claimed')).toHaveLength(1);
+    const verify = new RunLedger(path);
+    expect(verify.listRuns(['CLAIMED'])).toHaveLength(1);
+    verify.close();
+  }, 30_000);
+
+  it('fails closed without a partial claim when the SQLite writer is busy', () => {
+    const path = createDbPath();
+    const owner = new RunLedger(path);
+    const contender = new RunLedger(path, { busyTimeoutMs: 10 });
+    register(owner, 'BUSY-1');
+    const blocker = new Database(path);
+    blocker.exec('BEGIN IMMEDIATE');
+    try {
+      expect(() => contender.claimRun('BUSY-1', {
+        ownerInstanceId: 'contender', leaseMs: 1_000, now: 2_000,
+      })).toThrow(/busy|locked/i);
+    } finally {
+      blocker.exec('ROLLBACK');
+      blocker.close();
+    }
+    expect(owner.getRun('BUSY-1')).toMatchObject({ state: 'READY', attemptNo: 0, leaseEpoch: 0 });
+    owner.close();
+    contender.close();
+  });
+
+  it.each(['CLAIMED', 'EXECUTING', 'VERIFYING', 'PUBLISHING'] as const)(
+    'recovers a process kill at %s without making it directly claimable',
+    (crashState) => {
+      const path = createDbPath();
+      const beforeCrash = new RunLedger(path);
+      register(beforeCrash, `KILL-${crashState}`);
+      const runClaim = claim(beforeCrash, `KILL-${crashState}`, 'dead-process', 2_000);
+      if (crashState !== 'CLAIMED') expect(beforeCrash.transition(runClaim, 'EXECUTING', {}, 2_100)).toBe(true);
+      if (crashState === 'VERIFYING') expect(beforeCrash.transition(runClaim, 'VERIFYING', {}, 2_200)).toBe(true);
+      if (crashState === 'PUBLISHING') expect(beforeCrash.transition(runClaim, 'PUBLISHING', {}, 2_200)).toBe(true);
+      beforeCrash.close();
+
+      const afterRestart = new RunLedger(path);
+      expect(afterRestart.reconcileExpiredLeases(3_001)).toHaveLength(1);
+      expect(afterRestart.getRun(`KILL-${crashState}`)?.state).toBe('NEEDS_RECONCILE');
+      expect(afterRestart.claimRun(`KILL-${crashState}`, {
+        ownerInstanceId: 'replacement', leaseMs: 1_000, now: 3_002,
+      })).toBeNull();
+      afterRestart.close();
+    },
+  );
+
+  it('opens a repository circuit when the rolling attempt budget is exhausted', () => {
+    const ledger = new RunLedger(createDbPath());
+    register(ledger, 'BUDGET-1', '/budget-repo');
+    register(ledger, 'BUDGET-2', '/budget-repo');
+    const first = ledger.claimRun('BUDGET-1', {
+      ownerInstanceId: 'daemon', leaseMs: 1_000, now: 2_000,
+      maxAttemptsPerHour: 1, circuitCooldownMs: 60_000,
+    });
+    expect(first).not.toBeNull();
+    expect(ledger.transition(first!, 'RETRY_AT', { retryAt: 9_000 }, 2_100)).toBe(true);
+
+    expect(ledger.claimRun('BUDGET-2', {
+      ownerInstanceId: 'daemon', leaseMs: 1_000, now: 2_200,
+      maxAttemptsPerHour: 1, circuitCooldownMs: 60_000,
+    })).toBeNull();
+    expect(ledger.getMetrics(2_200).openCircuits).toBe(1);
+    ledger.close();
+  });
+
+  it('opens a failure circuit as soon as the threshold result is recorded', () => {
+    const ledger = new RunLedger(createDbPath());
+    register(ledger, 'FAIL-1', '/failure-repo');
+    register(ledger, 'FAIL-2', '/failure-repo');
+    const first = claim(ledger, 'FAIL-1', 'daemon', 2_000);
+    expect(ledger.recordAttemptResult(first, {
+      success: false,
+      finalStatus: 'infra_error',
+      maxFailuresPerHour: 1,
+      circuitCooldownMs: 60_000,
+    }, 2_100)).toBe(true);
+    expect(ledger.transition(first, 'RETRY_AT', { retryAt: 9_000 }, 2_101)).toBe(true);
+
+    expect(ledger.claimRun('FAIL-2', {
+      ownerInstanceId: 'daemon', leaseMs: 1_000, now: 2_200,
+      maxFailuresPerHour: 1,
+    })).toBeNull();
+    expect(ledger.getMetrics(2_200).openCircuits).toBe(1);
+    ledger.close();
+  });
+
+  it('opens a repository circuit when the daily cost budget is exhausted', () => {
+    const ledger = new RunLedger(createDbPath());
+    register(ledger, 'COST-1', '/cost-repo');
+    register(ledger, 'COST-2', '/cost-repo');
+    const first = claim(ledger, 'COST-1', 'daemon', 2_000);
+    expect(ledger.recordAttemptResult(first, {
+      success: true,
+      finalStatus: 'approved',
+      costUsd: 1.25,
+    }, 2_100)).toBe(true);
+    expect(ledger.transition(first, 'CANCELLED', {}, 2_101)).toBe(true);
+
+    expect(ledger.claimRun('COST-2', {
+      ownerInstanceId: 'daemon',
+      leaseMs: 1_000,
+      now: 2_200,
+      maxCostUsdPerDay: 1,
+      circuitCooldownMs: 60_000,
+    })).toBeNull();
+    expect(ledger.getMetrics(2_200).openCircuits).toBe(1);
+
+    // Expired circuits are removed in the same admission transaction, so a
+    // stale budget row cannot permanently stop unrelated future work.
+    register(ledger, 'COST-3', '/cost-repo');
+    expect(ledger.claimRun('COST-3', {
+      ownerInstanceId: 'daemon',
+      leaseMs: 1_000,
+      now: 62_201,
+    })).not.toBeNull();
+    expect(ledger.getMetrics(62_201).openCircuits).toBe(0);
+    ledger.close();
+  });
+
+  it('rebuilds a failure circuit from durable attempts after a coordinator restart', () => {
+    const ledger = new RunLedger(createDbPath());
+    register(ledger, 'FAIL-REBUILD-1', '/failure-rebuild-repo');
+    register(ledger, 'FAIL-REBUILD-2', '/failure-rebuild-repo');
+    const first = claim(ledger, 'FAIL-REBUILD-1', 'old-daemon', 2_000);
+    expect(ledger.recordAttemptResult(first, {
+      success: false,
+      finalStatus: 'infra_error',
+    }, 2_100)).toBe(true);
+    expect(ledger.transition(first, 'RETRY_AT', { retryAt: 9_000 }, 2_101)).toBe(true);
+
+    expect(ledger.claimRun('FAIL-REBUILD-2', {
+      ownerInstanceId: 'new-daemon',
+      leaseMs: 1_000,
+      now: 2_200,
+      maxFailuresPerHour: 1,
+    })).toBeNull();
+    expect(ledger.getMetrics(2_200).openCircuits).toBe(1);
+    ledger.close();
+  });
+});
+
+describe('RunLedger schema migration', () => {
+  it('imports legacy state once and never lets a later import overwrite durable truth', () => {
+    const ledger = new RunLedger(createDbPath());
+    const first = ledger.importRun({
+      issueId: 'MIGRATE-LEGACY', source: 'linear', identifier: 'INT-LEGACY',
+      title: 'legacy task', projectPath: '/repo', state: 'NEEDS_RECONCILE',
+      branchName: 'swarm/legacy', errorMessage: 'ambiguous legacy completion',
+    }, 1_000);
+    expect(first.imported).toBe(true);
+    expect(first.record).toMatchObject({ state: 'NEEDS_RECONCILE', branchName: 'swarm/legacy' });
+
+    expect(ledger.markReady('MIGRATE-LEGACY', 1_100)).toBe(true);
+    const second = ledger.importRun({
+      issueId: 'MIGRATE-LEGACY', source: 'linear', projectPath: '/other', state: 'DONE',
+    }, 1_200);
+    expect(second.imported).toBe(false);
+    expect(second.record).toMatchObject({ state: 'READY', projectPath: '/repo' });
+    ledger.close();
+  });
+
+  it('upgrades a v1 attempts table additively and remains writable', () => {
+    const path = createDbPath();
+    const old = new Database(path);
+    old.exec(`
+      CREATE TABLE automation_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      INSERT INTO automation_meta(key, value) VALUES ('schema_version', '1');
+      CREATE TABLE automation_attempts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        issue_id TEXT NOT NULL,
+        attempt_no INTEGER NOT NULL,
+        lease_epoch INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        stage TEXT NOT NULL,
+        started_at INTEGER NOT NULL,
+        finished_at INTEGER,
+        result_json TEXT,
+        error_code TEXT,
+        error_message TEXT,
+        UNIQUE(issue_id, attempt_no)
+      );
+    `);
+    old.close();
+
+    const ledger = new RunLedger(path);
+    register(ledger, 'MIGRATE-1');
+    const migratedClaim = claim(ledger, 'MIGRATE-1', 'daemon');
+    expect(ledger.recordAttemptResult(migratedClaim, {
+      success: true, finalStatus: 'approved', costUsd: 0.25,
+    }, 2_100)).toBe(true);
+    ledger.close();
+
+    const verify = new Database(path, { readonly: true });
+    const columns = (verify.pragma('table_info(automation_attempts)') as Array<{ name: string }>).map((row) => row.name);
+    expect(columns).toEqual(expect.arrayContaining(['result_status', 'success', 'cost_usd']));
+    expect((verify.prepare("SELECT value FROM automation_meta WHERE key = 'schema_version'").get() as { value: string }).value).toBe('2');
+    verify.close();
+  });
+});
+
+describe('RunLedger durable outbox races', () => {
+  function prepareSyncRun(ledger: RunLedger, issueId: string): RunClaim {
+    register(ledger, issueId);
+    const runClaim = claim(ledger, issueId, 'executor', 2_000);
+    expect(ledger.transition(runClaim, 'EXECUTING', {}, 2_100)).toBe(true);
+    const effect = ledger.enqueueEffect(runClaim, {
+      kind: 'linear.state.done',
+      dedupeKey: `linear:${issueId}:done:attempt-1`,
+      payload: { issueId, state: 'Done', marker: `openswarm-effect:${issueId}:1` },
+    }, 2_200);
+    expect(effect).not.toBeNull();
+    expect(ledger.transition(runClaim, 'SYNC_PENDING', {}, 2_300)).toBe(true);
+    return runClaim;
+  }
+
+  it('deduplicates effect creation and rejects a key collision', () => {
+    const ledger = new RunLedger(createDbPath());
+    register(ledger, 'OUT-1');
+    const runClaim = claim(ledger, 'OUT-1', 'executor');
+    const input = { kind: 'linear.comment', dedupeKey: 'effect-1', payload: { text: 'done' } };
+
+    const first = ledger.enqueueEffect(runClaim, input, 2_100);
+    const second = ledger.enqueueEffect(runClaim, input, 2_101);
+    expect(second?.id).toBe(first?.id);
+    expect(() => ledger.enqueueEffect(runClaim, {
+      kind: 'github.pr', dedupeKey: 'effect-1', payload: { branch: 'different' },
+    }, 2_102)).toThrow(/dedupe key collision/i);
+    expect(() => ledger.enqueueEffect(runClaim, {
+      kind: 'linear.comment', dedupeKey: 'effect-1', payload: { text: 'changed' },
+    }, 2_103)).toThrow(/dedupe key collision/i);
+    ledger.close();
+  });
+
+  it('does not expose an outbox effect before its run reaches SYNC_PENDING', () => {
+    const ledger = new RunLedger(createDbPath());
+    register(ledger, 'OUT-HIDDEN');
+    const runClaim = claim(ledger, 'OUT-HIDDEN', 'executor');
+    expect(ledger.transition(runClaim, 'EXECUTING', {}, 2_050)).toBe(true);
+    expect(ledger.enqueueEffect(runClaim, {
+      kind: 'tracker.complete', dedupeKey: 'OUT-HIDDEN:1', payload: {},
+    }, 2_100)).not.toBeNull();
+
+    expect(ledger.claimNextEffect('sender', 1_000, 2_200)).toBeNull();
+    expect(ledger.transition(runClaim, 'SYNC_PENDING', {}, 2_300)).toBe(true);
+    expect(ledger.claimNextEffect('sender', 1_000, 2_400)).not.toBeNull();
+    ledger.close();
+  });
+
+  it('commits success state and its outbox effect atomically', () => {
+    const ledger = new RunLedger(createDbPath());
+    register(ledger, 'OUT-ATOMIC');
+    const runClaim = claim(ledger, 'OUT-ATOMIC', 'executor');
+    expect(ledger.transition(runClaim, 'EXECUTING', {}, 2_050)).toBe(true);
+
+    expect(ledger.commitRunForSync(runClaim, {
+      kind: 'tracker.complete', dedupeKey: 'OUT-ATOMIC:1', payload: { done: true },
+    }, { prUrl: 'https://github.test/pull/atomic' }, 2_100)).toBe(true);
+    expect(ledger.getRun('OUT-ATOMIC')).toMatchObject({
+      state: 'SYNC_PENDING', prUrl: 'https://github.test/pull/atomic',
+    });
+    expect(ledger.claimNextEffect('sender', 1_000, 2_200)?.dedupeKey).toBe('OUT-ATOMIC:1');
+    ledger.close();
+  });
+
+  it('rejects transition and outbox publication after the execution lease expires', () => {
+    const ledger = new RunLedger(createDbPath());
+    register(ledger, 'OUT-STALE-COMMIT');
+    const stale = claim(ledger, 'OUT-STALE-COMMIT', 'executor', 2_000);
+    expect(ledger.transition(stale, 'EXECUTING', {}, 2_050)).toBe(true);
+
+    expect(ledger.transition(stale, 'VERIFYING', {}, 3_001)).toBe(false);
+    expect(ledger.commitRunForSync(stale, {
+      kind: 'tracker.complete',
+      dedupeKey: 'OUT-STALE-COMMIT:1',
+      payload: { shouldNotExist: true },
+    }, {}, 3_001)).toBe(false);
+    expect(ledger.getEffectByDedupeKey('OUT-STALE-COMMIT:1')).toBeNull();
+    expect(ledger.getRun('OUT-STALE-COMMIT')?.state).toBe('EXECUTING');
+    ledger.close();
+  });
+
+  it('finalizes a cancellation only after the current-attempt effect is acknowledged', () => {
+    const ledger = new RunLedger(createDbPath());
+    register(ledger, 'OUT-CANCEL');
+    const runClaim = claim(ledger, 'OUT-CANCEL', 'executor');
+    expect(ledger.transition(runClaim, 'EXECUTING', {}, 2_050)).toBe(true);
+
+    expect(ledger.commitRunForSync(runClaim, {
+      kind: 'tracker.cancel', dedupeKey: 'OUT-CANCEL:1', payload: { cancelled: true },
+    }, {}, 2_100)).toBe(true);
+    expect(ledger.getRun('OUT-CANCEL')?.state).toBe('SYNC_PENDING');
+
+    const effect = ledger.claimNextEffect('sender', 1_000, 2_200)!;
+    expect(ledger.getRun('OUT-CANCEL')?.state).toBe('SYNC_PENDING');
+    expect(ledger.ackEffectAndFinalizeRun(effect, 2_300)).toEqual({
+      acknowledged: true,
+      finalized: true,
+      issueId: 'OUT-CANCEL',
+    });
+    expect(ledger.getRun('OUT-CANCEL')?.state).toBe('CANCELLED');
+    ledger.close();
+  });
+
+  it('allows only one outbox consumer to claim a delivery', async () => {
+    const dbPath = createDbPath();
+    const first = new RunLedger(dbPath);
+    const second = new RunLedger(dbPath);
+    prepareSyncRun(first, 'OUT-2');
+
+    const results = await Promise.all([
+      Promise.resolve().then(() => first.claimNextEffect('sender-a', 1_000, 3_000)),
+      Promise.resolve().then(() => second.claimNextEffect('sender-b', 1_000, 3_000)),
+    ]);
+    expect(results.filter(Boolean)).toHaveLength(1);
+    first.close();
+    second.close();
+  });
+
+  it('recovers remote-success/local-crash without duplicating the remote effect', () => {
+    const dbPath = createDbPath();
+    const beforeCrash = new RunLedger(dbPath);
+    prepareSyncRun(beforeCrash, 'OUT-3');
+    const firstDelivery = beforeCrash.claimNextEffect('sender-old', 100, 3_000)!;
+
+    // Simulated remote API: an idempotency marker makes repeated delivery a no-op.
+    const remoteMarkers = new Set<string>();
+    const applyRemote = (dedupeKey: string) => {
+      const wasNew = !remoteMarkers.has(dedupeKey);
+      remoteMarkers.add(dedupeKey);
+      return wasNew;
+    };
+    expect(applyRemote(firstDelivery.dedupeKey)).toBe(true);
+    // Process dies here: no local ack.
+    beforeCrash.close();
+
+    const afterRestart = new RunLedger(dbPath);
+    const replacement = afterRestart.claimNextEffect('sender-new', 100, 3_101)!;
+    expect(replacement.leaseEpoch).toBe(firstDelivery.leaseEpoch + 1);
+    expect(applyRemote(replacement.dedupeKey)).toBe(false);
+
+    // A delayed old ack is fenced; only the replacement delivery may commit.
+    expect(afterRestart.ackEffect(firstDelivery, 3_102)).toBe(false);
+    expect(afterRestart.ackEffect(replacement, 3_102)).toBe(true);
+    expect(afterRestart.finalizeSyncedRun('OUT-3', 3_103)).toBe(true);
+    expect(afterRestart.getRun('OUT-3')?.state).toBe('DONE');
+    expect(remoteMarkers.size).toBe(1);
+    afterRestart.close();
+  });
+
+  it('atomically acknowledges the final effect and completes its run', () => {
+    const ledger = new RunLedger(createDbPath());
+    prepareSyncRun(ledger, 'OUT-ATOMIC-ACK');
+    const delivery = ledger.claimNextEffect('sender', 1_000, 3_000)!;
+
+    expect(ledger.ackEffectAndFinalizeRun(delivery, 3_100)).toEqual({
+      acknowledged: true,
+      finalized: true,
+      issueId: 'OUT-ATOMIC-ACK',
+    });
+    expect(ledger.getRun('OUT-ATOMIC-ACK')?.state).toBe('DONE');
+    expect(ledger.getEffectByDedupeKey('linear:OUT-ATOMIC-ACK:done:attempt-1')?.status).toBe('applied');
+    expect(ledger.ackEffectAndFinalizeRun(delivery, 3_101)).toMatchObject({
+      acknowledged: false,
+      finalized: false,
+    });
+    ledger.close();
+  });
+
+  it('repairs a legacy crash after effect ACK but before DONE transition', () => {
+    const dbPath = createDbPath();
+    const beforeCrash = new RunLedger(dbPath);
+    prepareSyncRun(beforeCrash, 'OUT-ACK-GAP');
+    const delivery = beforeCrash.claimNextEffect('sender', 1_000, 3_000)!;
+    expect(beforeCrash.ackEffect(delivery, 3_100)).toBe(true);
+    expect(beforeCrash.getRun('OUT-ACK-GAP')?.state).toBe('SYNC_PENDING');
+    beforeCrash.close();
+
+    const afterRestart = new RunLedger(dbPath);
+    expect(afterRestart.finalizeReadySyncedRuns(3_200)).toEqual(['OUT-ACK-GAP']);
+    expect(afterRestart.getRun('OUT-ACK-GAP')?.state).toBe('DONE');
+    expect(afterRestart.finalizeReadySyncedRuns(3_201)).toEqual([]);
+    afterRestart.close();
+  });
+
+  it('rejects outbox ack and retry after delivery lease expiry', () => {
+    const ledger = new RunLedger(createDbPath());
+    prepareSyncRun(ledger, 'OUT-EXPIRED');
+    const stale = ledger.claimNextEffect('sender-old', 100, 3_000)!;
+
+    expect(ledger.ackEffect(stale, 3_101)).toBe(false);
+    expect(ledger.retryEffect(stale, 'late failure', 4_000, {}, 3_101)).toBe(false);
+    const replacement = ledger.claimNextEffect('sender-new', 100, 3_101)!;
+    expect(replacement.leaseEpoch).toBe(stale.leaseEpoch + 1);
+    expect(ledger.ackEffect(stale, 3_102)).toBe(false);
+    expect(ledger.ackEffect(replacement, 3_102)).toBe(true);
+    ledger.close();
+  });
+
+  it('renews only the current outbox delivery generation', () => {
+    const ledger = new RunLedger(createDbPath());
+    prepareSyncRun(ledger, 'OUT-RENEW');
+    const delivery = ledger.claimNextEffect('sender', 100, 3_000)!;
+
+    const renewed = ledger.renewEffectLease(delivery, 500, 3_050);
+    expect(renewed).toMatchObject({
+      id: delivery.id,
+      leaseEpoch: delivery.leaseEpoch,
+      leaseExpiresAt: 3_550,
+      updatedAt: 3_050,
+    });
+    expect(ledger.renewEffectLease(delivery, 500, 3_551)).toBeNull();
+    expect(ledger.ackEffect(delivery, 3_552)).toBe(false);
+    ledger.close();
+  });
+
+  it('does not finalize while an effect is pending or dead', () => {
+    const ledger = new RunLedger(createDbPath());
+    prepareSyncRun(ledger, 'OUT-4');
+    expect(ledger.finalizeSyncedRun('OUT-4', 3_000)).toBe(false);
+
+    const delivery = ledger.claimNextEffect('sender', 1_000, 3_000)!;
+    expect(ledger.retryEffect(delivery, 'permission denied', 9_000, { dead: true }, 3_100)).toBe(true);
+    expect(ledger.finalizeSyncedRun('OUT-4', 3_101)).toBe(false);
+    expect(ledger.getMetrics(3_101).effectsByStatus.dead).toBe(1);
+    ledger.close();
+  });
+
+  it('recovers a PR published immediately before executor crash without rerunning', () => {
+    const ledger = new RunLedger(createDbPath());
+    register(ledger, 'OUT-5');
+    const runClaim = claim(ledger, 'OUT-5', 'executor', 2_000);
+    expect(ledger.transition(runClaim, 'EXECUTING', {}, 2_100)).toBe(true);
+    expect(ledger.transition(runClaim, 'PUBLISHING', {}, 2_200)).toBe(true);
+    expect(ledger.reconcileExpiredLeases(3_001)).toHaveLength(1);
+    expect(ledger.recoverPublishedRun(
+      'OUT-5',
+      { prUrl: 'https://github.test/pull/5', headSha: 'abc' },
+      { kind: 'tracker.complete', dedupeKey: 'OUT-5:too-early', payload: {} },
+      3_001,
+    )).toBe(false);
+    expect(ledger.confirmExecutorExit(runClaim, 3_002)).toBe(true);
+
+    expect(ledger.recoverPublishedRun(
+      'OUT-5',
+      { prUrl: 'https://github.test/pull/5', headSha: 'abc' },
+      { kind: 'tracker.complete', dedupeKey: 'OUT-5:recovered', payload: { marker: 'OUT-5' } },
+      3_002,
+    )).toBe(true);
+    expect(ledger.getRun('OUT-5')).toMatchObject({
+      state: 'SYNC_PENDING', prUrl: 'https://github.test/pull/5', headSha: 'abc',
+    });
+    expect(ledger.claimRun('OUT-5', { ownerInstanceId: 'replacement', leaseMs: 1_000, now: 3_003 })).toBeNull();
+    ledger.close();
+  });
+});

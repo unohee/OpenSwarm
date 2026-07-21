@@ -4,6 +4,7 @@
 // ============================================
 
 import { EmbedBuilder } from 'discord.js';
+import { createHash } from 'node:crypto';
 import type { TaskItem, DecisionResult } from '../orchestration/decisionEngine.js';
 import type { ExecutorResult } from '../orchestration/workflow.js';
 import type { PipelineResult, PipelineRunMetadata } from '../agents/pairPipeline.js';
@@ -34,6 +35,7 @@ import {
   removeWorktree,
 } from '../support/worktreeManager.js';
 import type { WorktreeInfo } from '../support/worktreeManager.js';
+import type { ExecutionDurabilityHooks } from './durableRunCoordinator.js';
 import { loadRepoMetadata } from '../support/repoMetadata.js';
 import { RateLimitError } from '../adapters/rateLimitError.js';
 import {
@@ -175,6 +177,8 @@ export interface ExecutionContext {
   verify?: import('../core/types.js').VerifyConfig;
   /** Max objective self-repair attempts (lint/bs/test) before giving up (default: 3) */
   maxReflections?: number;
+  /** Fenced durable-run callbacks. Omitted for legacy/off mode. */
+  durability?: ExecutionDurabilityHooks;
 }
 
 // Project Path Resolution
@@ -279,6 +283,33 @@ export async function isValidProjectPath(path: string): Promise<boolean> {
 
 // Task Decomposition
 
+function stableArtifactUuid(seed: string): string {
+  const bytes = createHash('sha256')
+    .update(seed)
+    .digest()
+    .subarray(0, 16);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+/** Stable child identity makes a partial decomposition restart converge on the
+ * first remote artifacts instead of creating a second set of sub-issues. */
+export function decompositionChildId(parentIssueId: string, index: number): string {
+  return stableArtifactUuid(`openswarm-decomposition:${parentIssueId}:child:${index}`);
+}
+
+function reviewerFollowupId(
+  parentIssueId: string,
+  index: number,
+  action: { type: string; title: string; location?: string },
+): string {
+  return stableArtifactUuid(
+    `openswarm-review-followup:${parentIssueId}:${index}:${action.type}:${action.title}:${action.location ?? ''}`,
+  );
+}
+
 /**
  * Create Linear sub-issues from an (approved) decomposition: create each
  * sub-issue, register tracking for limits, wire dependencies
@@ -308,17 +339,23 @@ export async function fileReviewerFollowups(
   if (requireApprove && review.decision !== 'approve') return 0;
   const actions = (review.recommendedActions ?? []).slice(0, 10);
   let filed = 0;
-  for (const a of actions) {
+  for (const [index, a] of actions.entries()) {
     const title = `[${a.type}] ${a.title}`;
     const body = a.location
       ? `Follow-up from reviewer.\n\nLocation: ${a.location}`
       : 'Follow-up recommended by the reviewer.';
     try {
+      let created: Awaited<ReturnType<ITaskSource['createSubIssue']>>;
       if (parentIssueId) {
-        await source.createSubIssue(parentIssueId, title, body, { priority: 3, projectId: opts.projectId });
+        created = await source.createSubIssue(parentIssueId, title, body, {
+          priority: 3,
+          projectId: opts.projectId,
+          idempotencyId: reviewerFollowupId(parentIssueId, index, a),
+        });
       } else {
-        await source.createTask(title, body, opts.projectId);
+        created = await source.createTask(title, body, opts.projectId);
       }
+      if ('error' in created) throw new Error(created.error);
       filed += 1;
     } catch (err) {
       console.error(`[Runner] follow-up issue create failed (${a.title}):`, err);
@@ -349,6 +386,7 @@ export async function createSubIssuesWithDependencies(
     estimatedMinutes: number;
     fileScope: string[];
   }> = [];
+  const creationErrors: string[] = [];
 
   for (const [index, subTask] of subTasks.entries()) {
     const fileScope = (subTask.fileScope ?? []).filter((f) => typeof f === 'string' && f.trim().length > 0);
@@ -362,15 +400,17 @@ export async function createSubIssuesWithDependencies(
     });
 
     const subResult = taskSource
-      ? await taskSource.createSubIssue(parentIssueId, subTask.title, subDescription, {
+        ? await taskSource.createSubIssue(parentIssueId, subTask.title, subDescription, {
           priority: subTask.priority,
           projectId: task.linearProject?.id,
           estimatedMinutes: subTask.estimatedMinutes,
+          idempotencyId: decompositionChildId(parentIssueId, index),
         })
       : { error: 'No task source registered' };
 
     if ('error' in subResult) {
       console.error(`[AutonomousRunner] Failed to create sub-issue: ${subResult.error}`);
+      creationErrors.push(`${subTask.title}: ${subResult.error}`);
       continue;
     }
 
@@ -387,58 +427,17 @@ export async function createSubIssuesWithDependencies(
     console.log(`[AutonomousRunner] Created sub-issue: ${subResult.identifier}`);
   }
 
-  if (createdSubIssues.length === 0) {
-    console.error('[AutonomousRunner] No sub-issues created');
+  if (creationErrors.length > 0 || createdSubIssues.length !== subTasks.length) {
+    const detail = creationErrors.join('; ') || `${createdSubIssues.length}/${subTasks.length} children created`;
+    console.error(`[AutonomousRunner] Incomplete sub-issue creation: ${detail}`);
     broadcastEvent({ type: 'pipeline:stage', data: { taskId, stage: 'decompose', status: 'fail', ...metadata } });
-    return false;
+    throw new Error(`Incomplete decomposition; retrying idempotently: ${detail}`);
   }
 
-  // Register decomposition in tracking (for limits)
-  registerDecomposition(
-    parentIssueId,
-    task.parentId, // Parent ID if this task is also a sub-issue
-    createdSubIssues.map(s => s.id)
-  );
-  console.log(`[AutonomousRunner] Registered decomposition: parent=${parentIssueId}, children=${createdSubIssues.length}, daily=${getDailyCreationCount()}/${dailyLimit}`);
-
-  await taskSource?.markAsDecomposed(
-    parentIssueId,
-    createdSubIssues.length,
-    totalEstimatedMinutes
-  );
-
   const childIdByTitle = new Map(createdSubIssues.map((subIssue) => [subIssue.title, subIssue.id]));
-  const parentState = markTaskDecomposed(parentIssueId, {
-    issueIdentifier: task.issueIdentifier,
-    title: task.title,
-    projectId: task.linearProject?.id,
-    projectName: task.linearProject?.name,
-    parentIssueId: task.parentId,
-    childIssueIds: createdSubIssues.map((subIssue) => subIssue.id),
-  });
-
-  await taskSource?.addComment(
-    parentIssueId,
-    buildTaskStateSyncComment(parentState, 'Parent task decomposed')
-  );
-
   const subIssueList = createdSubIssues
     .map((s, i) => `${i + 1}. ${s.identifier}: ${s.title}`)
     .join('\n');
-
-  await ctx.reportToDiscord(t('runner.decomposition.completed', {
-    original: task.issueIdentifier || parentIssueId || '',
-    count: String(createdSubIssues.length),
-    list: subIssueList,
-    totalMinutes: String(totalEstimatedMinutes),
-  }));
-
-  broadcastEvent({ type: 'pipeline:stage', data: { taskId, stage: 'decompose', status: 'complete', ...metadata } });
-  // Log each sub-issue as a log line for the dashboard
-  for (const s of createdSubIssues) {
-    broadcastEvent({ type: 'log', data: { taskId, stage: 'decompose', line: `↳ ${s.identifier}: ${s.title}` } });
-  }
-  console.log(`[AutonomousRunner] Decomposition complete: ${createdSubIssues.length} sub-issues created`);
 
   for (const subIssue of createdSubIssues) {
     const dependencyIssueIds = subIssue.dependencies
@@ -464,30 +463,81 @@ export async function createSubIssuesWithDependencies(
       linearState: isReady ? 'Todo' : 'Backlog',
     });
 
-    try {
-      if (isReady) {
-        await taskSource?.updateState(subIssue.id, 'Todo');
-        console.log(`[AutonomousRunner] Moved ${subIssue.identifier} to Todo`);
-      } else {
-        console.log(`[AutonomousRunner] Keeping ${subIssue.identifier} in Backlog until dependencies resolve`);
-      }
-      await taskSource?.addComment(
-        subIssue.id,
-        buildTaskStateSyncComment(
-          childState,
-          isReady ? 'Task ready after decomposition' : 'Task blocked by decomposition dependency'
-        )
-      );
-    } catch (err) {
-      console.warn(`[AutonomousRunner] Failed to initialize ${subIssue.identifier} state:`, err);
+    if (!taskSource) throw new Error('Task source unavailable while initializing decomposition');
+    const targetState = isReady ? 'Todo' : 'Backlog';
+    const accepted = await taskSource.updateState(subIssue.id, targetState);
+    if (!accepted) {
+      throw new Error(`Task source refused ${targetState} transition for decomposed child ${subIssue.identifier}`);
     }
+    console.log(isReady
+      ? `[AutonomousRunner] Moved ${subIssue.identifier} to Todo`
+      : `[AutonomousRunner] Keeping ${subIssue.identifier} in Backlog until dependencies resolve`);
+    await taskSource.addComment(
+      subIssue.id,
+      buildTaskStateSyncComment(
+        childState,
+        isReady ? 'Task ready after decomposition' : 'Task blocked by decomposition dependency'
+      ),
+      `decomposition:${parentIssueId}:child:${subIssue.topoRank}:state`,
+    );
   }
+
+  // Publish parent completion only after every child/dependency state has
+  // converged. A crash before this point leaves the parent runnable, while the
+  // deterministic child ids let the next attempt resume without duplicates.
+  if (!taskSource) throw new Error('Task source unavailable while finalizing decomposition');
+  await taskSource.markAsDecomposed(
+    parentIssueId,
+    createdSubIssues.length,
+    totalEstimatedMinutes,
+    `decomposition:${parentIssueId}:summary`,
+  );
+  const parentState = markTaskDecomposed(parentIssueId, {
+    issueIdentifier: task.issueIdentifier,
+    title: task.title,
+    projectId: task.linearProject?.id,
+    projectName: task.linearProject?.name,
+    parentIssueId: task.parentId,
+    childIssueIds: createdSubIssues.map((subIssue) => subIssue.id),
+  });
+  await taskSource.addComment(
+    parentIssueId,
+    buildTaskStateSyncComment(parentState, 'Parent task decomposed'),
+    `decomposition:${parentIssueId}:parent-state`,
+  );
+
+  // Notifications are observability, not decomposition truth. Once every
+  // tracker mutation above has converged, a Discord outage must not force a
+  // retry of the already-complete transaction.
+  await Promise.resolve(ctx.reportToDiscord(t('runner.decomposition.completed', {
+    original: task.issueIdentifier || parentIssueId || '',
+    count: String(createdSubIssues.length),
+    list: subIssueList,
+    totalMinutes: String(totalEstimatedMinutes),
+  }))).catch((error) => console.warn('[AutonomousRunner] Decomposition notification failed:', error));
+
+  broadcastEvent({ type: 'pipeline:stage', data: { taskId, stage: 'decompose', status: 'complete', ...metadata } });
+  // Log each sub-issue as a log line for the dashboard
+  for (const s of createdSubIssues) {
+    broadcastEvent({ type: 'log', data: { taskId, stage: 'decompose', line: `↳ ${s.identifier}: ${s.title}` } });
+  }
+  console.log(`[AutonomousRunner] Decomposition complete: ${createdSubIssues.length} sub-issues created`);
 
   // Trigger immediate heartbeat to pick up newly created sub-issues
   if (ctx.scheduleNextHeartbeat) {
     console.log('[AutonomousRunner] Scheduling immediate heartbeat to process sub-issues...');
     ctx.scheduleNextHeartbeat();
   }
+
+  // This synchronous, idempotent projection is deliberately last: no async
+  // failure after it can consume the daily/child budget while the remote
+  // decomposition is only partially initialized.
+  registerDecomposition(
+    parentIssueId,
+    task.parentId,
+    createdSubIssues.map((subIssue) => subIssue.id),
+  );
+  console.log(`[AutonomousRunner] Registered decomposition: parent=${parentIssueId}, children=${createdSubIssues.length}, daily=${getDailyCreationCount()}/${dailyLimit}`);
 
   return true;
 }
@@ -507,6 +557,7 @@ export async function decomposeTask(
   const maxChildren = ctx.decompositionMaxChildren ?? 5;
   const dailyLimit = ctx.decompositionDailyLimit ?? 20;
   const autoBacklog = ctx.decompositionAutoBacklog ?? true;
+  let existingChildren = 0;
 
   // ============================================
   // Pre-checks: Depth, Children, Daily Limit
@@ -535,15 +586,16 @@ export async function decomposeTask(
     }
 
     // Check children count limit
-    const childrenCount = getChildrenCount(task.issueId);
-    if (childrenCount >= maxChildren) {
-      console.log(`[AutonomousRunner] Children count limit reached: ${childrenCount}/${maxChildren}`);
+    existingChildren = getChildrenCount(task.issueId);
+    const recoveringPartialDecomposition = existingChildren > 0 && task.linearState === 'In Progress';
+    if (existingChildren >= maxChildren && !recoveringPartialDecomposition) {
+      console.log(`[AutonomousRunner] Children count limit reached: ${existingChildren}/${maxChildren}`);
       if (autoBacklog) {
         try {
           await taskSource?.updateState(task.issueId, 'Backlog');
           await taskSource?.addComment(task.issueId,
             `⚠️ **Auto-moved to Backlog**\n\n` +
-            `Reason: Too many sub-issues already created (${childrenCount}/${maxChildren})\n\n` +
+            `Reason: Too many sub-issues already created (${existingChildren}/${maxChildren})\n\n` +
             `This task has generated too many sub-issues. Please review the decomposition strategy, ` +
             `or handle it manually.`
           );
@@ -554,13 +606,16 @@ export async function decomposeTask(
       }
       return false;
     }
+    if (recoveringPartialDecomposition) {
+      console.log(`[AutonomousRunner] Reconciling ${existingChildren} existing child issue(s) after an interrupted decomposition`);
+    }
   }
 
   // Check daily creation limit
   // NOTE: Don't move to Backlog on daily limit — it resets tomorrow.
   // Moving to Backlog would permanently exclude the task from future heartbeats.
   // Instead, skip decomposition and fall through to direct execution.
-  if (!canCreateMoreIssues(dailyLimit)) {
+  if (existingChildren === 0 && !canCreateMoreIssues(dailyLimit)) {
     const currentCount = getDailyCreationCount();
     console.log(`[AutonomousRunner] Daily issue creation limit reached: ${currentCount}/${dailyLimit} — skipping decomposition (will retry tomorrow)`);
     return false;
@@ -788,15 +843,28 @@ export async function executePipeline(
   // ============================================
   let worktreeInfo: WorktreeInfo | null = null;
   let actualPath = projectPath;
-  // Preserve the worktree on non-success so the retry resumes from the partial
-  // work (INT-2503); unexpected throws leave it false → cleanup as before.
-  let keepWorktree = false;
+  // Preserve the worktree unless the run reaches the one deliverable terminal
+  // shape (approved success). `success` and `finalStatus` are supplied by
+  // multiple adapters, so treating either field alone as authoritative can
+  // delete partial work when they disagree.
+  let keepWorktree = true;
 
   if (ctx.worktreeMode && task.issueId && task.issueIdentifier) {
     const branchName = buildBranchName(task.issueIdentifier, task.title);
     try {
       worktreeInfo = await createWorktree(projectPath, task.issueId, branchName);
       actualPath = worktreeInfo.worktreePath;
+      if (ctx.durability && !(await ctx.durability.onWorktree(worktreeInfo))) {
+        await preserveWorktree(worktreeInfo, 'durable lease fence rejected worktree attachment');
+        return {
+          success: false,
+          sessionId: `worktree-fenced-${Date.now()}`,
+          iterations: 0,
+          totalDuration: 0,
+          finalStatus: 'infra_error',
+          stages: [],
+        };
+      }
       broadcastEvent({
         type: 'log',
         data: {
@@ -815,6 +883,13 @@ export async function executePipeline(
       // finalStatus path — a bare throw would only hit the log-only 'error'
       // handler with no backoff). The pipeline never runs. (INT-2521)
       console.error(`[Worktree] Creation failed for ${task.issueIdentifier} — infra_error, NOT falling back to the shared repo:`, err);
+      // `createWorktree` may already have completed before the durable attach
+      // failed. Preserve any acquired tree here because the main cleanup
+      // `finally` begins only after this setup block.
+      if (worktreeInfo) {
+        await preserveWorktree(worktreeInfo, 'worktree setup or durable attachment failed')
+          .catch((cleanupError) => console.warn('[Worktree] Setup cleanup failed:', cleanupError));
+      }
       return {
         success: false,
         sessionId: `worktree-fail-${Date.now()}`,
@@ -851,10 +926,68 @@ export async function executePipeline(
 
     const taskPrefix = buildTaskPrefix(task, actualPath);
 
+    // Node's EventEmitter does not await async listeners. Keep every async
+    // pipeline-event side effect reachable until it settles so executePipeline
+    // cannot return (and the durable run cannot complete) while tracker writes,
+    // notifications, or stage fences are still in flight.
+    const pendingPipelineEffects = new Set<Promise<void>>();
+    const lifecycleAbort = new AbortController();
+    let lifecycleFailure: Error | undefined;
+    const recordLifecycleFailure = (label: string, error: unknown): void => {
+      const normalized = error instanceof Error ? error : new Error(String(error));
+      lifecycleFailure ??= new Error(`${label}: ${normalized.message}`);
+      if (!lifecycleAbort.signal.aborted) lifecycleAbort.abort(lifecycleFailure);
+      console.warn(`[${taskPrefix}] ${label} failed:`, normalized);
+    };
+    const trackPipelineEffect = (
+      label: string,
+      start: () => Promise<unknown>,
+      critical = false,
+    ): void => {
+      let effect: Promise<unknown>;
+      try {
+        // Invoke immediately. In particular, the current durable hook performs
+        // its SQLite CAS before its first await; deferring invocation would let
+        // the stage start before the ownership fence has even been attempted.
+        effect = start();
+      } catch (error) {
+        if (critical) recordLifecycleFailure(label, error);
+        else console.error(`[${taskPrefix}] ${label} failed:`, error);
+        return;
+      }
+      let tracked!: Promise<void>;
+      tracked = effect
+        .then((value) => {
+          if (critical && value === false) {
+            throw new Error('durable lease fence rejected the event');
+          }
+        })
+        .catch((error: unknown) => {
+          if (critical) recordLifecycleFailure(label, error);
+          else console.error(`[${taskPrefix}] ${label} failed:`, error);
+        })
+        .finally(() => pendingPipelineEffects.delete(tracked));
+      pendingPipelineEffects.add(tracked);
+    };
+    const settlePipelineEffects = async (): Promise<void> => {
+      // Fixed-point drain: a settling callback may synchronously enqueue
+      // another effect before its promise completes.
+      while (pendingPipelineEffects.size > 0) {
+        await Promise.all(pendingPipelineEffects);
+      }
+    };
+
     pipeline.on('stage:start', ({ stage, context, model }) => {
       console.log(`[${taskPrefix}] Stage started: ${stage}`);
+      if (ctx.durability) {
+        trackPipelineEffect(
+          'Durable stage transition',
+          () => ctx.durability!.onStage(stage),
+          true,
+        );
+      }
       // Audit trail: comment the worker instruction (prompt summary, target
-      // files, model/effort) on each worker run. Non-blocking — fire & forget.
+      // files, model/effort) on each worker run.
       if (stage === 'worker' && task.issueId) {
         const draft = context?.config?.draftAnalysis;
         const body = buildWorkerStartComment({
@@ -867,8 +1000,16 @@ export async function executePipeline(
           maxTurns: context?.config?.roles?.worker?.maxTurns,
           isRevision: (context?.currentIteration ?? 1) > 1,
         });
-        void taskSource?.addComment(task.issueId, body).catch((err) =>
-          console.error(`[${taskPrefix}] Worker start audit comment failed:`, err));
+        const auditKey = context?.session?.id
+          ? `worker-start:${task.issueId}:${context.session.id}:${context.currentIteration ?? 1}`
+          : undefined;
+        const source = taskSource;
+        if (source) {
+          trackPipelineEffect(
+            'Worker start audit comment',
+            () => source.addComment(task.issueId!, body, auditKey),
+          );
+        }
       }
     });
 
@@ -878,52 +1019,61 @@ export async function executePipeline(
       projectPath: actualPath,
     };
 
-    pipeline.on('stage:complete', async ({ stage, result, context }) => {
+    pipeline.on('stage:complete', ({ stage, result, context }) => {
       console.log(`[${taskPrefix}] Stage completed: ${stage}, success=${result.success}`);
-      await reportStageResult(stage, result, ctx.reportToDiscord, taskReportCtx);
+      trackPipelineEffect(
+        'Stage result report',
+        () => reportStageResult(stage, result, ctx.reportToDiscord, taskReportCtx),
+      );
       // Audit trail: comment the actions taken (files changed, commands run,
       // confidence, halt reason) on each worker run.
-      if (stage === 'worker' && task.issueId) {
-        try {
-          await taskSource?.addComment(task.issueId, buildWorkerCompleteComment({
+      if (stage === 'worker' && task.issueId && taskSource) {
+        const source = taskSource;
+        const auditKey = context?.session?.id
+          ? `worker-complete:${task.issueId}:${context.session.id}:${context.currentIteration ?? 1}`
+          : undefined;
+        trackPipelineEffect(
+          'Worker complete audit comment',
+          () => source.addComment(task.issueId!, buildWorkerCompleteComment({
             attempt: context?.currentIteration ?? 1,
             maxAttempts: ctx.pairMaxAttempts ?? 3,
             result: result.result as WorkerResult,
             durationSec: Math.floor((result.duration ?? 0) / 1000),
-          }));
-        } catch (err) {
-          console.error(`[${taskPrefix}] Worker complete audit comment failed:`, err);
-        }
+          }), auditKey),
+        );
       }
       // On reviewer approval, optionally file recommendedActions as follow-up
       // sub-issues (gated OFF by default). INT-1611 restore (INT-1704).
       if (stage === 'reviewer' && task.issueId && ctx.guards?.autoFileFollowups && result.result) {
-        try {
-          const filed = await fileReviewerFollowups(taskSource, task.issueId, result.result as ReviewResult, {
+        trackPipelineEffect('Follow-up sub-issue filing', async () => {
+          const filed = await fileReviewerFollowups(taskSource, task.issueId!, result.result as ReviewResult, {
             autoFile: true,
             projectId: task.linearProject?.id,
           });
           if (filed > 0) console.log(`[${taskPrefix}] Filed ${filed} follow-up sub-issue(s) from reviewer.`);
-        } catch (err) {
-          console.error(`[${taskPrefix}] Follow-up sub-issue filing failed:`, err);
-        }
+        });
       }
     });
 
     pipeline.on('revision:start', ({ stage }) => {
-      void ctx.reportToDiscord(t('runner.pipeline.revisionNeeded', { stage }));
+      trackPipelineEffect(
+        'Revision notification',
+        () => ctx.reportToDiscord(t('runner.pipeline.revisionNeeded', { stage })),
+      );
     });
 
     // HALT event: low confidence → report to Linear + Discord
-    pipeline.on('halt', async ({ confidence, haltReason, sessionId, iteration }) => {
+    pipeline.on('halt', ({ confidence, haltReason, sessionId, iteration }) => {
       console.warn(`[${taskPrefix}] HALT event: confidence=${confidence}%, reason=${haltReason}`);
 
       // Report to Linear
       if (task.issueId && ctx.guards?.haltToLinear) {
-        try {
-          await taskSource?.logHalt(task.issueId, sessionId, confidence, iteration, haltReason);
-        } catch (err) {
-          console.error(`[${taskPrefix}] Linear logHalt failed:`, err);
+        const source = taskSource;
+        if (source) {
+          trackPipelineEffect(
+            'Linear logHalt',
+            () => source.logHalt(task.issueId!, sessionId, confidence, iteration, haltReason),
+          );
         }
       }
 
@@ -938,7 +1088,7 @@ export async function executePipeline(
           { name: 'Reason', value: haltReason || 'Low confidence score', inline: false },
         )
         .setTimestamp();
-      await ctx.reportToDiscord(haltEmbed);
+      trackPipelineEffect('HALT notification', () => ctx.reportToDiscord(haltEmbed));
     });
 
     const stages = getEnabledStages(roles, ctx.verify);
@@ -985,37 +1135,65 @@ export async function executePipeline(
 
     // Run pipeline in worktree path. The signal aborts the pipeline + in-flight
     // adapter call on cancel/disable; the finally below removes the worktree.
-    const result = await pipeline.run(task, actualPath, { signal });
+    const pipelineSignal = signal
+      ? AbortSignal.any([signal, lifecycleAbort.signal])
+      : lifecycleAbort.signal;
+    const result = await pipeline.run(task, actualPath, { signal: pipelineSignal });
+    await settlePipelineEffects();
+
+    // A stage ownership fence is part of execution correctness, not telemetry.
+    // Even if an adapter reports approval after ignoring the abort signal, a
+    // failed fence must prevent publication and preserve the worktree.
+    if (lifecycleFailure) {
+      result.success = false;
+      result.finalStatus = 'infra_error';
+    }
 
     // Create PR (worktree mode + pipeline success = finalStatus 'approved')
     if (worktreeInfo && result.success && result.finalStatus === 'approved') {
-      try {
-        const prUrl = await commitAndCreatePR(
-          worktreeInfo,
-          task.title,
-          task.issueIdentifier || '',
-          task.description || '',
-        );
-        result.prUrl = prUrl;
-        broadcastEvent({
-          type: 'log',
-          data: {
-            taskId: task.issueId || task.id,
-            stage: 'pr',
-            line: `PR created: ${prUrl}`,
-          },
-        });
-        console.log(`[Runner] PR created for ${task.issueIdentifier}: ${prUrl}`);
-      } catch (err) {
-        console.error('[Worktree] PR creation failed:', err);
-        broadcastEvent({
-          type: 'log',
-          data: {
-            taskId: task.issueId || task.id,
-            stage: 'pr',
-            line: `PR creation failed: ${err instanceof Error ? err.message : String(err)}`,
-          },
-        });
+      const publishAllowed = await ctx.durability?.beforePublish() ?? true;
+      if (!publishAllowed) {
+        result.success = false;
+        result.finalStatus = 'infra_error';
+        console.warn(`[Worktree] Publication fenced for ${task.issueIdentifier}; preserving worktree`);
+      } else {
+        try {
+          const prUrl = await commitAndCreatePR(
+            worktreeInfo,
+            task.title,
+            task.issueIdentifier || '',
+            task.description || '',
+          );
+          result.prUrl = prUrl;
+          const publicationRecorded = await ctx.durability?.onPublication(prUrl) ?? true;
+          if (!publicationRecorded) {
+            throw new Error('Durable lease fence rejected publication attachment');
+          }
+          broadcastEvent({
+            type: 'log',
+            data: {
+              taskId: task.issueId || task.id,
+              stage: 'pr',
+              line: `PR created: ${prUrl}`,
+            },
+          });
+          console.log(`[Runner] PR created for ${task.issueIdentifier}: ${prUrl}`);
+        } catch (err) {
+          console.error('[Worktree] PR creation failed:', err);
+          // A worktree-mode run is not deliverable until the branch is published.
+          // Keep it retryable and preserved instead of marking the issue Done with
+          // no remotely reviewable artifact.
+          result.success = false;
+          result.finalStatus = 'infra_error';
+          broadcastEvent({
+            type: 'log',
+            data: {
+              taskId: task.issueId || task.id,
+              stage: 'pr',
+              line: `PR creation failed: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          });
+        }
       }
     } else if (worktreeInfo) {
       // Log why PR was not created
@@ -1025,7 +1203,7 @@ export async function executePipeline(
       console.log(`[Runner] PR not created for ${task.issueIdentifier}: ${reason}`);
     }
 
-    keepWorktree = !result.success;
+    keepWorktree = !(result.success && result.finalStatus === 'approved');
     return result;
   } finally {
     // Success (PR created) → remove as before. Any non-success outcome
@@ -1256,37 +1434,61 @@ export async function syncFailureState(task: TaskItem, reason: string, retryStat
   return stateSynced;
 }
 
-export async function syncCancellationState(task: TaskItem): Promise<void> {
-  if (!task.issueId) return;
-  const state = markTaskBacklog(task.issueId, {
+export function projectCancellationState(task: TaskItem) {
+  if (!task.issueId) return undefined;
+  return markTaskBacklog(task.issueId, {
     issueIdentifier: task.issueIdentifier,
     title: task.title,
     linearState: 'Backlog',
   });
+}
+
+export async function syncCancellationState(
+  task: TaskItem,
+  idempotencyKey?: string,
+  preparedComment?: string,
+): Promise<void> {
+  const state = projectCancellationState(task);
+  if (!task.issueId || !state) return;
+  if (!taskSource) return;
 
   try {
-    await taskSource?.updateState(task.issueId, 'Backlog');
+    const accepted = await taskSource.updateState(task.issueId, 'Backlog');
+    if (!accepted) throw new Error(`Tracker refused Backlog reconciliation for ${task.issueId}`);
   } catch (err) {
     console.warn(`[AutonomousRunner] Failed to move cancelled task ${task.issueId} to Backlog:`, err);
+    throw err;
   }
 
   try {
-    await taskSource?.addComment(task.issueId, buildTaskStateSyncComment(state, 'Task cancelled'));
+    await taskSource.addComment(
+      task.issueId,
+      preparedComment ?? buildTaskStateSyncComment(state, 'Task cancelled'),
+      idempotencyKey,
+    );
   } catch (err) {
     console.warn(`[AutonomousRunner] Failed to sync cancelled state for ${task.issueId}:`, err);
+    throw err;
   }
 }
 
 export async function syncSuccessState(task: TaskItem, confidence?: number): Promise<void> {
   if (!task.issueId) return;
-  const state = markTaskDone(task.issueId, {
-    issueIdentifier: task.issueIdentifier,
-    title: task.title,
-    confidence,
-  });
+  const state = projectSuccessState(task, confidence);
+  if (!state) return;
   try {
     await taskSource?.addComment(task.issueId, buildTaskStateSyncComment(state, 'Task completed'));
   } catch (err) {
     console.warn(`[AutonomousRunner] Failed to sync success state for ${task.issueId}:`, err);
   }
+}
+
+/** Update the local compatibility projection without causing a remote effect. */
+export function projectSuccessState(task: TaskItem, confidence?: number) {
+  if (!task.issueId) return undefined;
+  return markTaskDone(task.issueId, {
+    issueIdentifier: task.issueIdentifier,
+    title: task.title,
+    confidence,
+  });
 }

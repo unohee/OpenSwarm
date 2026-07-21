@@ -56,5 +56,9 @@
 
     <key>ThrottleInterval</key>
     <integer>10</integer>
+
+    <!-- Allow the runner's bounded drain/outbox flush before launchd sends SIGKILL. -->
+    <key>ExitTimeOut</key>
+    <integer>45</integer>
 </dict>
 </plist>

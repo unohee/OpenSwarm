@@ -525,37 +525,49 @@ export function registerDecomposition(
   childrenIds: string[]
 ): void {
   const state = ensureDecompositionStateLoaded();
+  const now = new Date().toISOString();
+  const parentDepth = parentId ? (state.decompositions[parentId]?.depth ?? 0) : -1;
+  const issueDepth = parentDepth + 1;
+  const uniqueChildren = [...new Set(childrenIds)];
+  const existingChildren = new Set(
+    Object.values(state.decompositions)
+      .filter((entry) => entry.parentId === issueId)
+      .map((entry) => entry.issueId),
+  );
 
-  // Calculate depth
-  const parentDepth = parentId ? (state.decompositions[parentId]?.depth || 0) : 0;
-  const depth = parentDepth + 1;
-
-  // Update parent's children count
-  if (parentId) {
-    const parentEntry = state.decompositions[parentId] || {
-      issueId: parentId,
-      parentId: undefined,
-      depth: parentDepth,
-      childrenCount: 0,
-      createdAt: new Date().toISOString(),
-    };
-    parentEntry.childrenCount += childrenIds.length;
-    state.decompositions[parentId] = parentEntry;
+  // Validate the full batch before mutating the in-memory projection. A child
+  // identity collision must leave no half-created parent entry behind.
+  for (const childId of uniqueChildren) {
+    const existing = state.decompositions[childId];
+    if (existing && existing.parentId !== issueId) {
+      throw new Error(`Decomposition child ${childId} is already owned by ${existing.parentId ?? 'no parent'}`);
+    }
   }
 
-  // Register children
-  for (const childId of childrenIds) {
+  const existingIssue = state.decompositions[issueId];
+  state.decompositions[issueId] = {
+    issueId,
+    parentId,
+    depth: issueDepth,
+    childrenCount: new Set([...existingChildren, ...uniqueChildren]).size,
+    createdAt: existingIssue?.createdAt ?? now,
+  };
+
+  let newlyRegistered = 0;
+  for (const childId of uniqueChildren) {
+    const existing = state.decompositions[childId];
+    if (!existingChildren.has(childId)) newlyRegistered++;
     state.decompositions[childId] = {
       issueId: childId,
-      parentId,
-      depth,
-      childrenCount: 0,
-      createdAt: new Date().toISOString(),
+      parentId: issueId,
+      depth: issueDepth + 1,
+      childrenCount: existing?.childrenCount ?? 0,
+      createdAt: existing?.createdAt ?? now,
     };
   }
 
-  // Increment daily count
-  state.dailyCreationCount += childrenIds.length;
+  // Retried deterministic children do not consume the daily budget twice.
+  state.dailyCreationCount += newlyRegistered;
   state.updatedAt = new Date().toISOString();
 
   // Persist to disk

@@ -45,6 +45,12 @@ describe('SqliteTaskSource', () => {
     expect(store.getIssue(issue.id)?.status).toBe('done');
   });
 
+  it('returns false when a local state transition targets a missing issue', async () => {
+    store = freshStore();
+    const src = new SqliteTaskSource(store);
+    await expect(src.updateState('missing', 'Done')).resolves.toBe(false);
+  });
+
   it('addComment records a commented event', async () => {
     store = freshStore();
     const issue = store.createIssue({ projectId: 'p', title: 'x' });
@@ -52,6 +58,43 @@ describe('SqliteTaskSource', () => {
     await src.addComment(issue.id, 'hello');
     const events = store.getEvents(issue.id);
     expect(events.some((e) => e.type === 'commented')).toBe(true);
+  });
+
+  it('round-trips durable completion markers through execution comments', async () => {
+    store = freshStore();
+    const issue = store.createIssue({ projectId: 'p', title: 'x', status: 'todo' });
+    const src = new SqliteTaskSource(store);
+    await src.logPairComplete(issue.id, 'session', {
+      attempts: 1,
+      duration: 3,
+      filesChanged: ['src/a.ts'],
+      idempotencyMarker: 'complete:issue:attempt:1',
+    });
+
+    const comments = await src.getExecutionComments(issue.id);
+    expect(comments.some((comment) =>
+      comment.body.includes('<!-- openswarm-effect:complete:issue:attempt:1 -->'))).toBe(true);
+    expect(store.getIssue(issue.id)?.status).toBe('done');
+  });
+
+  it('deduplicates concurrent/retried local completion comments by marker', async () => {
+    store = freshStore();
+    const issue = store.createIssue({ projectId: 'p', title: 'x', status: 'todo' });
+    const src = new SqliteTaskSource(store);
+    const stats = {
+      attempts: 1,
+      duration: 3,
+      filesChanged: ['src/a.ts'],
+      idempotencyMarker: 'complete:issue:attempt:1',
+    };
+
+    await Promise.all([
+      src.logPairComplete(issue.id, 'session', stats),
+      src.logPairComplete(issue.id, 'session', stats),
+    ]);
+    const comments = store.getEvents(issue.id, 100)
+      .filter((event) => event.type === 'commented' && event.content?.includes('openswarm-effect:complete:issue:attempt:1'));
+    expect(comments).toHaveLength(1);
   });
 
   it('createSubIssue creates a child under the parent project', async () => {
@@ -68,6 +111,32 @@ describe('SqliteTaskSource', () => {
     }
   });
 
+  it('returns the first local child when an identical idempotent decomposition create is retried', async () => {
+    store = freshStore();
+    const parent = store.createIssue({ projectId: 'proj-x', title: 'parent' });
+    const src = new SqliteTaskSource(store);
+    const idempotencyId = '22222222-2222-4222-8222-222222222222';
+
+    const first = await src.createSubIssue(parent.id, 'first title', 'desc', { idempotencyId });
+    const retried = await src.createSubIssue(parent.id, 'first title', 'desc', { idempotencyId });
+    expect(first).toEqual(retried);
+    expect(store.listIssues({ parentId: parent.id, limit: 20, offset: 0 }).total).toBe(1);
+  });
+
+  it('rejects an idempotent child collision when a retried plan changed', async () => {
+    store = freshStore();
+    const parent = store.createIssue({ projectId: 'proj-x', title: 'parent' });
+    const src = new SqliteTaskSource(store);
+    const idempotencyId = '33333333-3333-4333-8333-333333333333';
+
+    await src.createSubIssue(parent.id, 'first title', 'desc', { idempotencyId });
+    const collided = await src.createSubIssue(parent.id, 'changed title', 'desc', { idempotencyId });
+    expect(collided).toEqual({
+      error: expect.stringContaining('existing artifact does not match'),
+    });
+    expect(store.listIssues({ parentId: parent.id, limit: 20, offset: 0 }).total).toBe(1);
+  });
+
   it('createTask creates a top-level todo issue', async () => {
     store = freshStore();
     const src = new SqliteTaskSource(store, 'proj-default');
@@ -81,12 +150,21 @@ describe('SqliteTaskSource', () => {
     }
   });
 
-  it('markAsDecomposed comments + moves the parent to Backlog', async () => {
+  it('markAsDecomposed comments + keeps the parent active for crash recovery', async () => {
     store = freshStore();
     const issue = store.createIssue({ projectId: 'p', title: 'big', status: 'todo' });
     const src = new SqliteTaskSource(store);
     await src.markAsDecomposed(issue.id, 3, 90);
-    expect(store.getIssue(issue.id)?.status).toBe('backlog');
+    expect(store.getIssue(issue.id)?.status).toBe('in_progress');
     expect(store.getEvents(issue.id).some((e) => e.type === 'commented')).toBe(true);
+  });
+
+  it('deduplicates a retried decomposition summary comment', async () => {
+    store = freshStore();
+    const issue = store.createIssue({ projectId: 'p', title: 'big', status: 'todo' });
+    const src = new SqliteTaskSource(store);
+    await src.markAsDecomposed(issue.id, 3, 90, `decomposition:${issue.id}:summary`);
+    await src.markAsDecomposed(issue.id, 3, 90, `decomposition:${issue.id}:summary`);
+    expect(store.getEvents(issue.id, 100).filter((event) => event.type === 'commented')).toHaveLength(1);
   });
 });
