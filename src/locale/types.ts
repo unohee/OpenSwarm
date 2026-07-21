@@ -394,6 +394,15 @@ export interface LocaleMessages {
  */
 /** Worker에 주입할 코드 컨텍스트 (반복 횟수 감소 목적) */
 export interface WorkerContext {
+  /** Repository/toolchain capsule captured before a fix worker mutates files. */
+  repository?: {
+    packageManager?: string;
+    workspaces: string[];
+    manifests: string[];
+    verificationCommands: string[];
+    sharedPaths: string[];
+    dependencyGraphAvailable: boolean;
+  };
   /** Knowledge Graph 기반 영향 분석 */
   impactAnalysis?: {
     directModules: string[];
@@ -456,7 +465,7 @@ export interface PromptTemplates {
      * pipeline. 'audit': evaluate existing files with no diff/worker — the
      * `review --max` codebase audit. (INT-2006)
      */
-    mode?: 'change' | 'audit';
+    mode?: 'change' | 'audit' | 'direct';
   }) => string;
   buildRevisionPromptFromReview: (opts: {
     decision: string;

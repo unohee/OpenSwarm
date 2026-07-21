@@ -248,6 +248,7 @@ export async function runReviewCommand(
         workerResult: wr,
         projectPath: c,
         adapterName: opts.adapter as never,
+        mode: 'direct',
         onLog,
       });
     });

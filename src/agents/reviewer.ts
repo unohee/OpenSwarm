@@ -42,7 +42,7 @@ export interface ReviewerOptions {
    * 'change' (default): review a worker's diff. 'audit': evaluate existing files
    * with no diff/worker (the `review --max` codebase audit). (INT-2006)
    */
-  mode?: 'change' | 'audit';
+  mode?: 'change' | 'audit' | 'direct';
   /** MCP tools to expose (e.g. linear__*). When unset the adapter self-sources (INT-1951). (INT-1950) */
   mcpTools?: ToolDefinition[];
   /** Tool-activity log lines (🔧 read_file …) for live progress display. (INT-1963) */
@@ -118,6 +118,18 @@ export function buildReviewerPrompt(options: ReviewerOptions): string {
       taskDescription: options.taskDescription,
       workerReport: `- **Files under audit (${files.length}):** ${filesSummary}`,
       mode: 'audit',
+    });
+  }
+
+  // Direct mode reviews a Git diff supplied by a user/CI checkout, not an
+  // OpenSwarm worker result. Do not manufacture a zero-command worker report:
+  // "evidence not collected here" is different from "validation was not run".
+  if (options.mode === 'direct') {
+    return getPrompts().buildReviewerPrompt({
+      taskTitle: options.taskTitle,
+      taskDescription: options.taskDescription,
+      workerReport: `- **Files changed (${files.length}):** ${filesSummary}`,
+      mode: 'direct',
     });
   }
 

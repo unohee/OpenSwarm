@@ -1,6 +1,10 @@
+import { execFileSync } from 'node:child_process';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { ReviewResult } from '../agents/agentPair.js';
-import type { AuditRun, AuditSummary } from './reviewAudit.js';
+import { aggregateAuditResults, runFixVerifyLoop, type AuditRun, type AuditSummary } from './reviewAudit.js';
 
 const ensureTaskSourceMock = vi.fn();
 const ensureProjectMappingMock = vi.fn();
@@ -30,11 +34,17 @@ vi.mock('../core/config.js', async () => {
 
 const commitAndCreateAuditPRMock = vi.fn();
 const removeWorktreeMock = vi.fn();
-vi.mock('../support/worktreeManager.js', () => ({
-  commitAndCreateAuditPR: (...args: unknown[]) => commitAndCreateAuditPRMock(...args),
-  removeWorktree: (...args: unknown[]) => removeWorktreeMock(...args),
-  createWorktree: vi.fn(),
-}));
+const preserveWorktreeMock = vi.fn();
+vi.mock('../support/worktreeManager.js', async () => {
+  const actual = await vi.importActual<typeof import('../support/worktreeManager.js')>('../support/worktreeManager.js');
+  return {
+    ...actual,
+    commitAndCreateAuditPR: (...args: unknown[]) => commitAndCreateAuditPRMock(...args),
+    removeWorktree: (...args: unknown[]) => removeWorktreeMock(...args),
+    preserveWorktree: (...args: unknown[]) => preserveWorktreeMock(...args),
+    createWorktree: vi.fn(),
+  };
+});
 
 const { filePerAreaFollowups, filePmSynthesizedIssues, reviewMaxResultFailed, loadVerifyConfigBestEffort, shipAuditWorktree } =
   await import('./reviewMaxCommand.js');
@@ -84,7 +94,8 @@ describe('loadVerifyConfigBestEffort (INT-2762)', () => {
 describe('reviewMaxResultFailed', () => {
   it('fails closed when --fix leaves a revise verdict unresolved', () => {
     expect(reviewMaxResultFailed({ decision: 'revise', resolved: false }, true)).toBe(true);
-    expect(reviewMaxResultFailed({ decision: 'approve', resolved: true }, true)).toBe(false);
+    expect(reviewMaxResultFailed({ decision: 'approve', resolved: true, verified: false }, true)).toBe(true);
+    expect(reviewMaxResultFailed({ decision: 'approve', resolved: true, verified: true }, true)).toBe(false);
   });
 
   it('preserves report-only review semantics without --fix', () => {
@@ -174,14 +185,17 @@ describe('filePmSynthesizedIssues (INT-2599)', () => {
 });
 
 describe('shipAuditWorktree (INT-2905)', () => {
-  beforeEach(() => removeWorktreeMock.mockResolvedValue(undefined));
+  beforeEach(() => {
+    removeWorktreeMock.mockResolvedValue(undefined);
+    preserveWorktreeMock.mockResolvedValue(true);
+  });
   const audit = {
     info: { worktreePath: '/repo/worktree/audit-1', branchName: 'swarm/audit-1', originalPath: '/repo', issueId: 'audit-1' },
     baseSha: 'abc123',
     forkedFromBranch: 'feat/in-flight',
   };
   const summary: AuditSummary = {
-    decision: 'revise',
+    decision: 'approve',
     totalAreas: 1,
     completed: 1,
     failed: 0,
@@ -199,6 +213,7 @@ describe('shipAuditWorktree (INT-2905)', () => {
       issueId: 'issue-uuid',
       identifier: 'INT-9',
       closes: true,
+      fixResult: { resolved: true, verified: true, verificationStatus: 'passed' },
     });
 
     expect(url).toBe('https://example.test/pull/9');
@@ -217,6 +232,7 @@ describe('shipAuditWorktree (INT-2905)', () => {
       issueId: 'INT-9',
       identifier: 'INT-9',
       closes: false,
+      fixResult: { resolved: true, verified: true, verificationStatus: 'passed' },
     });
 
     const req = commitAndCreateAuditPRMock.mock.calls[0][1] as { body: string };
@@ -227,7 +243,10 @@ describe('shipAuditWorktree (INT-2905)', () => {
   it('discards the worktree when the audit changed nothing', async () => {
     commitAndCreateAuditPRMock.mockResolvedValue(null);
 
-    const url = await shipAuditWorktree(audit, summary, '2026-07-21T00-00-00', { closes: false });
+    const url = await shipAuditWorktree(audit, summary, '2026-07-21T00-00-00', {
+      closes: false,
+      fixResult: { resolved: true, verified: true, verificationStatus: 'passed' },
+    });
 
     expect(url).toBeNull();
     expect(removeWorktreeMock).toHaveBeenCalledWith(audit.info);
@@ -236,9 +255,101 @@ describe('shipAuditWorktree (INT-2905)', () => {
   it('keeps the worktree and does not throw when the PR fails', async () => {
     commitAndCreateAuditPRMock.mockRejectedValue(new Error('push rejected'));
 
-    const url = await shipAuditWorktree(audit, summary, '2026-07-21T00-00-00', { closes: false });
+    const url = await shipAuditWorktree(audit, summary, '2026-07-21T00-00-00', {
+      closes: false,
+      fixResult: { resolved: true, verified: true, verificationStatus: 'passed' },
+    });
 
     expect(url).toBeNull();
     expect(removeWorktreeMock).not.toHaveBeenCalled();
+  });
+
+  it('preserves candidate work and refuses to publish when the verification gate fails', async () => {
+    const url = await shipAuditWorktree(audit, { ...summary, decision: 'revise' }, '2026-07-21T00-00-00', {
+      closes: false,
+      fixResult: { resolved: false, verified: false, verificationStatus: 'failed' },
+    });
+
+    expect(url).toBeNull();
+    expect(commitAndCreateAuditPRMock).not.toHaveBeenCalled();
+    expect(preserveWorktreeMock).toHaveBeenCalledWith(audit.info, expect.stringContaining('publication blocked'));
+  });
+
+  it('refuses publication when boolean flags conflict with a non-passed verification status', async () => {
+    const url = await shipAuditWorktree(audit, summary, '2026-07-21T00-00-00', {
+      closes: false,
+      fixResult: { resolved: true, verified: true, verificationStatus: 'infra' },
+    });
+
+    expect(url).toBeNull();
+    expect(commitAndCreateAuditPRMock).not.toHaveBeenCalled();
+    expect(preserveWorktreeMock).toHaveBeenCalledWith(audit.info, expect.stringContaining('verification=infra'));
+  });
+
+  it('orders fix-unit planning, sandbox promotion, re-review, verification, then publication', async () => {
+    const repo = await mkdtemp(join(tmpdir(), 'openswarm-review-fix-pipeline-'));
+    try {
+      await mkdir(join(repo, 'src'));
+      await writeFile(join(repo, '.gitignore'), 'node_modules/\n');
+      await writeFile(join(repo, 'src', 'a.ts'), 'export const a = 1;\n');
+      execFileSync('git', ['init', '-b', 'main'], { cwd: repo });
+      execFileSync('git', ['add', '-A'], { cwd: repo });
+      execFileSync('git', ['-c', 'user.email=test@example.com', '-c', 'user.name=Test', 'commit', '-m', 'base'], { cwd: repo });
+
+      const area = { label: 'src', dir: 'src', files: ['src/a.ts'] };
+      const initial: AuditRun = {
+        results: [{ area, review: { decision: 'revise', feedback: '', issues: ['a must be 2'] } }],
+        summary: aggregateAuditResults([]),
+      };
+      const events: string[] = [];
+      const loop = await runFixVerifyLoop(initial, repo, {
+        concurrency: 2,
+        maxRounds: 1,
+        repositoryContext: {
+          canonicalRoot: repo,
+          workspaces: [],
+          manifests: [],
+          verificationCommands: ['npm test'],
+          sharedPaths: [],
+          repoMemories: [],
+          dependencyGraphAvailable: true,
+          dependencyMap: {},
+          preflight: { ready: true, issues: [] },
+        },
+      }, {
+        fixWorker: async (unit, sandbox) => {
+          events.push(`sandbox:${unit.label}`);
+          await writeFile(join(sandbox, 'src', 'a.ts'), 'export const a = 2;\n');
+          return { success: true };
+        },
+        review: async () => {
+          events.push('re-review');
+          expect(await readFile(join(repo, 'src', 'a.ts'), 'utf8')).toContain('= 2');
+          return { decision: 'approve', feedback: '' };
+        },
+        verify: async () => {
+          events.push('verify');
+          return { success: (await readFile(join(repo, 'src', 'a.ts'), 'utf8')).includes('= 2') };
+        },
+      });
+
+      commitAndCreateAuditPRMock.mockImplementation(async () => {
+        events.push('publish');
+        return 'https://example.test/pull/11';
+      });
+      const url = await shipAuditWorktree(
+        { ...audit, info: { ...audit.info, worktreePath: repo } },
+        loop.finalRun.summary,
+        '2026-07-21T00-00-00',
+        { closes: false, fixResult: loop },
+      );
+
+      expect(loop.resolved).toBe(true);
+      expect(loop.verified).toBe(true);
+      expect(url).toBe('https://example.test/pull/11');
+      expect(events).toEqual(['sandbox:src', 're-review', 'verify', 'publish']);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
   });
 });

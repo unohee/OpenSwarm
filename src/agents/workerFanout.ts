@@ -9,7 +9,7 @@ import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { copyFile, cp, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import type { WorkerFanoutCandidateConfig, PipelineGuardsConfig } from '../core/types.js';
 import { runPool } from '../support/concurrencyPool.js';
@@ -84,7 +84,7 @@ async function git(cwd: string, args: string[], opts?: { env?: NodeJS.ProcessEnv
 // selected via GIT_INDEX_FILE. Returns '' when the worktree is clean. This lets
 // fan-out run on a dirty tree (e.g. a self-repair retry that still holds the
 // previous iteration's edits) by seeding that state into each sandbox.
-async function captureBaselinePatch(projectPath: string): Promise<string> {
+export async function captureBaselinePatch(projectPath: string): Promise<string> {
   const idxDir = await mkdtemp(join(tmpdir(), 'openswarm-fanout-idx-'));
   const env = { ...process.env, GIT_INDEX_FILE: join(idxDir, 'index') };
   try {
@@ -95,7 +95,7 @@ async function captureBaselinePatch(projectPath: string): Promise<string> {
   }
 }
 
-async function cloneSandbox(
+export async function cloneSandbox(
   projectPath: string,
   root: string,
   id: string,
@@ -156,7 +156,7 @@ function sharedPathModeFor(linkSharedPaths: boolean | undefined): 'copy' | 'link
   return 'copy';
 }
 
-async function changedFiles(projectPath: string, ignoredPaths: string[] = []): Promise<string[]> {
+export async function changedFiles(projectPath: string, ignoredPaths: string[] = []): Promise<string[]> {
   const out = await git(projectPath, ['status', '--porcelain']).catch(() => '');
   return out
     .split('\n')
@@ -205,27 +205,90 @@ async function winnerChangeSet(sandbox: string, ignoredPaths: string[] = []): Pr
 }
 
 /**
+ * Return the complete incremental sandbox delta, including both sides of a
+ * rename. Fix-unit scope checks use this instead of `git status` so a deleted or
+ * renamed source path cannot disappear from validation.
+ */
+export async function sandboxChangedFiles(sandbox: string, ignoredPaths: string[] = []): Promise<string[]> {
+  const { write, remove } = await winnerChangeSet(sandbox, ignoredPaths);
+  return [...new Set([...write, ...remove])].sort();
+}
+
+function assertSafeSandboxPath(path: string): void {
+  if (!path || path.includes('\0') || isAbsolute(path) || path.split(/[\\/]/).includes('..')) {
+    throw new Error(`unsafe sandbox path: ${JSON.stringify(path)}`);
+  }
+}
+
+function containedSandboxPath(root: string, path: string): string {
+  assertSafeSandboxPath(path);
+  const canonicalRoot = resolve(root);
+  const target = resolve(canonicalRoot, path);
+  const fromRoot = relative(canonicalRoot, target);
+  if (fromRoot === '..' || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot)) {
+    throw new Error(`unsafe sandbox path escapes repository: ${JSON.stringify(path)}`);
+  }
+  return target;
+}
+
+async function applyWinnerChangeSet(
+  projectPath: string,
+  sandbox: string,
+  changeSet: { write: string[]; remove: string[] },
+): Promise<string[]> {
+  // Validate the complete set before the first mutation so one malicious path
+  // cannot leave a partially promoted candidate behind.
+  const remove = changeSet.remove.map((rel) => ({ rel, dst: containedSandboxPath(projectPath, rel) }));
+  const write = changeSet.write.map((rel) => ({
+    rel,
+    src: containedSandboxPath(sandbox, rel),
+    dst: containedSandboxPath(projectPath, rel),
+  }));
+  for (const entry of remove) {
+    await rm(entry.dst, { force: true });
+  }
+  for (const entry of write) {
+    await mkdir(dirname(entry.dst), { recursive: true });
+    await copyFile(entry.src, entry.dst);
+  }
+  return [...changeSet.write, ...changeSet.remove];
+}
+
+/**
  * Promote the winner by COPYING its changed files into the project, rather than
  * reconstructing a patch and `git apply`-ing it. The patch route is inherently
- * fragile — context/whitespace/binary strictness made it fail ~79% of the time
- * in production on dirty (self-repair-retry) worktrees. A direct copy of the
+ * fragile on dirty (self-repair-retry) worktrees because context, whitespace,
+ * and binary strictness can reject an otherwise valid candidate. A direct copy of the
  * exact file set the winner touched cannot fail on context mismatch: the
  * sandbox file is `seeded-base + winner-edits`, and the project sits at the same
  * seeded base, so the copy yields `base + winner-edits`, untouched files keep
  * their project content. Returns the promoted path list.
  */
-async function promoteWinnerFiles(projectPath: string, sandbox: string, ignoredPaths: string[] = []): Promise<string[]> {
-  const { write, remove } = await winnerChangeSet(sandbox, ignoredPaths);
-  for (const rel of remove) {
-    await rm(join(projectPath, rel), { force: true });
+export async function promoteWinnerFiles(projectPath: string, sandbox: string, ignoredPaths: string[] = []): Promise<string[]> {
+  return applyWinnerChangeSet(projectPath, sandbox, await winnerChangeSet(sandbox, ignoredPaths));
+}
+
+/**
+ * Promote only the delta that a caller already inspected. The sandbox is read
+ * again immediately before copying; any late mutation turns into a hard error
+ * instead of bypassing the caller's scope/conflict checks.
+ */
+export async function promoteValidatedFiles(
+  projectPath: string,
+  sandbox: string,
+  validatedFiles: string[],
+  ignoredPaths: string[] = [],
+): Promise<string[]> {
+  validatedFiles.forEach(assertSafeSandboxPath);
+  const changeSet = await winnerChangeSet(sandbox, ignoredPaths);
+  const actual = [...new Set([...changeSet.write, ...changeSet.remove])].sort();
+  const expected = [...new Set(validatedFiles)].sort();
+  if (actual.length !== expected.length || actual.some((file, index) => file !== expected[index])) {
+    throw new Error(
+      `sandbox changed after validation: expected [${expected.join(', ')}], found [${actual.join(', ')}]`,
+    );
   }
-  for (const rel of write) {
-    const src = join(sandbox, rel);
-    const dst = join(projectPath, rel);
-    await mkdir(dirname(dst), { recursive: true });
-    await copyFile(src, dst);
-  }
-  return [...write, ...remove];
+  return applyWinnerChangeSet(projectPath, sandbox, changeSet);
 }
 
 function scoreCandidate(input: {
@@ -257,7 +320,7 @@ function scoreCandidate(input: {
 // sandbox and commit it, so the candidate continues from the dirty base and the
 // winner's promoted diff is the incremental delta (not base+delta, which would
 // double-apply onto the already-dirty project).
-async function seedBaseline(sandbox: string, root: string, id: string, baseline: string): Promise<void> {
+export async function seedBaseline(sandbox: string, root: string, id: string, baseline: string): Promise<void> {
   if (!baseline.trim()) return;
   const patchPath = join(root, `${id}-base.patch`);
   await writeFile(patchPath, baseline, 'utf8');

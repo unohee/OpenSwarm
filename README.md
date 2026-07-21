@@ -86,10 +86,10 @@ openswarm review                 # Review the working-tree changes
 openswarm review --max           # Full-codebase audit: fan reviewer subagents over areas
                                  #   → report at .openswarm/audit/ + PM-synthesized Linear
                                  #   issues by default (≤10 cohesive, master + sub-issues)
-openswarm review --max --fix     # after the audit, a worker per flagged area applies the
-                                 #   fixes in a dedicated worktree forked from HEAD, then
-                                 #   commits + pushes them as a PR (your working tree and
-                                 #   whatever a worker is doing on your branch stay untouched)
+openswarm review --max --fix     # after the audit, dependency-related findings are grouped;
+                                 #   independent fix units run in isolated sandboxes, then
+                                 #   a PR is published only after every re-review and trusted
+                                 #   deterministic repository check passes
                                  #   add --in-place to edit the current working tree instead
 openswarm review --max --concurrency 8   # widen the fan-out — areas auto-split to fill the pool
                                  # more --max flags: --no-linear (report only) · --issues-per-area
@@ -316,7 +316,7 @@ openswarm dash                # open the web dashboard (:3847)
 - **BS Detector** — Built-in static analysis engine that detects bad code patterns (empty catch, hardcoded secrets, `as any`, etc.) with pipeline guard integration
 - **Autonomous Pipeline** — Cron-driven heartbeat fetches Linear issues, runs Worker/Reviewer pair loops, and updates issue state automatically
 - **Worker/Reviewer Pairs** — Multi-iteration code generation with automated review, testing, and documentation stages
-- **Codebase Audit (`review --max`)** — fans reviewer subagents out over directory-shaped areas (auto-split to fill `--concurrency`), aggregates a deduped verdict into a markdown report, and synthesizes ≤10 cohesive Linear issues via a PM agent. `--fix` sends a worker per flagged area to apply the fixes in an isolated worktree (forked from HEAD, branch `swarm/audit-<ts>`) and ships them as a PR linked to the audit issue — `--in-place` keeps the old working-tree behavior. Language-agnostic; codex usage-limit aware with automatic `claude` fallback
+- **Codebase Audit (`review --max`)** — fans reviewer subagents out over directory-shaped areas (auto-split to fill `--concurrency`), aggregates a deduped verdict into a markdown report, and synthesizes ≤10 cohesive Linear issues via a PM agent. `--fix` groups findings by repository dependency closure, injects the package manager/manifests/verification contract and repo knowledge, runs only independent fix units concurrently in isolated sandboxes, and promotes disjoint in-scope diffs into an audit worktree. It publishes the PR only when every area re-approves and trusted deterministic verification passes; unavailable dependencies/checks fail closed. `--in-place` keeps edits in the current working tree but uses the same gates. Language-agnostic; codex usage-limit aware with automatic `claude` fallback
 - **CI / test gate auto-fix (`openswarm fix`)** — runs the project's objective checks (lint / typecheck / build / test), groups the failures by file into areas, fans a fix-worker out over each, then **re-runs the checks and repeats until green** (or the round budget). Deterministic convergence — unlike the review fix pass, it verifies its own work. Multi-language: auto-detects npm scripts, `Cargo.toml` (`cargo check`/`test`, clippy on request), and Python tooling (`ruff`/`mypy`/`pytest`, gated on the repo's config); any other toolchain via a `"checks"` map in `openswarm.json`
 - **Decision Engine** — Scope validation, rate limiting, priority-based task selection, and workflow mapping
 - **Cognitive Memory** — LanceDB vector store with Xenova/multilingual-e5-base embeddings for long-term recall across sessions

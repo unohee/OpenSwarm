@@ -3,7 +3,7 @@
 // Test Status: Complete
 
 import { describe, it, expect, vi, afterEach, beforeAll } from 'vitest';
-import { formatReviewFeedback, buildRevisionPrompt, runReviewer, type ReviewerOptions } from './reviewer.js';
+import { buildReviewerPrompt, formatReviewFeedback, buildRevisionPrompt, runReviewer, type ReviewerOptions } from './reviewer.js';
 import type { WorkerResult, ReviewResult } from './agentPair.js';
 import * as adapters from '../adapters/index.js';
 import { initLocale } from '../locale/index.js';
@@ -29,6 +29,18 @@ describe('runReviewer parse failure (INT-2521)', () => {
 });
 
 describe('reviewer', () => {
+  it('renders direct Git reviews without a fictitious command-less worker', () => {
+    const prompt = buildReviewerPrompt({
+      taskTitle: 'CLI working-tree review',
+      taskDescription: 'Review current changes',
+      workerResult: { success: true, summary: 'direct', filesChanged: ['src/a.ts'], commands: [], output: '' },
+      projectPath: '/repo',
+      mode: 'direct',
+    });
+    expect(prompt).toContain('Direct Git Change Mode');
+    expect(prompt).not.toContain('**Commands:** (none)');
+  });
+
   describe('formatReviewFeedback', () => {
     it('should format approve decision', () => {
       const result: ReviewResult = {

@@ -292,7 +292,7 @@ describe('runReviewCommand default deps (no injected review/getBranch/log/fileFo
       { getChangedFiles: async () => ['a.ts'], startProgress: () => null, log: () => {} },
     );
     expect(runReviewerMock).toHaveBeenCalledWith(
-      expect.objectContaining({ taskTitle: 'CLI working-tree review', projectPath: process.cwd() }),
+      expect.objectContaining({ taskTitle: 'CLI working-tree review', projectPath: process.cwd(), mode: 'direct' }),
     );
   });
 
@@ -303,7 +303,7 @@ describe('runReviewCommand default deps (no injected review/getBranch/log/fileFo
       { getChangedFiles: async () => ['a.ts'], startProgress: () => null, log: () => {} },
     );
     expect(runReviewerMock).toHaveBeenCalledWith(
-      expect.objectContaining({ taskTitle: 'CLI committed-diff review (vs origin/main)' }),
+      expect.objectContaining({ taskTitle: 'CLI committed-diff review (vs origin/main)', mode: 'direct' }),
     );
   });
 

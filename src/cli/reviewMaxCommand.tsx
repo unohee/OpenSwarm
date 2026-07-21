@@ -24,7 +24,9 @@ import {
   mergeFallback,
   type AuditArea,
   type FixVerifyRound,
+  type FixVerifyResult,
   type FixVerifyStop,
+  type FixVerificationStatus,
   type AuditRun,
   type AuditSummary,
 } from './reviewAudit.js';
@@ -37,6 +39,7 @@ import type { WorktreeInfo } from '../support/worktreeManager.js';
 import { loadConfig } from '../core/config.js';
 import type { VerifyConfig } from '../core/types.js';
 import { loadTrustedVerifyPlan, runDeterministicTester } from '../agents/deterministicTester.js';
+import { buildFixRepositoryContext } from './fixPlanning.js';
 
 /**
  * Best-effort verify config: `review --max` must still run in a repo with no —
@@ -94,12 +97,14 @@ export interface ReviewMaxCommandResult {
   decision: string;
   /** For --fix, true only when every area has a fresh approve verdict. */
   resolved?: boolean;
+  /** For --fix, true only when trusted deterministic verification passed. */
+  verified?: boolean;
 }
 
 /** `--fix` must fail closed on revise/error, not only on an aggregate reject. */
 export function reviewMaxResultFailed(result: ReviewMaxCommandResult | null, fix: boolean): boolean {
   if (!result) return false;
-  return result.decision === 'reject' || (fix && result.resolved !== true);
+  return result.decision === 'reject' || (fix && (result.resolved !== true || result.verified !== true));
 }
 
 /**
@@ -184,7 +189,8 @@ export async function createAuditWorktree(cwd: string, ts: string): Promise<Audi
 }
 
 /**
- * Ship the audit worktree: commit the fixes, push the branch, open a PR, and
+ * Ship the audit worktree only after review + deterministic verification pass:
+ * commit the fixes, push the branch, open a PR, and
  * note the PR on the Linear audit issue. A run that changed nothing leaves no
  * branch behind — the worktree is removed. Never throws: the audit report and
  * the Linear issues are already persisted, so a git/gh failure must not turn a
@@ -194,9 +200,32 @@ export async function shipAuditWorktree(
   audit: AuditWorktree,
   summary: AuditSummary,
   ts: string,
-  linear: { issueId?: string; identifier?: string; closes: boolean },
+  linear: {
+    issueId?: string;
+    identifier?: string;
+    closes: boolean;
+    fixResult: Pick<FixVerifyResult, 'resolved' | 'verified' | 'verificationStatus'>;
+  },
 ): Promise<string | null> {
-  const { commitAndCreateAuditPR, removeWorktree } = await import('../support/worktreeManager.js');
+  const { commitAndCreateAuditPR, removeWorktree, preserveWorktree } = await import('../support/worktreeManager.js');
+  const gatePassed =
+    linear.fixResult.resolved &&
+    linear.fixResult.verified &&
+    linear.fixResult.verificationStatus === 'passed';
+  if (!gatePassed || summary.decision !== 'approve') {
+    const reason =
+      `audit publication blocked: verdict=${summary.decision}, resolved=${linear.fixResult.resolved}, ` +
+      `verification=${linear.fixResult.verificationStatus}`;
+    const preserved = await preserveWorktree(audit.info, reason);
+    console.warn(
+      status.warn(
+        preserved
+          ? `Audit PR blocked by fail-closed gate; candidate work preserved at ${audit.info.worktreePath}.`
+          : 'Audit PR blocked by fail-closed gate; no candidate changes were present.',
+      ),
+    );
+    return null;
+  }
   const ref = linear.identifier ? `${linear.closes ? 'Closes' : 'Refs'} ${linear.identifier}` : '';
   const title = `fix(audit): codebase audit ${ts.slice(0, 10)} — review --max --fix`;
   const body = [
@@ -381,6 +410,10 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
   });
 
   let run: AuditRun;
+  let fixResolved: boolean | undefined;
+  let fixVerified: boolean | undefined;
+  let fixVerificationStatus: FixVerificationStatus | undefined;
+  let fixResult: Pick<FixVerifyResult, 'resolved' | 'verified' | 'verificationStatus'> | undefined;
   try {
     run = await runMaxReview(
       areas,
@@ -432,9 +465,8 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
   //       so the user reviews the diff first. (INT-2249 / INT-2443)
   if (opts.fix) {
     const targets = fixTargets(run);
-    if (!targets.length) {
-      console.log('\n--fix: nothing to apply (every area approved).');
-    } else {
+    if (!targets.length) console.log('\n--fix: no reviewer edits requested; running the deterministic publication gate.');
+    {
       const maxRounds = opts.fixRounds === undefined
         ? undefined
         : positiveIntegerOption(opts.fixRounds, opts.fixRounds, '--fix-rounds');
@@ -444,6 +476,14 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
       console.log(
         `\n${status.running('Fix → verify loop')} ${roundBudget}, ` +
           `${c.yellow(String(targets.length))} area(s) flagged, ${concurrency} concurrent worker(s).`,
+      );
+      const repositoryContext = await buildFixRepositoryContext(
+        workCwd,
+        trustedVerifyPlan,
+        [
+          ...run.summary.issues,
+          ...run.summary.recommendedActions.map((action) => `${action.title} ${action.location ?? ''}`),
+        ].join('\n'),
       );
       const loop = await runFixVerifyLoop(
         run,
@@ -456,10 +496,11 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
           fixTimeoutMs: 900_000,
           maxRounds,
           maxDurationMs: 2 * 60 * 60 * 1000,
+          repositoryContext,
         },
         {
-          verify: trustedVerifyPlan && trustedVerifyPlan.commands.length > 0
-            ? async () => {
+          verify: async () => {
+              if (!trustedVerifyPlan || trustedVerifyPlan.commands.length === 0) return null;
                 const result = await runDeterministicTester(
                   workCwd,
                   verifyConfig,
@@ -471,8 +512,7 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
                   output: result.output,
                   failedTests: result.failedTests,
                 };
-              }
-            : undefined,
+              },
           onRoundStart: (round, flagged) =>
             console.log(`\n${c.bold(`Round ${round}${maxRounds === undefined ? '' : `/${maxRounds}`}`)} — fixing ${flagged} area(s)...`),
           onFixProgress: (e) => {
@@ -492,12 +532,17 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
       // The loop's re-review carries the fresh verdicts — report/persist on those,
       // not the stale first-pass run.
       run = loop.finalRun;
+      fixResolved = loop.resolved;
+      fixVerified = loop.verified;
+      fixVerificationStatus = loop.verificationStatus;
+      fixResult = loop;
       const stopLabel: Record<FixVerifyStop, string> = {
         'all-approved': 'all findings cleared',
         'max-rounds': 'round budget spent',
         'no-progress': 'workers made no edits',
         'rate-limit': 'usage limit hit',
         'time-budget': 'two-hour safety budget spent',
+        'dependency-preflight': 'repository dependencies unavailable',
       };
       // Count "not approved" (includes errored/rate-limited areas), matching
       // loop.resolved — fixTargets would undercount an errored area.
@@ -508,10 +553,13 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
             `--fix: ${still} area(s) still flagged after ${loop.rounds.length} round(s) (${stopLabel[loop.stopReason]})`,
           );
       console.log(`\n${headline} · ${c.yellow(`${loop.filesChanged.length} file(s) touched`)}`);
+      if (!loop.verified) {
+        console.log(status.warn(`Publication gate: deterministic verification ${loop.verificationStatus}${loop.verificationError ? ` — ${loop.verificationError}` : ''}.`));
+      }
       console.log(
         c.dim(
           audit
-            ? `Changes are in the audit worktree (${audit.info.branchName}) — a PR follows below.`
+            ? `Changes are in the audit worktree (${audit.info.branchName}) — publication follows only if every safety gate passes.`
             : 'Changes are in the working tree — review the diff before committing.',
         ),
       );
@@ -552,6 +600,7 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
       issueId: parent.id,
       identifier: parent.identifier,
       closes: parent.created === true,
+      fixResult: fixResult ?? { resolved: false, verified: false, verificationStatus: 'not-run' },
     });
   }
 
@@ -569,7 +618,8 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
 
   return {
     decision: run.summary.decision,
-    resolved: opts.fix ? run.results.every((result) => result.review?.decision === 'approve') : undefined,
+    resolved: opts.fix ? fixResolved ?? run.results.every((result) => result.review?.decision === 'approve') : undefined,
+    verified: opts.fix ? fixVerified ?? fixVerificationStatus === 'passed' : undefined,
   };
 }
 

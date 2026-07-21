@@ -318,7 +318,7 @@ program
   .option('--no-linear', 'For --max: skip creating the default Linear master audit issue')
   .option('--fallback <adapter>', 'For --max: retry usage-limited areas on this adapter (default: claude for codex)')
   .option('--no-fallback', 'For --max: disable the automatic usage-limit fallback')
-  .option('--fix', 'For --max: apply reviewer fixes and re-review until every area approves, in an isolated audit worktree that ships as a PR')
+  .option('--fix', 'For --max: apply dependency-aware fixes in isolated sandboxes; publish a PR only after re-review and deterministic verification pass')
   .option('--in-place', 'For --max --fix: edit the current working tree instead of an isolated worktree (no branch, no PR)')
   .option('--fix-rounds <n>', 'For --max --fix: optional round cap (default: until clean, with a two-hour safety budget)', parsePositiveIntegerOption)
   .option('--no-learn', 'For --max: do not record the audit findings into the repo knowledge memory')

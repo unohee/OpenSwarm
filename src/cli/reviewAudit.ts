@@ -15,6 +15,13 @@ import type { AdapterName } from '../adapters/types.js';
 import { runPool } from '../support/concurrencyPool.js';
 import { RateLimitError } from '../adapters/rateLimitError.js';
 import { c, status } from '../support/colors.js';
+import {
+  planFixUnits,
+  workerContextForFixUnit,
+  type FixRepositoryContext,
+  type FixUnit,
+} from './fixPlanning.js';
+import { runIsolatedFixBatch } from './fixSandbox.js';
 
 // Source extensions and test patterns mirror src/knowledge/scanner.ts. Kept
 // local (not imported) because those are unexported module consts; the audit
@@ -503,6 +510,8 @@ export function mergeFallback(primary: AuditRun, fallback: AuditRun): AuditRun {
 /** Outcome of applying a reviewer's findings to one area. */
 export interface FixAreaResult {
   label: string;
+  /** Every original audit area covered by this dependency-aware fix unit. */
+  targetLabels: string[];
   /** true when the worker ran and reported success. */
   applied: boolean;
   filesChanged: string[];
@@ -522,11 +531,14 @@ export interface RunAreaFixesOptions {
   timeoutMs?: number;
   reasoningEffort?: 'low' | 'medium' | 'high';
   signal?: AbortSignal;
+  repositoryContext?: FixRepositoryContext;
 }
 
 export interface RunAreaFixesDeps {
-  /** Apply one area's fixes → worker result. Default spawns a real worker. Injectable for tests. */
-  fix?: (area: AuditArea, review: ReviewResult, onLog: (line: string) => void) => Promise<{ success: boolean; filesChanged: string[] }>;
+  /** Apply one dependency-aware fix unit. Default uses an isolated sandbox. */
+  fix?: (unit: FixUnit, onLog: (line: string) => void) => Promise<{ success: boolean; filesChanged: string[]; error?: string }>;
+  /** Injectable sandbox worker for integration tests; scope/promotion stay real. */
+  worker?: (unit: FixUnit, sandbox: string, onLog: (line: string) => void) => Promise<{ success: boolean; error?: string }>;
   onProgress?: (e: FixProgress) => void;
 }
 
@@ -538,56 +550,73 @@ export function fixTargets(run: AuditRun): AuditAreaResult[] {
   );
 }
 
-/** Turn one area's reviewer verdict into a worker task that applies the fixes. */
-export function buildFixTaskDescription(area: AuditArea, review: ReviewResult): string {
-  const issues = (review.issues ?? []).map((i) => `- ${i}`);
-  const actions = (review.recommendedActions ?? []).map(
-    (a) => `- [${a.type}] ${a.title}${a.location ? ` (${a.location})` : ''}`,
-  );
+/** Turn a dependency-aware fix unit into a repository-grounded worker task. */
+export function buildFixTaskDescription(unit: FixUnit, context: FixRepositoryContext): string {
+  const issues = unit.targets.flatMap((target) =>
+    (target.review.issues ?? []).map((issue) => `- [${target.area.label}] ${issue}`));
+  const actions = unit.targets.flatMap((target) =>
+    (target.review.recommendedActions ?? []).map(
+      (action) => `- [${action.type}] ${action.title}${action.location ? ` (${action.location})` : ''}`,
+    ));
   return [
-    `A code review of ${area.label} found issues. Apply the MINIMAL edits needed to resolve them.`,
+    `A code review of ${unit.targetLabels.join(', ')} found issues. Apply the MINIMAL root-cause edits needed to resolve them.`,
     '',
-    `Files in scope (edit only these — do not touch files outside ${area.dir}):`,
-    ...area.files.map((f) => `- ${f}`),
+    'Primary review files:',
+    ...unit.primaryFiles.map((file) => `- ${file}`),
+    unit.dependencyFiles.length ? `\nKnown imports/callers in the dependency closure:\n${unit.dependencyFiles.map((file) => `- ${file}`).join('\n')}` : '',
+    unit.testFiles.length ? `\nRelated tests:\n${unit.testFiles.map((file) => `- ${file}`).join('\n')}` : '',
+    unit.manifestFiles.length ? `\nRelevant manifests/lockfiles:\n${unit.manifestFiles.map((file) => `- ${file}`).join('\n')}` : '',
     '',
     issues.length ? `Issues to fix:\n${issues.join('\n')}` : '',
     actions.length ? `\nRecommended actions:\n${actions.join('\n')}` : '',
     '',
-    'Do not refactor beyond the fixes. Do not add features. Keep changes tight and verifiable.',
+    `Repository package manager: ${context.packageManager ?? 'not detected'}.`,
+    context.verificationCommands.length
+      ? `Required verification:\n${context.verificationCommands.map((command) => `- ${command}`).join('\n')}`
+      : 'No deterministic verification command was discovered; report this limitation and do not invent one.',
+    '',
+    context.dependencyGraphAvailable
+      ? 'The supporting scope above comes from the repository dependency graph. Inspect callers/contracts before editing.'
+      : 'No dependency graph is available. Conservatively inspect real imports/callers before editing.',
+    'Supporting edits to listed callers, shared contracts, tests, and manifests are allowed when required by the root cause. Do not change unrelated code.',
+    'Do not replace a missing dependency with a stub, copied package, or locally invented API. Report an environment blocker instead.',
   ]
     .filter((l) => l !== '')
     .join('\n');
 }
 
 /** Default fix applier: spawn a worker subagent that edits the area in place. */
-async function defaultFixArea(
-  area: AuditArea,
-  review: ReviewResult,
+async function defaultFixUnit(
+  unit: FixUnit,
+  context: FixRepositoryContext,
   cwd: string,
   opts: RunAreaFixesOptions,
   onLog: (line: string) => void,
-): Promise<{ success: boolean; filesChanged: string[] }> {
-  const { runWorker } = await import('../agents/worker.js');
+): Promise<{ success: boolean; error?: string }> {
+  const { runWorker, resolveWorkerBashTimeout } = await import('../agents/worker.js');
   const result = await runWorker({
-    taskTitle: `Apply review fixes: ${area.label}`,
-    taskDescription: buildFixTaskDescription(area, review),
+    taskTitle: `Apply review fixes: ${unit.label}`,
+    taskDescription: buildFixTaskDescription(unit, context),
     projectPath: cwd,
     adapterName: opts.adapter,
     timeoutMs: opts.timeoutMs,
     reasoningEffort: opts.reasoningEffort,
+    bashTimeoutMs: await resolveWorkerBashTimeout(cwd, opts.reasoningEffort),
     nudgeMaxOnNoEdit: 1,
+    fileScope: unit.allowedPaths,
+    workerContext: workerContextForFixUnit(unit, context),
     signal: opts.signal,
     onLog,
     suppressStatusLogs: true,
   });
-  return { success: result.success, filesChanged: result.filesChanged };
+  return { success: result.success, error: result.error ?? result.haltReason };
 }
 
 /**
- * Apply reviewer-recommended fixes for every non-approve area, fanned out with
- * the same concurrency cap as the review. Edits land in the working tree — no
- * commit, no re-review — so the user reviews the diff before committing. Never
- * throws on a single area: a failed fix lands as an error in its result. (INT-2249)
+ * Apply reviewer-recommended fixes as dependency-aware units. Independent units
+ * run in isolated sandboxes and only disjoint, in-scope diffs are promoted into
+ * the audit worktree. Never throws on a single unit: a failed fix lands as an
+ * error in its result. (INT-2249 / INT-2920)
  */
 export async function runAreaFixes(
   run: AuditRun,
@@ -595,30 +624,69 @@ export async function runAreaFixes(
   opts: RunAreaFixesOptions,
   deps: RunAreaFixesDeps = {},
 ): Promise<FixAreaResult[]> {
-  const fix = deps.fix ?? ((area, review, onLog) => defaultFixArea(area, review, cwd, opts, onLog));
   const targets = fixTargets(run);
-  const total = targets.length;
+  const context = opts.repositoryContext ?? {
+    canonicalRoot: cwd, workspaces: [], manifests: [], verificationCommands: [], sharedPaths: [], repoMemories: [],
+    dependencyGraphAvailable: false, dependencyMap: {}, preflight: { ready: true, issues: [] },
+  } satisfies FixRepositoryContext;
+  const units = planFixUnits(targets.map((target) => ({ area: target.area, review: target.review! })), context);
+  const total = units.length;
   let done = 0;
+  // Without a dependency graph we cannot prove that two areas are independent;
+  // use a conservative serial fallback. Isolated sandboxes still protect scope.
+  const concurrency = context.dependencyGraphAvailable ? opts.concurrency : 1;
+  const onResult = (unit: FixUnit, result: { success: boolean; filesChanged: string[]; error?: string }) => {
+    done++;
+    if (result.success) deps.onProgress?.({ type: 'done', label: unit.label, filesChanged: result.filesChanged.length, done, total });
+    else deps.onProgress?.({ type: 'error', label: unit.label, error: result.error ?? 'worker failed', done, total });
+  };
 
-  const settled = await runPool(
-    targets,
-    opts.concurrency,
-    async (t) => {
-      deps.onProgress?.({ type: 'start', label: t.area.label, done, total });
-      return fix(t.area, t.review!, (line) => deps.onProgress?.({ type: 'log', label: t.area.label, line }));
-    },
-    (s) => {
-      done++;
-      const label = targets[s.index].area.label;
-      if (s.error) deps.onProgress?.({ type: 'error', label, error: String(s.error), done, total });
-      else if (s.value) deps.onProgress?.({ type: 'done', label, filesChanged: s.value.filesChanged.length, done, total });
-    },
-  );
+  if (deps.fix) {
+    const settled = await runPool(
+      units,
+      concurrency,
+      async (unit) => {
+        deps.onProgress?.({ type: 'start', label: unit.label, done, total });
+        return deps.fix!(unit, (line) => deps.onProgress?.({ type: 'log', label: unit.label, line }));
+      },
+      (entry) => {
+        const unit = units[entry.index];
+        const value = entry.value ?? { success: false, filesChanged: [], error: entry.error ? String(entry.error) : 'no result' };
+        onResult(unit, value);
+      },
+    );
+    return settled.map((entry, index) => {
+      const unit = units[index];
+      const value = entry.value;
+      return {
+        label: unit.label, targetLabels: unit.targetLabels,
+        applied: value?.success === true, filesChanged: value?.filesChanged ?? [],
+        error: value?.error ?? (entry.error ? String(entry.error) : undefined),
+      };
+    });
+  }
 
-  return settled.map((s, i) => {
-    const label = targets[i].area.label;
-    if (s.error || !s.value) return { label, applied: false, filesChanged: [], error: s.error ? String(s.error) : 'no result' };
-    return { label, applied: s.value.success, filesChanged: s.value.filesChanged };
+  const isolated = await runIsolatedFixBatch({
+    projectPath: cwd,
+    items: units,
+    concurrency,
+    run: async (unit, sandbox, onLog) => {
+      deps.onProgress?.({ type: 'start', label: unit.label, done, total });
+      return deps.worker
+        ? deps.worker(unit, sandbox, onLog)
+        : defaultFixUnit(unit, context, sandbox, opts, onLog);
+    },
+    onLog: (unit, line) => deps.onProgress?.({ type: 'log', label: unit.label, line }),
+  });
+  return isolated.map((result) => {
+    onResult(result.item, result);
+    return {
+      label: result.item.label,
+      targetLabels: result.item.targetLabels,
+      applied: result.success,
+      filesChanged: result.filesChanged,
+      error: result.error,
+    };
   });
 }
 
@@ -639,7 +707,8 @@ export interface FixVerifyRound {
 }
 
 /** Why the loop stopped. */
-export type FixVerifyStop = 'all-approved' | 'max-rounds' | 'no-progress' | 'rate-limit' | 'time-budget';
+export type FixVerifyStop = 'all-approved' | 'max-rounds' | 'no-progress' | 'rate-limit' | 'time-budget' | 'dependency-preflight';
+export type FixVerificationStatus = 'not-run' | 'passed' | 'failed' | 'unavailable' | 'infra';
 
 export interface FixVerifyResult {
   rounds: FixVerifyRound[];
@@ -647,6 +716,10 @@ export interface FixVerifyResult {
   finalRun: AuditRun;
   /** True when no area is flagged at the end. */
   resolved: boolean;
+  /** Automatic publication requires deterministic verification to pass. */
+  verified: boolean;
+  verificationStatus: FixVerificationStatus;
+  verificationError?: string;
   stopReason: FixVerifyStop;
   /** Union of every file touched across all rounds. */
   filesChanged: string[];
@@ -662,11 +735,14 @@ export interface RunFixVerifyLoopOptions {
   /** Whole-loop wall-clock budget. Defaults to two hours. */
   maxDurationMs?: number;
   signal?: AbortSignal;
+  repositoryContext?: FixRepositoryContext;
 }
 
 export interface RunFixVerifyLoopDeps {
   review?: RunMaxReviewDeps['review'];
   fix?: RunAreaFixesDeps['fix'];
+  /** Test seam that preserves the production isolated-sandbox path. */
+  fixWorker?: RunAreaFixesDeps['worker'];
   /** Start of each round: (round, flaggedCount). */
   onRoundStart?: (round: number, flagged: number) => void;
   /** Fix-phase progress. */
@@ -753,15 +829,19 @@ export async function runFixVerifyLoop(
     timeoutMs: opts.fixTimeoutMs,
     reasoningEffort: 'high',
     signal: phaseSignal,
+    repositoryContext: opts.repositoryContext,
   };
   const reviewDeps: RunMaxReviewDeps = { review: deps.review, onProgress: deps.onReviewProgress };
-  const fixDeps: RunAreaFixesDeps = { fix: deps.fix, onProgress: deps.onFixProgress };
+  const fixDeps: RunAreaFixesDeps = { fix: deps.fix, worker: deps.fixWorker, onProgress: deps.onFixProgress };
   const allAreas = initial.results.map((result) => result.area);
 
   let run = initial;
   const rounds: FixVerifyRound[] = [];
   const allFiles = new Set<string>();
   let stopReason: FixVerifyStop = 'all-approved';
+  const verificationState: { status: FixVerificationStatus; error?: string } = {
+    status: deps.verify ? 'not-run' : 'unavailable',
+  };
   // "Unresolved" = not approved, which includes errored areas (a re-review that
   // crashed is NOT resolved) — unlike fixTargets, which only counts non-approve
   // areas that still carry review findings worth another fix pass.
@@ -773,9 +853,30 @@ export async function runFixVerifyLoop(
     actions: result.review?.recommendedActions ?? [],
   })));
   const applyVerificationGate = async (current: AuditRun, targetLabels: Set<string>): Promise<AuditRun> => {
-    if (!deps.verify || unresolved(current) !== 0) return current;
-    const verification = await withinFixLoopBudget(deps.verify(), budgetSignal);
-    if (!verification || verification.success) return current;
+    if (unresolved(current) !== 0) return current;
+    if (!deps.verify) {
+      verificationState.status = 'unavailable';
+      return current;
+    }
+    let verification: { success: boolean; output?: string; failedTests?: string[] } | null;
+    try {
+      verification = await withinFixLoopBudget(deps.verify(), budgetSignal);
+    } catch (error) {
+      if (error instanceof FixLoopTimeBudgetError) throw error;
+      verificationState.status = 'infra';
+      verificationState.error = error instanceof Error ? error.message : String(error);
+      return current;
+    }
+    if (!verification) {
+      verificationState.status = 'unavailable';
+      return current;
+    }
+    if (verification.success) {
+      verificationState.status = 'passed';
+      verificationState.error = undefined;
+      return current;
+    }
+    verificationState.status = 'failed';
 
     const issue = [
       `Deterministic verification failed: ${(verification.failedTests ?? []).join(', ') || 'repository checks'}`,
@@ -797,8 +898,33 @@ export async function runFixVerifyLoop(
     return { ...current, results, summary: aggregateAuditResults(results) };
   };
 
+  if (opts.repositoryContext && !opts.repositoryContext.preflight.ready) {
+    return {
+      rounds,
+      finalRun: run,
+      resolved: false,
+      verified: false,
+      verificationStatus: verificationState.status,
+      verificationError: opts.repositoryContext.preflight.issues.join('\n'),
+      stopReason: 'dependency-preflight',
+      filesChanged: [],
+    };
+  }
+
   for (let round = 1; round <= maxRounds; round++) {
-    const targets = fixTargets(run);
+    let targets = fixTargets(run);
+    if (!targets.length) {
+      try {
+        run = await applyVerificationGate(run, new Set());
+      } catch (error) {
+        if (error instanceof FixLoopTimeBudgetError) {
+          stopReason = 'time-budget';
+          break;
+        }
+        throw error;
+      }
+      targets = fixTargets(run);
+    }
     if (!targets.length) {
       // Nothing left to fix. Clean if every area approves; otherwise the leftover
       // is an errored/unfixable area, not a success.
@@ -875,7 +1001,7 @@ export async function runFixVerifyLoop(
       throw error;
     }
     run = mergeReReview(run, reReview);
-    run = await applyVerificationGate(run, new Set(edited.map((fix) => fix.label)));
+    run = await applyVerificationGate(run, new Set(edited.flatMap((fix) => fix.targetLabels)));
 
     const remaining = unresolved(run);
     const gatedByLabel = new Map(run.results.map((result) => [result.area.label, result]));
@@ -896,5 +1022,14 @@ export async function runFixVerifyLoop(
     if (round === maxRounds) { stopReason = 'max-rounds'; break; }
   }
 
-  return { rounds, finalRun: run, resolved: unresolved(run) === 0, stopReason, filesChanged: [...allFiles] };
+  return {
+    rounds,
+    finalRun: run,
+    resolved: unresolved(run) === 0,
+    verified: verificationState.status === 'passed',
+    verificationStatus: verificationState.status,
+    verificationError: verificationState.error,
+    stopReason,
+    filesChanged: [...allFiles],
+  };
 }

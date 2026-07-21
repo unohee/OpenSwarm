@@ -209,6 +209,30 @@ describe('buildWorkerPrompt', () => {
     expect(result).toContain('Code Context');
     expect(result).toContain('pnpm');
   });
+
+  it.each([
+    ['en', enPrompts, 'Repository Runtime Contract', 'Required repository verification commands'],
+    ['ko', koPrompts, '저장소 런타임 계약', '필수 저장소 검증 명령'],
+  ] as const)('%s worker prompt renders the repository runtime contract', (_label, prompts, heading, verifyHeading) => {
+    const result = prompts.buildWorkerPrompt({
+      ...base,
+      context: {
+        repository: {
+          packageManager: 'pnpm',
+          workspaces: ['packages/*'],
+          manifests: ['package.json', 'pnpm-lock.yaml'],
+          verificationCommands: ['pnpm test'],
+          sharedPaths: ['node_modules'],
+          dependencyGraphAvailable: true,
+        },
+      },
+    });
+    expect(result).toContain(heading);
+    expect(result).toContain('pnpm');
+    expect(result).toContain('packages/*');
+    expect(result).toContain(verifyHeading);
+    expect(result).toContain('pnpm test');
+  });
 });
 
 // ── 3. buildReviewerPrompt ─────────────────────────────────────
@@ -317,6 +341,26 @@ describe('buildReviewerPrompt', () => {
       const result = enPrompts.buildReviewerPrompt(auditOpts);
       expect(result).not.toContain("Worker's Report");
       expect(result).not.toContain('Definition of Done');
+    });
+  });
+
+  describe('direct Git change mode', () => {
+    const directOpts = {
+      taskTitle: 'CLI working-tree review',
+      taskDescription: 'Review current changes',
+      workerReport: '- **Files changed (1):** src/a.ts',
+      mode: 'direct' as const,
+    };
+
+    it('does not invent a zero-command worker report (en + ko)', () => {
+      for (const p of [enPrompts, koPrompts]) {
+        const result = p.buildReviewerPrompt(directOpts);
+        expect(result).toMatch(/Direct Git Change Mode|직접 Git 변경 모드/);
+        expect(result).not.toContain("Worker's Report");
+        expect(result).toContain('src/a.ts');
+        expect(result).toMatch(/Do not claim that validation was not run|검증을 실행하지 않았다고 주장하지 마라/);
+        expect(result).toContain('file:line');
+      }
     });
   });
 });

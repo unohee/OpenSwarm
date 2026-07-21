@@ -22,6 +22,7 @@ import {
 } from './reviewAudit.js';
 import type { ReviewResult } from '../agents/agentPair.js';
 import { RateLimitError } from '../adapters/rateLimitError.js';
+import { planFixUnits, type FixRepositoryContext } from './fixPlanning.js';
 
 describe('filterSourceFiles (INT-2006)', () => {
   it('keeps source extensions and drops the rest', () => {
@@ -385,18 +386,27 @@ describe('fixTargets + runAreaFixes (INT-2249)', () => {
   });
 
   it('buildFixTaskDescription scopes to the area files and lists issues', () => {
-    const desc = buildFixTaskDescription(area('src/b'), { decision: 'revise', feedback: '', issues: ['bug in f'] });
+    const context: FixRepositoryContext = {
+      canonicalRoot: '/repo', packageManager: 'pnpm', workspaces: [], manifests: ['package.json'],
+      verificationCommands: ['pnpm test'], sharedPaths: ['node_modules'], repoMemories: [],
+      dependencyGraphAvailable: true, dependencyMap: {}, preflight: { ready: true, issues: [] },
+    };
+    const [unit] = planFixUnits([
+      { area: area('src/b'), review: { decision: 'revise', feedback: '', issues: ['bug in f'] } },
+    ], context);
+    const desc = buildFixTaskDescription(unit, context);
     expect(desc).toContain('src/b/f.ts');
     expect(desc).toContain('bug in f');
-    expect(desc).toContain('do not touch files outside src/b');
+    expect(desc).toContain('Supporting edits');
+    expect(desc).toContain('pnpm test');
   });
 
   it('fans a fix worker out over each target and reports edited files', async () => {
     const seen: string[] = [];
     const fixes = await runAreaFixes(run(), '/repo', { concurrency: 2 }, {
-      fix: async (a) => {
-        seen.push(a.label);
-        return { success: true, filesChanged: a.files };
+      fix: async (unit) => {
+        seen.push(unit.label);
+        return { success: true, filesChanged: unit.primaryFiles };
       },
     });
     expect(seen.sort()).toEqual(['src/b', 'src/c']); // approve + error areas skipped
@@ -404,12 +414,27 @@ describe('fixTargets + runAreaFixes (INT-2249)', () => {
     expect(fixes.flatMap((f) => f.filesChanged).sort()).toEqual(['src/b/f.ts', 'src/c/f.ts']);
   });
 
+  it('falls back to serial fix units when no repository dependency graph is available', async () => {
+    let active = 0;
+    let maxActive = 0;
+    await runAreaFixes(run(), '/repo', { concurrency: 8 }, {
+      fix: async (unit) => {
+        active++;
+        maxActive = Math.max(maxActive, active);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        active--;
+        return { success: true, filesChanged: unit.primaryFiles };
+      },
+    });
+    expect(maxActive).toBe(1);
+  });
+
   it('emits fix worker log progress for a live status board', async () => {
     const events: string[] = [];
     await runAreaFixes(run(), '/repo', { concurrency: 1 }, {
-      fix: async (a, _review, onLog) => {
-        onLog(`[Worker] Git detected 1 changed file(s): ${a.files[0]}`);
-        return { success: true, filesChanged: a.files };
+      fix: async (unit, onLog) => {
+        onLog(`[Worker] Git detected 1 changed file(s): ${unit.primaryFiles[0]}`);
+        return { success: true, filesChanged: unit.primaryFiles };
       },
       onProgress: (e) => {
         if (e.type === 'log') events.push(`${e.label}: ${e.line}`);
@@ -423,9 +448,9 @@ describe('fixTargets + runAreaFixes (INT-2249)', () => {
 
   it('a failed fix lands as an error, not a throw', async () => {
     const fixes = await runAreaFixes(run(), '/repo', { concurrency: 1 }, {
-      fix: async (a) => {
-        if (a.label === 'src/c') throw new Error('worker died');
-        return { success: true, filesChanged: a.files };
+      fix: async (unit) => {
+        if (unit.label === 'src/c') throw new Error('worker died');
+        return { success: true, filesChanged: unit.primaryFiles };
       },
     });
     const c = fixes.find((f) => f.label === 'src/c');
@@ -466,7 +491,7 @@ describe('runFixVerifyLoop (INT-2443)', () => {
     let bReviews = 0;
     const fixed: string[] = [];
     const result = await runFixVerifyLoop(initial(), '/repo', { concurrency: 2, maxRounds: 3 }, {
-      fix: async (a) => { fixed.push(a.label); return { success: true, filesChanged: a.files }; },
+      fix: async (unit) => { fixed.push(unit.label); return { success: true, filesChanged: unit.primaryFiles }; },
       // round 1 re-review still revises, round 2 approves
       review: async (a) => ({
         decision: a.label === 'src/b' && ++bReviews < 2 ? 'revise' : 'approve',
@@ -483,7 +508,7 @@ describe('runFixVerifyLoop (INT-2443)', () => {
   it('keeps fixing past three rounds by default until every area approves', async () => {
     let bReviews = 0;
     const result = await runFixVerifyLoop(initial(), '/repo', { concurrency: 1 }, {
-      fix: async (a) => ({ success: true, filesChanged: a.files }),
+      fix: async (unit) => ({ success: true, filesChanged: unit.primaryFiles }),
       review: async (a) => ({
         decision: a.label === 'src/b' && ++bReviews < 5 ? 'revise' : 'approve',
         feedback: '',
@@ -498,9 +523,9 @@ describe('runFixVerifyLoop (INT-2443)', () => {
     let verifies = 0;
     let fixes = 0;
     const result = await runFixVerifyLoop(initial(), '/repo', { concurrency: 1, maxRounds: 3 }, {
-      fix: async (a) => {
+      fix: async (unit) => {
         fixes++;
-        return { success: true, filesChanged: a.files };
+        return { success: true, filesChanged: unit.primaryFiles };
       },
       review: async () => ({ decision: 'approve', feedback: '' }),
       verify: async () => ++verifies >= 2
@@ -517,7 +542,7 @@ describe('runFixVerifyLoop (INT-2443)', () => {
 
   it('fails closed when deterministic verification never passes', async () => {
     const result = await runFixVerifyLoop(initial(), '/repo', { concurrency: 1, maxRounds: 2 }, {
-      fix: async (a) => ({ success: true, filesChanged: a.files }),
+      fix: async (unit) => ({ success: true, filesChanged: unit.primaryFiles }),
       review: async () => ({ decision: 'approve', feedback: '' }),
       verify: async () => ({ success: false, failedTests: ['test'], output: 'still failing' }),
     });
@@ -531,9 +556,9 @@ describe('runFixVerifyLoop (INT-2443)', () => {
     const fixed: string[] = [];
     let confirmationFoundRegression = false;
     const result = await runFixVerifyLoop(initial(), '/repo', { concurrency: 1 }, {
-      fix: async (a) => {
-        fixed.push(a.label);
-        return { success: true, filesChanged: a.files };
+      fix: async (unit) => {
+        fixed.push(unit.label);
+        return { success: true, filesChanged: unit.primaryFiles };
       },
       review: async (a) => {
         if (a.label === 'src/a' && !confirmationFoundRegression) {
@@ -551,7 +576,7 @@ describe('runFixVerifyLoop (INT-2443)', () => {
 
   it('stops at the round budget and reports the still-flagged area', async () => {
     const result = await runFixVerifyLoop(initial(), '/repo', { concurrency: 1, maxRounds: 2 }, {
-      fix: async (a) => ({ success: true, filesChanged: a.files }),
+      fix: async (unit) => ({ success: true, filesChanged: unit.primaryFiles }),
       review: async (a) => ({ decision: a.label === 'src/b' ? 'reject' : 'approve', feedback: '' }), // never clears b
     });
     expect(result.rounds).toHaveLength(2);
@@ -564,9 +589,9 @@ describe('runFixVerifyLoop (INT-2443)', () => {
     let now = 0;
     const result = await runFixVerifyLoop(initial(), '/repo', { concurrency: 1, maxDurationMs: 100 }, {
       now: () => now,
-      fix: async (a) => {
+      fix: async (unit) => {
         now += 100;
-        return { success: true, filesChanged: a.files };
+        return { success: true, filesChanged: unit.primaryFiles };
       },
       review: async (a) => ({ decision: a.label === 'src/b' ? 'revise' : 'approve', feedback: '' }),
     });
@@ -595,6 +620,57 @@ describe('runFixVerifyLoop (INT-2443)', () => {
     expect(result.rounds).toHaveLength(0);
     expect(result.resolved).toBe(true);
     expect(result.stopReason).toBe('all-approved');
+    expect(result.verified).toBe(false);
+    expect(result.verificationStatus).toBe('unavailable');
+  });
+
+  it('runs deterministic verification even when the initial review is already clean', async () => {
+    const clean: AuditRun = {
+      results: [{ area: area('src/a'), review: { decision: 'approve', feedback: '' } }],
+      summary: aggregateAuditResults([]),
+    };
+    const verify = async () => ({ success: true });
+    const result = await runFixVerifyLoop(clean, '/repo', { concurrency: 1 }, { verify });
+    expect(result.rounds).toHaveLength(0);
+    expect(result.resolved).toBe(true);
+    expect(result.verified).toBe(true);
+    expect(result.verificationStatus).toBe('passed');
+  });
+
+  it('does not send an infrastructure-only verification failure to a code worker', async () => {
+    const clean: AuditRun = {
+      results: [{ area: area('src/a'), review: { decision: 'approve', feedback: '' } }],
+      summary: aggregateAuditResults([]),
+    };
+    let fixes = 0;
+    const result = await runFixVerifyLoop(clean, '/repo', { concurrency: 1 }, {
+      fix: async () => { fixes++; return { success: true, filesChanged: ['src/a/f.ts'] }; },
+      verify: async () => { throw new Error('verify-runner: pnpm infrastructure failure'); },
+    });
+    expect(fixes).toBe(0);
+    expect(result.resolved).toBe(true);
+    expect(result.verified).toBe(false);
+    expect(result.verificationStatus).toBe('infra');
+    expect(result.verificationError).toContain('pnpm infrastructure failure');
+  });
+
+  it('blocks all code workers when repository dependency preflight fails', async () => {
+    let fixes = 0;
+    const result = await runFixVerifyLoop(initial(), '/repo', {
+      concurrency: 2,
+      repositoryContext: {
+        canonicalRoot: '/repo', workspaces: [], manifests: ['package.json'], verificationCommands: ['pnpm test'],
+        sharedPaths: [], repoMemories: [], dependencyGraphAvailable: true, dependencyMap: {},
+        preflight: { ready: false, issues: ['node_modules missing'] },
+      },
+    }, {
+      fix: async () => { fixes++; return { success: true, filesChanged: [] }; },
+    });
+    expect(fixes).toBe(0);
+    expect(result.stopReason).toBe('dependency-preflight');
+    expect(result.resolved).toBe(false);
+    expect(result.verified).toBe(false);
+    expect(result.verificationError).toContain('node_modules missing');
   });
 
   it('re-reviews after a no-edit fix and accepts a finding that is already cleared', async () => {
@@ -624,11 +700,11 @@ describe('runFixVerifyLoop (INT-2443)', () => {
   it('retries a no-edit worker when the whole review provides a changed diagnosis', async () => {
     let fixes = 0;
     const result = await runFixVerifyLoop(initial(), '/repo', { concurrency: 1, maxRounds: 3 }, {
-      fix: async (a) => {
+      fix: async (unit) => {
         fixes++;
         return fixes === 1
           ? { success: true, filesChanged: [] }
-          : { success: true, filesChanged: a.files };
+          : { success: true, filesChanged: unit.primaryFiles };
       },
       review: async (a) => {
         if (a.label === 'src/a') return { decision: 'approve', feedback: '' };
@@ -645,7 +721,7 @@ describe('runFixVerifyLoop (INT-2443)', () => {
 
   it('stops when a re-review hits a usage limit, and stays unresolved', async () => {
     const result = await runFixVerifyLoop(initial(), '/repo', { concurrency: 1, maxRounds: 3 }, {
-      fix: async (a) => ({ success: true, filesChanged: a.files }),
+      fix: async (unit) => ({ success: true, filesChanged: unit.primaryFiles }),
       review: async () => { throw new RateLimitError(1770000000, 'usage limit'); },
     });
     expect(result.stopReason).toBe('rate-limit');
@@ -673,7 +749,7 @@ describe('runFixVerifyLoop (INT-2443)', () => {
       summary: aggregateAuditResults([]),
     });
     const result = await runFixVerifyLoop(flagged(), '/repo', { concurrency: 1, maxRounds: 3 }, {
-      fix: async (a) => ({ success: true, filesChanged: a.files }),
+      fix: async (unit) => ({ success: true, filesChanged: unit.primaryFiles }),
       review: async () => { throw new RateLimitError(1770000000, 'usage limit'); },
     });
     const b = result.finalRun.results.find((r) => r.area.label === 'src/b');
