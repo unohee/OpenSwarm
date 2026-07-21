@@ -53,6 +53,21 @@ vi.mock('../agents/reviewer.js', () => ({
   runReviewer: runReviewerMock,
 }));
 
+// Default review-command coverage must not write repository-local history into
+// the OpenSwarm checkout running the test suite.
+const loadReviewHistoryMock = vi.fn(async () => ({ records: [], legacyExcerpts: [] }));
+const captureReviewFileHashesMock = vi.fn(async () => ({}));
+const saveReviewHistoryMock = vi.fn(async () => '/tmp/review-history.json');
+vi.mock('./reviewHistory.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./reviewHistory.js')>();
+  return {
+    ...actual,
+    loadReviewHistory: loadReviewHistoryMock,
+    captureReviewFileHashes: captureReviewFileHashesMock,
+    saveReviewHistory: saveReviewHistoryMock,
+  };
+});
+
 const loadRepoMetadataMock = vi.fn();
 vi.mock('../support/repoMetadata.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../support/repoMetadata.js')>();

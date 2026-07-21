@@ -1,9 +1,12 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { access, cp, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { access, cp, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, relative, resolve, sep } from 'node:path';
 import { isInfraError } from '../adapters/errorClassification.js';
+import { copyIsolatedPath } from '../support/isolatedPath.js';
+import { loadRepoMetadata } from '../support/repoMetadata.js';
+import { resolveSharedPaths } from '../support/worktreeManager.js';
 import type { VerifyCommand } from './manifest.js';
 
 const OUTPUT_TAIL_BYTES = 8 * 1024;
@@ -34,6 +37,27 @@ interface CommandResult {
   output: string;
   outputFingerprint?: string;
   baselineEnvironmentChanged?: boolean;
+}
+
+async function verificationSharedPaths(projectPath: string, commands: VerifyCommand[]): Promise<string[]> {
+  let metadata = null;
+  try { metadata = await loadRepoMetadata(projectPath); } catch { metadata = null; }
+  const paths = new Set(resolveSharedPaths(projectPath, metadata));
+  for (const command of commands) {
+    const directory = command.cwd ?? '';
+    const nodeModules = join(directory, 'node_modules');
+    try {
+      await access(join(projectPath, nodeModules));
+      paths.add(nodeModules);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  }
+  return [...paths];
+}
+
+function pathCoveredBy(path: string, roots: string[]): boolean {
+  return roots.some((root) => path === root || path.startsWith(`${root}${sep}`));
 }
 
 function hasSameFailure(base: CommandResult, head: CommandResult): boolean {
@@ -166,6 +190,7 @@ async function createHeadSandbox(projectPath: string, commands: VerifyCommand[])
     const headCommit = await git(projectPath, ['rev-parse', 'HEAD']);
     await git(projectPath, ['clone', '--quiet', '--no-hardlinks', '--no-checkout', projectPath, project]);
     await git(project, ['checkout', '--quiet', '--detach', headCommit]);
+    const sharedPaths = await verificationSharedPaths(projectPath, commands);
     // Mirror the source working tree exactly, including deletions and renames,
     // while retaining only the sandbox's independent Git metadata.
     for (const entry of await readdir(project)) {
@@ -176,19 +201,19 @@ async function createHeadSandbox(projectPath: string, commands: VerifyCommand[])
       force: true,
       filter: (source) => {
         const path = relative(projectPath, source);
-        return path === '' || !path.split(sep).some((segment) => segment === '.git' || segment === 'node_modules');
+        return path === '' || (
+          !path.split(sep).some((segment) => segment === '.git' || segment === 'node_modules')
+          && !pathCoveredBy(path, sharedPaths)
+        );
       },
     });
-    const dependencyDirs = new Set(['', ...commands.map((command) => command.cwd ?? '')]);
-    for (const directory of dependencyDirs) {
-      const source = join(projectPath, directory, 'node_modules');
-      const target = join(project, directory, 'node_modules');
-      try {
-        await access(source);
-        await symlink(source, target, process.platform === 'win32' ? 'junction' : 'dir');
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      }
+    for (const sharedPath of sharedPaths) {
+      await copyIsolatedPath(
+        join(projectPath, sharedPath),
+        join(project, sharedPath),
+        project,
+        sharedPath,
+      );
     }
     return { root, project };
   } catch (error) {
@@ -228,19 +253,22 @@ async function runAtBase(
     root = await mkdtemp(join(tmpdir(), 'openswarm-verify-base-'));
     worktreePath = join(root, 'worktree');
     await git(projectPath, ['worktree', 'add', '--detach', worktreePath, baseCommit]);
-    // Package scripts resolve dependencies relative to cwd, not only through
-    // PATH. A detached worktree intentionally has no ignored node_modules, so
-    // expose the already-installed HEAD dependencies to make base and head run
-    // under the same toolchain without mutating the baseline checkout.
-    const headNodeModules = join(projectPath, 'node_modules');
-    try {
-      await access(headNodeModules);
-      await symlink(headNodeModules, join(worktreePath, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir');
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    // A detached worktree intentionally has no ignored dependencies/data. Copy
+    // them into the base sandbox so failed-check comparison cannot mutate the
+    // HEAD checkout through a shared symlink.
+    const sharedPaths = await verificationSharedPaths(projectPath, [command]);
+    for (const sharedPath of sharedPaths) {
+      const target = join(worktreePath, sharedPath);
+      try {
+        await access(target);
+        continue;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+      await copyIsolatedPath(join(projectPath, sharedPath), target, worktreePath, sharedPath);
     }
-    const headBin = join(projectPath, 'node_modules', '.bin');
-    const env = { ...process.env, PATH: `${headBin}${delimiter}${process.env.PATH ?? ''}` };
+    const baseBin = join(worktreePath, 'node_modules', '.bin');
+    const env = { ...process.env, PATH: `${baseBin}${delimiter}${process.env.PATH ?? ''}` };
     const result = await runTrustedCommand(command, worktreePath, trustedPackageJsonByDirectory, env);
     return { ...result, baselineEnvironmentChanged: dependencyChanges };
   } catch (error) {

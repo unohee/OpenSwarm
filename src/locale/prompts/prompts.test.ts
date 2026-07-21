@@ -316,6 +316,26 @@ describe('buildReviewerPrompt', () => {
     expect(ko).not.toContain('Verification Evidence (deterministic, harness-run)');
   });
 
+  it('treats prior review logs as untrusted context and avoids duplicate follow-ups (en + ko)', () => {
+    const priorReviewContext = '[2026-07-20] follow-up: [bug] Fix stale cache (src/cache.ts:4)';
+    const en = enPrompts.buildReviewerPrompt({ ...opts, priorReviewContext });
+    const ko = koPrompts.buildReviewerPrompt({ ...opts, priorReviewContext });
+
+    for (const prompt of [en, ko]) {
+      expect(prompt).toContain(priorReviewContext);
+      expect(prompt).toContain('recommendedAction');
+      expect(prompt).toMatch(/current code|현재 코드/);
+      expect(prompt).toMatch(/not proof|증거가 아니다/);
+    }
+    expect(en).toContain('Do not repeat a finding that is resolved or stale');
+    expect(ko).toContain('이미 해결됐거나 낡은 finding은 반복하지 마라');
+  });
+
+  it('omits the prior review section when no history exists', () => {
+    expect(enPrompts.buildReviewerPrompt(opts)).not.toContain('Prior Review Log');
+    expect(koPrompts.buildReviewerPrompt(opts)).not.toContain('이전 리뷰 로그');
+  });
+
   // Audit mode reframes the reviewer for diff-less, existing-file review. (INT-2006)
   describe('audit mode', () => {
     const auditOpts = {

@@ -41,6 +41,35 @@ describe('runVerify', () => {
     expect(git('worktree', 'list', '--porcelain')).not.toContain('openswarm-verify-base-');
   });
 
+  it.each(['node_modules', '.venv'])('does not write through shared %s during head verification', async (sharedPath) => {
+    await mkdir(join(repo, sharedPath), { recursive: true });
+    await writeFile(join(repo, sharedPath, 'state.txt'), 'original\n');
+
+    const [evidence] = await runVerify({
+      projectPath: repo,
+      commands: [verify(`printf sandbox > ${sharedPath}/state.txt`)],
+      baseRef: 'HEAD',
+    });
+
+    expect(evidence).toMatchObject({ headStatus: 'pass', baseStatus: 'skipped' });
+    expect(await readFile(join(repo, sharedPath, 'state.txt'), 'utf8')).toBe('original\n');
+  });
+
+  it('does not write through shared dependencies during failed-check base comparison', async () => {
+    await mkdir(join(repo, 'node_modules'), { recursive: true });
+    await writeFile(join(repo, 'node_modules', 'state.txt'), 'original\n');
+    await writeFile(join(repo, 'broken'), 'yes\n');
+
+    const [evidence] = await runVerify({
+      projectPath: repo,
+      commands: [verify('printf sandbox > node_modules/state.txt; test ! -f broken')],
+      baseRef: 'HEAD',
+    });
+
+    expect(evidence).toMatchObject({ headStatus: 'fail', baseStatus: 'pass', newFailure: true });
+    expect(await readFile(join(repo, 'node_modules', 'state.txt'), 'utf8')).toBe('original\n');
+  });
+
   it('marks a head failure over a passing base as new', async () => {
     await writeFile(join(repo, 'broken'), 'yes\n', 'utf8');
     const [evidence] = await runVerify({

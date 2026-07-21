@@ -11,6 +11,14 @@
 import type { ReviewResult, WorkerResult } from '../agents/agentPair.js';
 import type { ITaskSource } from '../automation/taskSource.js';
 import { startReviewProgress } from './reviewProgress.js';
+import {
+  captureReviewFileHashes,
+  dedupeReviewActions,
+  loadReviewHistory,
+  renderReviewHistoryContext,
+  saveReviewHistory,
+  type ReviewHistoryRecord,
+} from './reviewHistory.js';
 
 /** Synthesize a WorkerResult describing the working-tree changes for the reviewer. */
 export function buildReviewWorkerResult(changedFiles: string[], summary?: string): WorkerResult {
@@ -214,7 +222,18 @@ export async function runReviewCommand(
   opts: ReviewCommandOptions = {},
   deps: {
     getChangedFiles?: (cwd: string) => Promise<string[]>;
-    review?: (wr: WorkerResult, cwd: string, onLog?: (line: string) => void) => Promise<ReviewResult>;
+    review?: (
+      wr: WorkerResult,
+      cwd: string,
+      onLog?: (line: string) => void,
+      priorReviewContext?: string,
+    ) => Promise<ReviewResult>;
+    loadHistory?: (cwd: string, files: string[]) => Promise<{
+      context?: string;
+      records: ReviewHistoryRecord[];
+      currentHashes: Record<string, string>;
+    }>;
+    saveHistory?: (cwd: string, files: string[], review: ReviewResult, base?: string) => Promise<unknown>;
     fileFollowups?: (parentIssueId: string | undefined, review: ReviewResult) => Promise<number>;
     /** Override the project-mapping preflight (tests stub this to skip the interactive picker). */
     ensureProjectMapping?: (cwd: string, parentIssueId: string | undefined) => Promise<ProjectMappingResult>;
@@ -229,12 +248,31 @@ export async function runReviewCommand(
   const log = deps.log ?? ((l: string) => console.log(l));
 
   const getChangedFiles = deps.getChangedFiles ?? (async (c) => (await import('../support/gitTracker.js')).getChangedFiles(c, opts.base));
-  const changed = await getChangedFiles(cwd);
+  // Review reports/history are OpenSwarm's own local state. Repositories are
+  // expected to ignore `.openswarm/`, but filter it here as well so a repo that
+  // has not added the ignore rule cannot make each review trigger another one.
+  const changed = (await getChangedFiles(cwd)).filter((file) => !file.replaceAll('\\', '/').split('/').includes('.openswarm'));
   if (!changed.length) {
     log(opts.base ? `No changes vs ${opts.base} to review.` : 'No working-tree changes to review.');
     return null;
   }
   if (opts.debug) log(`Reviewing ${changed.length} changed file(s): ${changed.join(', ')}`);
+
+  const defaultLoadHistory = async (projectPath: string, files: string[]) => {
+    const [loaded, currentHashes] = await Promise.all([
+      loadReviewHistory(projectPath),
+      captureReviewFileHashes(projectPath, files),
+    ]);
+    const rendered = renderReviewHistoryContext(loaded, files, currentHashes);
+    return { context: rendered.context, records: rendered.matchingRecords, currentHashes };
+  };
+  const loadHistoryForReview = deps.loadHistory
+    ?? (deps.review ? async () => ({ context: undefined, records: [], currentHashes: {} }) : defaultLoadHistory);
+  const history = await loadHistoryForReview(cwd, changed).catch((error) => {
+    if (opts.debug) log(`Could not read prior review logs: ${error instanceof Error ? error.message : String(error)}`);
+    return { context: undefined, records: [], currentHashes: {} };
+  });
+  if (history.context) log(`Loaded prior review log context for ${changed.length} changed file(s).`);
 
   const review =
     deps.review ??
@@ -249,6 +287,7 @@ export async function runReviewCommand(
         projectPath: c,
         adapterName: opts.adapter as never,
         mode: 'direct',
+        priorReviewContext: history.context,
         onLog,
       });
     });
@@ -264,11 +303,28 @@ export async function runReviewCommand(
 
   let result: ReviewResult;
   try {
-    result = await review(buildReviewWorkerResult(changed), cwd, onLog);
+    result = await review(buildReviewWorkerResult(changed), cwd, onLog, history.context);
   } finally {
     progress?.stop();
   }
+  const deduped = dedupeReviewActions(result, history.records, history.currentHashes);
+  result = deduped.review;
+  if (deduped.removed > 0) log(`Suppressed ${deduped.removed} duplicate follow-up(s) already recorded for unchanged code.`);
   log(formatReviewOutput(result, !!process.stdout.isTTY));
+
+  const saveHistoryForReview = deps.saveHistory
+    ?? (deps.review
+      ? async () => undefined
+      : async (projectPath: string, files: string[], reviewResult: ReviewResult, base?: string) =>
+        saveReviewHistory(projectPath, { kind: 'direct', base, files, review: reviewResult }));
+  await saveHistoryForReview(
+    cwd,
+    changed,
+    result,
+    opts.base,
+  ).catch((error) => {
+    log(`Could not save review history: ${error instanceof Error ? error.message : String(error)}`);
+  });
 
   const followups = result.recommendedActions?.length ?? 0;
   if (opts.fileIssue && followups) {

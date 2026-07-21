@@ -19,6 +19,7 @@ import {
   runMaxReview,
   runFixVerifyLoop,
   fixTargets,
+  aggregateAuditResults,
   formatAuditSummary,
   formatAuditReport,
   mergeFallback,
@@ -30,6 +31,14 @@ import {
   type AuditRun,
   type AuditSummary,
 } from './reviewAudit.js';
+import {
+  captureReviewFileHashes,
+  dedupeReviewActions,
+  loadReviewHistory,
+  renderReviewHistoryContext,
+  saveReviewHistory,
+  type LoadedReviewHistory,
+} from './reviewHistory.js';
 import { AuditBoard } from '../tui/components/AuditBoard.js';
 import { resolveIssueFromBranch, ensureTaskSource, ensureProjectMapping } from './reviewCommand.js';
 import { synthesizeAuditIssues } from './auditPM.js';
@@ -40,6 +49,7 @@ import { loadConfig } from '../core/config.js';
 import type { VerifyConfig } from '../core/types.js';
 import { loadTrustedVerifyPlan, runDeterministicTester } from '../agents/deterministicTester.js';
 import { buildFixRepositoryContext } from './fixPlanning.js';
+import { collectFixRuntimePreflightIssues } from './fixPreflight.js';
 
 /**
  * Best-effort verify config: `review --max` must still run in a repo with no —
@@ -124,6 +134,26 @@ function positiveIntegerOption(value: number | undefined, fallback: number, name
     throw new Error(`${name} must be a positive integer`);
   }
   return n;
+}
+
+/** Apply repository review history to each area, then rebuild the aggregate. */
+export function dedupeAuditRunHistory(
+  run: AuditRun,
+  loaded: LoadedReviewHistory,
+  currentHashes: Record<string, string>,
+): { run: AuditRun; removed: number } {
+  let removed = 0;
+  const results = run.results.map((result) => {
+    if (!result.review) return result;
+    const history = renderReviewHistoryContext(loaded, result.area.files, currentHashes);
+    const deduped = dedupeReviewActions(result.review, history.matchingRecords, currentHashes);
+    removed += deduped.removed;
+    return { ...result, review: deduped.review };
+  });
+  return {
+    run: { ...run, results, summary: aggregateAuditResults(results) },
+    removed,
+  };
 }
 
 /** Interactive cost gate. Non-TTY always proceeds (scripted runs). */
@@ -396,6 +426,48 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
     }
   }
 
+  // Repeated audits should start with the repository's own review record. The
+  // original checkout owns the history; an isolated --fix worktree supplies the
+  // bytes being reviewed. History is advisory and best-effort, never a reason
+  // to abort a current review.
+  let loadedHistory: LoadedReviewHistory = { records: [], legacyExcerpts: [] };
+  try {
+    loadedHistory = await loadReviewHistory(cwd);
+  } catch (error) {
+    console.warn(status.warn(`Could not read prior review logs: ${error instanceof Error ? error.message : String(error)}`));
+  }
+
+  let currentReviewHashes: Record<string, string> = {};
+  try {
+    currentReviewHashes = await captureReviewFileHashes(workCwd, files);
+  } catch (error) {
+    console.warn(status.warn(`Could not fingerprint the current review scope: ${error instanceof Error ? error.message : String(error)}`));
+  }
+
+  const priorReviewContextByArea: Record<string, string> = {};
+  for (const area of areas) {
+    const rendered = renderReviewHistoryContext(loadedHistory, area.files, currentReviewHashes);
+    if (rendered.context) priorReviewContextByArea[area.label] = rendered.context;
+  }
+  const areasWithHistory = Object.keys(priorReviewContextByArea).length;
+  if (areasWithHistory > 0) {
+    console.log(status.info(`Loaded prior review log context for ${areasWithHistory}/${areas.length} audit area(s).`));
+  }
+
+  const applyHistoryDedupe = async (candidate: AuditRun): Promise<AuditRun> => {
+    try {
+      currentReviewHashes = await captureReviewFileHashes(workCwd, candidate.results.flatMap((result) => result.area.files));
+      const deduped = dedupeAuditRunHistory(candidate, loadedHistory, currentReviewHashes);
+      if (deduped.removed > 0) {
+        console.log(`Suppressed ${deduped.removed} duplicate follow-up(s) already recorded for unchanged code.`);
+      }
+      return deduped.run;
+    } catch (error) {
+      console.warn(status.warn(`Could not deduplicate review history: ${error instanceof Error ? error.message : String(error)}`));
+      return candidate;
+    }
+  };
+
   // Capture deterministic commands and npm script contents before any fix worker
   // can edit them. LLM approval alone is not completion evidence: the fix must
   // also leave the repository's real checks without new failures.
@@ -418,7 +490,11 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
     run = await runMaxReview(
       areas,
       workCwd,
-      { concurrency, adapter: opts.adapter as AdapterName | undefined },
+      {
+        concurrency,
+        adapter: opts.adapter as AdapterName | undefined,
+        priorReviewContextByArea,
+      },
       { onProgress: (e) => events.emit('progress', e) },
     );
   } finally {
@@ -435,7 +511,7 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
       const fbRun = await runMaxReview(
         pending,
         workCwd,
-        { concurrency, adapter: fallback },
+        { concurrency, adapter: fallback, priorReviewContextByArea },
         {
           onProgress: (e) => {
             if (e.type === 'done') console.error(`  [${fallback}] ${e.label}: ${e.decision}`);
@@ -446,6 +522,8 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
       run = mergeFallback(run, fbRun);
     }
   }
+
+  run = await applyHistoryDedupe(run);
 
   console.log(formatAuditSummary(run.summary));
 
@@ -485,6 +563,12 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
           ...run.summary.recommendedActions.map((action) => `${action.title} ${action.location ?? ''}`),
         ].join('\n'),
       );
+      if (targets.length > 0) {
+        repositoryContext.preflight.issues.push(
+          ...await collectFixRuntimePreflightIssues(workCwd, verifyConfig, trustedVerifyPlan),
+        );
+        repositoryContext.preflight.ready = repositoryContext.preflight.issues.length === 0;
+      }
       const loop = await runFixVerifyLoop(
         run,
         workCwd,
@@ -497,6 +581,7 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
           maxRounds,
           maxDurationMs: 2 * 60 * 60 * 1000,
           repositoryContext,
+          priorReviewContextByArea,
         },
         {
           verify: async () => {
@@ -531,7 +616,7 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
       );
       // The loop's re-review carries the fresh verdicts — report/persist on those,
       // not the stale first-pass run.
-      run = loop.finalRun;
+      run = await applyHistoryDedupe(loop.finalRun);
       fixResolved = loop.resolved;
       fixVerified = loop.verified;
       fixVerificationStatus = loop.verificationStatus;
@@ -577,6 +662,22 @@ export async function runReviewMaxCommand(opts: ReviewMaxOptions = {}): Promise<
     console.log(`\nReport saved: ${outPath}`);
   } catch (e) {
     console.warn(`Could not save report: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  try {
+    await saveReviewHistory(cwd, {
+      kind: 'max',
+      files,
+      hashProjectPath: workCwd,
+      areas: run.results.map((result) => ({
+        label: result.area.label,
+        files: result.area.files,
+        review: result.review,
+        error: result.error,
+      })),
+    });
+  } catch (error) {
+    console.warn(`Could not save review history: ${error instanceof Error ? error.message : String(error)}`);
   }
 
   // (4) Linear: PM synthesis is the DEFAULT — a master parent + ≤10 cohesive

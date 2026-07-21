@@ -293,14 +293,20 @@ function isProtected(resolved: string, protectedFiles?: string[]): boolean {
 
 /** 프로젝트 경로 내로 접근을 제한하는 경로 검증 */
 export function validatePath(filePath: string, cwd: string): string {
-  const resolved = path.resolve(cwd, filePath);
-  // cwd 하위이거나, /tmp 하위만 허용
-  if (!resolved.startsWith(cwd) && !resolved.startsWith('/tmp')) {
+  const projectRoot = path.resolve(cwd);
+  const resolved = path.resolve(projectRoot, filePath);
+  const inside = (root: string): boolean => {
+    const rel = path.relative(path.resolve(root), resolved);
+    return rel === '' || (!rel.startsWith(`..${path.sep}`) && rel !== '..' && !path.isAbsolute(rel));
+  };
+  // cwd 하위이거나, /tmp 하위만 허용. 문자열 prefix 비교는 상대 cwd를
+  // 전부 거부하고 `/repo-evil` 같은 sibling을 `/repo` 내부로 오인한다.
+  if (!inside(projectRoot) && !inside('/tmp')) {
     // 모델이 자가수정하도록 안내 — 그냥 거부만 하면 같은 실수를 반복한다.
     throw new Error(
-      `Path "${filePath}" is outside the project root (${cwd}). ` +
+      `Path "${filePath}" is outside the project root (${projectRoot}). ` +
       `Use a path relative to the project root instead, e.g. "." for the whole project or "src/...". ` +
-      `Do not use "/" or absolute paths outside ${cwd}.`,
+      `Do not use "/" or absolute paths outside ${projectRoot}.`,
     );
   }
   return resolved;

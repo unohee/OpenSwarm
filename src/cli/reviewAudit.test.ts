@@ -370,6 +370,15 @@ describe('balanceAreasToConcurrency (INT-2249)', () => {
 
 describe('fixTargets + runAreaFixes (INT-2249)', () => {
   const area = (label: string): AuditArea => ({ label, dir: label, files: [`${label}/f.ts`] });
+  const repositoryContext: FixRepositoryContext = {
+    canonicalRoot: '/repo', workspaces: [], manifests: [], verificationCommands: [], sharedPaths: [], repoMemories: [],
+    dependencyGraphAvailable: true,
+    dependencyMap: {
+      'src/b/f.ts': { imports: [], dependents: [], tests: [] },
+      'src/c/f.ts': { imports: [], dependents: [], tests: [] },
+    },
+    preflight: { ready: true, issues: [] },
+  };
   const run = (): AuditRun => ({
     results: [
       { area: area('src/a'), review: { decision: 'approve', feedback: '' } },
@@ -403,7 +412,7 @@ describe('fixTargets + runAreaFixes (INT-2249)', () => {
 
   it('fans a fix worker out over each target and reports edited files', async () => {
     const seen: string[] = [];
-    const fixes = await runAreaFixes(run(), '/repo', { concurrency: 2 }, {
+    const fixes = await runAreaFixes(run(), '/repo', { concurrency: 2, repositoryContext }, {
       fix: async (unit) => {
         seen.push(unit.label);
         return { success: true, filesChanged: unit.primaryFiles };
@@ -431,7 +440,7 @@ describe('fixTargets + runAreaFixes (INT-2249)', () => {
 
   it('emits fix worker log progress for a live status board', async () => {
     const events: string[] = [];
-    await runAreaFixes(run(), '/repo', { concurrency: 1 }, {
+    await runAreaFixes(run(), '/repo', { concurrency: 1, repositoryContext }, {
       fix: async (unit, onLog) => {
         onLog(`[Worker] Git detected 1 changed file(s): ${unit.primaryFiles[0]}`);
         return { success: true, filesChanged: unit.primaryFiles };
@@ -447,7 +456,7 @@ describe('fixTargets + runAreaFixes (INT-2249)', () => {
   });
 
   it('a failed fix lands as an error, not a throw', async () => {
-    const fixes = await runAreaFixes(run(), '/repo', { concurrency: 1 }, {
+    const fixes = await runAreaFixes(run(), '/repo', { concurrency: 1, repositoryContext }, {
       fix: async (unit) => {
         if (unit.label === 'src/c') throw new Error('worker died');
         return { success: true, filesChanged: unit.primaryFiles };
@@ -607,6 +616,17 @@ describe('runFixVerifyLoop (INT-2443)', () => {
     expect(result.rounds).toHaveLength(0);
     expect(result.resolved).toBe(false);
     expect(result.stopReason).toBe('time-budget');
+  });
+
+  it('returns a fail-closed result when post-fix verification exceeds the loop budget', async () => {
+    const result = await runFixVerifyLoop(initial(), '/repo', { concurrency: 1, maxDurationMs: 10 }, {
+      fix: async (unit) => ({ success: true, filesChanged: unit.primaryFiles }),
+      review: async () => ({ decision: 'approve', feedback: '' }),
+      verify: async () => await new Promise<{ success: boolean }>(() => {}),
+    });
+    expect(result.stopReason).toBe('time-budget');
+    expect(result.verified).toBe(false);
+    expect(result.verificationStatus).not.toBe('passed');
   });
 
   it('reports all-approved before consulting an expired time budget', async () => {
