@@ -5,8 +5,12 @@ work. These are not style conventions — they are **system-enforced invariants*
 Agents are LLMs and will not self-police; the daemon code must make violations
 impossible, not merely discouraged.
 
-> **Core tenet** — Respect order · honor isolation · treat Linear as the single
-> source of truth · leave no trace (worktrees). **When in doubt, stop rather than proceed.**
+> **Core tenet** — Respect order · honor isolation · treat the tracker as intent
+> truth and the durable ledger as execution truth · preserve uncertain artifacts.
+> **When in doubt, stop rather than proceed.**
+
+The crash/restart state machine, fenced leases, durable outbox, and rollout modes
+are specified in [DURABLE_AUTONOMY.md](DURABLE_AUTONOMY.md).
 
 This protocol was distilled from a 2026-06-22 incident where the daemon processed a
 numbered chain out of order (issue #8 before its blocker #7), spawned orphan
@@ -38,14 +42,16 @@ Issues that would touch overlapping files must not run concurrently; on conflict
 - **Failure prevented:** repeated `kyte_cli/cmd/issue.py` conflict deferral; `trash/openclaw/` (624650 scanned entities, normal ~1,594) producing hundreds of false shared files.
 - **Enforcement:** knowledge/registry scan honors `.gitignore`; conflict detector excludes ignored paths; sequencer picks a deterministic winner instead of dropping both. → **INT-1810**
 
-### R4 — Worktree reclaim (1 issue = 1 worktree, always cleaned)
-Every issue runs in exactly one worktree, reclaimed on **every** exit path —
-success, rejection, failure, kill.
+### R4 — Worktree reclaim (1 issue = 1 worktree, uncertain work is preserved)
+Every issue runs in exactly one worktree. Terminal/proven-orphan worktrees are
+reclaimed; crash-ambiguous or dirty worktrees are preserved for reconciliation.
 - **Failure prevented:** orphan worktrees (`1562d0c7`, `9d46189b`, `fab12f10`, `403ec530`) accumulated because `removeWorktree` only ran on PR-creation success.
-- **Enforcement:** `removeWorktree` in a `finally` covering all outcomes; `pruneWorktrees` on daemon start sweeps strays. → **INT-1810** (added to scope)
+- **Enforcement:** durable active-worktree markers are written immediately after
+  creation; startup pruning accepts only terminal ledger paths or proven orphans.
 
-### R5 — Linear is the single source of truth
-Local `taskState` is subordinate to Linear. If an issue's Linear state becomes
+### R5 — Tracker intent and durable execution have separate authority
+Local `taskState` is subordinate to Linear/local tracker intent, while
+`automation.db` exclusively owns execution claims. If an issue's tracker state becomes
 non-actionable (Backlog / Done / Canceled) or it becomes blocked, any in-flight
 local `in_progress` entry is invalidated, not restored.
 - **Failure prevented:** an issue set to Backlog kept running because `~/.openswarm/task-state.json` held `in_progress`; the daemon even flipped Linear back to In Progress.

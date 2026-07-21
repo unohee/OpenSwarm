@@ -4,6 +4,8 @@
 // ============================================
 
 import { EventEmitter } from 'node:events';
+import { randomUUID } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import type { TaskItem } from './decisionEngine.js';
@@ -27,8 +29,16 @@ export function normalizeProjectPath(path: string): string {
   const expanded = slashed === '~' || slashed.startsWith('~/')
     ? `${homedir()}${slashed.slice(1)}`
     : slashed;
-  const normalized = resolve(expanded).replace(/\\/g, '/').replace(/\/+$/g, '');
-  return normalized || '/';
+  const resolved = resolve(expanded);
+  let canonical = resolved;
+  try {
+    canonical = realpathSync.native(resolved);
+  } catch {
+    // Queueing can precede worktree creation; a not-yet-existing path still gets
+    // a stable absolute fallback.
+  }
+  const normalized = canonical.replace(/\\/g, '/').replace(/\/+$/g, '');
+  return (process.platform === 'win32' ? normalized.toLowerCase() : normalized) || '/';
 }
 
 function isSameProjectOrDescendant(candidatePath: string, projectPath: string): boolean {
@@ -47,10 +57,14 @@ export interface QueuedTask {
 }
 
 export interface RunningTask {
+  /** Unique execution generation. Task ids may be reused after retries. */
+  runId: string;
   task: TaskItem;
   projectPath: string;
   startedAt: number;
   promise: Promise<PipelineResult>;
+  /** Settles only when the underlying executor really exits, not when a watchdog frees the slot. */
+  executorSettled: Promise<void>;
   /** Aborts this task's pipeline + in-flight adapter call (cancel / project disable). */
   abortController: AbortController;
   /** Current pipeline stage (worker/reviewer/…), for the dashboard process view. */
@@ -66,6 +80,8 @@ export interface SchedulerConfig {
   maxConcurrentPerProject?: number;
   /** Git worktree mode: each task runs in its own isolated worktree (bypasses project busy check) */
   worktreeMode?: boolean;
+  /** Test/operations override for the last-resort watchdog. */
+  hardTaskTimeoutMs?: number;
 }
 
 export interface SchedulerStats {
@@ -73,6 +89,8 @@ export interface SchedulerStats {
   running: number;
   completed: number;
   failed: number;
+  /** Timed-out executors that have not acknowledged cancellation yet. */
+  quarantined: number;
   byProject: Map<string, number>;
 }
 
@@ -112,6 +130,11 @@ export class TaskScheduler extends EventEmitter {
   private completedCount = 0;
   private failedCount = 0;
   private paused = false;
+  private stopping = false;
+  /** A timed-out executor may still mutate its worktree. Keep that repository fail-closed. */
+  private quarantinedProjects = new Map<string, Map<string, { taskId: string; projectPath: string }>>();
+  /** Includes executors whose logical task promise was already timed out/rejected. */
+  private unsettledExecutors = new Map<string, Promise<void>>();
 
   constructor(config: SchedulerConfig) {
     super();
@@ -125,11 +148,15 @@ export class TaskScheduler extends EventEmitter {
   /**
    * Add task to queue
    */
-  enqueue(task: TaskItem, projectPath: string): void {
+  enqueue(task: TaskItem, projectPath: string): boolean {
+    if (this.stopping) {
+      console.warn(`[Scheduler] Refusing enqueue while stopping: ${task.title}`);
+      return false;
+    }
     // Duplicate check
     if (this.isTaskQueued(task.id) || this.isTaskRunning(task.id)) {
       console.log(`[Scheduler] Task ${task.id} already in queue/running, skipping`);
-      return;
+      return false;
     }
 
     const queuedTask: QueuedTask = {
@@ -152,6 +179,7 @@ export class TaskScheduler extends EventEmitter {
 
     console.log(`[Scheduler] Enqueued task: ${task.title} (priority: ${task.priority})`);
     this.emit('enqueued', queuedTask);
+    return true;
   }
 
   /**
@@ -195,7 +223,7 @@ export class TaskScheduler extends EventEmitter {
    * Check if available slots exist
    */
   hasAvailableSlot(): boolean {
-    return this.runningTasks.size < this.config.maxConcurrent;
+    return !this.stopping && this.runningTasks.size < this.config.maxConcurrent;
   }
 
   /**
@@ -213,6 +241,7 @@ export class TaskScheduler extends EventEmitter {
    */
   isProjectBusy(projectPath: string): boolean {
     const normalizedProject = normalizeProjectPath(projectPath);
+    if (this.quarantinedProjects.has(normalizedProject)) return true;
     let runningCount = 0;
     for (const running of this.runningTasks.values()) {
       if (normalizeProjectPath(running.projectPath) === normalizedProject) {
@@ -237,6 +266,12 @@ export class TaskScheduler extends EventEmitter {
     return counts;
   }
 
+  private quarantinedExecutorCount(): number {
+    let count = 0;
+    for (const runs of this.quarantinedProjects.values()) count += runs.size;
+    return count;
+  }
+
   private displayPathForNormalizedProject(normalizedProject: string): string {
     for (const running of this.runningTasks.values()) {
       if (normalizeProjectPath(running.projectPath) === normalizedProject) {
@@ -253,13 +288,29 @@ export class TaskScheduler extends EventEmitter {
     if (this.config.allowSameProjectConcurrent) {
       const cap = this.config.maxConcurrentPerProject;
       if (cap == null) return [];
-      return Array.from(this.runningCountByProject().entries())
+      const busy = Array.from(this.runningCountByProject().entries())
         .filter(([, count]) => count >= cap)
         .map(([project]) => this.displayPathForNormalizedProject(project));
+      for (const quarantines of this.quarantinedProjects.values()) {
+        const quarantine = quarantines.values().next().value as { projectPath: string } | undefined;
+        if (!quarantine) continue;
+        if (!busy.some((path) => normalizeProjectPath(path) === normalizeProjectPath(quarantine.projectPath))) {
+          busy.push(quarantine.projectPath);
+        }
+      }
+      return busy;
     }
 
-    return Array.from(this.runningCountByProject().keys())
+    const busy = Array.from(this.runningCountByProject().keys())
       .map(project => this.displayPathForNormalizedProject(project));
+    for (const quarantines of this.quarantinedProjects.values()) {
+      const quarantine = quarantines.values().next().value as { projectPath: string } | undefined;
+      if (!quarantine) continue;
+      if (!busy.some((path) => normalizeProjectPath(path) === normalizeProjectPath(quarantine.projectPath))) {
+        busy.push(quarantine.projectPath);
+      }
+    }
+    return busy;
   }
 
   // ============================================
@@ -297,7 +348,22 @@ export class TaskScheduler extends EventEmitter {
     task: TaskItem,
     projectPath: string,
     executor: (signal: AbortSignal) => Promise<PipelineResult>
-  ): void {
+  ): boolean {
+    if (this.stopping || this.paused) {
+      console.warn(`[Scheduler] Refusing start while ${this.stopping ? 'stopping' : 'paused'}: ${task.title}`);
+      return false;
+    }
+    if (this.runningTasks.has(task.id)) {
+      console.warn(`[Scheduler] Refusing duplicate running task id: ${task.id}`);
+      return false;
+    }
+    const normalizedProject = normalizeProjectPath(projectPath);
+    if (this.quarantinedProjects.has(normalizedProject)) {
+      console.warn(`[Scheduler] Refusing start in quarantined project: ${projectPath}`);
+      return false;
+    }
+
+    const runId = randomUUID();
     const abortController = new AbortController();
     let resolveTask!: (result: PipelineResult) => void;
     let rejectTask!: (error: unknown) => void;
@@ -306,60 +372,84 @@ export class TaskScheduler extends EventEmitter {
       rejectTask = reject;
     });
 
+    let settleExecutor!: () => void;
+    const executorSettled = new Promise<void>((resolve) => { settleExecutor = resolve; });
     const runningTask: RunningTask = {
+      runId,
       task,
       projectPath,
       startedAt: Date.now(),
       abortController,
       promise,
+      executorSettled,
     };
 
     this.runningTasks.set(task.id, runningTask);
+    this.unsettledExecutors.set(runId, executorSettled);
     console.log(`[Scheduler] Started task: ${task.title}`);
     this.emit('started', runningTask);
 
-    // Hard wall-clock backstop. Per-stage timeouts (pairPipeline stageTimeoutMs) and
-    // git-op timeouts normally reclaim a stall; this catches a hang OUTSIDE those.
-    // We abort (lets the pipeline unwind to 'cancelled' if it's responsive) AND
-    // reject after the ceiling so the slot is freed even if the executor is truly
-    // unresponsive. We deliberately do NOT wait for the executor to confirm it
-    // stopped — that would reintroduce the very hang this guards against; per-task
-    // worktree isolation bounds what a lingering executor can touch, and the abort
-    // signal is its stop request. On reject → handleTaskError: it frees the slot and
-    // emits 'error' (log/Discord only). It does NOT touch the STUCK counters
-    // (failedTaskCounts/incrementRejection live in autonomousRunner, driven by the
-    // 'failed' event's finalStatus, not 'error'), so the task simply stays In
-    // Progress and is re-selected next heartbeat. (INT-2521)
+    // Hard wall-clock backstop. The logical slot is reclaimed so other repositories
+    // can progress, but the repository stays quarantined until the underlying
+    // executor actually settles. This closes the timeout-vs-retry mutation race;
+    // the durable ledger separately fences any late state callback. (INT-2521)
+    const hardTaskTimeoutMs = this.config.hardTaskTimeoutMs ?? HARD_TASK_TIMEOUT_MS;
     const watchdog = setTimeout(() => {
-      if (!this.runningTasks.has(task.id)) return;
-      console.warn(`[Scheduler] Task "${task.title}" exceeded the ${Math.round(HARD_TASK_TIMEOUT_MS / 60_000)}min hard watchdog — aborting and freeing the slot`);
+      const current = this.runningTasks.get(task.id);
+      if (!current || current.runId !== runId) return;
+      console.warn(`[Scheduler] Task "${task.title}" exceeded the ${Math.round(hardTaskTimeoutMs / 60_000)}min hard watchdog — aborting and quarantining its project`);
+      const quarantines = this.quarantinedProjects.get(normalizedProject) ?? new Map();
+      quarantines.set(runId, { taskId: task.id, projectPath });
+      this.quarantinedProjects.set(normalizedProject, quarantines);
       abortController.abort();
-      rejectTask(new Error(`Task timed out after ${HARD_TASK_TIMEOUT_MS}ms (scheduler hard watchdog)`));
-    }, HARD_TASK_TIMEOUT_MS);
+      rejectTask(new Error(`Task timed out after ${hardTaskTimeoutMs}ms (scheduler hard watchdog)`));
+    }, hardTaskTimeoutMs);
 
     // Completion handling
     runningTask.promise
       .then((result) => {
-        this.handleTaskComplete(task.id, result);
+        this.handleTaskComplete(task.id, runId, result);
       })
       .catch((error) => {
-        this.handleTaskError(task.id, error);
+        this.handleTaskError(task.id, runId, error instanceof Error ? error : new Error(String(error)));
       })
       .finally(() => clearTimeout(watchdog));
 
+    let executorPromise: Promise<PipelineResult>;
     try {
-      Promise.resolve(executor(abortController.signal)).then(resolveTask, rejectTask);
+      executorPromise = Promise.resolve(executor(abortController.signal));
     } catch (error) {
-      rejectTask(error);
+      executorPromise = Promise.reject(error);
     }
+    executorPromise
+      .then(resolveTask, rejectTask)
+      .finally(() => {
+        settleExecutor();
+        this.unsettledExecutors.delete(runId);
+        const quarantines = this.quarantinedProjects.get(normalizedProject);
+        if (quarantines?.delete(runId)) {
+          if (quarantines.size === 0) {
+            this.quarantinedProjects.delete(normalizedProject);
+            console.log(`[Scheduler] Timed-out executor exited; project quarantine cleared: ${projectPath}`);
+            if (!this.stopping) this.emit('quarantineCleared', { task, projectPath, runId });
+          } else {
+            console.log(`[Scheduler] Timed-out executor exited; ${quarantines.size} quarantine(s) remain: ${projectPath}`);
+          }
+        }
+      })
+      .catch(() => {
+        // The wrapper promise above owns error reporting; prevent a secondary
+        // unhandled rejection from this bookkeeping chain.
+      });
+    return true;
   }
 
   /**
    * Handle task completion
    */
-  private handleTaskComplete(taskId: string, result: PipelineResult): void {
+  private handleTaskComplete(taskId: string, runId: string, result: PipelineResult): void {
     const running = this.runningTasks.get(taskId);
-    if (!running) return;
+    if (!running || running.runId !== runId) return;
 
     this.runningTasks.delete(taskId);
 
@@ -368,11 +458,13 @@ export class TaskScheduler extends EventEmitter {
       // failed; free the slot and let the runner schedule a delayed re-check.
       console.log(`[Scheduler] Task superseded: ${running.task.title}`);
       this.emit('superseded', { task: running.task, result });
-    } else if (result.finalStatus === 'cancelled') {
-      // A cancelled task is neither a success nor a failure — don't bump counts
-      // or trigger the failure/retry path. Just free the slot.
-      console.log(`[Scheduler] Task cancelled: ${running.task.title}`);
-      this.emit('cancelled', { task: running.task, result });
+    } else if (result.finalStatus === 'cancelled' || result.finalStatus === 'decomposed') {
+      // These are coordination outcomes, not completed implementations. In
+      // particular, a decomposed parent can carry success=true even though only
+      // child issues were created; counting it as completed races the durable
+      // child workflow and makes capacity/pace telemetry lie.
+      console.log(`[Scheduler] Task ${result.finalStatus}: ${running.task.title}`);
+      this.emit(result.finalStatus, { task: running.task, result });
     } else if (result.success) {
       this.completedCount++;
       console.log(`[Scheduler] Task completed: ${running.task.title}`);
@@ -384,15 +476,15 @@ export class TaskScheduler extends EventEmitter {
     }
 
     // Trigger next task execution
-    this.emit('slotFreed');
+    if (!this.stopping) this.emit('slotFreed');
   }
 
   /**
    * Handle task error
    */
-  private handleTaskError(taskId: string, error: Error): void {
+  private handleTaskError(taskId: string, runId: string, error: Error): void {
     const running = this.runningTasks.get(taskId);
-    if (!running) return;
+    if (!running || running.runId !== runId) return;
 
     this.runningTasks.delete(taskId);
     this.failedCount++;
@@ -406,7 +498,7 @@ export class TaskScheduler extends EventEmitter {
         projectPath: running.projectPath,
       });
     }
-    this.emit('slotFreed');
+    if (!this.stopping) this.emit('slotFreed');
   }
 
   /**
@@ -427,10 +519,14 @@ export class TaskScheduler extends EventEmitter {
         break;
       }
 
-      this.startTask(next.task, next.projectPath, (signal) =>
+      const didStart = this.startTask(next.task, next.projectPath, (signal) =>
         executor(next.task, next.projectPath, signal)
       );
-      started++;
+      if (didStart) started++;
+      else {
+        this.taskQueue.unshift(next);
+        break;
+      }
     }
 
     console.log(`[Scheduler] runAvailable: started ${started} tasks`);
@@ -478,7 +574,53 @@ export class TaskScheduler extends EventEmitter {
    */
   async waitAll(): Promise<PipelineResult[]> {
     const promises = Array.from(this.runningTasks.values()).map((r) => r.promise);
-    return Promise.all(promises);
+    const settled = await Promise.allSettled(promises);
+    return settled
+      .filter((result): result is PromiseFulfilledResult<PipelineResult> => result.status === 'fulfilled')
+      .map((result) => result.value);
+  }
+
+  /** Wait to a fixed point for underlying executor processes, including ones
+   * whose watchdog already reclaimed their logical scheduler slot. */
+  async waitForExecutorExit(): Promise<void> {
+    while (this.unsettledExecutors.size > 0) {
+      await Promise.allSettled(this.unsettledExecutors.values());
+    }
+  }
+
+  getUnsettledExecutorCount(): number {
+    return this.unsettledExecutors.size;
+  }
+
+  /**
+   * Stop admitting work, abort all executors, and wait up to `graceMs` for real
+   * executor exit. A timed-out executor remains quarantined and can no longer
+   * race a replacement in the same repository.
+   */
+  async shutdown(graceMs = 30_000): Promise<{ drained: boolean; remaining: number; quarantined: number }> {
+    if (!Number.isFinite(graceMs) || graceMs < 0) throw new Error('graceMs must be a non-negative finite number');
+    this.stopping = true;
+    this.paused = true;
+    this.clearQueue();
+
+    const running = Array.from(this.runningTasks.values());
+    for (const task of running) task.abortController.abort();
+    if (this.unsettledExecutors.size > 0 && graceMs > 0) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        this.waitForExecutorExit(),
+        new Promise<void>((resolve) => { timer = setTimeout(resolve, graceMs); }),
+      ]);
+      if (timer) clearTimeout(timer);
+      // Let the completion/error handlers remove their matching run generation.
+      await Promise.resolve();
+    }
+
+    return {
+      drained: this.unsettledExecutors.size === 0 && this.runningTasks.size === 0 && this.quarantinedProjects.size === 0,
+      remaining: this.unsettledExecutors.size,
+      quarantined: this.quarantinedExecutorCount(),
+    };
   }
 
   // ============================================
@@ -498,6 +640,10 @@ export class TaskScheduler extends EventEmitter {
    * Resume scheduler
    */
   resume(): void {
+    if (this.stopping) {
+      console.warn('[Scheduler] Resume ignored: scheduler is stopping');
+      return;
+    }
     this.paused = false;
     console.log('[Scheduler] Resumed');
     this.emit('resumed');
@@ -530,6 +676,7 @@ export class TaskScheduler extends EventEmitter {
       running: this.runningTasks.size,
       completed: this.completedCount,
       failed: this.failedCount,
+      quarantined: this.quarantinedExecutorCount(),
       byProject,
     };
   }

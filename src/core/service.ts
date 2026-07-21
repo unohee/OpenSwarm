@@ -27,6 +27,8 @@ import { setDefaultAdapter } from '../adapters/index.js';
 import { readProviderOverride, formatProviderOverrideMismatchWarning } from './providerOverride.js';
 import { enrichTaskFromState, hydrateTaskStateFromComments, updateTaskLinearState } from '../taskState/store.js';
 import { probeDaemonPort } from '../cli/daemon.js';
+import { rotateServiceLogs } from '../support/logRotation.js';
+import { acquireServiceInstanceLock, type ServiceInstanceLock } from '../support/serviceInstanceLock.js';
 
 let state: ServiceState = {
   running: false,
@@ -38,6 +40,7 @@ let githubRepos: string[] = [];
 let githubCheckTimer: NodeJS.Timeout | null = null;
 let prProcessor: PRProcessor | null = null;
 let memoryCompactionJob: Cron | null = null;
+let serviceInstanceLock: ServiceInstanceLock | null = null;
 
 /**
  * Get PR Processor instance (for web dashboard)
@@ -50,9 +53,24 @@ export function getPRProcessor(): PRProcessor | null {
  * Start the service
  */
 export async function startService(config: SwarmConfig): Promise<void> {
-  console.log('Starting OpenSwarm service...');
+  if (serviceInstanceLock) throw new Error('OpenSwarm service is already starting or running in this process');
+  const lock = acquireServiceInstanceLock();
+  serviceInstanceLock = lock;
+  try {
+    await startServiceLocked(config);
+  } catch (error) {
+    if (serviceInstanceLock === lock) {
+      lock.release();
+      serviceInstanceLock = null;
+    }
+    throw error;
+  }
+}
 
-  // Single-instance guard: refuse to start if another instance — however it was
+async function startServiceLocked(config: SwarmConfig): Promise<void> {
+  // The lifetime SQLite lock above is the atomic single-instance authority.
+  // Keep the port probe as a diagnostic for older daemons or unrelated
+  // processes that predate/do not own that lock. Refuse to start if another instance — however it was
   // launched (`openswarm start`, launchd, or a stray manual `node dist/index.js`)
   // — is already serving the API port. `openswarm start` already checks this via
   // startDaemon(), but launchd's plist invokes `node dist/index.js` directly and
@@ -61,14 +79,19 @@ export async function startService(config: SwarmConfig): Promise<void> {
   // an already-running one; both raced on the same Linear queue AND the same
   // unlocked local state files, silently losing each other's failure-counter
   // writes so structurally-failing tasks never reached the STUCK threshold and
-  // retried forever instead. Checking here — the one path every invocation
-  // method shares — closes that gap for good. (INT-2570)
+  // retried forever instead. (INT-2570)
   if (await probeDaemonPort()) {
     throw new Error(
       'Another OpenSwarm instance is already serving port 3847 — refusing to start a duplicate. ' +
       "Check for stray processes ('ps aux | grep dist/index.js') or restart the managed one " +
       "('launchctl kickstart -k gui/$UID/com.intrect.openswarm')."
     );
+  }
+
+  const rotatedLogs = rotateServiceLogs();
+  console.log('Starting OpenSwarm service...');
+  if (rotatedLogs.rotated.length > 0) {
+    console.log(`[Service] Rotated oversized logs: ${rotatedLogs.rotated.join(', ')}`);
   }
 
   // Locale initialization
@@ -240,6 +263,10 @@ export async function startService(config: SwarmConfig): Promise<void> {
       triggerNow: true,  // Execute immediately on start
       maxConcurrentTasks: config.autonomous.maxConcurrentTasks,
       maxConcurrentPerProject: config.autonomous.maxConcurrentPerProject,
+      automationLedgerMode: config.autonomous.automationLedgerMode,
+      automationDbPath: config.autonomous.automationDbPath,
+      automationLeaseMs: config.autonomous.automationLeaseMs,
+      shutdownGraceMs: config.autonomous.shutdownGraceMs,
       allowSameProjectConcurrent: config.autonomous.allowSameProjectConcurrent,
       defaultRoles: config.autonomous.defaultRoles,
       projectAgents: config.autonomous.projectAgents,
@@ -515,7 +542,18 @@ function formatDuration(ms: number): string {
  * Stop the service
  */
 export async function stopService(): Promise<void> {
+  await stopServiceLocked();
+  serviceInstanceLock?.release();
+  serviceInstanceLock = null;
+}
+
+async function stopServiceLocked(): Promise<void> {
   console.log('Stopping OpenSwarm service...');
+
+  // Stop task admission first and let real executors drain while their tracker,
+  // notifier, rate limiter, and web dependencies are still alive.
+  await autonomous.stopAutonomous();
+  console.log('Autonomous runner stopped');
 
   // Clean up GitHub monitoring timer
   if (githubCheckTimer) {

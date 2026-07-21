@@ -16,6 +16,7 @@ import {
   buildBranchName,
   commitAndCreatePR,
   createWorktree,
+  inspectWorktreeRecovery,
   preserveWorktree,
   pruneWorktrees,
   removePreservedWorktreeAt,
@@ -229,7 +230,7 @@ describe('createWorktree retry/resume error paths', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it('recovers when a stray directory (not a real git worktree) occupies the target path', async () => {
+  it('retains an unproven stray directory instead of deleting possible crash output', async () => {
     // Simulate a leftover directory that was never registered via `git worktree
     // add` (e.g. a half-finished manual cleanup). `git worktree remove` fails
     // against it ("is not a working tree"), which must fall back to a direct
@@ -238,10 +239,63 @@ describe('createWorktree retry/resume error paths', () => {
     mkdirSync(worktreePath, { recursive: true });
     writeFileSync(join(worktreePath, 'stray.txt'), 'leftover');
 
-    const info = await createWorktree(repo, 'INT-1', 'swarm/INT-1-test');
-    expect(info.worktreePath).toBe(worktreePath);
-    expect(existsSync(join(worktreePath, 'stray.txt'))).toBe(false); // stray content wiped
-    expect(existsSync(join(worktreePath, 'app.py'))).toBe(true); // fresh checkout from base
+    await expect(createWorktree(repo, 'INT-1', 'swarm/INT-1-test'))
+      .rejects.toThrow(/requires reconciliation/i);
+    expect(readFileSync(join(worktreePath, 'stray.txt'), 'utf8')).toBe('leftover');
+  });
+
+  it('distinguishes a live owner, a dead owner, and a safely preserved worktree', async () => {
+    const info = await createWorktree(repo, 'INT-1', 'swarm/INT-1-recovery');
+    await expect(inspectWorktreeRecovery(repo, 'INT-1', info.worktreePath)).resolves.toMatchObject({
+      state: 'active_owner',
+      marker: { ownerPid: process.pid },
+    });
+
+    expect(info.activeMarkerToken).toBeTruthy();
+    const markerPath = join(
+      repo,
+      '.git',
+      'openswarm',
+      'active-worktrees',
+      'INT-1',
+      `${info.activeMarkerToken}.json`,
+    );
+    const marker = JSON.parse(readFileSync(markerPath, 'utf8'));
+    marker.ownerPid = 2_147_483_647;
+    writeFileSync(markerPath, JSON.stringify(marker));
+    await expect(inspectWorktreeRecovery(repo, 'INT-1', info.worktreePath)).resolves.toMatchObject({ state: 'orphaned' });
+
+    writeFileSync(join(info.worktreePath, 'app.py'), 'base\npartial\n');
+    expect(await preserveWorktree(info, 'retryable failure')).toBe(true);
+    await expect(inspectWorktreeRecovery(repo, 'INT-1', info.worktreePath)).resolves.toMatchObject({ state: 'preserved' });
+  });
+
+  it('clears only its own active marker when a newer owner token exists', async () => {
+    const info = await createWorktree(repo, 'INT-1', 'swarm/INT-1-token-fence');
+    expect(info.activeMarkerToken).toBeTruthy();
+    const markerDir = join(repo, '.git', 'openswarm', 'active-worktrees', 'INT-1');
+    const oldMarkerPath = join(markerDir, `${info.activeMarkerToken}.json`);
+    const newToken = 'new-owner-token';
+    const newMarkerPath = join(markerDir, `${newToken}.json`);
+    writeFileSync(newMarkerPath, JSON.stringify({
+      issueId: 'INT-1',
+      branchName: info.branchName,
+      worktreePath: info.worktreePath,
+      originalPath: repo,
+      ownerPid: process.pid,
+      ownerToken: newToken,
+      createdAt: new Date(Date.now() + 1_000).toISOString(),
+    }));
+    writeFileSync(join(info.worktreePath, 'app.py'), 'base\npartial\n');
+
+    expect(await preserveWorktree(info, 'old owner settling')).toBe(true);
+
+    expect(existsSync(oldMarkerPath)).toBe(false);
+    expect(existsSync(newMarkerPath)).toBe(true);
+    await expect(inspectWorktreeRecovery(repo, 'INT-1', info.worktreePath)).resolves.toMatchObject({
+      state: 'active_owner',
+      marker: { ownerToken: newToken },
+    });
   });
 
   it('deletes a pre-existing branch of the same name on retry (no preserve marker)', async () => {
@@ -258,7 +312,7 @@ describe('createWorktree retry/resume error paths', () => {
     ).toBe('swarm/dup-test');
   });
 
-  it('invalidates a preserved resume candidate whose .git linkage is broken (valid=false, branch match fails open)', async () => {
+  it('quarantines a preserved resume candidate whose .git linkage is broken', async () => {
     const info = await createWorktree(repo, 'INT-1', 'swarm/INT-1-test');
     writeFileSync(join(info.worktreePath, 'app.py'), 'base\npartial\n');
     expect(await preserveWorktree(info, 'test failure')).toBe(true);
@@ -270,9 +324,10 @@ describe('createWorktree retry/resume error paths', () => {
     //
     writeFileSync(join(info.worktreePath, '.git'), 'gitdir: /nonexistent/broken\n');
 
-    const recreated = await createWorktree(repo, 'INT-1', 'swarm/INT-1-test');
-    expect(existsSync(join(recreated.worktreePath, '.openswarm-preserved'))).toBe(false);
-    expect(readFileSync(join(recreated.worktreePath, 'app.py'), 'utf8')).toBe('base\n'); // fresh from base, not the partial content
+    await expect(createWorktree(repo, 'INT-1', 'swarm/INT-1-test'))
+      .rejects.toThrow(/requires reconciliation/i);
+    expect(existsSync(join(info.worktreePath, '.openswarm-preserved'))).toBe(true);
+    expect(readFileSync(join(info.worktreePath, 'app.py'), 'utf8')).toBe('base\npartial\n');
   });
 
   it('still creates the worktree from a cached remote-tracking ref when `git fetch` fails (remote unreachable)', async () => {
@@ -404,7 +459,7 @@ describe('pruneWorktrees (INT-1810 R4 / INT-2503 / INT-2506)', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it('sweeps an orphaned worktree, keeps an active one, keeps a fresh preserved one, and sweeps an expired preserved one', async () => {
+  it('only sweeps a proven orphan, keeps active/unproven/fresh preserved, and sweeps expired preserved', async () => {
     const orphan = await createWorktree(repo, 'INT-1', 'swarm/INT-1-orphan');
     const active = await createWorktree(repo, 'INT-2', 'swarm/INT-2-active');
     const freshPreserved = await createWorktree(repo, 'INT-3', 'swarm/INT-3-fresh');
@@ -420,10 +475,20 @@ describe('pruneWorktrees (INT-1810 R4 / INT-2503 / INT-2506)', () => {
     marker.at = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
     writeFileSync(expiredMarkerPath, JSON.stringify(marker));
 
-    await pruneWorktrees(repo, new Set([active.worktreePath]));
+    // Durable proof and the active-owner marker are sampled at different times.
+    // Make INT-1 a genuinely dead owner, while INT-2 deliberately appears in
+    // the stale proven set with a live owner to exercise the deletion TOCTOU.
+    const orphanActiveMarker = join(
+      repo, '.git', 'openswarm', 'active-worktrees', 'INT-1', `${orphan.activeMarkerToken}.json`,
+    );
+    const orphanMarker = JSON.parse(readFileSync(orphanActiveMarker, 'utf8'));
+    orphanMarker.ownerPid = 2_147_483_647;
+    writeFileSync(orphanActiveMarker, JSON.stringify(orphanMarker));
+
+    await pruneWorktrees(repo, new Set(), new Set([orphan.worktreePath, active.worktreePath]));
 
     expect(existsSync(orphan.worktreePath)).toBe(false); // swept — orphan, not active, not preserved
-    expect(existsSync(active.worktreePath)).toBe(true); // kept — in the active set
+    expect(existsSync(active.worktreePath)).toBe(true); // kept — live marker defeats stale proven-orphan snapshot
     expect(existsSync(freshPreserved.worktreePath)).toBe(true); // kept — preserved and still fresh
     expect(existsSync(expiredPreserved.worktreePath)).toBe(false); // swept — preserved but expired
 
@@ -438,14 +503,14 @@ describe('pruneWorktrees (INT-1810 R4 / INT-2503 / INT-2506)', () => {
     await expect(pruneWorktrees(notARepo)).resolves.toBeUndefined();
   });
 
-  it('treats an unreadable/malformed preserve marker as expired and sweeps it', async () => {
+  it('retains an unreadable/malformed preserve marker for reconciliation', async () => {
     const info = await createWorktree(repo, 'INT-5', 'swarm/INT-5-malformed');
     // Bypass preserveWorktree entirely — drop a marker file that isn't valid JSON.
     writeFileSync(join(info.worktreePath, '.openswarm-preserved'), '{ not json');
 
     await pruneWorktrees(repo);
 
-    expect(existsSync(info.worktreePath)).toBe(false); // swept — unreadable marker treated as expired
+    expect(existsSync(info.worktreePath)).toBe(true);
   });
 
   it('logs a warning but does not throw when the orphan sweep itself fails (broken worktree .git linkage)', async () => {
@@ -702,6 +767,37 @@ esac`);
     }
 
     expect(readFileSync(ghLog, 'utf8')).toContain('pr create');
+    git(repo, 'worktree', 'remove', '--force', info.worktreePath);
+  });
+
+  it('recovers a concurrent PR-create loser by re-reading the branch PR', async () => {
+    setUpRepo();
+    const info = await createWorktree(repo, 'INT-4-RACE', 'swarm/INT-4-race');
+    writeFileSync(join(info.worktreePath, 'src', 'index.ts'), 'export const x = 2;\n');
+
+    const lookupCount = join(root, 'lookup-count');
+    const ghLog = fakeGh(`case "$*" in
+  *"pr list --head"*)
+    n=0; [ -f "${lookupCount}" ] && n=$(cat "${lookupCount}")
+    n=$((n + 1)); printf '%s' "$n" > "${lookupCount}"
+    if [ "$n" -eq 1 ]; then echo ""; else echo "https://github.com/acme/widgets/pull/77"; fi;;
+  *"in:body"*) echo "[]";;
+  *"pr list --state open"*) echo "[]";;
+  *"pr create"*) exit 1;;
+esac`);
+
+    const prevPath = process.env.PATH;
+    process.env.PATH = `${join(root, 'bin')}:${prevPath}`;
+    try {
+      await expect(commitAndCreatePR(info, 'title', 'INT-4-RACE', 'desc'))
+        .resolves.toBe('https://github.com/acme/widgets/pull/77');
+    } finally {
+      process.env.PATH = prevPath;
+    }
+
+    const calls = readFileSync(ghLog, 'utf8');
+    expect(calls.match(/pr list --head/g)).toHaveLength(2);
+    expect(calls.match(/pr create/g)).toHaveLength(1);
     git(repo, 'worktree', 'remove', '--force', info.worktreePath);
   });
 

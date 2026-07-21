@@ -50,7 +50,7 @@ const cancelledResult = (): PipelineResult => ({
 function mockTaskSource() {
   return {
     kind: 'local',
-    updateState: vi.fn(async () => {}),
+    updateState: vi.fn(async () => true),
     addComment: vi.fn(async () => {}),
   } as unknown as ITaskSource & {
     updateState: ReturnType<typeof vi.fn>;
@@ -101,7 +101,8 @@ describe('AutonomousRunner cancellation state sync', () => {
     expect(source.updateState).toHaveBeenCalledWith('ISSUE-1', 'Backlog');
     expect(source.addComment).toHaveBeenCalledWith(
       'ISSUE-1',
-      expect.stringContaining('Task cancelled')
+      expect.stringContaining('Task cancelled'),
+      undefined,
     );
   });
 });

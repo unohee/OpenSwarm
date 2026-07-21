@@ -57,7 +57,10 @@ describe('fileReviewerFollowups (INT-1704)', () => {
     expect(filed).toBe(2);
     expect(create).toHaveBeenCalledTimes(2);
     expect(create.mock.calls[0][1]).toBe('[test] add edge-case coverage'); // title
-    expect(create.mock.calls[0][3]).toMatchObject({ priority: 3 });
+    expect(create.mock.calls[0][3]).toMatchObject({
+      priority: 3,
+      idempotencyId: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/),
+    });
   });
 
   it('creates top-level (standalone) issues when no parent is given (INT-1968)', async () => {
@@ -100,6 +103,14 @@ describe('fileReviewerFollowups (INT-1704)', () => {
     const create = vi.fn()
       .mockResolvedValueOnce({})
       .mockRejectedValueOnce(new Error('boom'));
+    const filed = await fileReviewerFollowups(mockSource(create), 'INT-1', review(), { autoFile: true });
+    expect(filed).toBe(1);
+  });
+
+  it('does not count a task-source error result as a filed follow-up', async () => {
+    const create = vi.fn()
+      .mockResolvedValueOnce({ id: 'ok', identifier: 'INT-2', title: 'ok' })
+      .mockResolvedValueOnce({ error: 'tracker rejected create' });
     const filed = await fileReviewerFollowups(mockSource(create), 'INT-1', review(), { autoFile: true });
     expect(filed).toBe(1);
   });

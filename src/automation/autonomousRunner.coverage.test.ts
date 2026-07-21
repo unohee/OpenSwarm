@@ -26,6 +26,12 @@ import type { DecisionResult, TaskItem } from '../orchestration/decisionEngine.j
 import type { AutonomousConfig } from './runnerTypes.js';
 import type { ITaskSource } from './taskSource.js';
 
+const detectFileConflictsMock = vi.hoisted(() => vi.fn());
+
+vi.mock('../orchestration/conflictDetector.js', () => ({
+  detectFileConflicts: detectFileConflictsMock,
+}));
+
 // writeProviderOverride writes unconditionally to ~/.config/openswarm/ (no dryRun
 // guard, no env override) — mock it so switchProvider() tests never touch the real
 // filesystem outside the sandbox.
@@ -46,6 +52,7 @@ type RunnerExecutionModule = typeof import('./runnerExecution.js');
 let tempDir = '';
 let AutonomousRunner: AutonomousRunnerCtor;
 let runnerExecution: RunnerExecutionModule;
+let runnerModule: typeof import('./autonomousRunner.js');
 
 const cfg = (over: Partial<AutonomousConfig> = {}): AutonomousConfig => ({
   linearTeamId: 'team',
@@ -106,6 +113,8 @@ type Internal = {
   sameProjectCandidateCap(): number | null;
   currentProjectLoad(projectPath: string): number;
   canQueueProjectCandidate(projectPath: string): boolean;
+  enqueueCandidate(task: TaskItem, projectPath: string): boolean;
+  detectSafeCandidateIds(candidates: Array<{ task: TaskItem; projectPath: string }>): Promise<Set<string>>;
   formatTaskContext(t: TaskItem): string;
   syslogSkipSummary(unmapped: Map<string, number>, disabled: Map<string, number>): void;
   lastFetchedTasks: TaskItem[];
@@ -130,8 +139,11 @@ describe('AutonomousRunner coverage — safely-reachable helpers', () => {
     vi.stubEnv('OPENSWARM_RUNNER_REJECTION_STATE_FILE', join(tempDir, 'runner-rejection-state.json'));
     vi.stubEnv('OPENSWARM_RUNNER_PIPELINE_HISTORY_FILE', join(tempDir, 'runner-pipeline-history.json'));
     vi.stubEnv('OPENSWARM_RUNNER_DECOMPOSITION_STATE_FILE', join(tempDir, 'runner-decomposition-state.json'));
-    ({ AutonomousRunner } = await import('./autonomousRunner.js'));
+    runnerModule = await import('./autonomousRunner.js');
+    ({ AutonomousRunner } = runnerModule);
     runnerExecution = await import('./runnerExecution.js');
+    detectFileConflictsMock.mockReset();
+    detectFileConflictsMock.mockResolvedValue({ safe: [], conflictGroups: [] });
   }, 30000);
 
   afterEach(() => {
@@ -200,6 +212,43 @@ describe('AutonomousRunner coverage — safely-reachable helpers', () => {
   });
 
   describe('per-project candidate cap helpers', () => {
+    it('returns the scheduler enqueue result so a duplicate race does not consume a heartbeat slot', () => {
+      const r = new AutonomousRunner(cfg());
+      const internal = r as unknown as Internal;
+      const candidate = task({ id: 'enqueue-race' });
+
+      expect(internal.enqueueCandidate(candidate, '/repo')).toBe(true);
+      expect(internal.enqueueCandidate(candidate, '/repo')).toBe(false);
+      expect(internal.scheduler.getQueuedTasks()).toHaveLength(1);
+    });
+
+    it('groups syntactic aliases of one repository into one conflict analysis', async () => {
+      const r = new AutonomousRunner(cfg());
+      const internal = r as unknown as Internal;
+      const first = task({ id: 'alias-first' });
+      const second = task({ id: 'alias-second' });
+      detectFileConflictsMock.mockResolvedValue({ safe: [first, second], conflictGroups: [] });
+
+      const safe = await internal.detectSafeCandidateIds([
+        { task: first, projectPath: '/repo' },
+        { task: second, projectPath: '/tmp/../repo' },
+      ]);
+
+      expect(safe).toEqual(new Set(['alias-first', 'alias-second']));
+      expect(detectFileConflictsMock).toHaveBeenCalledTimes(1);
+      expect(detectFileConflictsMock).toHaveBeenCalledWith([first, second], '/repo');
+    });
+
+    it('serializes a repository when conflict analysis cannot prove tasks disjoint', () => {
+      const candidates = [
+        { task: task({ id: 'first' }), projectPath: '/repo' },
+        { task: task({ id: 'second' }), projectPath: '/repo' },
+        { task: task({ id: 'third' }), projectPath: '/repo' },
+      ];
+      expect(runnerModule.failClosedConflictFallback(candidates)).toEqual(new Set(['first']));
+      expect(runnerModule.failClosedConflictFallback([])).toEqual(new Set());
+    });
+
     it('sameProjectCandidateCap is null when same-project parallel is disabled', () => {
       const r = new AutonomousRunner(cfg({ allowSameProjectConcurrent: false, worktreeMode: true, maxConcurrentPerProject: 2 }));
       const internal = r as unknown as Internal;
@@ -506,9 +555,9 @@ describe('AutonomousRunner coverage — safely-reachable helpers', () => {
   });
 
   describe('stop() before start()', () => {
-    it('is safe to call when no cron job was ever created', () => {
+    it('is safe to call when no cron job was ever created', async () => {
       const r = new AutonomousRunner(cfg());
-      expect(() => r.stop()).not.toThrow();
+      await expect(r.stop()).resolves.toBeUndefined();
       expect(r.getState().isRunning).toBe(false);
     });
   });

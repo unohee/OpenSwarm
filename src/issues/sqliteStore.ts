@@ -7,6 +7,7 @@
 
 import Database from 'better-sqlite3';
 import { nanoid } from 'nanoid';
+import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { mkdirSync } from 'node:fs';
@@ -55,6 +56,8 @@ export interface IIssueStore {
 }
 
 export interface CreateIssueInput {
+  /** Caller-provided stable ID for idempotent local issue creation. */
+  id?: string;
   projectId: string;
   title: string;
   description?: string;
@@ -81,6 +84,8 @@ export interface EventData {
   content?: string;
   memoryId?: string;
   actor?: string;
+  /** Stable key for an idempotent event insert. */
+  idempotencyKey?: string;
 }
 
 export interface IssueStats {
@@ -233,7 +238,7 @@ export class SqliteIssueStore implements IIssueStore {
   // ============ 이슈 CRUD ============
 
   createIssue(input: CreateIssueInput): Issue {
-    const id = nanoid(12);
+    const id = input.id ?? nanoid(12);
     const now = new Date().toISOString();
 
     const insertIssue = this.db.prepare(`
@@ -493,11 +498,13 @@ export class SqliteIssueStore implements IIssueStore {
   // ============ 이벤트 로그 ============
 
   addEvent(issueId: string, type: IssueEventType, data?: EventData): IssueEvent {
-    const id = nanoid(12);
+    const id = data?.idempotencyKey
+      ? `os-${createHash('sha256').update(`issue-event:${data.idempotencyKey}`).digest('hex').slice(0, 24)}`
+      : nanoid(12);
     const now = new Date().toISOString();
 
     this.db.prepare(`
-      INSERT INTO issue_events (id, issue_id, type, old_value, new_value, content, memory_id, actor, created_at)
+      INSERT OR IGNORE INTO issue_events (id, issue_id, type, old_value, new_value, content, memory_id, actor, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id, issueId, type,
@@ -506,16 +513,28 @@ export class SqliteIssueStore implements IIssueStore {
       data?.actor ?? 'system', now,
     );
 
+    const existing = this.db.prepare('SELECT * FROM issue_events WHERE id = ?').get(id) as any;
+    if (
+      existing.issue_id !== issueId
+      || existing.type !== type
+      || (existing.old_value ?? undefined) !== data?.oldValue
+      || (existing.new_value ?? undefined) !== data?.newValue
+      || (existing.content ?? undefined) !== data?.content
+      || (existing.memory_id ?? undefined) !== data?.memoryId
+      || existing.actor !== (data?.actor ?? 'system')
+    ) {
+      throw new Error(`Issue event idempotency key collision: ${data?.idempotencyKey}`);
+    }
     return {
       id,
-      issueId,
-      type,
-      oldValue: data?.oldValue,
-      newValue: data?.newValue,
-      content: data?.content,
-      memoryId: data?.memoryId,
-      actor: data?.actor ?? 'system',
-      createdAt: now,
+      issueId: existing.issue_id,
+      type: existing.type,
+      oldValue: existing.old_value ?? undefined,
+      newValue: existing.new_value ?? undefined,
+      content: existing.content ?? undefined,
+      memoryId: existing.memory_id ?? undefined,
+      actor: existing.actor,
+      createdAt: existing.created_at,
     };
   }
 

@@ -62,6 +62,7 @@ vi.mock('../support/web.js', () => ({
 vi.mock('../automation/autonomousRunner.js', () => ({
   setTaskSource: vi.fn(),
   setNotifier: vi.fn(),
+  stopAutonomous: vi.fn(async () => {}),
   startAutonomous: vi.fn(async () => ({
     switchProvider: vi.fn(),
   })),
@@ -80,6 +81,14 @@ vi.mock('./providerOverride.js', () => ({
 // startup path unchanged. INT-2570's own tests override this per-case.
 vi.mock('../cli/daemon.js', () => ({
   probeDaemonPort: vi.fn(async () => false),
+}));
+
+vi.mock('../support/logRotation.js', () => ({
+  rotateServiceLogs: vi.fn(() => ({ rotated: [], skippedLocked: false })),
+}));
+
+vi.mock('../support/serviceInstanceLock.js', () => ({
+  acquireServiceInstanceLock: vi.fn(() => ({ path: '/tmp/test-service-lock.db', release: vi.fn() })),
 }));
 
 vi.mock('../automation/prProcessor.js', () => {
@@ -200,6 +209,10 @@ describe('service', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  afterEach(async () => {
+    await stopService();
   });
 
   it('reapplies a persisted provider override on boot when it differs from config', async () => {
@@ -346,6 +359,14 @@ describe('service', () => {
   // ============================================
 
   describe('single-instance guard (INT-2570)', () => {
+    it('rejects a second start before it can initialize side effects', async () => {
+      const { initDiscord } = await import('../discord/index.js');
+      await startService(mockConfig);
+
+      await expect(startService(mockConfig)).rejects.toThrow(/already starting or running/i);
+      expect(initDiscord).toHaveBeenCalledTimes(1);
+    });
+
     it('refuses to start when another instance already answers on the API port', async () => {
       const { probeDaemonPort } = await import('../cli/daemon.js');
       vi.mocked(probeDaemonPort).mockResolvedValueOnce(true);

@@ -2,9 +2,21 @@
 // OpenSwarm - Canonical Task State Store
 // ============================================
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { TaskItem } from '../orchestration/decisionEngine.js';
 
@@ -133,8 +145,44 @@ function persistStore(): void {
   const store = ensureStoreLoaded();
   store.updatedAt = new Date().toISOString();
   const path = getStorePath();
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(store, null, 2), 'utf8');
+  const directory = dirname(path);
+  mkdirSync(directory, { recursive: true });
+
+  // Write + fsync + atomic rename. A daemon kill or ENOSPC must leave either
+  // the old complete snapshot or the new complete snapshot, never truncated
+  // JSON that prevents the next startup. The SQLite run ledger is execution
+  // truth; this file remains a compatibility projection.
+  const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  let fd: number | undefined;
+  try {
+    fd = openSync(temporaryPath, 'wx', 0o600);
+    writeFileSync(fd, JSON.stringify(store, null, 2), 'utf8');
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = undefined;
+    renameSync(temporaryPath, path);
+    chmodSync(path, 0o600);
+
+    // Persist the directory entry where the platform supports directory fsync.
+    let directoryFd: number | undefined;
+    try {
+      directoryFd = openSync(directory, 'r');
+      fsyncSync(directoryFd);
+    } catch {
+      // Windows and some filesystems reject directory fsync; the file itself is
+      // already durable and atomically visible.
+    } finally {
+      if (directoryFd !== undefined) closeSync(directoryFd);
+    }
+  } catch (error) {
+    if (fd !== undefined) closeSync(fd);
+    try {
+      if (existsSync(temporaryPath)) unlinkSync(temporaryPath);
+    } catch {
+      // Keep the original persistence error; cleanup failure is secondary.
+    }
+    throw error;
+  }
 }
 
 function createDefaultState(issueId: string): OpenSwarmTaskState {
@@ -523,9 +571,11 @@ function isTrustedTaskStateSyncComment(comment: TaskStateSyncComment): boolean {
 
   if (comment.source === 'openswarm') return true;
 
-  // Linear fetcher can omit author metadata; when the marker and prefix are
-  // present and no identity fields exist, preserve the historical sync path.
-  if (comment.user === undefined && comment.author === undefined && comment.source === undefined) return true;
+  // Missing identity is not authority. A user can copy the marker/prefix into a
+  // comment, so authorless hydration must fail closed. Durable execution truth
+  // lives in automation.db; comments are audit/context only unless explicitly
+  // attributed to OpenSwarm or an allow-listed operator.
+  if (comment.user === undefined && comment.author === undefined && comment.source === undefined) return false;
 
   const author = (comment.user || comment.author || '').trim().toLowerCase();
   if (!author) return false;

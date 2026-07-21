@@ -1,12 +1,13 @@
 // Purpose: enableProject must also add the repo to allowedProjects so
 // resolveProjectPath reads its openswarm.json mapping (INT-1973).
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, vi } from 'vitest';
 import { AutonomousRunner, decisionSelectionBudget } from './autonomousRunner.js';
 import type { AutonomousConfig } from './runnerTypes.js';
 import type { TaskItem } from '../orchestration/decisionEngine.js';
+import { normalizeProjectPath } from '../orchestration/taskScheduler.js';
 
 const cfg = (over: Partial<AutonomousConfig> = {}): AutonomousConfig => ({
   linearTeamId: 'team',
@@ -32,6 +33,29 @@ describe('AutonomousRunner.enableProject (INT-1973)', () => {
     r.enableProject('/x/a');
     expect(r.getAllowedProjects().filter((p) => p === '/x/a')).toHaveLength(1);
     expect(r.getEnabledProjects()).toContain('/x/a');
+  });
+
+  it('uses one canonical identity when enable and disable arrive through path aliases', () => {
+    const root = mkdtempSync(join(tmpdir(), 'openswarm-project-alias-'));
+    const repo = join(root, 'repo');
+    const alias = join(root, 'repo-alias');
+    try {
+      mkdirSync(repo);
+      symlinkSync(repo, alias, 'dir');
+      const r = new AutonomousRunner(cfg({ allowedProjects: [alias] }));
+
+      r.enableProject(alias);
+      expect(r.getEnabledProjects()).toEqual([normalizeProjectPath(repo)]);
+      expect(r.getAllowedProjects()).toEqual([alias]);
+
+      // A disable request using the real path must remove the alias-enabled
+      // repository; otherwise a concurrent heartbeat can admit new work after
+      // the UI reports the repository disabled.
+      r.disableProject(repo);
+      expect(r.getEnabledProjects()).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
@@ -241,7 +265,7 @@ describe('AutonomousRunner backlog grooming mapping (INT-1609)', () => {
         issueId: 'issue-1',
         linearProject: { id: projectId, name: 'Mapped' },
       }]);
-      expect(groups.get(dir)?.map(t => t.id)).toEqual(['task-1']);
+      expect(groups.get(normalizeProjectPath(dir))?.map(t => t.id)).toEqual(['task-1']);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

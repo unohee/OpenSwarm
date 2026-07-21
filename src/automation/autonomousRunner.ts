@@ -45,14 +45,18 @@ import {
   formatPipelineResultEmbed,
 } from '../agents/pairPipeline.js';
 import type { DefaultRolesConfig } from '../core/types.js';
-import * as planner from '../support/planner.js';
 import * as execution from './runnerExecution.js';
 import { reportToDiscord, fetchLinearTasks, getTaskSource } from './runnerExecution.js';
 import { t } from '../locale/index.js';
 import { broadcastEvent, type SwarmStats } from '../core/eventHub.js';
 import { writeProviderOverride } from '../core/providerOverride.js';
-import { getTaskState } from '../taskState/store.js';
-import { pruneWorktrees, removePreservedWorktreeAt } from '../support/worktreeManager.js';
+import { buildTaskStateSyncComment, getTaskState } from '../taskState/store.js';
+import {
+  findPullRequestForBranch,
+  inspectWorktreeRecovery,
+  pruneWorktrees,
+  removePreservedWorktreeAt,
+} from '../support/worktreeManager.js';
 import { loadRepoMetadata } from '../support/repoMetadata.js';
 import { STUCK_LABEL } from '../linear/index.js';
 import { refreshGraph, toProjectSlug } from '../knowledge/index.js';
@@ -69,6 +73,13 @@ import {
   runBacklogGroomingPlanner,
   summarizeGroomingDecision,
 } from './backlogGrooming.js';
+import {
+  DurableRunCoordinator,
+  type ExecutionDurabilityHooks,
+  type RepositoryAdmissionPolicy,
+} from './durableRunCoordinator.js';
+import type { EffectClaim, EffectInput, ImportRunInput, RunLedgerMode } from './runLedger.js';
+import type { PairCompleteStats } from './taskSource.js';
 
 // Re-export types and integration setters (used by service.ts)
 export { setNotifier, setTaskSource } from './runnerExecution.js';
@@ -78,7 +89,54 @@ export type { ProjectInfo } from './runnerState.js';
 let runnerInstance: AutonomousRunner | null = null;
 const DECISION_SELECTION_OVERSAMPLE = 3;
 
-type RunnableCandidate = { task: TaskItem; projectPath: string };
+export type RunnableCandidate = { task: TaskItem; projectPath: string };
+
+interface CompletionEffectPayload {
+  version: 1;
+  marker: string;
+  task: TaskItem;
+  stats: PairCompleteStats;
+  projectPath?: string;
+  costUsd?: number;
+}
+
+interface CancellationEffectPayload {
+  version: 1;
+  marker: string;
+  task: TaskItem;
+  /** Frozen at effect creation so retries reuse the same idempotent comment. */
+  comment: string;
+}
+
+function isCompletionEffectPayload(value: unknown): value is CompletionEffectPayload {
+  if (!value || typeof value !== 'object') return false;
+  const payload = value as Partial<CompletionEffectPayload>;
+  return payload.version === 1
+    && typeof payload.marker === 'string'
+    && !!payload.task
+    && typeof payload.task === 'object'
+    && !!payload.stats
+    && typeof payload.stats === 'object';
+}
+
+function isCancellationEffectPayload(value: unknown): value is CancellationEffectPayload {
+  if (!value || typeof value !== 'object') return false;
+  const payload = value as Partial<CancellationEffectPayload>;
+  return payload.version === 1
+    && typeof payload.marker === 'string'
+    && !!payload.task
+    && typeof payload.task === 'object'
+    && typeof payload.comment === 'string';
+}
+
+/**
+ * Conflict analysis is an admission safety check. If it is unavailable, allow
+ * only one candidate from that repository so uncertainty cannot turn into
+ * concurrent overlapping edits. Input order already reflects decision priority.
+ */
+export function failClosedConflictFallback(candidates: readonly RunnableCandidate[]): Set<string> {
+  return new Set(candidates.length > 0 ? [candidates[0].task.id] : []);
+}
 
 export function decisionSelectionBudget(availableSlots: number, candidateCount: number): number {
   const slots = Math.max(0, Math.floor(availableSlots));
@@ -91,9 +149,14 @@ export class AutonomousRunner {
   private config: AutonomousConfig;
   private engine: DecisionEngine;
   private scheduler: TaskScheduler;
+  private readonly durableRuns: DurableRunCoordinator;
+  private outboxDrain: Promise<void> | null = null;
+  private readonly schedulerHandlers = new Set<Promise<void>>();
   /** Adapter default-model cache for the dashboard PAIR bar (INT-2393). */
   private defaultModelCache = new Map<string, Promise<string | undefined>>();
   private cronJob: Cron | null = null;
+  private startupHeartbeatTimer: ReturnType<typeof setTimeout> | null = null;
+  private stopping = false;
   private state: RunnerState = {
     isRunning: false,
     lastHeartbeat: 0,
@@ -102,6 +165,10 @@ export class AutonomousRunner {
 
   // Heartbeat concurrency guard
   private _heartbeatRunning = false;
+  private heartbeatCompletion: Promise<void> | null = null;
+  private stopPromise: Promise<void> | null = null;
+  private deferredShutdownCleanup: Promise<void> | null = null;
+  private durableRunsClosed = false;
 
   // Explicitly enabled project paths (allow-list; empty = nothing runs ONLY once
   // the selection has been touched — see projectSelectionTouched).
@@ -125,7 +192,8 @@ export class AutonomousRunner {
   }
 
   private normalizePath(p: string): string {
-    return this.pathsCaseInsensitive ? p.toLowerCase() : p;
+    const canonical = normalizeProjectPath(p);
+    return this.pathsCaseInsensitive ? canonical.toLowerCase() : canonical;
   }
 
   /** Check if a resolved path is under any enabled project */
@@ -248,7 +316,7 @@ export class AutonomousRunner {
     // restart. Skipped under dryRun (tests) so the real ~/.openswarm isn't touched. (INT-2208)
     if (!config.dryRun) {
       const sel = loadProjectSelection();
-      this.enabledProjects = new Set(sel.enabled);
+      this.enabledProjects = new Set(sel.enabled.map((projectPath) => normalizeProjectPath(projectPath)));
       this.projectSelectionTouched = sel.touched;
     }
     this.engine = getDecisionEngine({
@@ -274,18 +342,29 @@ export class AutonomousRunner {
       worktreeMode: config.worktreeMode ?? false,
     });
 
+    const ledgerMode: RunLedgerMode = config.automationLedgerMode
+      ?? (config.dryRun ? 'off' : 'primary');
+    this.durableRuns = new DurableRunCoordinator({
+      mode: ledgerMode,
+      dbPath: config.automationDbPath,
+      leaseMs: config.automationLeaseMs,
+      // Same-repo parallelism is never implicit at the durable admission layer.
+      maxActiveForProject: config.maxConcurrentPerProject ?? 1,
+    });
+
     // Set up scheduler event handling
     this.setupSchedulerEvents();
   }
 
   private setupSchedulerEvents(): void {
-    this.scheduler.on('started', async (running) => {
+    this.scheduler.on('started', (running) => {
       const taskCtx = this.formatTaskContext(running.task);
       console.log(`[Scheduler] Task started: ${taskCtx} ${running.task.title}`);
       broadcastEvent({ type: 'task:started', data: { taskId: running.task.id, title: running.task.title, issueIdentifier: running.task.issueIdentifier } });
     });
 
-    this.scheduler.on('completed', async ({ task, result }) => {
+    this.scheduler.on('completed', ({ task, result }) => {
+      this.trackSchedulerHandler('completed', (async () => {
       const taskCtx = this.formatTaskContext(task);
       console.log(`[Scheduler] Task completed: ${taskCtx} ${task.title}`);
       broadcastEvent({ type: 'task:completed', data: { taskId: task.id, success: result.success, duration: result.totalDuration } });
@@ -293,7 +372,7 @@ export class AutonomousRunner {
       await reportToDiscord(formatPipelineResultEmbed(result));
 
       // Track as completed ONLY on success to prevent re-selection (persist to disk)
-      if (task.issueId && result.success) {
+      if (task.issueId && result.success && !this.durableRuns.isPrimary) {
         this.completedTaskIds.add(task.issueId);
         clearRejection(task.issueId); // Clear rejection count on success
         clearRetryTime(task.issueId, this.failedTaskRetryTimes); // Clear retry backoff time
@@ -308,6 +387,20 @@ export class AutonomousRunner {
       // files. Both cases have a different coordination surface for completion.
       if (result.finalStatus === 'decomposed') {
         console.log(`[Scheduler] Task ${result.finalStatus}; skipping Done state`);
+        this.scheduleNextHeartbeat();
+        return;
+      }
+
+      if (result.success && task.issueId && this.durableRuns.isPrimary) {
+        await this.drainDurableOutbox().catch((error) =>
+          console.error('[Outbox] Completion delivery pass failed:', error));
+        const durableState = this.durableRuns.getRun(task.issueId)?.state;
+        if (durableState === 'DONE') {
+          recordProjectCompletion(task.linearProject?.name ?? 'unknown', result.totalCost?.costUsd);
+          console.log(`[Scheduler] Durable completion committed for ${task.issueId}`);
+        } else {
+          console.warn(`[Scheduler] ${task.issueId} remains ${durableState ?? 'unknown'}; not counted complete`);
+        }
         this.scheduleNextHeartbeat();
         return;
       }
@@ -362,9 +455,10 @@ export class AutonomousRunner {
       }
 
       this.scheduleNextHeartbeat();
+      })());
     });
 
-    this.scheduler.on('superseded', async ({ task, result }) => {
+    this.scheduler.on('superseded', ({ task, result }) => {
       const taskCtx = this.formatTaskContext(task);
       console.log(`[Scheduler] Task superseded: ${taskCtx} ${task.title}`);
       this.recordPipelineHistory(task, result);
@@ -374,19 +468,40 @@ export class AutonomousRunner {
       this.scheduleNextHeartbeat();
     });
 
-    this.scheduler.on('cancelled', async ({ task, result }) => {
+    this.scheduler.on('cancelled', ({ task, result }) => {
+      this.trackSchedulerHandler('cancelled', (async () => {
+        const taskCtx = this.formatTaskContext(task);
+        console.log(`[Scheduler] Task cancelled: ${taskCtx} ${task.title}`);
+        broadcastEvent({ type: 'task:completed', data: { taskId: task.id, success: false, duration: result.totalDuration } });
+        this.recordPipelineHistory(task, result);
+        try {
+          // In primary mode cancellation is already atomically parked in
+          // SYNC_PENDING with a tracker.cancel effect. Direct delivery here
+          // would recreate the remote-success/local-crash race that the outbox
+          // exists to close.
+          if (this.durableRuns.isPrimary) await this.drainDurableOutbox();
+          else await execution.syncCancellationState(task);
+        } finally {
+          // Keep parity with completed/failed handlers: discovery resumes even
+          // if tracker delivery is pending. Durable SYNC_PENDING still fences
+          // this issue from re-execution.
+          this.scheduleNextHeartbeat();
+        }
+      })());
+    });
+
+    this.scheduler.on('decomposed', ({ task, result }) => {
       const taskCtx = this.formatTaskContext(task);
-      console.log(`[Scheduler] Task cancelled: ${taskCtx} ${task.title}`);
-      broadcastEvent({ type: 'task:completed', data: { taskId: task.id, success: false, duration: result.totalDuration } });
+      console.log(`[Scheduler] Task decomposed: ${taskCtx} ${task.title}`);
       this.recordPipelineHistory(task, result);
-      await execution.syncCancellationState(task);
-      // Keep parity with the completed/failed handlers: kick the next heartbeat
-      // so discovery resumes immediately instead of waiting for the next cron
-      // tick (matters in serial mode, where slotFreed/runAvailableTasks is a no-op).
+      broadcastEvent({ type: 'task:completed', data: { taskId: task.id, success: false, duration: result.totalDuration } });
+      // Child issues, rather than the parent execution, now own completion.
+      // Re-run discovery without incrementing completed/failed counters.
       this.scheduleNextHeartbeat();
     });
 
-    this.scheduler.on('failed', async ({ task, result }) => {
+    this.scheduler.on('failed', ({ task, result }) => {
+      this.trackSchedulerHandler('failed', (async () => {
       const taskCtx = this.formatTaskContext(task);
       this.recordPipelineHistory(task, result);
 
@@ -462,6 +577,12 @@ export class AutonomousRunner {
           clearRetryTime(task.issueId, this.failedTaskRetryTimes);
           clearRejection(task.issueId);
           recordLastFailureDetail(this.taskStateRef, task.issueId, infeasDetail);
+          if (this.durableRuns.isPrimary) {
+            this.durableRuns.markNeedsHuman(
+              task.issueId,
+              `DoD appears unsatisfiable in the sandbox after ${attempts} attempts: ${infeasible.marker}`,
+            );
+          }
           this.saveTaskState();
           if (result.taskContext?.projectPath) {
             await removePreservedWorktreeAt(result.taskContext.projectPath)
@@ -507,6 +628,9 @@ export class AutonomousRunner {
           // Max rejections reached - permanently block
           this.completedTaskIds.add(task.issueId); // Prevent re-selection
           clearRetryTime(task.issueId, this.failedTaskRetryTimes); // Clear retry time
+          if (this.durableRuns.isPrimary) {
+            this.durableRuns.markNeedsHuman(task.issueId, `Reviewer rejected ${rejectionCount} attempts: ${feedback}`);
+          }
           this.saveTaskState();
           // Terminally stuck → no retry will resume the preserved tree; commit
           // the partial work to the branch and free the disk (INT-2506).
@@ -568,6 +692,12 @@ export class AutonomousRunner {
           // Max retries exceeded - permanently block
           this.completedTaskIds.add(task.issueId); // Prevent re-selection
           clearRetryTime(task.issueId, this.failedTaskRetryTimes); // Clear retry time
+          if (this.durableRuns.isPrimary) {
+            this.durableRuns.markNeedsHuman(
+              task.issueId,
+              `Autonomous execution failed ${count} times: ${failureDetail}`,
+            );
+          }
           this.saveTaskState();
           console.log(`[Scheduler] Task failure count: ${count}/${AutonomousRunner.MAX_RETRY_COUNT} for ${taskCtx} — STUCK`);
           // Terminally stuck → commit partial work to the branch, free the disk (INT-2506).
@@ -608,9 +738,11 @@ export class AutonomousRunner {
       }
 
       this.scheduleNextHeartbeat();
+      })());
     });
 
-    this.scheduler.on('error', async ({ task, error, startedAt, projectPath }) => {
+    this.scheduler.on('error', ({ task, error, startedAt, projectPath }) => {
+      this.trackSchedulerHandler('error', (async () => {
       const taskCtx = this.formatTaskContext(task);
       console.error(`[Scheduler] Task error: ${taskCtx} ${task.title}`, error);
       const timeout = isTimeoutError(error);
@@ -621,12 +753,20 @@ export class AutonomousRunner {
         taskContext: { issueIdentifier: task.issueIdentifier || task.issueId, projectName: task.linearProject?.name, projectPath, taskTitle: task.title },
       });
       await reportToDiscord(t('runner.pipelineError', { title: `${taskCtx} ${task.title}`, error: error.message }));
+      })());
     });
 
     this.scheduler.on('slotFreed', () => {
       // Auto-execute next task when slot becomes available
-      void this.runAvailableTasks();
+      this.trackSchedulerHandler('slotFreed', this.runAvailableTasks());
     });
+  }
+
+  private trackSchedulerHandler(label: string, operation: Promise<void>): void {
+    this.schedulerHandlers.add(operation);
+    void operation
+      .catch((error) => console.error(`[Scheduler] ${label} handler failed:`, error))
+      .finally(() => this.schedulerHandlers.delete(operation));
   }
 
   private filterAlreadyProcessed(tasks: TaskItem[]): TaskItem[] {
@@ -639,6 +779,43 @@ export class AutonomousRunner {
     const filtered = tasks.filter(task => {
       const id = task.issueId || task.id;
       const isStuck = task.labels?.includes(STUCK_LABEL) ?? false;
+      let durableRun = this.durableRuns.getRun(id);
+
+      if (
+        this.durableRuns.isPrimary
+        && durableRun
+        && (
+          durableRun.state === 'DONE'
+          || durableRun.state === 'DECOMPOSED'
+          || durableRun.state === 'CANCELLED'
+        )
+        && task.linearState === 'Todo'
+        && this.durableRuns.markReady(id)
+      ) {
+        durableRun = this.durableRuns.getRun(id);
+      }
+
+      if (
+        this.durableRuns.isPrimary
+        && durableRun?.state === 'NEEDS_HUMAN'
+        && !isStuck
+        && task.linearState === 'Todo'
+      ) {
+        const resumed = this.durableRuns.resumeNeedsHuman(id);
+        if (resumed) {
+          durableRun = this.durableRuns.getRun(id);
+          if (resumed === 'SYNC_PENDING') this.scheduleNextHeartbeat();
+        }
+      }
+
+      if (this.durableRuns.isPrimary && durableRun) {
+        if (['DONE', 'DECOMPOSED', 'CANCELLED', 'NEEDS_HUMAN'].includes(durableRun.state)) return false;
+        if (['CLAIMED', 'EXECUTING', 'VERIFYING', 'PUBLISHING', 'SYNC_PENDING', 'NEEDS_RECONCILE'].includes(durableRun.state)) return false;
+        if (durableRun.state === 'RETRY_AT' && (durableRun.retryAt ?? 0) > Date.now()) {
+          backoffSkipped++;
+          return false;
+        }
+      }
 
       // No Linear project → can't be routed to a repo. Drop here (quietly, once per
       // heartbeat) instead of letting a whole batch of project-less Todos reach the
@@ -655,8 +832,11 @@ export class AutonomousRunner {
         return false;
       }
 
-      // Check rejection limit first
-      if (isRejectionLimitReached(id)) {
+      const legacyIsAuthority = !this.durableRuns.isPrimary || !durableRun;
+
+      // Check rejection limit first. Once an issue has a durable row, the
+      // imported ledger state replaces legacy JSON counters as authority.
+      if (legacyIsAuthority && isRejectionLimitReached(id)) {
         return false; // Skip tasks that hit max rejection limit
       }
 
@@ -666,7 +846,8 @@ export class AutonomousRunner {
       // state — the previous code re-selected it every heartbeat because blocking
       // left it in Todo (a recoverable state), which the recovery branch then
       // mistook for deliberate user intervention.
-      const hasFailureHistory = this.completedTaskIds.has(id) || (this.failedTaskCounts.get(id) ?? 0) >= AutonomousRunner.MAX_RETRY_COUNT;
+      const hasFailureHistory = legacyIsAuthority
+        && (this.completedTaskIds.has(id) || (this.failedTaskCounts.get(id) ?? 0) >= AutonomousRunner.MAX_RETRY_COUNT);
       const stuckDecision = classifyStuck({ isStuck, linearState: task.linearState, hasFailureHistory });
       if (stuckDecision === 'recover') {
         this.completedTaskIds.delete(id);
@@ -684,8 +865,8 @@ export class AutonomousRunner {
         return false;
       }
 
-      if (this.completedTaskIds.has(id)) return false;
-      if ((this.failedTaskCounts.get(id) ?? 0) >= AutonomousRunner.MAX_RETRY_COUNT) return false;
+      if (legacyIsAuthority && this.completedTaskIds.has(id)) return false;
+      if (legacyIsAuthority && (this.failedTaskCounts.get(id) ?? 0) >= AutonomousRunner.MAX_RETRY_COUNT) return false;
 
       // External-claim guard (INT-1979 dup): an issue set to 'In Progress' that THIS
       // daemon never claimed is owned by a human or another agent — picking it up
@@ -694,12 +875,18 @@ export class AutonomousRunner {
       // execution.status='in_progress' when WE claim, so our own in-flight work
       // (incl. resumption after a restart) still passes; a bare Linear 'In Progress'
       // with no local claim record is skipped.
-      if (task.linearState === 'In Progress' && getTaskState(id)?.execution?.status !== 'in_progress') {
-        return false;
+      if (task.linearState === 'In Progress') {
+        if (this.durableRuns.isPrimary) {
+          // Comments/local JSON are context, not ownership authority. Only a
+          // durable crashed-run record may resume an externally In Progress card.
+          if (!durableRun || !['NEEDS_RECONCILE', 'READY', 'RETRY_AT'].includes(durableRun.state)) return false;
+        } else if (getTaskState(id)?.execution?.status !== 'in_progress') {
+          return false;
+        }
       }
 
       // Check if task is in exponential backoff period
-      if (!canRetryNow(id, this.failedTaskRetryTimes)) {
+      if (legacyIsAuthority && !canRetryNow(id, this.failedTaskRetryTimes)) {
         backoffSkipped++;
         return false; // Skip tasks still in backoff period
       }
@@ -744,13 +931,14 @@ export class AutonomousRunner {
    */
   private _nextHeartbeatTimer: ReturnType<typeof setTimeout> | null = null;
   private scheduleNextHeartbeat(): void {
+    if (this.stopping) return;
     if (this._nextHeartbeatTimer) return; // already queued
     // Fire on the next event-loop tick so the current scheduler callback
     // returns first (avoids re-entrant heartbeat() while still in `completed`
     // handlers).
     this._nextHeartbeatTimer = setTimeout(() => {
       this._nextHeartbeatTimer = null;
-      void this.heartbeat();
+      if (!this.stopping) void this.heartbeat();
     }, 0);
   }
 
@@ -760,8 +948,355 @@ export class AutonomousRunner {
     }
 
     await this.scheduler.runAvailable(async (task, projectPath, signal) => {
-      return this.executePipeline(task, projectPath, signal);
+      return this.executeDurably(task, projectPath, signal);
     });
+  }
+
+  private completionStats(result: PipelineResult): PairCompleteStats {
+    return {
+      attempts: result.iterations,
+      duration: Math.floor(result.totalDuration / 1000),
+      filesChanged: result.workerResult?.filesChanged || [],
+      workerSummary: result.workerResult?.summary,
+      workerCommands: result.workerResult?.commands,
+      reviewerFeedback: result.reviewResult?.feedback,
+      reviewerDecision: result.reviewResult?.decision,
+      testResults: result.testerResult ? {
+        passed: result.testerResult.testsPassed,
+        failed: result.testerResult.testsFailed,
+        coverage: result.testerResult.coverage,
+        failedTests: result.testerResult.failedTests,
+      } : undefined,
+    };
+  }
+
+  private buildCompletionEffect(task: TaskItem, result: PipelineResult, attemptNo: number): EffectInput {
+    const marker = `complete:${task.issueId || task.id}:attempt:${attemptNo}`;
+    const payload: CompletionEffectPayload = {
+      version: 1,
+      marker,
+      task,
+      stats: { ...this.completionStats(result), idempotencyMarker: marker },
+      projectPath: result.taskContext?.projectPath,
+      costUsd: result.totalCost?.costUsd,
+    };
+    return { kind: 'tracker.complete', dedupeKey: marker, payload };
+  }
+
+  private buildCancellationEffect(task: TaskItem, attemptNo: number): EffectInput {
+    const marker = `cancel:${task.issueId || task.id}:attempt:${attemptNo}`;
+    const state = execution.projectCancellationState(task);
+    const payload: CancellationEffectPayload = {
+      version: 1,
+      marker,
+      task,
+      comment: state
+        ? `${buildTaskStateSyncComment(state, 'Task cancelled')}\n\n<!-- openswarm-effect:${marker} -->`
+        : `Task cancelled\n\n<!-- openswarm-effect:${marker} -->`,
+    };
+    return { kind: 'tracker.cancel', dedupeKey: marker, payload };
+  }
+
+  private async executeDurably(task: TaskItem, projectPath: string, signal?: AbortSignal): Promise<PipelineResult> {
+    const cancelled = (): PipelineResult => ({
+      success: false,
+      sessionId: `runner-stopping-${Date.now()}`,
+      stages: [],
+      finalStatus: 'cancelled',
+      totalDuration: 0,
+      iterations: 0,
+      taskContext: { issueIdentifier: task.issueIdentifier || task.issueId, projectPath, taskTitle: task.title },
+    });
+    if (this.stopping || signal?.aborted) return cancelled();
+
+    let admission: RepositoryAdmissionPolicy;
+    try {
+      const metadata = await loadRepoMetadata(projectPath);
+      if (metadata?.automation?.enabled === false) {
+        return {
+          success: false,
+          sessionId: `repo-admission-disabled-${Date.now()}`,
+          stages: [],
+          finalStatus: 'superseded',
+          totalDuration: 0,
+          iterations: 0,
+          taskContext: { issueIdentifier: task.issueIdentifier || task.issueId, projectPath, taskTitle: task.title },
+        };
+      }
+      const sameRepoParallelAllowed = (this.config.worktreeMode ?? false)
+        && (this.config.allowSameProjectConcurrent ?? true);
+      admission = {
+        maxConcurrent: sameRepoParallelAllowed
+          ? (metadata?.automation?.maxConcurrent ?? this.config.maxConcurrentPerProject ?? 1)
+          : 1,
+        maxAttemptsPerHour: metadata?.automation?.maxAttemptsPerHour ?? 12,
+        maxFailuresPerHour: metadata?.automation?.maxFailuresPerHour ?? 6,
+        maxCostUsdPerDay: metadata?.automation?.maxCostUsdPerDay,
+        circuitCooldownMs: (metadata?.automation?.circuitCooldownMinutes ?? 60) * 60_000,
+      };
+    } catch (error) {
+      console.error(`[Admission] Invalid/unreadable repository policy for ${projectPath}:`, error);
+      return {
+        success: false,
+        sessionId: `repo-admission-error-${Date.now()}`,
+        stages: [],
+        finalStatus: 'infra_error',
+        totalDuration: 0,
+        iterations: 0,
+        taskContext: { issueIdentifier: task.issueIdentifier || task.issueId, projectPath, taskTitle: task.title },
+      };
+    }
+
+    if (this.stopping || signal?.aborted) return cancelled();
+
+    return this.durableRuns.execute(
+      task,
+      projectPath,
+      (durability, leaseSignal) => this.executePipeline(
+        task,
+        projectPath,
+        signal ? AbortSignal.any([signal, leaseSignal]) : leaseSignal,
+        durability,
+      ),
+      {
+        admission,
+        successEffect: (result, claim) => this.buildCompletionEffect(task, result, claim.attemptNo),
+        cancelEffect: (_result, claim) => this.buildCancellationEffect(task, claim.attemptNo),
+      },
+    );
+  }
+
+  private async reconcileDurableArtifacts(tasks: TaskItem[]): Promise<void> {
+    if (!this.durableRuns.isPrimary || this.stopping) return;
+    const taskById = new Map(tasks.map((task) => [task.issueId || task.id, task]));
+
+    for (const run of this.durableRuns.listRuns(['NEEDS_RECONCILE'])) {
+      if (this.stopping) return;
+      const task = taskById.get(run.issueId);
+      if (!task) continue; // absence from an actionable fetch is ambiguous; keep parked
+      if (run.ownerInstanceId || run.leaseToken) {
+        console.warn(`[Reconciler] Keeping ${run.identifier ?? run.issueId} fenced until its original executor exits`);
+        continue;
+      }
+
+      if (run.branchName) {
+        let pr;
+        try {
+          pr = await findPullRequestForBranch(run.projectPath, run.branchName);
+        } catch (error) {
+          console.warn(`[Reconciler] GitHub lookup failed for ${run.identifier ?? run.issueId}; keeping NEEDS_RECONCILE:`, error);
+          continue;
+        }
+
+        if (pr) {
+          if (pr.state === 'CLOSED') {
+            this.durableRuns.markNeedsHuman(run.issueId, `Published PR was closed without merge: ${pr.url}`);
+            continue;
+          }
+          const recoveredResult: PipelineResult = {
+            success: true,
+            sessionId: `recovered-publication-${run.attemptNo}`,
+            stages: [],
+            finalStatus: 'approved',
+            totalDuration: 0,
+            iterations: Math.max(1, run.attemptNo),
+            prUrl: pr.url,
+            taskContext: {
+              issueIdentifier: task.issueIdentifier || run.identifier,
+              projectName: task.linearProject?.name,
+              projectPath: run.projectPath,
+              taskTitle: task.title,
+            },
+          };
+          if (this.durableRuns.recoverPublishedRun(
+            run.issueId,
+            { prUrl: pr.url, headSha: pr.headSha },
+            this.buildCompletionEffect(task, recoveredResult, run.attemptNo),
+          )) {
+            console.log(`[Reconciler] Recovered published run ${run.identifier ?? run.issueId}: ${pr.url}`);
+          }
+          continue;
+        }
+      }
+
+      // No PR exists. Never overlap a replacement with an executor that lost
+      // its lease but still owns the filesystem. Missing/ambiguous markers stay
+      // parked; preserved work or a dead owner is safe for createWorktree to resume.
+      const recovery = await inspectWorktreeRecovery(run.projectPath, run.issueId, run.worktreePath)
+        .catch((error) => {
+          console.warn(`[Reconciler] Worktree evidence unreadable for ${run.identifier ?? run.issueId}:`, error);
+          return null;
+        });
+      if (!recovery || recovery.state === 'active_owner' || recovery.state === 'ambiguous') {
+        console.warn(`[Reconciler] Keeping ${run.identifier ?? run.issueId} in NEEDS_RECONCILE (${recovery?.state ?? 'inspection_failed'})`);
+        continue;
+      }
+      if (this.durableRuns.markReady(run.issueId)) {
+        console.log(`[Reconciler] ${recovery.state === 'missing' ? 'Reopening branch' : 'Resuming worktree'} for ${run.identifier ?? run.issueId}`);
+      }
+    }
+    await this.drainDurableOutbox();
+  }
+
+  private async migrateLegacyRunState(tasks: TaskItem[]): Promise<void> {
+    if (!this.durableRuns.isPrimary || this.stopping) return;
+    let imported = 0;
+    for (const task of tasks) {
+      if (this.stopping) return;
+      const issueId = task.issueId || task.id;
+      if (this.durableRuns.getRun(issueId)) continue;
+
+      const canonical = getTaskState(issueId);
+      const failedCount = this.failedTaskCounts.get(issueId) ?? 0;
+      const retryAt = this.failedTaskRetryTimes.get(issueId);
+      const legacyCompleted = this.completedTaskIds.has(issueId);
+      const canonicalStatus = canonical?.execution.status;
+      const hasLegacySignal = legacyCompleted
+        || failedCount > 0
+        || retryAt != null
+        || ['in_progress', 'in_review', 'failed', 'halted', 'done', 'decomposed'].includes(canonicalStatus ?? '');
+      if (!hasLegacySignal) continue;
+
+      const projectPath = task.projectPath ?? await this.resolveProjectPath(task);
+      if (!projectPath || this.stopping) continue;
+
+      let state: ImportRunInput['state'];
+      let reason: string;
+      if (
+        task.labels?.includes(STUCK_LABEL)
+        || failedCount >= AutonomousRunner.MAX_RETRY_COUNT
+        || isRejectionLimitReached(issueId)
+        || canonicalStatus === 'failed'
+        || canonicalStatus === 'halted'
+      ) {
+        state = 'NEEDS_HUMAN';
+        reason = 'Legacy state indicates exhausted or human-blocked execution';
+      } else if (canonicalStatus === 'done' || task.linearState === 'Done') {
+        state = 'DONE';
+        reason = 'Legacy and tracker state agree that the issue is complete';
+      } else if (canonicalStatus === 'decomposed') {
+        state = 'DECOMPOSED';
+        reason = 'Legacy task state records successful decomposition';
+      } else if (
+        legacyCompleted
+        || canonicalStatus === 'in_progress'
+        || canonicalStatus === 'in_review'
+        || canonical?.worktree.branchName
+        || canonical?.worktree.worktreePath
+      ) {
+        state = 'NEEDS_RECONCILE';
+        reason = 'Legacy state may have in-flight or published work; artifact reconciliation required';
+      } else if (retryAt != null && retryAt > Date.now()) {
+        state = 'RETRY_AT';
+        reason = 'Legacy retry backoff imported';
+      } else {
+        state = 'READY';
+        reason = 'Legacy nonterminal state imported as claimable work';
+      }
+
+      const result = this.durableRuns.importLegacyRun({
+        issueId,
+        source: task.source ?? 'unknown',
+        identifier: task.issueIdentifier,
+        title: task.title,
+        projectPath,
+        state,
+        retryAt,
+        branchName: canonical?.worktree.branchName,
+        worktreePath: canonical?.worktree.worktreePath,
+        errorCode: 'legacy_import',
+        errorMessage: reason,
+        metadata: {
+          legacyCompleted,
+          failedCount,
+          canonicalStatus,
+          importedAt: new Date().toISOString(),
+        },
+      });
+      if (result?.imported) imported++;
+    }
+    if (imported > 0) this.syslog(`✓ Imported ${imported} legacy run state(s) into automation.db`);
+  }
+
+  private async deliverOutboxEffect(effect: EffectClaim): Promise<void> {
+    if (effect.kind === 'tracker.cancel') {
+      if (!isCancellationEffectPayload(effect.payload)) {
+        throw new Error(`Invalid automation effect payload: ${effect.kind}`);
+      }
+      await execution.syncCancellationState(
+        effect.payload.task,
+        effect.dedupeKey,
+        effect.payload.comment,
+      );
+      return;
+    }
+    if (effect.kind !== 'tracker.complete' || !isCompletionEffectPayload(effect.payload)) {
+      throw new Error(`Unsupported automation effect: ${effect.kind}`);
+    }
+    const payload = effect.payload;
+    const taskSource = getTaskSource();
+    if (!taskSource) throw new Error('Task source unavailable for outbox delivery');
+    const issueId = payload.task.issueId || payload.task.id;
+    const markerComment = `<!-- openswarm-effect:${payload.marker} -->`;
+
+    const comments = taskSource.getExecutionComments
+      ? await taskSource.getExecutionComments(issueId)
+      : [];
+    const alreadyCommented = comments.some((comment) => comment.body.includes(markerComment));
+    if (alreadyCommented) {
+      // The remote comment may have succeeded immediately before a process crash,
+      // while the following state mutation/local ack did not. Reapply the
+      // idempotent state transition but never duplicate the completion comment.
+      const accepted = await taskSource.updateState(issueId, 'Done');
+      if (!accepted) throw new Error(`Tracker refused Done reconciliation for ${issueId}`);
+    } else {
+      await taskSource.logPairComplete(issueId, effect.dedupeKey, payload.stats);
+    }
+
+    execution.projectSuccessState(payload.task);
+    await execution.reconcileCompletionState(payload.task);
+
+    if (payload.projectPath) {
+      await recordTaskOutcome(payload.projectPath, {
+        taskTitle: payload.task.title,
+        derivedFrom: payload.task.issueIdentifier ?? issueId,
+        iterations: payload.stats.attempts,
+      });
+    }
+    if (payload.task.linearProject) {
+      await updateProjectAfterTask(payload.task.linearProject.id, payload.task.linearProject.name, {
+        title: payload.task.title,
+        success: true,
+        duration: payload.stats.duration * 1000,
+        issueIdentifier: payload.task.issueIdentifier,
+        cost: payload.costUsd,
+        projectPath: payload.projectPath,
+      });
+    }
+  }
+
+  private async drainDurableOutbox(): Promise<void> {
+    if (!this.durableRuns.isPrimary) return;
+    if (this.outboxDrain) return this.outboxDrain;
+    const finalized = new Set<string>();
+    this.outboxDrain = (async () => {
+      const outcome = await this.durableRuns.drainOutbox(async (effect) => {
+        await this.deliverOutboxEffect(effect);
+        finalized.add(effect.issueId);
+      });
+      for (const issueId of finalized) {
+        if (this.durableRuns.getRun(issueId)?.state !== 'DONE') continue;
+        this.completedTaskIds.add(issueId);
+        clearRejection(issueId);
+        clearRetryTime(issueId, this.failedTaskRetryTimes);
+        this.lastFailureDetails.delete(issueId);
+      }
+      if (finalized.size > 0) this.saveTaskState();
+      if (outcome.retried > 0 || outcome.dead > 0) {
+        console.warn(`[Outbox] applied=${outcome.applied} retried=${outcome.retried} dead=${outcome.dead}`);
+      }
+    })().finally(() => { this.outboxDrain = null; });
+    return this.outboxDrain;
   }
 
   private getRolesForProject(projectPath: string): DefaultRolesConfig | undefined {
@@ -811,18 +1346,37 @@ export class AutonomousRunner {
   }
 
   async start(): Promise<void> {
+    if (this.stopPromise || this.durableRunsClosed) {
+      throw new Error('AutonomousRunner cannot be restarted after stop; create a new runner instance');
+    }
     if (this.state.isRunning) {
       console.log('[AutonomousRunner] Already running');
       return;
     }
 
+    this.stopping = false;
     await this.engine.init();
 
-    // worktree mode: clean up dangling worktrees at startup
+    // Recover durable intent before looking at filesystem leftovers. A restart
+    // never treats an unknown worktree as disposable.
+    const expired = this.durableRuns.reconcile();
+    if (expired.length > 0) {
+      console.warn(`[AutonomousRunner] Reconciled ${expired.length} expired execution lease(s)`);
+    }
+    await this.drainDurableOutbox();
+
+    // worktree mode: remove only terminal/proven-orphan trees after reconciliation
     if (this.config.worktreeMode) {
       for (const projectPath of this.config.allowedProjects) {
-        const resolvedPath = projectPath.replace('~', process.env.HOME || '');
-        pruneWorktrees(resolvedPath).catch((e) => console.error(`[AutonomousRunner] Worktree prune failed for ${resolvedPath}:`, e));
+        const resolvedPath = normalizeProjectPath(projectPath);
+        const protectedPaths = this.durableRuns.getProtectedWorktreePaths(resolvedPath);
+        const provenOrphans = new Set(
+          this.durableRuns.listRuns(['DONE', 'DECOMPOSED', 'CANCELLED'])
+            .filter((run) => run.projectPath === resolvedPath && run.worktreePath)
+            .map((run) => run.worktreePath!),
+        );
+        await pruneWorktrees(resolvedPath, protectedPaths, provenOrphans)
+          .catch((e) => console.error(`[AutonomousRunner] Worktree prune failed for ${resolvedPath}:`, e));
       }
     }
 
@@ -844,17 +1398,92 @@ export class AutonomousRunner {
     // Immediate execution option
     if (this.config.triggerNow) {
       console.log('[AutonomousRunner] Triggering immediate heartbeat in 10s...');
-      setTimeout(() => void this.heartbeat(), 10000); // Run after 10s (wait for Discord/Linear connection)
+      this.startupHeartbeatTimer = setTimeout(() => {
+        this.startupHeartbeatTimer = null;
+        if (!this.stopping) void this.heartbeat();
+      }, 10000); // Run after 10s (wait for Discord/Linear connection)
     }
   }
 
-  stop(): void {
+  stop(): Promise<void> {
+    if (!this.stopPromise) this.stopPromise = this.performStop();
+    return this.stopPromise;
+  }
+
+  private async performStop(): Promise<void> {
+    this.stopping = true;
     if (this.cronJob) {
       this.cronJob.stop();
       this.cronJob = null;
     }
+    if (this.startupHeartbeatTimer) {
+      clearTimeout(this.startupHeartbeatTimer);
+      this.startupHeartbeatTimer = null;
+    }
+    if (this._nextHeartbeatTimer) {
+      clearTimeout(this._nextHeartbeatTimer);
+      this._nextHeartbeatTimer = null;
+    }
     this.state.isRunning = false;
-    console.log('[AutonomousRunner] Stopped');
+    const graceMs = this.config.shutdownGraceMs ?? 30_000;
+    const deadline = Date.now() + graceMs;
+    const heartbeatAtStop = this.heartbeatCompletion;
+    const shutdown = await this.scheduler.shutdown(graceMs);
+    const remainingGrace = Math.max(0, deadline - Date.now());
+    const activityDrained = await this.waitForRunnerActivity(heartbeatAtStop, remainingGrace);
+
+    if (activityDrained) {
+      await this.finalizeStoppedResources();
+    } else {
+      // A network fetch/notifier may ignore cancellation. Return within the
+      // configured deadline, but keep the ledger open until every late callback
+      // has crossed the stopping fence. Closing it now would turn a benign late
+      // completion into a use-after-close race.
+      console.warn('[AutonomousRunner] Shutdown grace elapsed; deferring ledger close until late callbacks settle');
+      const cleanup = this.drainRunnerActivity(heartbeatAtStop)
+        .then(() => this.finalizeStoppedResources());
+      this.deferredShutdownCleanup = cleanup;
+      void cleanup
+        .catch((error) => console.warn('[AutonomousRunner] Deferred shutdown cleanup failed:', error))
+        .finally(() => {
+          if (this.deferredShutdownCleanup === cleanup) this.deferredShutdownCleanup = null;
+        });
+    }
+    console.log(`[AutonomousRunner] Stopped (drained=${shutdown.drained && activityDrained}, remaining=${shutdown.remaining}, quarantined=${shutdown.quarantined}, handlers=${this.schedulerHandlers.size})`);
+  }
+
+  private async drainRunnerActivity(heartbeat: Promise<void> | null): Promise<void> {
+    await Promise.all([
+      heartbeat ?? Promise.resolve(),
+      this.scheduler.waitForExecutorExit(),
+    ]);
+    // Handlers can enqueue follow-up bookkeeping while an earlier handler is
+    // settling, so drain to a fixed point rather than awaiting one snapshot.
+    while (this.schedulerHandlers.size > 0) {
+      await Promise.allSettled(this.schedulerHandlers);
+    }
+  }
+
+  private async waitForRunnerActivity(heartbeat: Promise<void> | null, graceMs: number): Promise<boolean> {
+    const drained = this.drainRunnerActivity(heartbeat).then(() => true);
+    if (graceMs <= 0) {
+      return heartbeat === null
+        && this.schedulerHandlers.size === 0
+        && this.scheduler.getUnsettledExecutorCount() === 0;
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), graceMs); });
+    const result = await Promise.race([drained, timedOut]);
+    if (timer) clearTimeout(timer);
+    return result;
+  }
+
+  private async finalizeStoppedResources(): Promise<void> {
+    if (this.durableRunsClosed) return;
+    await this.drainDurableOutbox().catch((error) =>
+      console.warn('[AutonomousRunner] Final outbox drain failed:', error));
+    this.durableRuns.close();
+    this.durableRunsClosed = true;
   }
 
   private buildStats(): SwarmStats {
@@ -870,7 +1499,7 @@ export class AutonomousRunner {
 
   private refreshKnowledgeGraphs(): void {
     for (const projectPath of this.config.allowedProjects) {
-      const resolvedPath = projectPath.replace('~', process.env.HOME || '');
+      const resolvedPath = normalizeProjectPath(projectPath);
       refreshGraph(resolvedPath).then(graph => {
         if (graph) {
           const slug = toProjectSlug(resolvedPath);
@@ -920,7 +1549,7 @@ export class AutonomousRunner {
     const byProjectId = new Map<string, string>();
     for (const repoPath of this.config.allowedProjects) {
       try {
-        const resolvedPath = repoPath.replace('~', process.env.HOME || '');
+        const resolvedPath = normalizeProjectPath(repoPath);
         const meta = await loadRepoMetadata(resolvedPath);
         if (meta?.linear?.projectId) byProjectId.set(meta.linear.projectId, resolvedPath);
       } catch {
@@ -998,11 +1627,15 @@ export class AutonomousRunner {
   }
 
   async heartbeat(): Promise<void> {
+    if (this.stopping) return;
     if (this._heartbeatRunning) {
       console.log('[AutonomousRunner] Heartbeat already running, skipping');
       return;
     }
     this._heartbeatRunning = true;
+    let settleHeartbeat!: () => void;
+    const completion = new Promise<void>((resolve) => { settleHeartbeat = resolve; });
+    this.heartbeatCompletion = completion;
 
     console.log('[AutonomousRunner] Heartbeat triggered');
     this.state.lastHeartbeat = Date.now();
@@ -1011,19 +1644,33 @@ export class AutonomousRunner {
     this.syslog('▶ Heartbeat started');
 
     try {
+      const expiredLeases = this.durableRuns.reconcile();
+      if (expiredLeases.length > 0) {
+        this.syslog(`⚠ Reconciled ${expiredLeases.length} expired execution lease(s)`);
+      }
+      await this.drainDurableOutbox();
+      if (this.stopping) return;
+
       // 0. Knowledge graph refresh (async, service continues even on failure)
       this.refreshKnowledgeGraphs();
 
-      // 0.1 Sweep orphan worktrees every heartbeat (crashed/cancelled leftovers),
-      // never the worktree of a currently-running task. Startup does a full sweep;
-      // this keeps repos from accumulating worktree/ dirs between restarts.
+      // 0.1 Reconcile before pruning. Unknown/crash-recovery worktrees are never
+      // deleted from a heartbeat without a terminal durable record.
       if (this.config.worktreeMode) {
         const activeWorktrees = new Set(
           this.scheduler.getRunningTasks().map((r) => `${r.projectPath}/worktree/${r.task.issueId}`),
         );
+        for (const path of this.durableRuns.getProtectedWorktreePaths()) activeWorktrees.add(path);
+        const terminalRuns = this.durableRuns.listRuns(['DONE', 'DECOMPOSED', 'CANCELLED']);
         for (const projectPath of this.config.allowedProjects) {
-          const resolvedPath = projectPath.replace('~', process.env.HOME || '');
-          pruneWorktrees(resolvedPath, activeWorktrees).catch((e) =>
+          if (this.stopping) return;
+          const resolvedPath = normalizeProjectPath(projectPath);
+          const provenOrphans = new Set(
+            terminalRuns
+              .filter((run) => run.projectPath === resolvedPath && run.worktreePath)
+              .map((run) => run.worktreePath!),
+          );
+          await pruneWorktrees(resolvedPath, activeWorktrees, provenOrphans).catch((e) =>
             console.error(`[AutonomousRunner] Worktree sweep failed for ${resolvedPath}:`, e),
           );
         }
@@ -1033,6 +1680,7 @@ export class AutonomousRunner {
       const active = getActiveMonitors().filter(m => m.state === 'pending' || m.state === 'running');
       if (active.length > 0) {
         const checked = await checkAllMonitors().catch(() => 0);
+        if (this.stopping) return;
         this.syslog(`✓ Monitors: ${checked} checked / ${active.length} active`);
       }
 
@@ -1071,6 +1719,7 @@ export class AutonomousRunner {
       // 2. Fetch tasks from Linear
       this.syslog('⟳ Fetching tasks from Linear...');
       const fetchResult = await fetchLinearTasks();
+      if (this.stopping) return;
       if (fetchResult.error) {
         this.syslog(`✗ Linear fetch error: ${fetchResult.error}`);
         await reportToDiscord(`⚠️ Linear fetch failed: ${fetchResult.error}`);
@@ -1082,10 +1731,16 @@ export class AutonomousRunner {
         return;
       }
 
+      await this.migrateLegacyRunState(tasks);
+      if (this.stopping) return;
+      await this.reconcileDurableArtifacts(tasks);
+      if (this.stopping) return;
+
       this.lastFetchedTasks = tasks;
       this.syslog(`✓ Found ${tasks.length} tasks from Linear`);
 
       tasks = await this.maybeRunBacklogGrooming(tasks);
+      if (this.stopping) return;
       this.lastFetchedTasks = tasks;
       if (tasks.length === 0) {
         this.syslog('— No executable tasks after backlog grooming');
@@ -1111,6 +1766,7 @@ export class AutonomousRunner {
       // 3. Run Decision Engine (single task)
       this.syslog('⟳ Running Decision Engine...');
       const decision = await this.engine.heartbeat(filteredTasks);
+      if (this.stopping) return;
       this.syslog(`→ Decision: ${decision.action} — ${decision.reason}`);
       this.state.lastDecision = decision;
 
@@ -1134,10 +1790,13 @@ export class AutonomousRunner {
       }
     } finally {
       this._heartbeatRunning = false;
+      if (this.heartbeatCompletion === completion) this.heartbeatCompletion = null;
+      settleHeartbeat();
     }
   }
 
   private async heartbeatParallel(tasks: TaskItem[]): Promise<void> {
+    if (this.stopping) return;
     const availableSlots = this.scheduler.getAvailableSlots();
     const runningCount = this.scheduler.getStats().running;
     this.syslog(`  Parallel mode | slots: ${availableSlots} free / ${this.config.maxConcurrentTasks} max | running: ${runningCount}`);
@@ -1213,6 +1872,7 @@ export class AutonomousRunner {
     let pass = 0;
 
     while (enqueuedCount < maxSlots) {
+      if (this.stopping) return;
       const remainingSlots = maxSlots - enqueuedCount;
       const selectableTasks = tasksForEngine.filter(task => !consideredTaskIds.has(task.id));
       const selectionBudget = decisionSelectionBudget(remainingSlots, selectableTasks.length);
@@ -1227,6 +1887,7 @@ export class AutonomousRunner {
         selectionBudget,
         [] // No project exclusion — worktree mode isolates each task
       );
+      if (this.stopping) return;
 
       console.log(`[AutonomousRunner] Decision: ${decision.action} — ${decision.reason} (${decision.tasks?.length ?? 0} tasks)`);
       skippedCount += decision.skippedCount ?? 0;
@@ -1240,9 +1901,12 @@ export class AutonomousRunner {
       }
 
       const candidates = await this.resolveRunnableCandidates(decision.tasks);
+      if (this.stopping) return;
       const safeTasks = await this.detectSafeCandidateIds(candidates);
+      if (this.stopping) return;
 
       for (const { task, projectPath } of candidates) {
+        if (this.stopping) return;
         if (enqueuedCount >= maxSlots) break;
         if (!safeTasks.has(task.id)) continue;
         if (!this.canQueueProjectCandidate(projectPath)) {
@@ -1250,8 +1914,9 @@ export class AutonomousRunner {
           continue;
         }
 
-        this.enqueueCandidate(task, projectPath);
-        enqueuedCount++;
+        if (this.enqueueCandidate(task, projectPath)) {
+          enqueuedCount++;
+        }
       }
 
       pass++;
@@ -1281,12 +1946,13 @@ export class AutonomousRunner {
     }
 
     // Execute tasks
-    await this.runAvailableTasks();
+    if (!this.stopping) await this.runAvailableTasks();
   }
 
   private async resolveRunnableCandidates(decisionTasks: Array<{ task: TaskItem }>): Promise<RunnableCandidate[]> {
     const candidates: { task: TaskItem; projectPath: string }[] = [];
     for (const { task } of decisionTasks) {
+      if (this.stopping) return candidates;
       if (this.scheduler.isTaskQueued(task.id) || this.scheduler.isTaskRunning(task.id)) {
         this.syslog(`  Skip (already queued/running): ${task.issueIdentifier || task.id.slice(0, 8)} ${task.title}`);
         continue;
@@ -1324,12 +1990,15 @@ export class AutonomousRunner {
   }
 
   private async detectSafeCandidateIds(candidates: RunnableCandidate[]): Promise<Set<string>> {
-    // Group candidates by projectPath for conflict detection
+    // Group candidates by canonical repository identity for conflict detection.
+    // A symlink/relative-path alias must not split one repository into two groups
+    // and bypass same-repository conflict serialization.
     const byProject = new Map<string, { task: TaskItem; projectPath: string }[]>();
     for (const c of candidates) {
-      const group = byProject.get(c.projectPath) || [];
+      const canonicalPath = normalizeProjectPath(c.projectPath);
+      const group = byProject.get(canonicalPath) || [];
       group.push(c);
-      byProject.set(c.projectPath, group);
+      byProject.set(canonicalPath, group);
     }
 
     // Detect file conflicts per project using Knowledge Graph
@@ -1359,9 +2028,13 @@ export class AutonomousRunner {
           }
         }
       } catch (err) {
-        // KG 분석 실패 시 모든 태스크를 safe로 처리 (graceful degradation)
+        // 분석 실패는 동시 편집 안전성을 증명하지 못한 상태다. 저장소마다
+        // 하나만 통과시켜 직렬화하고, 나머지는 다음 heartbeat로 미룬다.
         console.warn(`[AutonomousRunner] Conflict detection failed for ${projPath}:`, err);
-        for (const c of group) safeTasks.add(c.task.id);
+        for (const id of failClosedConflictFallback(group)) safeTasks.add(id);
+        for (const deferred of group.slice(1)) {
+          this.syslog(`Conflict analysis unavailable — serializing: ${deferred.task.issueIdentifier || deferred.task.id.slice(0, 8)} ${deferred.task.title}`);
+        }
       }
     }
 
@@ -1380,28 +2053,24 @@ export class AutonomousRunner {
     if (prior) task.priorAttemptFeedback = prior.detail;
   }
 
-  private enqueueCandidate(task: TaskItem, projectPath: string): void {
+  private enqueueCandidate(task: TaskItem, projectPath: string): boolean {
     this.attachPriorFeedback(task);
-    this.scheduler.enqueue(task, projectPath);
+    if (!this.scheduler.enqueue(task, projectPath)) return false;
     broadcastEvent({ type: 'task:queued', data: { taskId: task.id, title: task.title, projectPath, issueIdentifier: task.issueIdentifier } });
     this.syslog(`✓ Queued: ${task.issueIdentifier || ''} ${task.title} → ${projectPath.split('/').slice(-2).join('/')}`);
-
-    // Claim the task immediately: set Linear to 'In Progress' so restarts don't re-queue it
-    if (task.issueId) {
-      getTaskSource()?.updateState(task.issueId, 'In Progress').catch((err: Error) =>
-        console.warn(`[AutonomousRunner] Failed to claim issue ${task.issueIdentifier}:`, err)
-      );
-    }
+    return true;
   }
 
   /** Execute task in pair mode */
   private async executeTaskPairMode(task: TaskItem): Promise<void> {
+    if (this.stopping) return;
     // Serial path (maxConcurrentTasks=1) bypasses enqueueCandidate — attach the
     // prior-session feedback here too so both paths inject it (INT-2474).
     this.attachPriorFeedback(task);
 
     // Auto-resolve project path
     const projectPath = await this.resolveProjectPath(task);
+    if (this.stopping) return;
 
     // Error if project path mapping failed
     if (!projectPath) {
@@ -1429,33 +2098,17 @@ export class AutonomousRunner {
 
     console.log(`[AutonomousRunner] projectPath: ${projectPath}`);
 
-    // Check task decomposition (when enableDecomposition is set)
-    if (this.config.enableDecomposition) {
-      const threshold = this.config.decompositionThresholdMinutes ?? 30;
-      const needsDecomp = planner.needsDecomposition(task, threshold);
-
-      if (needsDecomp) {
-        console.log(`[AutonomousRunner] Task "${task.title}" needs decomposition (>${threshold}min estimated)`);
-        const decomposed = await this.decomposeTask(task, projectPath, threshold);
-        if (decomposed) {
-          // Decomposition succeeded - sub-tasks added to queue, skip original task
-          return;
-        }
-        // Decomposition failed - execute original task as-is
-        console.log('[AutonomousRunner] Decomposition failed, executing original task');
-      }
-    }
-
     // Use scheduler for parallel processing mode
     if (this.config.maxConcurrentTasks && this.config.maxConcurrentTasks > 1) {
-      this.scheduler.enqueue(task, projectPath);
-      broadcastEvent({ type: 'task:queued', data: { taskId: task.id, title: task.title, projectPath, issueIdentifier: task.issueIdentifier } });
+      if (this.scheduler.enqueue(task, projectPath)) {
+        broadcastEvent({ type: 'task:queued', data: { taskId: task.id, title: task.title, projectPath, issueIdentifier: task.issueIdentifier } });
+      }
       await this.runAvailableTasks();
       return;
     }
 
     // Single execution (legacy)
-    const result = await this.executePipeline(task, projectPath);
+    const result = await this.executeDurably(task, projectPath);
 
     // Rate-limited: pause until quota resets. Return before any Discord/Linear
     // reporting or state change — no failure count, no card spam. Same as the
@@ -1471,6 +2124,15 @@ export class AutonomousRunner {
     }
 
     await reportToDiscord(formatPipelineResultEmbed(result));
+
+    if (result.success && task.issueId && this.durableRuns.isPrimary) {
+      await this.drainDurableOutbox().catch((error) =>
+        console.error('[Outbox] Serial completion delivery pass failed:', error));
+      if (this.durableRuns.getRun(task.issueId)?.state !== 'DONE') {
+        console.warn(`[AutonomousRunner] ${task.issueId} remains sync-pending; completion will reconcile later`);
+      }
+      return;
+    }
 
     // Update Linear issue state
     if (task.issueId) {
@@ -1523,7 +2185,7 @@ export class AutonomousRunner {
     }
   }
 
-  private getExecCtx(): execution.ExecutionContext {
+  private getExecCtx(durability?: ExecutionDurabilityHooks): execution.ExecutionContext {
     return {
       allowedProjects: this.config.allowedProjects,
       plannerModel: this.config.plannerModel,
@@ -1543,6 +2205,7 @@ export class AutonomousRunner {
       guards: this.config.guards,
       verify: this.config.verify,
       maxReflections: this.config.maxReflections,
+      durability,
     };
   }
 
@@ -1550,12 +2213,13 @@ export class AutonomousRunner {
     return execution.resolveProjectPath(this.getExecCtx(), task);
   }
 
-  private async decomposeTask(task: TaskItem, projectPath: string, targetMinutes: number): Promise<boolean | 'no-decomp'> {
-    return execution.decomposeTask(this.getExecCtx(), task, projectPath, targetMinutes);
-  }
-
-  private async executePipeline(task: TaskItem, projectPath: string, signal?: AbortSignal): Promise<PipelineResult> {
-    return execution.executePipeline(this.getExecCtx(), task, projectPath, signal);
+  private async executePipeline(
+    task: TaskItem,
+    projectPath: string,
+    signal?: AbortSignal,
+    durability?: ExecutionDurabilityHooks,
+  ): Promise<PipelineResult> {
+    return execution.executePipeline(this.getExecCtx(durability), task, projectPath, signal);
   }
 
   private async requestApproval(decision: DecisionResult): Promise<void> {
@@ -1610,6 +2274,7 @@ export class AutonomousRunner {
     return { isRunning: this.state.isRunning, lastHeartbeat: this.state.lastHeartbeat,
       engineStats: this.engine.getStats(), pendingApproval: !!this.state.pendingApproval,
       schedulerStats: this.scheduler.getStats(),
+      automationLedger: this.durableRuns.getMetrics(),
       turboMode: this.turboMode,
       turboExpiresAt: this.turboExpiresAt,
       dailyPace: getDailyPaceInfo(),
@@ -1789,29 +2454,33 @@ export class AutonomousRunner {
 
   disableProject(projectPath: string): void {
     this.projectSelectionTouched = true; // empty set now means "nothing runs" (INT-2207)
-    this.enabledProjects.delete(projectPath);
-    console.log(`[AutonomousRunner] Project disabled: ${projectPath}`);
+    const canonicalPath = normalizeProjectPath(projectPath);
+    for (const enabled of this.enabledProjects) {
+      if (normalizeProjectPath(enabled) === canonicalPath) this.enabledProjects.delete(enabled);
+    }
+    console.log(`[AutonomousRunner] Project disabled: ${canonicalPath}`);
     // Disabling gates new selection AND cancels any in-flight pipeline for this
     // project — otherwise a running task keeps working a now-disabled repo.
-    const cancelled = this.scheduler.cancelProjectTasks(projectPath);
+    const cancelled = this.scheduler.cancelProjectTasks(canonicalPath);
     if (cancelled > 0) {
-      this.syslog(`⏹ Cancelled ${cancelled} in-flight task(s) for disabled project ${projectPath.split('/').pop()}`);
+      this.syslog(`⏹ Cancelled ${cancelled} in-flight task(s) for disabled project ${canonicalPath.split('/').pop()}`);
     }
     this.persistSelection();
   }
 
   enableProject(projectPath: string): void {
     this.projectSelectionTouched = true; // explicit selection from here on (INT-2207)
-    this.enabledProjects.add(projectPath);
+    const canonicalPath = normalizeProjectPath(projectPath);
+    this.enabledProjects.add(canonicalPath);
     // Enabling a repo (via `openswarm add` / the dashboard) must also ALLOW it:
     // resolveProjectPath only reads a repo's openswarm.json for paths in
     // allowedProjects, so an enabled-but-not-allowed repo never resolves
     // ("No repo mapped"). Keep config + DecisionEngine in sync. (INT-1970)
     const allowed = this.config.allowedProjects ?? [];
-    if (!allowed.includes(projectPath)) {
-      this.updateAllowedProjects([...allowed, projectPath]);
+    if (!allowed.some((allowedPath) => normalizeProjectPath(allowedPath) === canonicalPath)) {
+      this.updateAllowedProjects([...allowed, canonicalPath]);
     }
-    console.log(`[AutonomousRunner] Project enabled: ${projectPath}`);
+    console.log(`[AutonomousRunner] Project enabled: ${canonicalPath}`);
     this.persistSelection();
   }
 
@@ -1890,8 +2559,10 @@ export async function startAutonomous(config: AutonomousConfig): Promise<Autonom
 /**
  * Stop runner (convenience function)
  */
-export function stopAutonomous(): void {
+export async function stopAutonomous(): Promise<void> {
   if (runnerInstance) {
-    runnerInstance.stop();
+    const stoppingRunner = runnerInstance;
+    await stoppingRunner.stop();
+    if (runnerInstance === stoppingRunner) runnerInstance = null;
   }
 }

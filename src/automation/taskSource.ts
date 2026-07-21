@@ -30,6 +30,8 @@ export interface PairCompleteStats {
   reviewerDecision?: string;
   testResults?: { passed: number; failed: number; coverage?: number; failedTests?: string[] };
   remainingWork?: string;
+  /** Hidden marker used by the durable outbox to make comment delivery idempotent. */
+  idempotencyMarker?: string;
 }
 
 export type SubIssueResult = { id: string; identifier: string; title: string } | { error: string };
@@ -46,14 +48,14 @@ export interface ITaskSource {
   createTask(title: string, description: string, projectId?: string): Promise<SubIssueResult>;
   updateState(issueId: string, state: TaskState): Promise<boolean>;
   updateDescription?(issueId: string, description: string): Promise<void>;
-  addComment(issueId: string, body: string): Promise<void>;
+  addComment(issueId: string, body: string, idempotencyKey?: string): Promise<void>;
   /** Fresh tracker discussion for execution-time context; avoids stale discovery snapshots. */
   getExecutionComments?(issueId: string): Promise<Array<{ body: string; createdAt: string }>>;
   createSubIssue(
     parentId: string,
     title: string,
     description: string,
-    options?: { priority?: number; projectId?: string; estimatedMinutes?: number },
+    options?: { priority?: number; projectId?: string; estimatedMinutes?: number; idempotencyId?: string },
   ): Promise<SubIssueResult>;
   logPairStart(issueId: string, sessionId: string, projectPath: string): Promise<void>;
   logPairComplete(issueId: string, sessionId: string, stats: PairCompleteStats): Promise<void>;
@@ -63,7 +65,7 @@ export interface ITaskSource {
   /** Clear the stuck marker so the issue becomes eligible for retry again. */
   unstick(issueId: string): Promise<void>;
   logHalt(issueId: string, sessionId: string, confidence: number, iteration: number, reason: string): Promise<void>;
-  markAsDecomposed(issueId: string, subIssueCount: number, totalMinutes: number): Promise<void>;
+  markAsDecomposed(issueId: string, subIssueCount: number, totalMinutes: number, idempotencyMarker?: string): Promise<void>;
 }
 
 // ---- Linear-backed (delegates to the existing linear.* — behavior unchanged) ----
@@ -83,13 +85,15 @@ export class LinearTaskSource implements ITaskSource {
   }
   updateState(issueId: string, state: TaskState): Promise<boolean> { return linear.updateIssueState(issueId, state); }
   updateDescription(issueId: string, description: string): Promise<void> { return linear.updateIssueDescription(issueId, description); }
-  addComment(issueId: string, body: string): Promise<void> { return linear.addComment(issueId, body); }
+  addComment(issueId: string, body: string, idempotencyKey?: string): Promise<void> {
+    return linear.addComment(issueId, body, idempotencyKey ? linear.effectCommentId(idempotencyKey) : undefined);
+  }
   async getExecutionComments(issueId: string): Promise<Array<{ body: string; createdAt: string }>> {
     const issue = await linear.getIssue(issueId);
     if (!issue) throw new Error(`Could not refresh issue comments: ${issueId}`);
     return issue.comments.map(({ body, createdAt }) => ({ body, createdAt }));
   }
-  createSubIssue(parentId: string, title: string, description: string, options?: { priority?: number; projectId?: string; estimatedMinutes?: number }): Promise<SubIssueResult> {
+  createSubIssue(parentId: string, title: string, description: string, options?: { priority?: number; projectId?: string; estimatedMinutes?: number; idempotencyId?: string }): Promise<SubIssueResult> {
     return linear.createSubIssue(parentId, title, description, options);
   }
   logPairStart(issueId: string, sessionId: string, projectPath: string): Promise<void> { return linear.logPairStart(issueId, sessionId, projectPath); }
@@ -98,7 +102,9 @@ export class LinearTaskSource implements ITaskSource {
   logStuck(issueId: string, sessionName: string, reason: string): Promise<void> { return linear.logStuck(issueId, sessionName, reason); }
   unstick(issueId: string): Promise<void> { return linear.removeIssueLabel(issueId, linear.STUCK_LABEL); }
   logHalt(issueId: string, sessionId: string, confidence: number, iteration: number, reason: string): Promise<void> { return linear.logHalt(issueId, sessionId, confidence, iteration, reason); }
-  markAsDecomposed(issueId: string, subIssueCount: number, totalMinutes: number): Promise<void> { return linear.markAsDecomposed(issueId, subIssueCount, totalMinutes); }
+  markAsDecomposed(issueId: string, subIssueCount: number, totalMinutes: number, idempotencyMarker?: string): Promise<void> {
+    return linear.markAsDecomposed(issueId, subIssueCount, totalMinutes, idempotencyMarker);
+  }
 }
 
 // ---- SQLite-backed (local issue store, no external account) ----
@@ -151,20 +157,28 @@ export class SqliteTaskSource implements ITaskSource {
     }
   }
   async updateState(issueId: string, state: TaskState): Promise<boolean> {
-    this.store.changeStatus(issueId, STATE_TO_STATUS[state]);
-    return true;
+    return this.store.changeStatus(issueId, STATE_TO_STATUS[state]) !== null;
   }
   async updateDescription(issueId: string, description: string): Promise<void> {
     this.store.updateIssue(issueId, { description });
   }
-  async addComment(issueId: string, body: string): Promise<void> {
-    this.store.addEvent(issueId, 'commented', { content: body });
+  async addComment(issueId: string, body: string, idempotencyKey?: string): Promise<void> {
+    this.store.addEvent(issueId, 'commented', {
+      content: body,
+      idempotencyKey,
+    });
   }
-  async createSubIssue(parentId: string, title: string, description: string, options?: { priority?: number; projectId?: string; estimatedMinutes?: number }): Promise<SubIssueResult> {
+  async getExecutionComments(issueId: string): Promise<Array<{ body: string; createdAt: string }>> {
+    return this.store.getEvents(issueId, 500)
+      .filter((event) => event.type === 'commented' && event.content)
+      .map((event) => ({ body: event.content!, createdAt: event.createdAt }));
+  }
+  async createSubIssue(parentId: string, title: string, description: string, options?: { priority?: number; projectId?: string; estimatedMinutes?: number; idempotencyId?: string }): Promise<SubIssueResult> {
     const parent = this.store.getIssue(parentId);
     const numToPriority: Record<number, IssuePriority> = { 1: 'urgent', 2: 'high', 3: 'medium', 4: 'low' };
     try {
       const issue = this.store.createIssue({
+        id: options?.idempotencyId,
         projectId: options?.projectId ?? parent?.projectId ?? this.defaultProjectId,
         title,
         description,
@@ -175,6 +189,17 @@ export class SqliteTaskSource implements ITaskSource {
       });
       return { id: issue.id, identifier: issue.id, title: issue.title };
     } catch (err) {
+      const existing = options?.idempotencyId ? this.store.getIssue(options.idempotencyId) : null;
+      if (
+        existing?.parentId === parentId
+        && existing.title === title
+        && (existing.description ?? '') === description
+      ) {
+        return { id: existing.id, identifier: existing.id, title: existing.title };
+      }
+      if (existing) {
+        return { error: `Idempotent child collision for ${options!.idempotencyId}: existing artifact does not match the requested plan` };
+      }
       return { error: err instanceof Error ? err.message : String(err) };
     }
   }
@@ -222,7 +247,7 @@ export class SqliteTaskSource implements ITaskSource {
         : ['(none)'],
     });
 
-    await this.addComment(issueId, formatAutomationComment({
+    const comment = formatAutomationComment({
       heading: 'Task complete',
       summary: stats.workerSummary?.trim() || undefined,
       sections,
@@ -233,8 +258,10 @@ export class SqliteTaskSource implements ITaskSource {
         Files: stats.filesChanged.length,
       },
       attribution: 'Worker/Reviewer/Tester pipeline',
-    }));
-    await this.updateState(issueId, 'Done');
+    }) + (stats.idempotencyMarker ? `\n\n<!-- openswarm-effect:${stats.idempotencyMarker} -->` : '');
+    await this.addComment(issueId, comment, stats.idempotencyMarker);
+    const accepted = await this.updateState(issueId, 'Done');
+    if (!accepted) throw new Error(`Local issue store refused Done transition for ${issueId}`);
   }
   async logBlocked(issueId: string, _sessionName: string, reason: string): Promise<void> {
     await this.addComment(issueId, formatAutomationComment({
@@ -272,17 +299,18 @@ export class SqliteTaskSource implements ITaskSource {
       meta: { Session: _sessionId, Confidence: `${confidence}%`, Attempt: `#${iteration}` },
     }));
   }
-  async markAsDecomposed(issueId: string, subIssueCount: number, totalMinutes: number): Promise<void> {
+  async markAsDecomposed(issueId: string, subIssueCount: number, totalMinutes: number, idempotencyMarker?: string): Promise<void> {
     await this.addComment(issueId, formatAutomationComment({
       heading: 'Decomposed into sub-issues',
-      summary: 'The parent is parked while child issues execute.',
+      summary: 'The parent stays active while child issues execute.',
       sections: [{
         label: 'Result',
         body: [`Sub-issues created: ${subIssueCount}`, `Total estimated time: ${totalMinutes} min`],
       }],
       attribution: 'Planner agent',
-    }));
-    await this.updateState(issueId, 'Backlog');
+    }), idempotencyMarker);
+    const accepted = await this.updateState(issueId, 'In Progress');
+    if (!accepted) throw new Error(`Local issue store refused decomposed parent transition for ${issueId}`);
   }
 }
 
