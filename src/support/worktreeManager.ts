@@ -138,7 +138,7 @@ function assertManagedWorktreePath(repoPath: string, worktreePath: string): stri
 // deps/DBs are read-mostly, so parallel workers sharing them is safe.
 
 /** Always-gitignored dependency dirs safe to auto-link without a config. */
-const AUTO_SHARED_CANDIDATES = ['node_modules', '.venv', 'venv'];
+const AUTO_SHARED_CANDIDATES = ['node_modules', '.venv-verify', '.venv', 'venv'];
 
 interface SandboxConfig {
   sandbox?: { sharedPaths?: string[] } | null;

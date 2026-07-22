@@ -12,6 +12,16 @@ async function readText(path: string): Promise<string | null> {
   return readFile(path, 'utf8').catch(() => null);
 }
 
+async function pythonCommand(projectPath: string): Promise<string> {
+  const candidates = process.platform === 'win32'
+    ? ['.venv-verify/Scripts/python.exe', '.venv/Scripts/python.exe', 'venv/Scripts/python.exe']
+    : ['.venv-verify/bin/python', '.venv/bin/python', 'venv/bin/python'];
+  for (const candidate of candidates) {
+    if (await exists(join(projectPath, candidate))) return `./${candidate}`;
+  }
+  return 'python';
+}
+
 function command(name: string, run: string, kind: VerifyCommand['kind']): VerifyCommand {
   return { name, run, kind, timeoutMs: DEFAULT_TIMEOUT_MS };
 }
@@ -50,7 +60,7 @@ export async function discoverVerifyCommands(projectPath: string): Promise<Verif
   const pyproject = await readText(join(projectPath, 'pyproject.toml'));
   const setupCfg = await readText(join(projectPath, 'setup.cfg'));
   if (pytestIni || pyproject?.includes('[tool.pytest.ini_options]') || setupCfg?.includes('[tool:pytest]')) {
-    commands.push(command('pytest', 'python -m pytest -x -q', 'test'));
+    commands.push(command('pytest', `${await pythonCommand(projectPath)} -m pytest -x -q`, 'test'));
   }
 
   // Rust repositories use Cargo's native test runner.

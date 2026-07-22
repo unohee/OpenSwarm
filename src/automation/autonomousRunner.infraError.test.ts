@@ -105,6 +105,29 @@ describe('AutonomousRunner infra_error handling (INT-2010)', () => {
     expect(history.every((entry: { failureCause?: string }) => entry.failureCause === 'infra')).toBe(true);
   });
 
+  it('parks a pair-level stuck result once without replaying the outer retry budget', async () => {
+    const source = mockTaskSource();
+    runnerExecution.setTaskSource(source);
+    const runner = new AutonomousRunner(cfg());
+    const scheduler = (runner as unknown as { scheduler: TaskScheduler }).scheduler;
+    const stuck: PipelineResult = {
+      ...result('failed'),
+      failureSignal: 'stuck',
+      stuckReason: 'Same error repeated 3 times: schema validation failed',
+      taskContext: { issueIdentifier: 'INT-1', projectPath: '/repo', taskTitle: 'Edit some files' },
+    };
+
+    scheduler.startTask(task(), '/repo', async () => stuck);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    expect(source.logStuck).toHaveBeenCalledTimes(1);
+    expect(source.logStuck).toHaveBeenCalledWith(
+      'ISSUE-1', 'autonomous-runner', expect.stringContaining('Same error repeated 3 times'),
+    );
+    const state = JSON.parse(readFileSync(join(tempDir, 'runner-task-state.json'), 'utf8'));
+    expect(state.failed['ISSUE-1']).toBe(4);
+  });
+
   it('does not persist a superseded open issue as completed (INT-2568)', async () => {
     const source = mockTaskSource();
     runnerExecution.setTaskSource(source);

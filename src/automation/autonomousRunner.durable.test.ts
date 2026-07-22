@@ -290,6 +290,42 @@ describe('AutonomousRunner durable completion race', () => {
     internal.durableRuns.close();
   });
 
+  it('resumes durable NEEDS_HUMAN when an operator moves a stuck issue to Todo', async () => {
+    const [{ AutonomousRunner }, execution] = await Promise.all([
+      import('./autonomousRunner.js'),
+      import('./runnerExecution.js'),
+    ]);
+    const unstick = vi.fn(async () => {});
+    execution.setTaskSource({
+      kind: 'linear', fetchTasks: vi.fn(async () => []), getExecutionComments: vi.fn(async () => []),
+      updateState: vi.fn(async () => true), addComment: vi.fn(async () => {}),
+      createTask: vi.fn(), createSubIssue: vi.fn(), logPairStart: vi.fn(),
+      logPairComplete: vi.fn(), logBlocked: vi.fn(), logStuck: vi.fn(), unstick,
+      logHalt: vi.fn(), markAsDecomposed: vi.fn(),
+    } as unknown as ITaskSource);
+    const runner = new AutonomousRunner({
+      linearTeamId: 'team', allowedProjects: ['/repo'], heartbeatSchedule: '0 * * * *',
+      autoExecute: true, maxConsecutiveTasks: 1, cooldownSeconds: 0, dryRun: true,
+      automationLedgerMode: 'primary', automationDbPath: join(root, 'stuck-recovery.db'),
+    });
+    const internal = runner as unknown as InternalRunner;
+    internal.durableRuns.importLegacyRun({
+      issueId: 'stuck-issue', source: 'linear', identifier: 'INT-STUCK', title: 'retry me',
+      projectPath: '/repo', state: 'NEEDS_HUMAN',
+    });
+    const task: TaskItem = {
+      id: 'stuck-issue', issueId: 'stuck-issue', issueIdentifier: 'INT-STUCK', source: 'linear',
+      title: 'retry me', priority: 2, createdAt: Date.now(), linearState: 'Todo',
+      labels: ['swarm:stuck'], linearProject: { id: 'project', name: 'Repo' },
+    };
+
+    expect(internal.filterAlreadyProcessed([task])).toEqual([task]);
+    expect(internal.durableRuns.getRun('stuck-issue')).toMatchObject({ state: 'READY' });
+    await Promise.resolve();
+    expect(unstick).toHaveBeenCalledWith('stuck-issue');
+    internal.durableRuns.close();
+  });
+
   it('recovers a PR published before process death without rerunning the pipeline', async () => {
     const [{ AutonomousRunner }, execution] = await Promise.all([
       import('./autonomousRunner.js'),

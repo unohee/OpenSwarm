@@ -273,6 +273,15 @@ describe('runVerify', () => {
     expect(evidence).toMatchObject({ headStatus: 'fail', baseStatus: 'fail', newFailure: false });
   });
 
+  it('normalizes isolated worktree paths when comparing the same failure', async () => {
+    const [evidence] = await runVerify({
+      projectPath: repo,
+      commands: [verify('printf "%s\\npre-existing failure\\n" "$PWD"; exit 1')],
+      baseRef: 'HEAD',
+    });
+    expect(evidence).toMatchObject({ headStatus: 'fail', baseStatus: 'fail', newFailure: false });
+  });
+
   it('marks an additional head failure as new when base already fails', async () => {
     await writeFile(join(repo, 'existing-failure'), 'yes\n', 'utf8');
     git('add', 'existing-failure');
@@ -317,6 +326,20 @@ describe('runVerify', () => {
     });
 
     expect(evidence).toMatchObject({ headStatus: 'fail', baseStatus: 'fail', newFailure: true });
+  });
+
+  it('waives the same pre-existing missing environment dependency after a manifest change', async () => {
+    await writeFile(join(repo, 'pyproject.toml'), '[project]\nname = "fixture"\n', 'utf8');
+    git('add', 'pyproject.toml');
+    git('commit', '-m', 'base python manifest');
+    await writeFile(join(repo, 'pyproject.toml'), '[project]\nname = "fixture"\nversion = "1"\n', 'utf8');
+
+    const [evidence] = await runVerify({
+      projectPath: repo,
+      commands: [verify("printf '%s\\nModuleNotFoundError: No module named '\"'\"'slack_bolt'\"'\"'\\n' \"$PWD\"; exit 1")],
+      baseRef: 'HEAD',
+    });
+    expect(evidence).toMatchObject({ headStatus: 'fail', baseStatus: 'fail', newFailure: false });
   });
 
   it.each(['Cargo.toml', 'go.mod'])('invalidates baseline failures when %s changes', async (name) => {

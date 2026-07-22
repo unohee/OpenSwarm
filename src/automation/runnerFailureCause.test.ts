@@ -9,6 +9,7 @@ describe('pipeline history failure causes (INT-2659)', () => {
     ['no-changes', { success: false, finalStatus: 'failed', workerFilesChanged: 0 }],
     ['gate-fail', { success: false, finalStatus: 'failed', workerFilesChanged: 1, failureSignal: 'gate-fail' }],
     ['timeout', { success: false, finalStatus: 'infra_error', failureSignal: 'timeout' }],
+    ['stuck', { success: false, finalStatus: 'failed', failureSignal: 'stuck' }],
     ['cancelled', { success: false, finalStatus: 'cancelled' }],
   ] as const)('classifies %s from structural fields', (expected, signals) => {
     expect(classifyFailureCause(signals)).toBe(expected);

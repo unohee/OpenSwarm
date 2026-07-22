@@ -542,6 +542,39 @@ export class AutonomousRunner {
         return;
       }
 
+      // The bounded pair loop already proved stagnation (same error/output or
+      // repeated REVISE). Retrying the whole pipeline would only replay the same
+      // loop up to MAX_RETRY_COUNT times, multiplying cost and STUCK log noise.
+      if (result.failureSignal === 'stuck' && task.issueId) {
+        const failureDetail = result.stuckReason
+          ?? pickFailureDetail([result.lastReviewFeedback, result.reviewResult?.feedback, result.workerResult?.error])
+          ?? 'Pair pipeline detected repeated non-progress.';
+        this.completedTaskIds.add(task.issueId);
+        this.failedTaskCounts.set(task.issueId, AutonomousRunner.MAX_RETRY_COUNT);
+        clearRetryTime(task.issueId, this.failedTaskRetryTimes);
+        recordLastFailureDetail(this.taskStateRef, task.issueId, failureDetail);
+        if (this.durableRuns.isPrimary) {
+          this.durableRuns.markNeedsHuman(task.issueId, `Pair pipeline stuck: ${failureDetail}`);
+        }
+        this.saveTaskState();
+        if (result.taskContext?.projectPath) {
+          await removePreservedWorktreeAt(result.taskContext.projectPath)
+            .catch((err) => console.warn('[Worktree] STUCK cleanup failed:', err));
+        }
+        try {
+          await execution.syncFailureState(task, `Pair pipeline stuck: ${failureDetail}`);
+          await getTaskSource()?.logStuck(
+            task.issueId,
+            'autonomous-runner',
+            `Pair pipeline detected repeated non-progress; another full retry would repeat the same loop.\n\n**Reason:**\n${failureDetail}`,
+          );
+          console.log(`[Scheduler] Issue ${task.issueId} marked STUCK from pair-level stagnation (no outer retry)`);
+        } catch (err) {
+          console.error('[Scheduler] Failed to update pair-level STUCK issue state:', err);
+        }
+        return;
+      }
+
       console.log(`[Scheduler] Task failed: ${taskCtx} ${task.title}`);
       broadcastEvent({ type: 'task:completed', data: { taskId: task.id, success: false, duration: result.totalDuration } });
       await reportToDiscord(formatPipelineResultEmbed(result));
@@ -798,8 +831,7 @@ export class AutonomousRunner {
       if (
         this.durableRuns.isPrimary
         && durableRun?.state === 'NEEDS_HUMAN'
-        && !isStuck
-        && task.linearState === 'Todo'
+        && ['Todo', 'In Progress', 'In Review'].includes(task.linearState ?? '')
       ) {
         const resumed = this.durableRuns.resumeNeedsHuman(id);
         if (resumed) {
@@ -900,7 +932,7 @@ export class AutonomousRunner {
         console.warn(`[AutonomousRunner] Failed to clear stuck label for ${id}:`, err));
     }
     if (stuckSkipped > 0) {
-      this.syslog(`🛑 Skipped ${stuckSkipped} stuck issue(s) (retries exhausted — remove the \`${STUCK_LABEL}\` label or move to Todo to retry)`);
+      this.syslog(`🛑 Skipped ${stuckSkipped} stuck issue(s) (retries exhausted — remove the \`${STUCK_LABEL}\` label or move to Todo / In Progress to retry)`);
     }
     if (recovered > 0) {
       this.saveTaskState();
