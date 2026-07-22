@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { formatInputDebug, inputDebugEnabled, appendInputDebug } from './inputDebug.js';
@@ -40,6 +40,7 @@ describe('appendInputDebug (INT-1964)', () => {
       const lines = readFileSync(path, 'utf8').trim().split('\n');
       expect(lines).toHaveLength(2);
       expect(lines[0]).toContain('cp=[51060]');
+      expect(statSync(path).mode & 0o777).toBe(0o600);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -10,7 +10,7 @@
 // keypress logs one code point but the screen shows two glyphs, it's terminal
 // echo (fix in the client); if it logs the code point twice, it's ink-level.
 
-import { appendFileSync, mkdirSync } from 'node:fs';
+import { closeSync, mkdirSync, openSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 
@@ -50,7 +50,12 @@ export function inputDebugEnabled(env: NodeJS.ProcessEnv = process.env): boolean
 export function appendInputDebug(input: string, key: DebugKeyFlags = {}, path = INPUT_DEBUG_LOG): void {
   try {
     mkdirSync(dirname(path), { recursive: true });
-    appendFileSync(path, `${formatInputDebug(input, key)}\n`);
+    const fd = openSync(path, 'a', 0o600);
+    try {
+      writeFileSync(fd, `${formatInputDebug(input, key)}\n`, 'utf8');
+    } finally {
+      closeSync(fd);
+    }
   } catch {
     // diagnostics must never break input handling
   }

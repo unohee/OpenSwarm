@@ -61,6 +61,18 @@ describe('TOOL_DEFINITIONS', () => {
   });
 });
 
+describe('validatePath realpath containment', () => {
+  it('rejects an in-root symlink that resolves outside the root', async () => {
+    const link = path.join(TMP_DIR, 'outside-link.txt');
+    await fs.symlink('/etc/hosts', link);
+    try {
+      expect(() => validatePath(link, TMP_DIR)).toThrow(/outside the project root/);
+    } finally {
+      await fs.unlink(link);
+    }
+  });
+});
+
 // ──────────────────────────────────────────────
 // 1b. search_memory tool
 // ──────────────────────────────────────────────

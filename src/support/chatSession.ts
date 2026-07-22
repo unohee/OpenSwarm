@@ -9,11 +9,14 @@
 
 import { homedir } from 'node:os';
 import { resolve, relative, isAbsolute } from 'node:path';
-import { readFile, writeFile, mkdir, readdir, stat } from 'node:fs/promises';
+import { readFile, mkdir, readdir, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { loadConfig } from '../core/config.js';
 import { getDefaultAdapterName, isKnownAdapter, type AdapterName } from '../adapters/index.js';
 import { getDefaultChatModel, runChatCompletion } from './chatBackend.js';
+import { atomicWriteFileSync } from './atomicFile.js';
+
+const sessionWriteQueues = new Map<string, Promise<void>>();
 
 /**
  * On-disk location for persisted chat sessions. Read via OPENSWARM_CHAT_DIR when
@@ -50,30 +53,45 @@ export async function ensureChatDir(dir: string = getChatDir()): Promise<void> {
 
 export async function saveSession(session: Session, dir: string = getChatDir()): Promise<void> {
   await ensureChatDir(dir);
-  session.updatedAt = new Date().toISOString();
-  await writeFile(resolveSessionPath(session.id, dir), JSON.stringify(session, null, 2));
+  const path = resolveSessionPath(session.id, dir);
+  const previous = sessionWriteQueues.get(path) ?? Promise.resolve();
+  const write = previous.catch(() => undefined).then(() => {
+    session.updatedAt = new Date().toISOString();
+    atomicWriteFileSync(path, `${JSON.stringify(session, null, 2)}\n`);
+  });
+  sessionWriteQueues.set(path, write);
+  try {
+    await write;
+  } finally {
+    if (sessionWriteQueues.get(path) === write) sessionWriteQueues.delete(path);
+  }
 }
 
 export async function loadSession(id: string, dir: string = getChatDir()): Promise<Session | null> {
   const path = resolveSessionPath(id, dir, false);
   if (!path) return null;
   if (!existsSync(path)) return null;
-  const data = JSON.parse(await readFile(path, 'utf-8'));
+  let data: Record<string, unknown>;
+  try {
+    data = JSON.parse(await readFile(path, 'utf-8')) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
   // Validate the persisted provider — a stale/removed adapter (e.g. `claude`)
   // must not pass through, or downstream model lookups crash. If it's replaced,
   // its model no longer applies → use the provider's default.
-  const provider = inferProvider(data.provider, data.model);
-  const model = data.provider === provider && data.model ? data.model : getDefaultChatModel(provider);
+  const provider = inferProvider(data.provider as AdapterName | undefined, data.model as string | undefined);
+  const model = data.provider === provider && typeof data.model === 'string' ? data.model : getDefaultChatModel(provider);
   return {
     ...data,
     provider,
     model,
     // Older session files may predate the messages field — default to [] so
     // messagesToHistory never sees undefined. (INT-2014)
-    messages: Array.isArray(data.messages) ? data.messages : [],
-    totalCost: data.totalCost ?? 0,
-    totalTokens: data.totalTokens ?? 0,
-  };
+    messages: Array.isArray(data.messages) ? data.messages as Message[] : [],
+    totalCost: typeof data.totalCost === 'number' ? data.totalCost : 0,
+    totalTokens: typeof data.totalTokens === 'number' ? data.totalTokens : 0,
+  } as Session;
 }
 
 function resolveSessionPath(id: string, dir: string): string;

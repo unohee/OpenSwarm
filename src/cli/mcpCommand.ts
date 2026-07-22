@@ -6,11 +6,12 @@
 // the JSON by hand. The mutation helpers are pure (registry in → registry out)
 // so routing is unit-tested; runMcpCommand is the thin read→mutate→write shell.
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join } from 'node:path';
 import type { McpServerConfig } from '../core/types.js';
 import { BUILTIN_MCP_SERVERS } from '../mcp/mcpClient.js';
+import { atomicWriteFileSync } from '../support/atomicFile.js';
 
 export const MCP_JSON_PATH = join(homedir(), '.openswarm', 'mcp.json');
 
@@ -23,14 +24,13 @@ export function readMcpJson(path = MCP_JSON_PATH): McpJson {
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8')) as { mcpServers?: Record<string, McpServerConfig> };
     return { mcpServers: parsed.mcpServers ?? {} };
-  } catch {
-    return { mcpServers: {} };
+  } catch (error) {
+    throw new Error(`MCP registry is malformed at ${path}: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
 export function writeMcpJson(json: McpJson, path = MCP_JSON_PATH): void {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(json, null, 2)}\n`);
+  atomicWriteFileSync(path, `${JSON.stringify(json, null, 2)}\n`);
 }
 
 /**

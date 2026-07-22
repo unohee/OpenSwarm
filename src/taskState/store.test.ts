@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import {
   upsertTaskState,
   getTaskState,
@@ -110,6 +112,24 @@ describe('task state store', () => {
       fileScope: ['src/override.ts'],
     });
     expect(overridden.fileScope).toEqual(['src/override.ts']);
+  });
+
+  it('serializes two process writers without losing either update', async () => {
+    const fixture = fileURLToPath(new URL('./storeClaimProcess.fixture.ts', import.meta.url));
+    const run = (issueId: string, delay: number) => new Promise<void>((resolve, reject) => {
+      const child = spawn(process.execPath, ['--import', 'tsx', fixture, stateFile, issueId, String(delay)], {
+        stdio: 'pipe',
+      });
+      let stderr = '';
+      child.stderr.on('data', (chunk) => { stderr += String(chunk); });
+      child.on('error', reject);
+      child.on('exit', (code) => code === 0 ? resolve() : reject(new Error(stderr || `child exited ${code}`)));
+    });
+
+    await Promise.all([run('PROCESS-A', 0), run('PROCESS-B', 0)]);
+    resetTaskStateStoreForTests();
+    expect(getTaskState('PROCESS-A')?.title).toBe('PROCESS-A');
+    expect(getTaskState('PROCESS-B')?.title).toBe('PROCESS-B');
   });
 
   it('keeps tasks blocked until dependencies are done, then releases them', () => {

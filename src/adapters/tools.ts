@@ -6,6 +6,7 @@
 // ============================================
 
 import fs from 'node:fs/promises';
+import { existsSync, realpathSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { homedir } from 'node:os';
@@ -286,17 +287,38 @@ export interface ToolExecOptions {
 
 const DEFAULT_BASH_TIMEOUT_MS = 30000;
 
-function isProtected(resolved: string, protectedFiles?: string[]): boolean {
+function canonicalizePath(candidate: string): string {
+  if (existsSync(candidate)) return realpathSync(candidate);
+  const suffix: string[] = [];
+  let ancestor = candidate;
+  while (!existsSync(ancestor)) {
+    const parent = path.dirname(ancestor);
+    if (parent === ancestor) break;
+    suffix.unshift(path.basename(ancestor));
+    ancestor = parent;
+  }
+  return path.join(realpathSync(ancestor), ...suffix);
+}
+
+export function isProtectedPath(resolved: string, protectedFiles?: string[]): boolean {
   if (!protectedFiles?.length) return false;
-  return protectedFiles.some((p) => resolved === p || resolved.endsWith(`/${p}`));
+  return protectedFiles.some((p) => {
+    const absolute = path.resolve(p);
+    const canonical = canonicalizePath(absolute);
+    return resolved === canonical || resolved.endsWith(`/${p}`);
+  });
 }
 
 /** 프로젝트 경로 내로 접근을 제한하는 경로 검증 */
 export function validatePath(filePath: string, cwd: string): string {
-  const projectRoot = path.resolve(cwd);
+  const requestedRoot = path.resolve(cwd);
+  const projectRoot = existsSync(requestedRoot) ? realpathSync(requestedRoot) : requestedRoot;
   const resolved = path.resolve(projectRoot, filePath);
+  const canonical = canonicalizePath(resolved);
   const inside = (root: string): boolean => {
-    const rel = path.relative(path.resolve(root), resolved);
+    const requested = path.resolve(root);
+    const canonicalRoot = existsSync(requested) ? realpathSync(requested) : requested;
+    const rel = path.relative(canonicalRoot, canonical);
     return rel === '' || (!rel.startsWith(`..${path.sep}`) && rel !== '..' && !path.isAbsolute(rel));
   };
   // cwd 하위이거나, /tmp 하위만 허용. 문자열 prefix 비교는 상대 cwd를
@@ -309,7 +331,7 @@ export function validatePath(filePath: string, cwd: string): string {
       `Do not use "/" or absolute paths outside ${projectRoot}.`,
     );
   }
-  return resolved;
+  return canonical;
 }
 
 // Normalize a single line for fuzzy edit matching: strip trailing whitespace and
@@ -421,7 +443,7 @@ export async function executeTool(
 
       case 'write_file': {
         const filePath = validatePath(args.path, cwd);
-        if (isProtected(filePath, execOptions?.protectedFiles)) {
+        if (isProtectedPath(filePath, execOptions?.protectedFiles)) {
           return {
             tool_call_id: callId,
             content: `PROTECTED: ${args.path} is part of the verification harness and must not be modified. ` +
@@ -438,7 +460,7 @@ export async function executeTool(
 
       case 'edit_file': {
         const filePath = validatePath(args.path, cwd);
-        if (isProtected(filePath, execOptions?.protectedFiles)) {
+        if (isProtectedPath(filePath, execOptions?.protectedFiles)) {
           return {
             tool_call_id: callId,
             content: `PROTECTED: ${args.path} is part of the verification harness and must not be modified. ` +
@@ -503,7 +525,7 @@ export async function executeTool(
             ?? l.match(/^\*\*\* Move to: (.+)$/)?.[1]?.trim(),
           )
           .filter((p): p is string => !!p)
-          .find((p) => isProtected(validatePath(p, cwd), execOptions?.protectedFiles));
+          .find((p) => isProtectedPath(validatePath(p, cwd), execOptions?.protectedFiles));
         if (protectedHit) {
           return {
             tool_call_id: callId,

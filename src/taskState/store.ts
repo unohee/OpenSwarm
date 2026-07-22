@@ -11,6 +11,7 @@ import {
   openSync,
   readFileSync,
   renameSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -102,6 +103,10 @@ export type OpenSwarmTaskState = z.infer<typeof OpenSwarmTaskStateSchema>;
 type TaskStateStore = z.infer<typeof TaskStateStoreSchema>;
 
 let cache: TaskStateStore | null = null;
+const LOCK_STALE_MS = 30_000;
+const LOCK_WAIT_MS = 10;
+const LOCK_TIMEOUT_MS = 5_000;
+const lockWaitBuffer = new Int32Array(new SharedArrayBuffer(4));
 
 function getStorePath(): string {
   return process.env.OPENSWARM_TASK_STATE_FILE || join(homedir(), '.openswarm', 'task-state.json');
@@ -139,6 +144,54 @@ function ensureStoreLoaded(): TaskStateStore {
 
 export function resetTaskStateStoreForTests(): void {
   cache = null;
+}
+
+function withStoreLock<T>(operation: () => T): T {
+  const path = getStorePath();
+  const directory = dirname(path);
+  const lockPath = `${path}.lock`;
+  mkdirSync(directory, { recursive: true });
+  const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  let lockFd: number | undefined;
+
+  while (lockFd === undefined) {
+    try {
+      lockFd = openSync(lockPath, 'wx', 0o600);
+      writeFileSync(lockFd, `${process.pid}\n`, 'utf8');
+      fsyncSync(lockFd);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'EEXIST') throw error;
+      try {
+        if (Date.now() - statSync(lockPath).mtimeMs > LOCK_STALE_MS) {
+          unlinkSync(lockPath);
+          continue;
+        }
+      } catch (statError) {
+        if ((statError as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        throw statError;
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(`Timed out waiting for task state lock: ${lockPath}`);
+      }
+      Atomics.wait(lockWaitBuffer, 0, 0, LOCK_WAIT_MS);
+    }
+  }
+
+  try {
+    // Another process may have committed since this process populated cache.
+    cache = null;
+    return operation();
+  } finally {
+    closeSync(lockFd);
+    try {
+      unlinkSync(lockPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        console.warn(`[TaskState] Failed to remove lock ${lockPath}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  }
 }
 
 function persistStore(): void {
@@ -211,34 +264,30 @@ export function listTaskStates(): OpenSwarmTaskState[] {
 }
 
 export function upsertTaskState(issueId: string, patch: Partial<OpenSwarmTaskState>): OpenSwarmTaskState {
-  const store = ensureStoreLoaded();
-  const current = store.tasks[issueId] || createDefaultState(issueId);
-  const { execution, worktree, ...topLevelPatch } = patch;
-  const definedTopLevelPatch = Object.fromEntries(
-    Object.entries(topLevelPatch).filter(([, value]) => value !== undefined)
-  ) as Partial<OpenSwarmTaskState>;
-  const merged: OpenSwarmTaskState = {
-    ...current,
-    ...definedTopLevelPatch,
-    issueId,
-    childIssueIds: patch.childIssueIds ?? current.childIssueIds ?? [],
-    dependencyIssueIds: patch.dependencyIssueIds ?? current.dependencyIssueIds ?? [],
-    dependencyTitles: patch.dependencyTitles ?? current.dependencyTitles ?? [],
-    fileScope: patch.fileScope ?? current.fileScope ?? [],
-    execution: {
-      ...current.execution,
-      ...(execution),
-    },
-    worktree: {
-      ...current.worktree,
-      ...(worktree),
-    },
-    updatedAt: new Date().toISOString(),
-  };
+  return withStoreLock(() => {
+    const store = ensureStoreLoaded();
+    const current = store.tasks[issueId] || createDefaultState(issueId);
+    const { execution, worktree, ...topLevelPatch } = patch;
+    const definedTopLevelPatch = Object.fromEntries(
+      Object.entries(topLevelPatch).filter(([, value]) => value !== undefined)
+    ) as Partial<OpenSwarmTaskState>;
+    const merged: OpenSwarmTaskState = {
+      ...current,
+      ...definedTopLevelPatch,
+      issueId,
+      childIssueIds: patch.childIssueIds ?? current.childIssueIds ?? [],
+      dependencyIssueIds: patch.dependencyIssueIds ?? current.dependencyIssueIds ?? [],
+      dependencyTitles: patch.dependencyTitles ?? current.dependencyTitles ?? [],
+      fileScope: patch.fileScope ?? current.fileScope ?? [],
+      execution: { ...current.execution, ...execution },
+      worktree: { ...current.worktree, ...worktree },
+      updatedAt: new Date().toISOString(),
+    };
 
-  store.tasks[issueId] = OpenSwarmTaskStateSchema.parse(merged);
-  persistStore();
-  return store.tasks[issueId];
+    store.tasks[issueId] = OpenSwarmTaskStateSchema.parse(merged);
+    persistStore();
+    return store.tasks[issueId];
+  });
 }
 
 export function enrichTaskFromState(task: TaskItem): TaskItem {

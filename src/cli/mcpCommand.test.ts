@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -70,6 +70,20 @@ describe('runMcpCommand round-trip (INT-1953)', () => {
       expect(readMcpJson(path).mcpServers.linear).toBeUndefined();
       expect(existsSync(path)).toBe(true);
       expect(readFileSync(path, 'utf8')).toContain('mcpServers');
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed when the registry is malformed', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mcpcmd-'));
+    const path = join(dir, 'mcp.json');
+    try {
+      writeFileSync(path, '{broken');
+      expect(() => readMcpJson(path)).toThrow(/MCP registry is malformed/);
+      expect(() => runMcpCommand('add', 'linear', [], { preset: 'linear', path })).toThrow(/malformed/);
+      expect(readFileSync(path, 'utf8')).toBe('{broken');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -6,7 +6,7 @@
 //          VEGA token_count.py 패턴 이식 — 토큰 기반 히스토리 압축.
 // ============================================
 
-import { TOOL_DEFINITIONS, APPLY_PATCH_TOOL, executeToolCalls, createReadCache, validatePath, type ToolCall, type ToolResult, type ToolDefinition } from './tools.js';
+import { TOOL_DEFINITIONS, APPLY_PATCH_TOOL, executeToolCalls, createReadCache, isProtectedPath, validatePath, type ToolCall, type ToolResult, type ToolDefinition } from './tools.js';
 import { WEB_TOOL_DEFINITIONS } from './webTools.js';
 import { detectRateLimit, RateLimitError } from './rateLimitError.js';
 import { isInfraError } from './errorClassification.js';
@@ -388,7 +388,7 @@ export async function runAgenticLoop(options: AgenticLoopOptions): Promise<Agent
             } catch {
               return `✗ ${block.filePath} — outside project root, rejected`;
             }
-            if (protectedFiles?.some(p => resolved === p || resolved.endsWith(`/${p}`))) {
+            if (isProtectedPath(resolved, protectedFiles)) {
               return `✗ ${block.filePath} — PROTECTED harness file, cannot modify`;
             }
             const r = await applyEditBlock(block, cwd);

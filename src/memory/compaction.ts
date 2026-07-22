@@ -9,6 +9,26 @@ import { isTransientReviewRejectionMemory } from './memoryFilters.js';
 const MIN_IMPORTANCE = 0.1;
 const CONSOLIDATION_SIMILARITY = 0.85;
 
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function stableMetadata(value: unknown): string {
+  if (typeof value !== 'string') return stableJson(value);
+  try {
+    return stableJson(JSON.parse(value));
+  } catch {
+    return JSON.stringify(value);
+  }
+}
+
 /**
  * Calculate cosine similarity between two vectors
  */
@@ -32,7 +52,7 @@ function cosineSimilarity(a: number[], b: number[]): number {
 /**
  * Remove duplicate memories based on vector similarity
  */
-function removeDuplicates(records: CognitiveMemoryRecord[]): CognitiveMemoryRecord[] {
+export function removeDuplicates(records: CognitiveMemoryRecord[]): CognitiveMemoryRecord[] {
   const unique: CognitiveMemoryRecord[] = [];
   const seen = new Set<string>();
 
@@ -47,7 +67,7 @@ function removeDuplicates(records: CognitiveMemoryRecord[]): CognitiveMemoryReco
         record.repo !== existing.repo ||
         record.type !== existing.type ||
         record.derivedFrom !== existing.derivedFrom ||
-        record.metadata !== existing.metadata
+        stableMetadata(record.metadata) !== stableMetadata(existing.metadata)
       ) {
         continue;
       }
@@ -153,6 +173,7 @@ export async function compactMemoryTable(): Promise<{
       await db.createEmptyTable(tempTableName, await table.schema());
     }
 
+    let replaced = false;
     try {
       console.log(`[Compaction] Replacing ${targetTableName} with compacted data...`);
       if (normalized.length > 0) {
@@ -162,11 +183,16 @@ export async function compactMemoryTable(): Promise<{
       }
       const newTable = await db.openTable(targetTableName);
       setTable(newTable);
+      replaced = true;
     } finally {
-      try {
-        await db.dropTable(tempTableName);
-      } catch (cleanupError) {
-        console.warn(`[Compaction] Failed to drop temporary table ${tempTableName}:`, cleanupError);
+      if (replaced) {
+        try {
+          await db.dropTable(tempTableName);
+        } catch (cleanupError) {
+          console.warn(`[Compaction] Failed to drop temporary table ${tempTableName}:`, cleanupError);
+        }
+      } else {
+        console.warn(`[Compaction] Replacement failed; retained recoverable table ${tempTableName}`);
       }
     }
 

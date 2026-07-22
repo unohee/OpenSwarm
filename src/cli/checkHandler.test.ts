@@ -515,7 +515,7 @@ describe('formatEntityCompact (via handleCheck --untested / --tag)', () => {
     const { handleCheck } = await import('./checkHandler.js');
     await handleCheck(undefined, { tag: 'wip' });
 
-    expect(store.entitiesByTag).toHaveBeenCalledWith('wip');
+    expect(store.entitiesByTag).toHaveBeenCalledWith('wip', undefined, 'openswarm');
     expect(out()).toContain('No entities with tag "wip"');
   });
 
@@ -578,7 +578,7 @@ describe('handleCheck file brief', () => {
     const { handleCheck } = await import('./checkHandler.js');
     await handleCheck('src/x.ts', {});
 
-    expect(store.fileBrief).toHaveBeenCalledWith('src/x.ts');
+    expect(store.fileBrief).toHaveBeenCalledWith('src/x.ts', 'openswarm');
     expect(out()).toContain('File Brief: src/x.ts');
     expect(out()).toContain('2 entities, 1 untested');
   });

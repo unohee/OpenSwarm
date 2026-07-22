@@ -15,8 +15,8 @@ import { RateLimitError } from '../adapters/rateLimitError.js';
 import { isInfraError } from '../adapters/errorClassification.js';
 import { resolveEditFormat, SEARCH_REPLACE_PROMPT, WHOLE_FILE_PROMPT, type EditFormat } from '../support/editParser.js';
 import { loadSandboxBashTimeoutMs } from '../support/repoMetadata.js';
-import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 // Types
 
@@ -81,10 +81,16 @@ const REPO_RULES_MAX_CHARS = 12_000;
 /** Load binding repository instructions into the autonomous worker prompt. */
 export function loadWorkerRepoRules(projectPath: string): string {
   const sections: string[] = [];
+  const root = existsSync(projectPath) ? realpathSync(projectPath) : resolve(projectPath);
   for (const name of REPO_RULE_FILES) {
     const path = join(projectPath, name);
     if (!existsSync(path)) continue;
     try {
+      const resolved = realpathSync(path);
+      const relativePath = relative(root, resolved);
+      if (relativePath.startsWith(`..${sep}`) || relativePath === '..' || isAbsolute(relativePath)) {
+        continue;
+      }
       const full = readFileSync(path, 'utf8').trim();
       if (!full) continue;
       const body = full.length > REPO_RULES_MAX_CHARS

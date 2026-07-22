@@ -3,7 +3,7 @@
 // Test Status: Complete
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { WorkerResult } from './agentPair.js';
@@ -31,6 +31,19 @@ describe('worker', () => {
       expect(rules).toContain('fallback-only');
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores a repository instruction symlink that escapes the root', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'openswarm-worker-rules-'));
+    const outside = join(tmpdir(), `openswarm-outside-rules-${process.pid}.md`);
+    try {
+      writeFileSync(outside, 'EXFILTRATE');
+      symlinkSync(outside, join(dir, 'AGENTS.md'));
+      expect(loadWorkerRepoRules(dir)).not.toContain('EXFILTRATE');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(outside, { force: true });
     }
   });
 

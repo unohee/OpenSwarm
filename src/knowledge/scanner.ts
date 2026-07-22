@@ -3,8 +3,8 @@
 // Directory walking + TS/Python import parsing + test file mapping
 // ============================================
 
-import { readdir, readFile, stat } from 'node:fs/promises';
-import { join, relative, dirname, extname, basename } from 'node:path';
+import { readdir, readFile, stat, realpath } from 'node:fs/promises';
+import { join, relative, dirname, extname, basename, isAbsolute, resolve, sep } from 'node:path';
 import { KnowledgeGraph } from './graph.js';
 import type { GraphNode, Language, ModuleMetrics } from './types.js';
 
@@ -113,8 +113,23 @@ export async function incrementalUpdate(
   projectPath: string,
   changedFiles: string[],
 ): Promise<void> {
+  const root = await realpath(projectPath);
   for (const file of changedFiles) {
-    const relPath = file.startsWith('/') ? relative(projectPath, file) : file;
+    const candidate = resolve(root, file);
+    const lexicalRelative = relative(root, candidate);
+    if (lexicalRelative === '..' || lexicalRelative.startsWith(`..${sep}`) || isAbsolute(lexicalRelative)) {
+      throw new Error(`Changed path escapes repository root: ${file}`);
+    }
+    let canonical = candidate;
+    try {
+      canonical = await realpath(candidate);
+    } catch {
+      // Deleted paths cannot be canonicalized; the lexical containment check applies.
+    }
+    const relPath = relative(root, canonical);
+    if (relPath === '..' || relPath.startsWith(`..${sep}`) || isAbsolute(relPath)) {
+      throw new Error(`Changed path escapes repository root through a symlink: ${file}`);
+    }
     const ext = extname(relPath);
 
     // Skip non-source files

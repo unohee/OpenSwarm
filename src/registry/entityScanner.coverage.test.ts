@@ -258,7 +258,7 @@ describe('entity scanner coverage extensions', () => {
     // while the sibling file outside it still scans fine.
     expect(state.registered.some(e => e.name === 'readableFn')).toBe(true);
     expect(state.registered.some(e => e.name === 'hiddenFn')).toBe(false);
-    expect(result.errors).toEqual([]);
+    expect(result.errors.some(error => error.includes('src/locked'))).toBe(true);
     expect(logSpy.mock.calls.some(call => String(call[0]).includes('skip dir'))).toBe(true);
     logSpy.mockRestore();
   });
@@ -275,7 +275,7 @@ describe('entity scanner coverage extensions', () => {
     const result = await scanRepository(tmp, 'test-project', { allowNonRepo: true, verbose: true });
 
     expect(state.registered.some(e => e.name === 'unreachableFn')).toBe(false);
-    expect(result.errors).toEqual([]);
+    expect(result.errors.some(error => error.includes('src/nostat/unreachable.ts'))).toBe(true);
     logSpy.mockRestore();
   });
 

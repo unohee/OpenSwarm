@@ -1,9 +1,36 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { clampDiscordText, startTypingIndicator } from './discordCore.js';
+import { mkdtempSync, readFileSync, statSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { clampDiscordText, getChatHistory, saveChatHistory, startTypingIndicator } from './discordCore.js';
 
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+  delete process.env.OPENSWARM_CHAT_HISTORY_FILE;
+});
+
+describe('Discord persisted chat history', () => {
+  it('serializes concurrent updates in an owner-only snapshot', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'openswarm-discord-history-'));
+    const path = join(dir, 'history.json');
+    process.env.OPENSWARM_CHAT_HISTORY_FILE = path;
+    try {
+      await Promise.all(Array.from({ length: 20 }, (_, index) => saveChatHistory({
+        timestamp: new Date(index).toISOString(),
+        user: `user-${index}`,
+        userId: String(index),
+        message: `message-${index}`,
+        response: `response-${index}`,
+      })));
+      expect(await getChatHistory()).toHaveLength(20);
+      expect(JSON.parse(readFileSync(path, 'utf8'))).toHaveLength(20);
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('Discord outbound bounds', () => {

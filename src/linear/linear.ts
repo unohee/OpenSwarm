@@ -92,7 +92,7 @@ const ISSUES_QUERY = `
     }
   }`;
 
-async function fetchIssuesForStates(
+export async function fetchIssuesForStates(
   linear: LinearClient,
   stateNames: string[],
   extraFilter: Record<string, unknown> = {},
@@ -113,6 +113,7 @@ async function fetchIssuesForStates(
   const nodes: RawIssueNode[] = [];
   let after: string | undefined;
   // Hard page cap (10 × 100 = 1000) so a runaway never loops forever.
+  let hasNextPage = false;
   for (let page = 0; page < 10; page++) {
     const res = await withRateLimit('linear', () =>
       gql.rawRequest<{ issues: { nodes: RawIssueNode[]; pageInfo: { hasNextPage: boolean; endCursor: string } } }>(
@@ -123,8 +124,15 @@ async function fetchIssuesForStates(
     const conn = res?.data?.issues;
     if (!conn) break;
     nodes.push(...conn.nodes);
-    if (!conn.pageInfo?.hasNextPage) break;
+    hasNextPage = conn.pageInfo?.hasNextPage === true;
+    if (!hasNextPage) break;
+    if (!conn.pageInfo.endCursor || conn.pageInfo.endCursor === after) {
+      throw new Error('Linear issue pagination returned a missing or repeated cursor');
+    }
     after = conn.pageInfo.endCursor;
+  }
+  if (hasNextPage) {
+    throw new Error(`Linear issue fetch exceeded the explicit ${10 * FETCH_PAGE_SIZE}-issue safety cap`);
   }
   return { nodes };
 }

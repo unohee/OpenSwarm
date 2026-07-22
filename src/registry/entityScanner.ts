@@ -664,6 +664,7 @@ export async function scanRepository(
     try {
       entries = await readdir(dirPath, { withFileTypes: true });
     } catch (err) {
+      errors.push(`${relPath || '.'}: ${err instanceof Error ? err.message : 'access denied'}`);
       if (verbose) console.log(`  [scan] skip dir ${relPath}: ${err instanceof Error ? err.message : 'access denied'}`);
       return;
     }
@@ -688,6 +689,7 @@ export async function scanRepository(
           const fileStat = await stat(fullPath);
           if (fileStat.size > MAX_FILE_SIZE) continue;
         } catch (err) {
+          errors.push(`${entryRelPath}: ${err instanceof Error ? err.message : 'access denied'}`);
           if (verbose) console.log(`  [scan] skip stat ${entryRelPath}: ${err instanceof Error ? err.message : 'access denied'}`);
           continue;
         }

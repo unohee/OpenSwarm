@@ -14,10 +14,13 @@ import {
   ThreadChannel,
 } from 'discord.js';
 import fs from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import type { SwarmEvent, AgentStatus } from '../core/types.js';
 import { getAdapter, spawnCli } from '../adapters/index.js';
 import * as memory from '../memory/index.js';
 import { t, getPrompts, getDateLocale } from '../locale/index.js';
+import { atomicWriteFileSync } from '../support/atomicFile.js';
 
 // Handler module (for routing)
 import { handlePair } from './discordPair.js';
@@ -638,7 +641,10 @@ export async function sendToThread(threadId: string, content: string | EmbedBuil
 // OpenSwarm Chat Feature
 
 // Chat history storage path
-const CHAT_HISTORY_FILE = '/tmp/openswarm-chat-history.json';
+export function getChatHistoryFile(): string {
+  return process.env.OPENSWARM_CHAT_HISTORY_FILE ?? join(homedir(), '.openswarm', 'chat-history.json');
+}
+let chatHistoryWriteQueue: Promise<void> = Promise.resolve();
 
 /**
  * Handle general chat (OpenClaw-style history management)
@@ -800,23 +806,21 @@ function splitMessage(text: string, maxLen: number): string[] {
 /**
  * Save chat history
  */
-async function saveChatHistory(entry: ChatEntry): Promise<void> {
-  try {
+export async function saveChatHistory(entry: ChatEntry): Promise<void> {
+  const write = chatHistoryWriteQueue.catch(() => undefined).then(async () => {
     let history: ChatEntry[] = [];
     try {
-      const data = await fs.readFile(CHAT_HISTORY_FILE, 'utf-8');
-      history = JSON.parse(data);
+      const parsed: unknown = JSON.parse(await fs.readFile(getChatHistoryFile(), 'utf-8'));
+      if (Array.isArray(parsed)) history = parsed as ChatEntry[];
     } catch {
-      // Empty array if file doesn't exist
+      // Missing or corrupt history starts a new valid snapshot.
     }
-
     history.push(entry);
-
-    if (history.length > 100) {
-      history = history.slice(-100);
-    }
-
-    await fs.writeFile(CHAT_HISTORY_FILE, JSON.stringify(history, null, 2));
+    atomicWriteFileSync(getChatHistoryFile(), `${JSON.stringify(history.slice(-100), null, 2)}\n`);
+  });
+  chatHistoryWriteQueue = write;
+  try {
+    await write;
   } catch (err) {
     console.error('[OpenSwarm] Failed to save chat history:', err);
   }
@@ -827,8 +831,8 @@ async function saveChatHistory(entry: ChatEntry): Promise<void> {
  */
 export async function getChatHistory(): Promise<ChatEntry[]> {
   try {
-    const data = await fs.readFile(CHAT_HISTORY_FILE, 'utf-8');
-    return JSON.parse(data);
+    const data: unknown = JSON.parse(await fs.readFile(getChatHistoryFile(), 'utf-8'));
+    return Array.isArray(data) ? data as ChatEntry[] : [];
   } catch {
     return [];
   }

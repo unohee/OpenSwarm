@@ -190,18 +190,18 @@ export class KnowledgeGraph {
 
   /** Transitive dependency traversal (BFS) */
   getTransitiveDependents(nodeId: string, maxDepth: number = 5): GraphNode[] {
-    const visited = new Set<string>();
+    const discovered = new Set<string>([nodeId]);
     const result: GraphNode[] = [];
     const queue: Array<{ id: string; depth: number }> = [{ id: nodeId, depth: 0 }];
 
     while (queue.length > 0) {
       const { id, depth } = queue.shift()!;
-      if (visited.has(id) || depth > maxDepth) continue;
-      visited.add(id);
+      if (depth > maxDepth) continue;
 
       const dependents = this.getDependents(id);
       for (const dep of dependents) {
-        if (!visited.has(dep.id)) {
+        if (!discovered.has(dep.id)) {
+          discovered.add(dep.id);
           result.push(dep);
           queue.push({ id: dep.id, depth: depth + 1 });
         }

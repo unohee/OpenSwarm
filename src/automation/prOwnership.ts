@@ -6,6 +6,7 @@
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { z } from 'zod';
 
 // Types
 
@@ -22,6 +23,18 @@ interface OwnershipState {
   updatedAt: string;
 }
 
+const OwnedPRSchema = z.object({
+  repo: z.string().min(1),
+  prNumber: z.number().int().positive(),
+  branch: z.string().min(1),
+  createdAt: z.string().datetime(),
+  issueIdentifier: z.string().min(1).optional(),
+});
+const OwnershipStateSchema = z.object({
+  prs: z.array(OwnedPRSchema),
+  updatedAt: z.string().min(1),
+});
+
 // Constants
 
 const OWNERSHIP_PATH = resolve(homedir(), '.openswarm', 'pr-ownership.json');
@@ -31,8 +44,12 @@ const OWNERSHIP_PATH = resolve(homedir(), '.openswarm', 'pr-ownership.json');
 async function loadState(): Promise<OwnershipState> {
   try {
     const data = await readFile(OWNERSHIP_PATH, 'utf-8');
-    return JSON.parse(data);
-  } catch {
+    return OwnershipStateSchema.parse(JSON.parse(data));
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT' && !String((error as Error).message).startsWith('ENOENT')) {
+      throw new Error(`PR ownership state is invalid at ${OWNERSHIP_PATH}: ${error instanceof Error ? error.message : String(error)}`);
+    }
     return { prs: [], updatedAt: new Date().toISOString() };
   }
 }

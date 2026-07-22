@@ -232,6 +232,10 @@ export class SqliteIssueStore implements IIssueStore {
         INSERT INTO issues_fts(rowid, title, description)
         VALUES (new.rowid, new.title, new.description);
       END;
+
+      -- Existing databases may predate the triggers. Rebuild external-content
+      -- FTS so rows already present in issues become searchable immediately.
+      INSERT INTO issues_fts(issues_fts) VALUES('rebuild');
     `);
   }
 
@@ -244,8 +248,8 @@ export class SqliteIssueStore implements IIssueStore {
     const insertIssue = this.db.prepare(`
       INSERT INTO issues (id, project_id, title, description, status, priority, source,
         assignee, milestone, estimate_minutes, complexity, parent_id,
-        linear_id, linear_identifier, linear_url, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        linear_id, linear_identifier, linear_url, created_at, updated_at, closed_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const insertLabel = this.db.prepare(
@@ -274,7 +278,7 @@ export class SqliteIssueStore implements IIssueStore {
         input.estimateMinutes ?? null, input.complexity ?? null,
         input.parentId ?? null,
         input.linearId ?? null, input.linearIdentifier ?? null, input.linearUrl ?? null,
-        now, now,
+        now, now, input.status === 'done' || input.status === 'cancelled' ? now : null,
       );
 
       for (const label of input.labels ?? []) {
@@ -439,8 +443,8 @@ export class SqliteIssueStore implements IIssueStore {
     }
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-    const limit = filter?.limit ?? 50;
-    const offset = filter?.offset ?? 0;
+    const limit = normalizeLimit(filter?.limit, 50, 500);
+    const offset = normalizeOffset(filter?.offset);
 
     const countRow = this.db.prepare(
       `SELECT COUNT(*) as cnt FROM issues i ${ftsJoin} ${where}`
@@ -545,14 +549,14 @@ export class SqliteIssueStore implements IIssueStore {
     // monotonic with insertion order, so the newest event always sorts first.
     return (this.db.prepare(
       'SELECT * FROM issue_events WHERE issue_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?'
-    ).all(issueId, limit) as any[]).map(this.rowToEvent);
+    ).all(issueId, normalizeLimit(limit, 50, 500)) as any[]).map(this.rowToEvent);
   }
 
   getRecentEvents(limit = 20): IssueEvent[] {
     // rowid DESC tiebreaker for same-millisecond created_at — see getEvents.
     return (this.db.prepare(
       'SELECT * FROM issue_events ORDER BY created_at DESC, rowid DESC LIMIT ?'
-    ).all(limit) as any[]).map(this.rowToEvent);
+    ).all(normalizeLimit(limit, 20, 500)) as any[]).map(this.rowToEvent);
   }
 
   // ============ 라벨 ============
@@ -614,11 +618,10 @@ export class SqliteIssueStore implements IIssueStore {
 
   linkMemory(issueId: string, memoryId: string): void {
     const now = new Date().toISOString();
-    this.db.prepare(
+    const result = this.db.prepare(
       'INSERT OR IGNORE INTO issue_memory_links (issue_id, memory_id, linked_at) VALUES (?, ?, ?)'
     ).run(issueId, memoryId, now);
-
-    this.addEvent(issueId, 'memory_linked', { memoryId });
+    if (result.changes > 0) this.addEvent(issueId, 'memory_linked', { memoryId });
   }
 
   getLinkedMemories(issueId: string): string[] {
@@ -819,12 +822,27 @@ function toFtsQuery(search: string): string | null {
   return tokens.length > 0 ? tokens.join(' ') : null;
 }
 
+function normalizeLimit(value: number | undefined, fallback: number, maximum: number): number {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.min(maximum, Math.max(1, Math.trunc(value!)));
+}
+
+function normalizeOffset(value: number | undefined): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.trunc(value!));
+}
+
 // 싱글톤 인스턴스
 let storeInstance: SqliteIssueStore | null = null;
+let storeInstancePath: string | null = null;
 
 export function getIssueStore(dbPath?: string): SqliteIssueStore {
+  const requestedPath = resolve(dbPath ?? DEFAULT_DB_PATH);
   if (!storeInstance) {
-    storeInstance = new SqliteIssueStore(dbPath);
+    storeInstance = new SqliteIssueStore(requestedPath);
+    storeInstancePath = requestedPath;
+  } else if (storeInstancePath !== requestedPath) {
+    throw new Error(`Issue store already initialized at ${storeInstancePath}; requested ${requestedPath}`);
   }
   return storeInstance;
 }
@@ -833,5 +851,6 @@ export function closeIssueStore(): void {
   if (storeInstance) {
     storeInstance.close();
     storeInstance = null;
+    storeInstancePath = null;
   }
 }

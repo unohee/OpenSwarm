@@ -59,12 +59,10 @@ describe('prOwnership', () => {
       expect(fsMock.readFile).toHaveBeenCalledWith(OWNERSHIP_PATH, 'utf-8');
     });
 
-    it('returns an empty state when the file contains corrupt JSON', async () => {
+    it('fails closed when the file contains corrupt JSON', async () => {
       fsMock.readFile.mockResolvedValue('{ this is not valid json');
 
-      const all = await getAllOwnedPRs();
-
-      expect(all).toEqual([]);
+      await expect(getAllOwnedPRs()).rejects.toThrow(/ownership state is invalid/);
     });
 
     it('parses a well-formed persisted state', async () => {
@@ -78,6 +76,11 @@ describe('prOwnership', () => {
 
       expect(all).toEqual(stored.prs);
     });
+  });
+
+  it('rejects structurally invalid persisted ownership rows', async () => {
+    fsMock.readFile.mockResolvedValue(JSON.stringify({ prs: [{ repo: '', prNumber: -1 }], updatedAt: 'x' }));
+    await expect(getAllOwnedPRs()).rejects.toThrow(/ownership state is invalid/);
   });
 
   describe('registerOwnedPR', () => {

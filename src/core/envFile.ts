@@ -7,9 +7,10 @@
 // resolver. Existing process.env values are never overwritten — a shell
 // export always wins over the file.
 
-import { existsSync, readFileSync, writeFileSync, chmodSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { atomicWriteFileSync } from '../support/atomicFile.js';
 
 export interface EnvLoadResult {
   path: string | null;
@@ -119,9 +120,7 @@ export function writeEnvVars(path: string, kv: Record<string, string>): void {
   while (out.length > 0 && out[out.length - 1].trim() === '') out.pop();
   for (const [key, value] of remaining) out.push(formatEnvLine(key, value));
 
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, out.join('\n') + '\n', 'utf8');
-  chmodSync(path, 0o600);
+  atomicWriteFileSync(path, out.join('\n') + '\n');
 }
 
 /**

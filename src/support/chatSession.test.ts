@@ -106,6 +106,13 @@ describe('saveSession / loadSession (injectable dir)', () => {
     expect(await loadSession('does-not-exist', dir)).toBeNull();
   });
 
+  it('returns null for a corrupt session and creates snapshots owner-only', async () => {
+    await fs.writeFile(path.join(dir, 'broken.json'), '{broken');
+    expect(await loadSession('broken', dir)).toBeNull();
+    await saveSession(mk(), dir);
+    expect((await fs.stat(path.join(dir, '20260626-1200.json'))).mode & 0o777).toBe(0o600);
+  });
+
   it('repairs an unknown persisted provider on load (default model from backend)', async () => {
     // Hand-write a session whose provider is no longer a valid adapter.
     await fs.writeFile(

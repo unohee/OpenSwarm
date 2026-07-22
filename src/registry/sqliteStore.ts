@@ -20,6 +20,20 @@ import type {
 const DEFAULT_DB_PATH = resolve(homedir(), '.openswarm', 'registry.db');
 const SQLITE_IN_CHUNK_SIZE = 500;
 
+function clampInteger(value: number, fallback: number, maximum = Number.MAX_SAFE_INTEGER): number {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.min(maximum, Math.max(0, Math.trunc(value)));
+}
+
+function toLiteralFtsQuery(search: string): string | null {
+  const terms = search.split('').map((char) => {
+    const code = char.charCodeAt(0);
+    return code < 32 || code === 127 ? ' ' : char;
+  }).join('').trim().split(/\s+/).filter(Boolean);
+  if (terms.length === 0) return null;
+  return terms.map((term) => `"${term.replace(/"/g, '""')}"`).join(' AND ');
+}
+
 // ============ 인터페이스 ============
 
 export interface RegisterEntityInput {
@@ -460,10 +474,11 @@ export class SqliteRegistryStore {
 
     // FTS 전문검색
     let ftsJoin = '';
-    if (filter?.search) {
+    const ftsQuery = filter?.search ? toLiteralFtsQuery(filter.search) : null;
+    if (ftsQuery) {
       ftsJoin = 'INNER JOIN code_entities_fts ON code_entities_fts.rowid = e.rowid';
       conditions.push('code_entities_fts MATCH ?');
-      params.push(filter.search);
+      params.push(ftsQuery);
     }
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -610,17 +625,30 @@ export class SqliteRegistryStore {
     ).all(entityId) as WarningRow[]).map(this.rowToWarning);
   }
 
-  getUnresolvedWarnings(severity?: WarningSeverity): EntityWarning[] {
-    const where = severity
-      ? 'WHERE resolved = 0 AND severity = ?'
-      : 'WHERE resolved = 0';
-    const params = severity ? [severity] : [];
+  getUnresolvedWarnings(
+    severity?: WarningSeverity,
+    projectId?: string,
+    limit = 200,
+    offset = 0,
+  ): EntityWarning[] {
+    const conditions = ['w.resolved = 0'];
+    const params: unknown[] = [];
+    if (severity) {
+      conditions.push('w.severity = ?');
+      params.push(severity);
+    }
+    if (projectId) {
+      conditions.push('e.project_id = ?');
+      params.push(projectId);
+    }
 
     return (this.db.prepare(
-      `SELECT * FROM code_entity_warnings ${where} ORDER BY
-        CASE severity WHEN 'critical' THEN 0 WHEN 'error' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END,
-        created_at DESC`
-    ).all(...params) as WarningRow[]).map(this.rowToWarning);
+      `SELECT w.* FROM code_entity_warnings w
+       JOIN code_entities e ON e.id = w.entity_id
+       WHERE ${conditions.join(' AND ')} ORDER BY
+        CASE w.severity WHEN 'critical' THEN 0 WHEN 'error' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END,
+        w.created_at DESC LIMIT ? OFFSET ?`
+    ).all(...params, clampInteger(limit, 200, 200), clampInteger(offset, 0)) as WarningRow[]).map(this.rowToWarning);
   }
 
   // ============ 관계 ============
@@ -673,10 +701,12 @@ export class SqliteRegistryStore {
   }
 
   /** 이슈 ID로 연결된 엔티티 ID 목록 반환 (역방향 조회) */
-  getEntitiesByIssueId(issueId: string): CodeEntity[] {
+  getEntitiesByIssueId(issueId: string, projectId?: string): CodeEntity[] {
     const rows = this.db.prepare(
-      'SELECT entity_id FROM code_entity_issue_links WHERE issue_id = ?'
-    ).all(issueId) as IssueLinkRow[];
+      `SELECT l.entity_id, l.issue_id FROM code_entity_issue_links l
+       JOIN code_entities e ON e.id = l.entity_id
+       WHERE l.issue_id = ? ${projectId ? 'AND e.project_id = ?' : ''}`
+    ).all(...(projectId ? [issueId, projectId] : [issueId])) as IssueLinkRow[];
 
     const entities: CodeEntity[] = [];
     for (const row of rows) {
@@ -800,26 +830,37 @@ export class SqliteRegistryStore {
     return this.rowsToEntities(rows);
   }
 
-  entitiesByTag(tag: string, value?: string): CodeEntity[] {
-    const query = value
+  entitiesByTag(
+    tag: string,
+    value?: string,
+    projectId?: string,
+    limit = 200,
+    offset = 0,
+  ): CodeEntity[] {
+    const projectFilter = projectId ? 'AND e.project_id = ?' : '';
+    const query = value !== undefined
       ? `SELECT e.* FROM code_entities e
          JOIN code_entity_tags t ON t.entity_id = e.id
-         WHERE t.tag = ? AND t.value = ?`
+         WHERE t.tag = ? AND t.value = ? ${projectFilter}`
       : `SELECT e.* FROM code_entities e
          JOIN code_entity_tags t ON t.entity_id = e.id
-         WHERE t.tag = ?`;
-    const params = value ? [tag, value] : [tag];
+         WHERE t.tag = ? ${projectFilter}`;
+    const params: unknown[] = value !== undefined ? [tag, value] : [tag];
+    if (projectId) params.push(projectId);
 
-    const rows = this.db.prepare(query).all(...params) as EntityRow[];
+    const rows = this.db.prepare(`${query} ORDER BY e.file_path, e.line_start NULLS LAST, e.name LIMIT ? OFFSET ?`)
+      .all(...params, clampInteger(limit, 200, 200), clampInteger(offset, 0)) as EntityRow[];
     return this.rowsToEntities(rows);
   }
 
   searchEntities(query: string, limit = 20, projectId?: string): CodeEntity[] {
+    const ftsQuery = toLiteralFtsQuery(query);
+    if (!ftsQuery) return [];
     // FTS5 검색 시도
     let ftsRows: EntityRow[] = [];
     try {
       const projectFilter = projectId ? 'AND e.project_id = ?' : '';
-      const params = projectId ? [query, projectId, limit] : [query, limit];
+      const params = projectId ? [ftsQuery, projectId, limit] : [ftsQuery, limit];
       ftsRows = this.db.prepare(`
         SELECT e.* FROM code_entities e
         INNER JOIN code_entities_fts ON code_entities_fts.rowid = e.rowid
@@ -838,7 +879,7 @@ export class SqliteRegistryStore {
 
     // FTS 결과가 부족하면 LIKE 폴백 (camelCase, 부분 매칭)
     if (results.length < limit) {
-      const escapedQuery = query.replace(/[%_]/g, ch => `\\${ch}`);
+      const escapedQuery = query.replace(/[\\%_]/g, ch => `\\${ch}`);
       const likePattern = `%${escapedQuery}%`;
       const existingIds = new Set(results.map(e => e.id));
       const projectFilter = projectId ? 'AND project_id = ?' : '';

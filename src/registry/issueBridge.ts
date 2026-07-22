@@ -21,7 +21,7 @@ export function getEntitiesForIssue(
   const entityMap = new Map<string, CodeEntity>();
 
   // 1. 명시적 연결된 엔티티 (정식 store 메서드 사용)
-  for (const entity of store.getEntitiesByIssueId(issueId)) {
+  for (const entity of store.getEntitiesByIssueId(issueId, projectId)) {
     entityMap.set(entity.id, entity);
   }
 

@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -59,6 +59,19 @@ describe('knowledge scanner', () => {
 
     expect(graph.getTests('src/foo.ts').map(n => n.id)).not.toContain('tests/subject.test.ts');
     expect(graph.getTests('src/bar.ts').map(n => n.id)).toContain('tests/subject.test.ts');
+  });
+
+  it('rejects incremental paths that escape through traversal or symlinks', async () => {
+    const graph = await scanProject(tmp, 'test-project');
+    await expect(incrementalUpdate(graph, tmp, ['../outside.ts'])).rejects.toThrow(/escapes repository root/);
+    const outside = join(tmpdir(), `openswarm-scanner-outside-${process.pid}.ts`);
+    await writeFile(outside, 'export const secret = 1;\n');
+    await symlink(outside, join(tmp, 'linked.ts'));
+    try {
+      await expect(incrementalUpdate(graph, tmp, ['linked.ts'])).rejects.toThrow(/symlink/);
+    } finally {
+      await rm(outside, { force: true });
+    }
   });
 
   it('maps Python relative imports to modules in the same package', async () => {

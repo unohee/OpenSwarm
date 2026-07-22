@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { effectCommentId, parseBlockerIdentifiers } from './linear.js';
+import { effectCommentId, fetchIssuesForStates, parseBlockerIdentifiers } from './linear.js';
+import type { LinearClient } from '@linear/sdk';
 
 describe('effectCommentId', () => {
   it('derives a stable, marker-specific UUIDv4 for Linear uniqueness', () => {
@@ -7,6 +8,34 @@ describe('effectCommentId', () => {
     expect(first).toBe(effectCommentId('complete:issue-1:attempt:1'));
     expect(first).not.toBe(effectCommentId('complete:issue-1:attempt:2'));
     expect(first).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  });
+});
+
+describe('fetchIssuesForStates pagination', () => {
+  it('collects every page', async () => {
+    let page = 0;
+    const linear = {
+      client: {
+        rawRequest: async () => ({ data: { issues: {
+          nodes: [{ id: `id-${page}`, identifier: `INT-${page}`, title: 't', priority: 2 }],
+          pageInfo: { hasNextPage: page++ === 0, endCursor: `cursor-${page}` },
+        } } }),
+      },
+    } as unknown as LinearClient;
+    expect((await fetchIssuesForStates(linear, ['Todo'])).nodes.map((node) => node.id)).toEqual(['id-0', 'id-1']);
+  });
+
+  it('reports explicit truncation instead of silently returning a partial set', async () => {
+    let page = 0;
+    const linear = {
+      client: {
+        rawRequest: async () => ({ data: { issues: {
+          nodes: [],
+          pageInfo: { hasNextPage: true, endCursor: `cursor-${page++}` },
+        } } }),
+      },
+    } as unknown as LinearClient;
+    await expect(fetchIssuesForStates(linear, ['Todo'])).rejects.toThrow(/safety cap/);
   });
 });
 

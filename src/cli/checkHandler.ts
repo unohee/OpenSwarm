@@ -254,7 +254,13 @@ export async function handleCheck(
     if (opts.tree) {
       const projectId = opts.project ?? resolveProjectId(process.cwd());
       const scopePath = filePath || '';  // optional dir scope
-      const { entities } = store.listEntities({ projectId, limit: 50000, offset: 0 });
+      const entities: CodeEntity[] = [];
+      const pageSize = 5_000;
+      for (let offset = 0; ; offset += pageSize) {
+        const page = store.listEntities({ projectId, limit: pageSize, offset });
+        entities.push(...page.entities);
+        if (entities.length >= page.total || page.entities.length === 0) break;
+      }
 
       // Group entities by directory → file
       const tree = new Map<string, Map<string, { total: number; untested: number; highRisk: number; deprecated: number; kinds: Map<string, number> }>>();
@@ -423,7 +429,8 @@ export async function handleCheck(
 
     // --tag
     if (opts.tag) {
-      const entities = store.entitiesByTag(opts.tag);
+      const projectId = opts.project ?? resolveProjectId(process.cwd());
+      const entities = store.entitiesByTag(opts.tag, undefined, projectId);
       console.log(`\n${c.bold(`Entities tagged "${opts.tag}"`)} (${entities.length})\n`);
       if (entities.length === 0) {
         console.log(`  ${c.dim(`No entities with tag "${opts.tag}"`)}\n`);
@@ -436,7 +443,8 @@ export async function handleCheck(
 
     // --search
     if (opts.search) {
-      const entities = store.searchEntities(opts.search);
+      const projectId = opts.project ?? resolveProjectId(process.cwd());
+      const entities = store.searchEntities(opts.search, 20, projectId);
       console.log(`\n${c.bold(`Search: "${opts.search}"`)} (${entities.length} results)\n`);
       if (entities.length === 0) {
         console.log(`  ${c.dim('No matches')}\n`);
@@ -449,7 +457,7 @@ export async function handleCheck(
 
     // 파일 경로 지정: fileBrief
     if (filePath) {
-      const brief = store.fileBrief(filePath);
+      const brief = store.fileBrief(filePath, opts.project ?? resolveProjectId(process.cwd()));
       console.log(`\n${c.bold(`File Brief: ${filePath}`)}`);
       console.log(`${'─'.repeat(40)}`);
       console.log(`  ${c.dim(brief.summary)}\n`);
