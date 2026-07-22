@@ -130,7 +130,7 @@ export async function handleGraphQL(
 
   // graphql-yoga는 Node.js HTTP 서버에서 req, res를 직접 처리
   // handle() 호출 시 내부적으로 res에 응답을 작성
-  await yoga.handleNodeRequestAndResponse(req, res);
+  await yoga.requestListener(req, res);
 }
 
 /**

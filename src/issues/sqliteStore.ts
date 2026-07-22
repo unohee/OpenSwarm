@@ -114,6 +114,11 @@ export class SqliteIssueStore implements IIssueStore {
 
   private migrate(): void {
     this.db.exec(`
+      CREATE TABLE IF NOT EXISTS schema_migrations (
+        name TEXT PRIMARY KEY,
+        applied_at TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS issues (
         id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL,
@@ -233,10 +238,15 @@ export class SqliteIssueStore implements IIssueStore {
         VALUES (new.rowid, new.title, new.description);
       END;
 
-      -- Existing databases may predate the triggers. Rebuild external-content
-      -- FTS so rows already present in issues become searchable immediately.
-      INSERT INTO issues_fts(issues_fts) VALUES('rebuild');
     `);
+    const ftsMigration = this.db.prepare('SELECT 1 FROM schema_migrations WHERE name = ?').get('issues_fts_v1');
+    if (!ftsMigration) {
+      this.db.transaction(() => {
+        this.db.prepare("INSERT INTO issues_fts(issues_fts) VALUES('rebuild')").run();
+        this.db.prepare('INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)')
+          .run('issues_fts_v1', new Date().toISOString());
+      })();
+    }
   }
 
   // ============ 이슈 CRUD ============

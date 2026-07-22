@@ -14,12 +14,13 @@
 // openswarm.json — registering a path alone wouldn't tell the daemon which
 // Linear project's issues belong to it.
 
-import { existsSync, readFileSync, writeFileSync, statSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, renameSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { expandPath } from '../core/config.js';
 import { c } from '../support/colors.js';
 import { loadRepoMetadata, RepoMetadataError } from '../support/repoMetadata.js';
+import { atomicWriteFileSync } from '../support/atomicFile.js';
 
 /** Persisted dashboard/CLI repo registry. Mirrors web.ts ReposConfig. */
 export interface ReposConfig {
@@ -45,14 +46,15 @@ export function loadRepos(file: string = REPOS_FILE): ReposConfig {
       basePaths: raw.basePaths ?? [],
       removedConfigPaths: raw.removedConfigPaths ?? [],
     };
-  } catch {
-    return emptyReposConfig();
+  } catch (error) {
+    const recoveryPath = `${file}.corrupt-${Date.now()}`;
+    try { renameSync(file, recoveryPath); } catch { /* preserve original error below */ }
+    throw new Error(`Repository registry is malformed at ${file}; preserved as ${recoveryPath}: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
 function saveRepos(cfg: ReposConfig, file: string = REPOS_FILE): void {
-  mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(file, JSON.stringify(cfg, null, 2) + '\n', 'utf-8');
+  atomicWriteFileSync(file, JSON.stringify(cfg, null, 2) + '\n', 0o600);
 }
 
 const uniq = (a: string[]): string[] => [...new Set(a)];

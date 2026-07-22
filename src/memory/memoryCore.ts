@@ -204,6 +204,18 @@ export async function getMemoriesByIds(ids: string[]): Promise<Array<{ id: strin
   return ids.flatMap((id) => byId.has(id) ? [{ id, content: byId.get(id)! }] : []);
 }
 
+export async function hasMemoryDerivedFrom(derivedFrom: string): Promise<boolean> {
+  return (await getMemoryIdsByDerivedFrom(derivedFrom, 1)).length > 0;
+}
+
+export async function getMemoryIdsByDerivedFrom(derivedFrom: string, limit = 100): Promise<string[]> {
+  await initDatabase();
+  if (!table) return [];
+  const escaped = derivedFrom.replace(/'/g, "''");
+  const rows = await table.query().where(`derivedFrom = '${escaped}'`).limit(Math.max(1, Math.min(limit, 1_000))).toArray();
+  return rows.map((row: any) => String(row.id));
+}
+
 /**
  * Retry a Lance write (add/update/delete) on optimistic-concurrency conflict.
  *

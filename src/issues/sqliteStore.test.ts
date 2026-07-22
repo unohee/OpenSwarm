@@ -49,6 +49,7 @@ describe('SqliteIssueStore durable semantics', () => {
     store.close();
     const db = new Database(dbPath);
     db.exec("INSERT INTO issues_fts(issues_fts) VALUES('delete-all')");
+    db.prepare('DELETE FROM schema_migrations WHERE name = ?').run('issues_fts_v1');
     db.close();
     const reopened = new SqliteIssueStore(dbPath);
     expect(reopened.listIssues({ search: 'needle' }).total).toBe(1);

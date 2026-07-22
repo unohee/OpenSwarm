@@ -5,9 +5,14 @@
 // Dependencies: memoryCore, sqliteStore
 // ============================================
 
-import { saveMemory, searchMemorySafe, saveCognitiveMemory, getMemoriesByIds } from '../memory/memoryCore.js';
+import { saveMemory, searchMemorySafe, saveCognitiveMemory, getMemoriesByIds, hasMemoryDerivedFrom, getMemoryIdsByDerivedFrom } from '../memory/memoryCore.js';
 import type { SqliteIssueStore } from './sqliteStore.js';
 import type { Issue } from './schema.js';
+import { createHash } from 'node:crypto';
+
+function digestSource(kind: string, values: string[]): string {
+  return `issue-event-digest:${kind}:${createHash('sha256').update(values.join('\0')).digest('hex')}`;
+}
 
 /**
  * 이슈 생성 시 관련 기억 자동 연결
@@ -47,6 +52,12 @@ export async function saveCompletionInsight(
   store: SqliteIssueStore,
   issue: Issue,
 ): Promise<string | null> {
+  const derivedFrom = `issue:${issue.id}`;
+  const existingIds = await getMemoryIdsByDerivedFrom(derivedFrom, 1);
+  if (existingIds[0]) {
+    store.linkMemory(issue.id, existingIds[0]);
+    return existingIds[0];
+  }
   // 이슈 이벤트 히스토리 수집
   const events = store.getEvents(issue.id, 100);
   if (events.length === 0) return null;
@@ -83,7 +94,7 @@ export async function saveCompletionInsight(
     importance: issue.priority === 'urgent' ? 0.95 : issue.priority === 'high' ? 0.85 : 0.7,
     isVerified: true,
     skipDistillation: true,
-    derivedFrom: `issue:${issue.id}`,
+    derivedFrom,
     metadata: {
       issueId: issue.id,
       projectId: issue.projectId,
@@ -218,14 +229,15 @@ export async function digestRecentEvents(
       .filter(Boolean);
 
     if (reasons.length > 0) {
-      await saveCognitiveMemory('strategy', [
+      const derivedFrom = digestSource('blocking', reasons);
+      if (!(await hasMemoryDerivedFrom(derivedFrom))) await saveCognitiveMemory('strategy', [
         '반복 블로킹 패턴 감지:',
         ...reasons.map((r) => `- ${r}`),
         `총 ${blockEvents.length}건 (최근 ${limit}개 이벤트 중)`,
       ].join('\n'), {
         importance: 0.85,
         confidence: 0.75,
-        derivedFrom: 'issue-event-digest',
+        derivedFrom,
       });
     }
   }
@@ -233,13 +245,15 @@ export async function digestRecentEvents(
   // 패턴 분석: 빈번한 우선순위 변경
   const priorityChanges = events.filter((e) => e.type === 'priority_changed');
   if (priorityChanges.length >= 5) {
+    const derivedFrom = digestSource('priority', priorityChanges.map((event) => `${event.id}:${event.oldValue}:${event.newValue}`));
+    if (await hasMemoryDerivedFrom(derivedFrom)) return events.length;
     await saveCognitiveMemory('system_pattern', [
       `최근 우선순위 변경 빈도 높음 (${priorityChanges.length}건)`,
       '우선순위 기준 재검토 필요',
     ].join('\n'), {
       importance: 0.7,
       confidence: 0.6,
-      derivedFrom: 'issue-event-digest',
+      derivedFrom,
     });
   }
 

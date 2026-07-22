@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import type { IncomingMessage } from 'node:http';
-import { isGraphQLTransportAuthorized } from './server.js';
+import { createServer, type IncomingMessage } from 'node:http';
+import { handleGraphQL, isGraphQLTransportAuthorized } from './server.js';
 
 function request(address: string | undefined, headers: Record<string, string> = {}): IncomingMessage {
   return { socket: { remoteAddress: address }, headers } as unknown as IncomingMessage;
@@ -50,5 +50,24 @@ describe('GraphQL transport authorization', () => {
     const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
 
     expect(elapsedMs).toBeLessThan(250);
+  });
+
+  it('serves an authenticated GraphQL query through the Node HTTP adapter', async () => {
+    process.env.OPENSWARM_GRAPHQL_TOKEN = 'secret';
+    const httpServer = createServer((req, res) => { void handleGraphQL(req, res); });
+    await new Promise<void>((resolve) => httpServer.listen(0, '127.0.0.1', resolve));
+    try {
+      const address = httpServer.address();
+      if (!address || typeof address === 'string') throw new Error('missing test server address');
+      const response = await fetch(`http://127.0.0.1:${address.port}/graphql`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: 'Bearer secret' },
+        body: JSON.stringify({ query: '{ __typename }' }),
+      });
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({ data: { __typename: 'Query' } });
+    } finally {
+      await new Promise<void>((resolve, reject) => httpServer.close((error) => error ? reject(error) : resolve()));
+    }
   });
 });

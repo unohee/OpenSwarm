@@ -12,12 +12,17 @@ const readFileSyncMock = vi.fn();
 const writeFileSyncMock = vi.fn();
 const statSyncMock = vi.fn();
 const mkdirSyncMock = vi.fn();
+const renameSyncMock = vi.fn();
 vi.mock('node:fs', () => ({
   existsSync: existsSyncMock,
   readFileSync: readFileSyncMock,
   writeFileSync: writeFileSyncMock,
   statSync: statSyncMock,
   mkdirSync: mkdirSyncMock,
+  renameSync: renameSyncMock,
+}));
+vi.mock('../support/atomicFile.js', () => ({
+  atomicWriteFileSync: (path: string, contents: string) => writeFileSyncMock(path, contents),
 }));
 
 const loadRepoMetadataMock = vi.fn();
@@ -210,12 +215,12 @@ describe('mapRepoToLinear branches (via handleProjectAdd)', () => {
   });
 });
 
-describe('loadRepos malformed-JSON fallback (via handleProjectList)', () => {
-  it('falls back to an empty config when the repos file has invalid JSON', () => {
+describe('loadRepos malformed-JSON recovery (via handleProjectList)', () => {
+  it('preserves the invalid registry and reports the corruption', () => {
     readFileSyncMock.mockReturnValue('{ not valid json ,, }');
     existsSyncMock.mockImplementation((p: string) => typeof p === 'string' && p.endsWith('openswarm-repos.json'));
-    handleProjectList();
-    expect(logs.join('\n')).toContain('(none)'); // empty config → no enabled repos
+    expect(() => handleProjectList()).toThrow(/preserved as/);
+    expect(renameSyncMock).toHaveBeenCalledOnce();
   });
 });
 

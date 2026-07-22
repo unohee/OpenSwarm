@@ -275,7 +275,7 @@ describe('runVerify', () => {
   it('preserves Git metadata inside the isolated head sandbox', async () => {
     const [evidence] = await runVerify({
       projectPath: repo,
-      commands: [verify('git rev-parse --is-inside-work-tree && git diff --check')],
+      commands: [verify('git rev-parse --is-inside-work-tree && git diff --check', 5_000)],
       baseRef: 'HEAD',
     });
     expect(evidence).toMatchObject({ headStatus: 'pass', newFailure: false });
@@ -289,7 +289,7 @@ describe('runVerify', () => {
 
     const [evidence] = await runVerify({
       projectPath: linked,
-      commands: [verify('printf sandbox > README.md; git add README.md')],
+      commands: [verify('printf sandbox > README.md; git add README.md', 5_000)],
       baseRef: 'HEAD',
     });
 
@@ -331,6 +331,15 @@ describe('runVerify', () => {
       commands: [verify('printf "%s\\npre-existing failure\\n" "$PWD"; exit 1')],
       baseRef: 'HEAD',
     });
+    expect(evidence).toMatchObject({ headStatus: 'fail', baseStatus: 'fail', newFailure: false });
+  });
+
+  it('compares failure fingerprints independently of stdout chunk boundaries', async () => {
+    await writeFile(join(repo, 'split-output'), 'yes\n');
+    const command = 'if [ -f split-output ]; then printf abc; sleep 0.05; printf def; else printf abcdef; fi; exit 1';
+
+    const [evidence] = await runVerify({ projectPath: repo, commands: [verify(command)], baseRef: 'HEAD' });
+
     expect(evidence).toMatchObject({ headStatus: 'fail', baseStatus: 'fail', newFailure: false });
   });
 

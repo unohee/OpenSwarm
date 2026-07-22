@@ -1,6 +1,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { access, cp, lstat, mkdtemp, readFile, readdir, readlink, realpath, rm } from 'node:fs/promises';
+import { access, cp, lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rm } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
@@ -12,6 +13,8 @@ import { atomicWriteFileSync } from '../support/atomicFile.js';
 import type { VerifyCommand } from './manifest.js';
 
 const OUTPUT_TAIL_BYTES = 8 * 1024;
+const FINGERPRINT_BYTES = 4 * 1024 * 1024;
+const GIT_TIMEOUT_MS = 30_000;
 const execFileAsync = promisify(execFile);
 const DEPENDENCY_INPUTS = new Set([
   'package.json', 'package-lock.json', 'npm-shrinkwrap.json', 'pnpm-lock.yaml', 'yarn.lock',
@@ -99,6 +102,10 @@ function appendTail(current: Buffer, chunk: Buffer): Buffer {
 }
 
 async function terminateVerificationProcesses(processGroupId: number | undefined, marker: string): Promise<void> {
+  if (processGroupId && process.platform === 'win32') {
+    await execFileAsync('taskkill', ['/PID', String(processGroupId), '/T', '/F'], { timeout: 10_000 }).catch(() => {});
+    return;
+  }
   if (processGroupId && process.platform !== 'win32') {
     try { process.kill(-processGroupId, 'SIGKILL'); } catch { /* already exited */ }
   }
@@ -138,6 +145,8 @@ async function runCommand(command: VerifyCommand, root: string, env: NodeJS.Proc
     return { status: 'infra', output: error instanceof Error ? error.message : String(error) };
   }
   const isolatedHome = join(dirname(root), 'home');
+  const isolatedTmp = join(dirname(root), 'tmp');
+  await Promise.all([mkdir(isolatedHome, { recursive: true }), mkdir(isolatedTmp, { recursive: true })]);
   const processMarker = `openswarm-verify-${randomUUID()}`;
   const safeEnv: NodeJS.ProcessEnv = {
     PATH: env.PATH,
@@ -146,26 +155,52 @@ async function runCommand(command: VerifyCommand, root: string, env: NodeJS.Proc
     XDG_CONFIG_HOME: join(isolatedHome, '.config'),
     XDG_CACHE_HOME: join(isolatedHome, '.cache'),
     XDG_DATA_HOME: join(isolatedHome, '.local', 'share'),
+    TMPDIR: isolatedTmp,
+    TMP: isolatedTmp,
+    TEMP: isolatedTmp,
     OPENSWARM_VERIFY_PROCESS_MARKER: processMarker,
   };
-  for (const key of ['LANG', 'LC_ALL', 'LC_CTYPE', 'TERM', 'COLORTERM', 'NO_COLOR', 'FORCE_COLOR', 'CI', 'TZ', 'TMPDIR', 'TMP', 'TEMP', 'SystemRoot', 'ComSpec', 'PATHEXT']) {
+  for (const key of ['LANG', 'LC_ALL', 'LC_CTYPE', 'TERM', 'COLORTERM', 'NO_COLOR', 'FORCE_COLOR', 'CI', 'TZ', 'SystemRoot', 'ComSpec', 'PATHEXT']) {
     if (env[key] !== undefined) safeEnv[key] = env[key];
   }
   const shell = process.env.SHELL || '/bin/sh';
+  let executable = shell;
+  let invocationArgs = ['-lc', command.run];
+  if (process.platform === 'darwin' && existsSync('/usr/bin/sandbox-exec')) {
+    const writableRoot = (await realpath(dirname(root))).replaceAll('\\', '\\\\').replaceAll('"', '\\"');
+    const profile = `(version 1) (deny default) (allow process*) (allow file-read*) (allow sysctl-read) (allow file-write* (subpath "${writableRoot}") (literal "/dev/null") (literal "/dev/tty"))`;
+    executable = '/usr/bin/sandbox-exec';
+    invocationArgs = ['-p', profile, shell, '-lc', command.run];
+  } else if (process.platform === 'linux') {
+    const bubblewrap = ['/usr/bin/bwrap', '/usr/local/bin/bwrap'].find(existsSync);
+    if (!bubblewrap) return { status: 'fail', output: '[security] OS verification sandbox is unavailable (bubblewrap not installed)' };
+    executable = bubblewrap;
+    const writableRoot = dirname(root);
+    invocationArgs = ['--ro-bind', '/', '/', '--bind', writableRoot, writableRoot, '--unshare-net', '--dev', '/dev', '--proc', '/proc', '--', shell, '-lc', command.run];
+  } else if (process.platform === 'win32') {
+    return { status: 'fail', output: '[security] OS verification sandbox is unavailable on this Windows host' };
+  }
   return await new Promise((resolveResult) => {
     let output: Buffer = Buffer.alloc(0);
-    const outputHash = createHash('sha256');
+    const fingerprintChunks: Buffer[] = [];
+    let fingerprintBytes = 0;
+    let fingerprintTruncated = false;
     let settled = false;
     let timedOut = false;
     const detached = process.platform !== 'win32';
-    const child = spawn(shell, ['-lc', command.run], {
+    const child = spawn(executable, invocationArgs, {
       cwd,
       env: safeEnv,
       detached,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     const record = (chunk: Buffer) => {
-      outputHash.update(normalizeFailureOutput(chunk.toString('utf8'), cwd));
+      if (fingerprintBytes < FINGERPRINT_BYTES) {
+        const retained = chunk.subarray(0, FINGERPRINT_BYTES - fingerprintBytes);
+        fingerprintChunks.push(retained);
+        fingerprintBytes += retained.length;
+        fingerprintTruncated ||= retained.length < chunk.length;
+      } else fingerprintTruncated = true;
       output = appendTail(output, chunk);
     };
     child.stdout.on('data', record);
@@ -176,14 +211,21 @@ async function runCommand(command: VerifyCommand, root: string, env: NodeJS.Proc
       settled = true;
       clearTimeout(timer);
       if (extra) {
-        outputHash.update(normalizeFailureOutput(extra, cwd));
+        const extraBuffer = Buffer.from(extra);
+        if (fingerprintBytes < FINGERPRINT_BYTES) {
+          const retained = extraBuffer.subarray(0, FINGERPRINT_BYTES - fingerprintBytes);
+          fingerprintChunks.push(retained);
+          fingerprintBytes += retained.length;
+          fingerprintTruncated ||= retained.length < extraBuffer.length;
+        } else fingerprintTruncated = true;
         output = appendTail(output, Buffer.from(extra));
       }
       const outputText = output.toString('utf8');
+      const fingerprintText = Buffer.concat(fingerprintChunks).toString('utf8') + (fingerprintTruncated ? '\n<TRUNCATED>' : '');
       resolveResult({
         status,
         output: outputText,
-        outputFingerprint: outputHash.digest('hex'),
+        outputFingerprint: createHash('sha256').update(normalizeFailureOutput(fingerprintText, cwd)).digest('hex'),
         environmentFailure: status === 'fail' && isEnvironmentFailure(outputText),
       });
     };
@@ -195,6 +237,8 @@ async function runCommand(command: VerifyCommand, root: string, env: NodeJS.Proc
         } catch {
           child.kill('SIGKILL');
         }
+      } else if (process.platform === 'win32' && child.pid) {
+        void terminateVerificationProcesses(child.pid, processMarker);
       } else {
         child.kill('SIGKILL');
       }
@@ -359,17 +403,25 @@ async function createHeadSandbox(projectPath: string, commands: VerifyCommand[])
 async function git(projectPath: string, args: string[]): Promise<string> {
   return await new Promise((resolveResult, reject) => {
     const maxOutputBytes = 4 * 1024 * 1024;
-    const child = spawn('git', ['-C', projectPath, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn('git', ['-C', projectPath, ...args], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: process.platform !== 'win32',
+    });
     let stdout = '';
     let stderr = '';
     let outputBytes = 0;
     let settled = false;
+    let timer: ReturnType<typeof setTimeout>;
     const fail = (error: Error) => {
       if (settled) return;
       settled = true;
-      child.kill('SIGKILL');
+      clearTimeout(timer);
+      if (child.pid && process.platform !== 'win32') {
+        try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
+      } else child.kill('SIGKILL');
       reject(error);
     };
+    timer = setTimeout(() => fail(new Error(`git ${args[0] ?? ''} timed out after ${GIT_TIMEOUT_MS}ms`)), GIT_TIMEOUT_MS);
     const append = (target: 'stdout' | 'stderr', chunk: Buffer) => {
       outputBytes += chunk.length;
       if (outputBytes > maxOutputBytes) {
@@ -385,6 +437,7 @@ async function git(projectPath: string, args: string[]): Promise<string> {
     child.on('close', (code) => {
       if (settled) return;
       settled = true;
+      clearTimeout(timer);
       if (code === 0) resolveResult(stdout.trim());
       else reject(new Error(`git exited with code ${code}: ${stderr.trim()}`));
     });

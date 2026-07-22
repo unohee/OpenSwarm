@@ -9,6 +9,11 @@ import { formatAutomationComment, type CommentSection } from './format.js';
 import { setLinearClient } from './projectUpdater.js';
 import { withRateLimit } from '../support/rateLimiter.js';
 import { c, status } from '../support/colors.js';
+import { readFile } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
+import { resolve } from 'node:path';
+import { atomicWriteFile } from '../support/atomicFile.js';
+import { withFileLock } from '../support/fileLock.js';
 
 /**
  * Extract project info from an issue
@@ -141,6 +146,43 @@ export async function fetchIssuesForStates(
 const DAILY_ISSUE_LIMIT = 10;
 let dailyIssueCount = 0;
 let lastResetDate: string = '';
+const DAILY_ISSUE_STATE_FILE = process.env.OPENSWARM_DAILY_ISSUE_STATE_FILE
+  || resolve(process.env.VITEST ? tmpdir() : homedir(), process.env.VITEST ? `openswarm-linear-quota-${process.pid}.json` : '.openswarm/linear-issue-quota.json');
+
+async function reserveDailyIssue(): Promise<boolean> {
+  return withFileLock(`${DAILY_ISSUE_STATE_FILE}.lock`, async () => {
+    const today = new Date().toISOString().slice(0, 10);
+    let state = { date: today, count: 0 };
+    try {
+      const parsed = JSON.parse(await readFile(DAILY_ISSUE_STATE_FILE, 'utf8')) as Partial<typeof state>;
+      if (parsed.date === today && Number.isSafeInteger(parsed.count) && (parsed.count ?? -1) >= 0) state = { date: today, count: parsed.count! };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    if (state.count >= DAILY_ISSUE_LIMIT) return false;
+    state.count++;
+    await atomicWriteFile(DAILY_ISSUE_STATE_FILE, JSON.stringify(state), 0o600);
+    dailyIssueCount = state.count;
+    lastResetDate = today;
+    return true;
+  });
+}
+
+async function releaseDailyIssue(): Promise<void> {
+  await withFileLock(`${DAILY_ISSUE_STATE_FILE}.lock`, async () => {
+    const today = new Date().toISOString().slice(0, 10);
+    let count = 0;
+    try {
+      const parsed = JSON.parse(await readFile(DAILY_ISSUE_STATE_FILE, 'utf8')) as { date?: string; count?: number };
+      if (parsed.date === today && Number.isSafeInteger(parsed.count)) count = Math.max(0, (parsed.count ?? 0) - 1);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    await atomicWriteFile(DAILY_ISSUE_STATE_FILE, JSON.stringify({ date: today, count }), 0o600);
+    dailyIssueCount = count;
+    lastResetDate = today;
+  });
+}
 
 // Caching Layer
 
@@ -560,7 +602,10 @@ export async function getMyIssues(
   }
 
   console.log(`[Linear] Fetching issues for ${cacheKey}`);
-  const linear = getClient();
+  const requestController = new AbortController();
+  const linear = new LinearClient(isOAuthMode
+    ? { accessToken: currentToken, signal: requestController.signal }
+    : { apiKey: currentToken, signal: requestController.signal });
 
   // Wrap with timeout
   const fetchIssues = async (): Promise<LinearIssueInfo[]> => {
@@ -643,18 +688,19 @@ export async function getMyIssues(
     });
   };
 
-  // Apply timeout
+  // Apply timeout to the SDK transport itself so paginated requests do not
+  // continue consuming sockets and rate-limit budget after the caller gives up.
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   let result: LinearIssueInfo[];
   try {
-    result = await Promise.race([
-      fetchIssues(),
-      new Promise<never>((_, reject) => {
-        timeoutId = setTimeout(() => reject(new Error(`getMyIssues timed out after ${timeoutMs}ms`)), timeoutMs);
-      }),
-    ]);
+    timeoutId = setTimeout(() => requestController.abort(), timeoutMs);
+    result = await fetchIssues();
+  } catch (error) {
+    if (requestController.signal.aborted) throw new Error(`getMyIssues timed out after ${timeoutMs}ms`, { cause: error });
+    throw error;
   } finally {
     if (timeoutId) clearTimeout(timeoutId);
+    requestController.abort();
   }
 
   // Cache the result
@@ -1165,13 +1211,6 @@ export async function createIssue(
   if (!isLinearInitialized()) return { error: 'Linear not configured' };
   resetDailyCounterIfNeeded();
 
-  // Check daily limit (unless bypassLimit is set)
-  if (!options?.bypassLimit && dailyIssueCount >= DAILY_ISSUE_LIMIT) {
-    return {
-      error: `Daily issue creation limit (${DAILY_ISSUE_LIMIT}) reached. Please try again tomorrow.`,
-    };
-  }
-
   const linear = getClient();
 
   // Resolve a single team UUID. Multi-team configs hold a comma-joined list in the
@@ -1195,22 +1234,30 @@ export async function createIssue(
     .map((name) => teamLabels.nodes.find((l) => l.name === name)?.id)
     .filter((id): id is string => !!id);
 
-  const issuePayload = await linear.createIssue({
-    teamId: resolvedTeamId,
-    title,
-    description,
-    labelIds,
-    ...(options?.projectId ? { projectId: options.projectId } : {}),
-  });
+  const reserved = options?.bypassLimit ? false : await reserveDailyIssue();
+  if (!options?.bypassLimit && !reserved) {
+    return { error: `Daily issue creation limit (${DAILY_ISSUE_LIMIT}) reached. Please try again tomorrow.` };
+  }
+  let issuePayload;
+  try {
+    issuePayload = await linear.createIssue({
+      teamId: resolvedTeamId,
+      title,
+      description,
+      labelIds,
+      ...(options?.projectId ? { projectId: options.projectId } : {}),
+    });
+  } catch (error) {
+    if (reserved) await releaseDailyIssue();
+    throw error;
+  }
 
   const issue = await issuePayload.issue;
   if (!issue) {
+    if (reserved) await releaseDailyIssue();
     throw new Error('Failed to create issue');
   }
   const stateName = (await issue.state)?.name ?? 'Unknown';
-
-  // Increment counter
-  dailyIssueCount++;
 
   // Clear cache after mutation
   clearLinearCache();
@@ -1395,14 +1442,6 @@ export async function proposeWork(
   if (!isLinearInitialized()) return { error: 'Linear not configured' };
   resetDailyCounterIfNeeded();
 
-  // Check daily limit
-  if (dailyIssueCount >= DAILY_ISSUE_LIMIT) {
-    console.log(`[${sessionName}] Daily issue creation limit reached (${dailyIssueCount}/${DAILY_ISSUE_LIMIT})`);
-    return {
-      error: `Daily issue creation limit (${DAILY_ISSUE_LIMIT}) reached. Please defer the proposal to tomorrow.`,
-    };
-  }
-
   const linear = getClient();
 
   // Look up Backlog state ID
@@ -1438,22 +1477,31 @@ ${suggestedApproach ? `### Suggested Approach\n${suggestedApproach}` : ''}
 ---
 _This issue was auto-created by an agent. Please review and adjust priority or delete as needed._`;
 
-  const issuePayload = await linear.createIssue({
-    teamId: proposalTeamId,
-    title: `[Proposal] ${title}`,
-    description,
-    labelIds,
-    stateId: backlogState?.id,
-    priority: 4, // Low priority
-  });
+  const reserved = await reserveDailyIssue();
+  if (!reserved) {
+    console.log(`[${sessionName}] Daily issue creation limit reached (${dailyIssueCount}/${DAILY_ISSUE_LIMIT})`);
+    return { error: `Daily issue creation limit (${DAILY_ISSUE_LIMIT}) reached. Please defer the proposal to tomorrow.` };
+  }
+  let issuePayload;
+  try {
+    issuePayload = await linear.createIssue({
+      teamId: proposalTeamId,
+      title: `[Proposal] ${title}`,
+      description,
+      labelIds,
+      stateId: backlogState?.id,
+      priority: 4, // Low priority
+    });
+  } catch (error) {
+    await releaseDailyIssue();
+    throw error;
+  }
 
   const issue = await issuePayload.issue;
   if (!issue) {
+    await releaseDailyIssue();
     throw new Error('Failed to create proposal issue');
   }
-
-  // Increment counter
-  dailyIssueCount++;
 
   console.log(`[${sessionName}] Proposal created: ${issue.identifier} (today ${dailyIssueCount}/${DAILY_ISSUE_LIMIT})`);
 
