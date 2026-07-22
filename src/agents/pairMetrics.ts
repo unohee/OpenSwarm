@@ -57,16 +57,32 @@ const SUMMARY_FILE = path.join(METRICS_DIR, 'pair-summary.json');
 let recordsCache: PairSessionRecord[] = [];
 let summaryCache: PairMetricsSummary | null = null;
 let initialized = false;
+let mutationQueue: Promise<void> = Promise.resolve();
+
+function isFiniteNonNegative(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+export function isPairSessionRecord(value: unknown): value is PairSessionRecord {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.sessionId === 'string' && record.sessionId.length > 0
+    && typeof record.taskId === 'string'
+    && typeof record.taskTitle === 'string'
+    && ['approved', 'rejected', 'failed', 'cancelled'].includes(String(record.result))
+    && isFiniteNonNegative(record.attempts)
+    && isFiniteNonNegative(record.maxAttempts)
+    && isFiniteNonNegative(record.durationMs)
+    && isFiniteNonNegative(record.filesChanged)
+    && isFiniteNonNegative(record.startedAt)
+    && isFiniteNonNegative(record.finishedAt);
+}
 
 /**
  * Ensure metrics directory exists
  */
 async function ensureDir(): Promise<void> {
-  try {
-    await fs.mkdir(METRICS_DIR, { recursive: true });
-  } catch {
-    // Already exists
-  }
+  await fs.mkdir(METRICS_DIR, { recursive: true, mode: 0o700 });
 }
 
 /**
@@ -77,7 +93,9 @@ async function loadRecords(): Promise<PairSessionRecord[]> {
     await ensureDir();
     try {
       const data = await fs.readFile(RECORDS_FILE, 'utf-8');
-      recordsCache = JSON.parse(data);
+      const parsed: unknown = JSON.parse(data);
+      if (!Array.isArray(parsed) || !parsed.every(isPairSessionRecord)) throw new Error('Invalid pair metrics record file');
+      recordsCache = parsed;
     } catch {
       recordsCache = [];
     }
@@ -91,7 +109,7 @@ async function loadRecords(): Promise<PairSessionRecord[]> {
  */
 async function saveRecords(): Promise<void> {
   await ensureDir();
-  await fs.writeFile(RECORDS_FILE, JSON.stringify(recordsCache, null, 2));
+  await atomicWriteJson(RECORDS_FILE, recordsCache);
 }
 
 /**
@@ -99,8 +117,14 @@ async function saveRecords(): Promise<void> {
  */
 async function saveSummary(): Promise<void> {
   if (summaryCache) {
-    await fs.writeFile(SUMMARY_FILE, JSON.stringify(summaryCache, null, 2));
+    await atomicWriteJson(SUMMARY_FILE, summaryCache);
   }
+}
+
+async function atomicWriteJson(file: string, value: unknown): Promise<void> {
+  const temp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+  await fs.writeFile(temp, JSON.stringify(value, null, 2), { mode: 0o600 });
+  await fs.rename(temp, file);
 }
 
 // Public API
@@ -109,21 +133,31 @@ async function saveSummary(): Promise<void> {
  * Record session result
  */
 export async function recordSession(record: PairSessionRecord): Promise<void> {
-  await loadRecords();
+  if (!isPairSessionRecord(record)) throw new Error('Invalid pair session record');
+  const operation = mutationQueue.then(async () => {
+    await loadRecords();
 
-  // Prevent duplicates
-  const exists = recordsCache.some(r => r.sessionId === record.sessionId);
-  if (!exists) {
-    recordsCache.push(record);
+    // Prevent duplicates
+    const exists = recordsCache.some(r => r.sessionId === record.sessionId);
+    if (!exists) {
+      recordsCache.push(record);
 
-    // Keep only the last 1000 records
-    if (recordsCache.length > 1000) {
-      recordsCache = recordsCache.slice(-1000);
+      // Keep only the last 1000 records
+      if (recordsCache.length > 1000) recordsCache = recordsCache.slice(-1000);
+
+      await saveRecords();
+      await updateSummary();
     }
+  });
+  mutationQueue = operation.catch(() => {});
+  return operation;
+}
 
-    await saveRecords();
-    await updateSummary();
-  }
+export function resetPairMetricsForTests(): void {
+  recordsCache = [];
+  summaryCache = null;
+  initialized = false;
+  mutationQueue = Promise.resolve();
 }
 
 /**

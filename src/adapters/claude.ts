@@ -10,6 +10,7 @@ import type {
   CliRunOptions,
   CliRunResult,
   AdapterCapabilities,
+  CliCommandSpec,
   WorkerResult,
   ReviewResult,
 } from './types.js';
@@ -50,21 +51,21 @@ export class ClaudeCliAdapter implements CliAdapter {
     }
   }
 
-  buildCommand(options: CliRunOptions): { command: string; args: string[] } {
+  buildCommand(options: CliRunOptions): CliCommandSpec {
     // options.prompt is the temp file path (set by spawnCli)
     const promptFile = options.prompt;
     // Always pin a model: omitting --model runs the user's PERSONAL default,
     // which can be the most expensive tier (observed: planner calls landing on
     // claude-fable-5 at ~$0.64 per trivial call). (INT-2509)
-    const modelFlag = ` --model ${options.model ?? CLAUDE_DEFAULT_MODEL}`;
-    const maxTurnsFlag = options.maxTurns ? ` --max-turns ${options.maxTurns}` : '';
+    const model = options.model ?? CLAUDE_DEFAULT_MODEL;
+    if (!model.trim() || model.includes('\0')) throw new Error('Invalid Claude model');
     // Register OpenSwarm's memory MCP server unless the caller needs an isolated run.
     // bypassPermissions auto-allows its tool when present.
-    const mcpConfigFlag = options.memoryTools === false
-      ? ''
-      : ` --mcp-config ${writeClaudeMcpConfig()}`;
-    const cmd = `echo "" | claude -p "$(cat ${promptFile})" --output-format stream-json --verbose --permission-mode bypassPermissions${mcpConfigFlag}${modelFlag}${maxTurnsFlag}`;
-    return { command: cmd, args: [] };
+    const args = ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'bypassPermissions'];
+    if (options.memoryTools !== false) args.push('--mcp-config', writeClaudeMcpConfig());
+    args.push('--model', model);
+    if (options.maxTurns) args.push('--max-turns', String(options.maxTurns));
+    return { command: 'claude', args, stdinFile: promptFile };
   }
 
   async getDefaultModel(): Promise<string> {

@@ -101,12 +101,15 @@ export class AgentBus {
   private messagesPath: string;
   private listeners: Map<MessageType, Array<(msg: AgentMessage) => void>> = new Map();
   private pollInterval: NodeJS.Timeout | null = null;
+  private pollInFlight = false;
   private lastMessageId: string = '';
+  private readonly contextLockPath: string;
 
   constructor(executionId: string) {
     this.executionId = executionId;
     this.contextPath = resolve(BUS_DIR, executionId, 'context.json');
     this.messagesPath = resolve(BUS_DIR, executionId, 'messages');
+    this.contextLockPath = resolve(BUS_DIR, executionId, 'context.lock');
   }
 
   /**
@@ -172,75 +175,48 @@ export class AgentBus {
    * Handle step completion
    */
   private async handleStepCompleted(payload: StepCompletedPayload): Promise<void> {
-    const context = await this.getContext();
-    if (!context) return;
-
-    context.stepOutputs[payload.stepId] = payload.output;
-
-    if (payload.changedFiles) {
-      for (const file of payload.changedFiles) {
-        if (!context.changedFiles.includes(file)) {
-          context.changedFiles.push(file);
+    await this.mutateContext((context) => {
+      context.stepOutputs[payload.stepId] = payload.output;
+      if (payload.changedFiles) {
+        for (const file of payload.changedFiles) {
+          if (!context.changedFiles.includes(file)) context.changedFiles.push(file);
         }
       }
-    }
-
-    await this.saveContext(context);
+    });
   }
 
   /**
    * Handle context update
    */
   private async handleContextUpdate(payload: ContextUpdatePayload): Promise<void> {
-    const context = await this.getContext();
-    if (!context) return;
-
-    switch (payload.operation) {
-      case 'set':
-        context.data[payload.key] = payload.value;
-        break;
-      case 'append':
-        if (!Array.isArray(context.data[payload.key])) {
-          context.data[payload.key] = [];
-        }
-        (context.data[payload.key] as unknown[]).push(payload.value);
-        break;
-      case 'delete':
-        delete context.data[payload.key];
-        break;
-    }
-
-    await this.saveContext(context);
+    await this.mutateContext((context) => {
+      switch (payload.operation) {
+        case 'set': context.data[payload.key] = payload.value; break;
+        case 'append':
+          if (!Array.isArray(context.data[payload.key])) context.data[payload.key] = [];
+          (context.data[payload.key] as unknown[]).push(payload.value);
+          break;
+        case 'delete': delete context.data[payload.key]; break;
+      }
+    });
   }
 
   /**
    * Handle file change
    */
   private async handleFileChanged(payload: FileChangedPayload): Promise<void> {
-    const context = await this.getContext();
-    if (!context) return;
-
-    if (!context.changedFiles.includes(payload.path)) {
-      context.changedFiles.push(payload.path);
-    }
-
-    await this.saveContext(context);
+    await this.mutateContext((context) => {
+      if (!context.changedFiles.includes(payload.path)) context.changedFiles.push(payload.path);
+    });
   }
 
   /**
    * Handle error
    */
   private async handleError(stepId: string, message: string): Promise<void> {
-    const context = await this.getContext();
-    if (!context) return;
-
-    context.errors.push({
-      stepId,
-      message,
-      timestamp: Date.now(),
+    await this.mutateContext((context) => {
+      context.errors.push({ stepId, message, timestamp: Date.now() });
     });
-
-    await this.saveContext(context);
   }
 
   /**
@@ -259,7 +235,36 @@ export class AgentBus {
    * Save context
    */
   private async saveContext(context: SharedContext): Promise<void> {
-    await fs.writeFile(this.contextPath, JSON.stringify(context, null, 2));
+    const temp = `${this.contextPath}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+    await fs.writeFile(temp, JSON.stringify(context, null, 2), { mode: 0o600 });
+    await fs.rename(temp, this.contextPath);
+  }
+
+  private async mutateContext(mutator: (context: SharedContext) => void): Promise<void> {
+    await this.withContextLock(async () => {
+      const context = await this.getContext();
+      if (!context) return;
+      mutator(context);
+      await this.saveContext(context);
+    });
+  }
+
+  private async withContextLock<T>(operation: () => Promise<T>): Promise<T> {
+    const deadline = Date.now() + 10_000;
+    while (true) {
+      try {
+        await fs.mkdir(this.contextLockPath);
+        break;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST' || Date.now() >= deadline) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+    }
+    try {
+      return await operation();
+    } finally {
+      await fs.rmdir(this.contextLockPath).catch(() => {});
+    }
   }
 
   /**
@@ -314,7 +319,13 @@ export class AgentBus {
     if (this.pollInterval) return;
 
     this.pollInterval = setInterval(async () => {
-      await this.checkNewMessages();
+      if (this.pollInFlight) return;
+      this.pollInFlight = true;
+      try {
+        await this.pollOnce();
+      } finally {
+        this.pollInFlight = false;
+      }
     }, intervalMs);
   }
 
@@ -331,7 +342,7 @@ export class AgentBus {
   /**
    * Check for new messages
    */
-  private async checkNewMessages(): Promise<void> {
+  async pollOnce(): Promise<void> {
     try {
       const files = await fs.readdir(this.messagesPath);
       const newFiles = files
@@ -346,7 +357,11 @@ export class AgentBus {
         const callbacks = this.listeners.get(message.type);
         if (callbacks) {
           for (const cb of callbacks) {
-            cb(message);
+            try {
+              cb(message);
+            } catch (error) {
+              console.warn(`[AgentBus] Listener failed for ${message.type}:`, error instanceof Error ? error.message : String(error));
+            }
           }
         }
 

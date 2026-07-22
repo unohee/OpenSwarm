@@ -210,7 +210,9 @@ export async function notifyPairCancelled(
 /**
  * Send Webhook (common)
  */
-async function sendWebhook(url: string, payload: WebhookPayload): Promise<WebhookResult> {
+const WEBHOOK_TIMEOUT_MS = 10_000;
+
+export async function sendWebhook(url: string, payload: WebhookPayload): Promise<WebhookResult> {
   try {
     const response = await fetch(url, {
       method: 'POST',
@@ -219,20 +221,20 @@ async function sendWebhook(url: string, payload: WebhookPayload): Promise<Webhoo
         'User-Agent': 'OpenSwarm/1.0',
       },
       body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
     });
-
-    if (response.ok) {
-      return {
+    const result = response.ok
+      ? {
         success: true,
         statusCode: response.status,
-      };
-    }
-
-    return {
+      }
+      : {
       success: false,
       statusCode: response.status,
       error: `HTTP ${response.status}: ${response.statusText}`,
-    };
+      };
+    await response.body?.cancel().catch(() => {});
+    return result;
   } catch (err) {
     return {
       success: false,
@@ -298,13 +300,15 @@ export async function sendDiscordWebhook(
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ embeds: [embed] }),
+      signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
     });
-
-    return {
+    const result = {
       success: response.ok,
       statusCode: response.status,
       error: response.ok ? undefined : `HTTP ${response.status}`,
     };
+    await response.body?.cancel().catch(() => {});
+    return result;
   } catch (err) {
     return {
       success: false,

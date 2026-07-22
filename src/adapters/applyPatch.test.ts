@@ -22,6 +22,10 @@ describe('parseV4A', () => {
     expect(() => parseV4A('no envelope here')).toThrow(/Begin Patch/);
   });
 
+  it('throws on a truncated patch missing the explicit End marker', () => {
+    expect(() => parseV4A('*** Begin Patch\n*** Add File: partial.txt\n+unsafe')).toThrow(/End Patch/);
+  });
+
   it('parses update / add / delete / move ops', () => {
     const ops = parseV4A(wrap(
       '*** Update File: a.ts\n@@\n-old\n+new\n' +

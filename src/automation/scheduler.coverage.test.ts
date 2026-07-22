@@ -16,7 +16,7 @@
 // `~/.openswarm/schedules.json` or spawns a real `claude` process.
 
 import { EventEmitter } from 'node:events';
-import { rm } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getDateLocale, t } from '../locale/index.js';
 import { getTimeWindowConfig, setTimeWindowConfig } from '../support/timeWindow.js';
@@ -215,21 +215,21 @@ describe('scheduler coverage', () => {
       ).toBe(true);
     });
 
-    it('logs and swallows an error for an invalid cron expression instead of throwing', async () => {
+    it('rejects an invalid cron expression before persisting it', async () => {
       await expect(
         addSchedule('bad-cron-job', testHome.path, 'do work', 'not a valid cron at all'),
-      ).resolves.toBeTruthy();
+      ).rejects.toThrow();
 
-      expect(
-        vi
-          .mocked(console.error)
-          .mock.calls.some(
-            ([msg]) => typeof msg === 'string' && msg.includes('Failed to start cron for bad-cron-job'),
-          ),
-      ).toBe(true);
-      // The schedule is still persisted even though its cron never started.
-      expect((await listSchedules()).find((s) => s.name === 'bad-cron-job')).toBeTruthy();
+      expect((await listSchedules()).find((s) => s.name === 'bad-cron-job')).toBeUndefined();
     });
+  });
+
+  it('fails visibly when the persisted schedule file is corrupt', async () => {
+    const scheduleDir = `${testHome.path}/.openswarm`;
+    await mkdir(scheduleDir, { recursive: true });
+    await writeFile(`${scheduleDir}/schedules.json`, '{not-json');
+
+    await expect(listSchedules()).rejects.toThrow('Failed to load schedules');
   });
 
   // ==========================================================
@@ -423,6 +423,22 @@ describe('scheduler coverage', () => {
       ).toBe(true);
     });
 
+    it('merges a completed run with the latest persisted failure counter', async () => {
+      const job = await addSchedule('concurrent-state-job', testHome.path, 'do work', '0 3 * * *');
+      spawnMock.mockImplementationOnce(() => createMockProc());
+      const pending = runNow(job.id, true);
+      await vi.waitFor(() => expect(spawned.processes).toHaveLength(1));
+
+      const scheduleFile = `${testHome.path}/.openswarm/schedules.json`;
+      const latest = await listSchedules();
+      latest[0].consecutiveFailures = 1;
+      await writeFile(scheduleFile, JSON.stringify(latest));
+      spawned.processes[0].emit('close', 1);
+      await pending;
+
+      expect((await listSchedules())[0].consecutiveFailures).toBe(2);
+    });
+
     it('caps recent results at MAX_RESULTS by evicting the oldest entry', async () => {
       await addSchedule('bulk-job', testHome.path, 'do work', '0 3 * * *');
 
@@ -514,6 +530,19 @@ describe('scheduler coverage', () => {
     expect(
       vi.mocked(console.log).mock.calls.some(([msg]) => typeof msg === 'string' && msg.includes('Loading 2 schedules')),
     ).toBe(true);
+  });
+
+  it('can start all schedules repeatedly without retaining duplicate cron jobs', async () => {
+    await addSchedule('idempotent-start', testHome.path, 'do work', '0 3 * * *');
+
+    await startAllSchedules();
+    await startAllSchedules();
+
+    expect(
+      vi.mocked(console.log).mock.calls.filter(
+        ([msg]) => typeof msg === 'string' && msg.includes('Started cron for idempotent-start'),
+      ),
+    ).toHaveLength(3);
   });
 
   it('kills a running process when stopping all schedules', async () => {

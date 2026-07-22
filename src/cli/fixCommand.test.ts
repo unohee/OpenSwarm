@@ -109,9 +109,15 @@ describe('parseFailingFiles (INT-2267)', () => {
     expect(files).toEqual(['lib/util.py', 'src/cli/fixCommand.test.ts', 'src/cli/fixCommand.ts']);
   });
 
-  it('ignores absolute paths and non-source text', () => {
+  it('ignores absolute paths without a repository boundary', () => {
     expect(parseFailingFiles('all good, no files here')).toEqual([]);
     expect(parseFailingFiles('/usr/lib/node/x.js failed')).toEqual([]);
+  });
+
+  it('normalizes absolute paths inside the project and rejects external paths', () => {
+    const root = '/work/repo';
+    const output = '/work/repo/src/app.ts(2,1): error\n/usr/lib/node/x.js failed';
+    expect(parseFailingFiles(output, root)).toEqual(['src/app.ts']);
   });
 
   it('extracts paths from cargo and pytest output (INT-2303)', () => {

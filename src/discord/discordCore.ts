@@ -273,7 +273,13 @@ export function setCallbacks(callbacks: {
 export async function initDiscord(token: string, channelId: string): Promise<void> {
   reportChannelId = channelId;
 
-  client = new Client({
+  // Reconfiguration/restart must not leave the old websocket client alive.
+  if (client) {
+    await client.destroy();
+    client = null;
+  }
+
+  const nextClient = new Client({
     intents: [
       GatewayIntentBits.Guilds,
       GatewayIntentBits.GuildMessages,
@@ -281,13 +287,19 @@ export async function initDiscord(token: string, channelId: string): Promise<voi
     ],
   });
 
-  client.once(Events.ClientReady, () => {
-    console.log(`Discord bot logged in as ${client?.user?.tag}`);
+  nextClient.once(Events.ClientReady, () => {
+    console.log(`Discord bot logged in as ${nextClient.user?.tag}`);
   });
 
-  client.on('messageCreate', handleMessage);
+  nextClient.on('messageCreate', handleMessage);
 
-  await client.login(token);
+  try {
+    await nextClient.login(token);
+    client = nextClient;
+  } catch (error) {
+    await nextClient.destroy().catch(() => {});
+    throw error;
+  }
 }
 
 // Handler function imports (used within functions to prevent lazy load issues)
@@ -492,7 +504,7 @@ export async function reportEvent(event: SwarmEvent): Promise<void> {
 
   const embed = new EmbedBuilder()
     .setTitle(`${emoji} [${event.session}] ${event.type.replace(/_/g, ' ')}`)
-    .setDescription(event.message)
+    .setDescription(clampDiscordText(event.message, 4096))
     .setColor(event.type.includes('failed') || event.type === 'error' ? 0xff0000 : 0x00ae86)
     .setTimestamp(event.timestamp);
 
@@ -522,6 +534,27 @@ export function formatTimeAgo(timestamp: number): string {
   if (hours > 0) return t('common.timeAgo.hoursAgo', { n: hours });
   if (minutes > 0) return t('common.timeAgo.minutesAgo', { n: minutes });
   return t('common.timeAgo.justNow');
+}
+
+export function clampDiscordText(value: string, limit: number): string {
+  if (value.length <= limit) return value;
+  if (limit <= 1) return '…'.slice(0, limit);
+  return `${value.slice(0, limit - 1)}…`;
+}
+
+export function startTypingIndicator(
+  channel: { sendTyping: () => Promise<unknown> },
+  intervalMs = 8_000,
+): NodeJS.Timeout {
+  const send = () => {
+    void channel.sendTyping().catch((error) => {
+      console.warn('[Discord] Typing indicator failed:', error instanceof Error ? error.message : String(error));
+    });
+  };
+  send();
+  const timer = setInterval(send, intervalMs);
+  timer.unref?.();
+  return timer;
 }
 
 /**
@@ -622,8 +655,7 @@ export async function handleChat(msg: Message): Promise<void> {
   // Show typing indicator (refresh every 8 seconds)
   let typingInterval: NodeJS.Timeout | null = null;
   if ('sendTyping' in channel) {
-    channel.sendTyping();
-    typingInterval = setInterval(() => channel.sendTyping(), 8000);
+    typingInterval = startTypingIndicator(channel);
   }
 
   // Add current message to history (response updated later)

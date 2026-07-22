@@ -8,6 +8,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { randomBytes, createHash } from 'node:crypto';
 import { AuthProfileStore, type AuthProfile } from './oauthStore.js';
 import { openBrowser } from './openBrowser.js';
+import { PkceSettlement, TOKEN_EXCHANGE_TIMEOUT_MS } from './pkceSettlement.js';
 
 // ----- Constants -----
 
@@ -61,6 +62,17 @@ export interface LinearFlowOptions {
   scopes?: string;
 }
 
+export function parseLinearTokenResponse(value: unknown): LinearFlowResult {
+  if (!value || typeof value !== 'object') throw new Error('Linear token response is not an object');
+  const tokens = value as Record<string, unknown>;
+  if (typeof tokens.access_token !== 'string' || !tokens.access_token) throw new Error('Linear token response missing access_token');
+  if (typeof tokens.refresh_token !== 'string' || !tokens.refresh_token) throw new Error('Linear token response missing refresh_token');
+  if (typeof tokens.expires_in !== 'number' || !Number.isFinite(tokens.expires_in) || tokens.expires_in <= 0) {
+    throw new Error('Linear token response has invalid expires_in');
+  }
+  return { accessToken: tokens.access_token, refreshToken: tokens.refresh_token, expiresIn: tokens.expires_in };
+}
+
 /**
  * Linear OAuth 2.0 PKCE flow.
  *   1. generate PKCE verifier/challenge + state
@@ -91,18 +103,19 @@ export async function runLinearPkceFlow(options: LinearFlowOptions = {}): Promis
   const authUrl = `${LINEAR_AUTH_ENDPOINT}?${authParams.toString()}`;
 
   return new Promise<LinearFlowResult>((resolve, reject) => {
-    let settled = false;
+    const settlement = new PkceSettlement();
+    const exchangeAbort = new AbortController();
 
     const timeout = setTimeout(() => {
-      if (!settled) {
-        settled = true;
+      if (settlement.finish()) {
+        exchangeAbort.abort(new Error('Linear login timed out'));
         server.close();
         reject(new Error('Linear login timed out (120s). 다시 시도하세요.'));
       }
     }, LOGIN_TIMEOUT_MS);
 
     const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
-      if (settled) {
+      if (settlement.settled) {
         res.writeHead(400);
         res.end();
         return;
@@ -119,8 +132,14 @@ export async function runLinearPkceFlow(options: LinearFlowOptions = {}): Promis
       const returnedState = url.searchParams.get('state');
       const error = url.searchParams.get('error');
 
+      if (!settlement.tryClaim()) {
+        res.writeHead(409);
+        res.end('OAuth callback already being processed');
+        return;
+      }
+
       if (error) {
-        settled = true;
+        settlement.finish();
         clearTimeout(timeout);
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(errorHtml(error));
@@ -130,7 +149,7 @@ export async function runLinearPkceFlow(options: LinearFlowOptions = {}): Promis
       }
 
       if (!code || returnedState !== state) {
-        settled = true;
+        settlement.finish();
         clearTimeout(timeout);
         res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(errorHtml('Invalid callback parameters'));
@@ -152,6 +171,7 @@ export async function runLinearPkceFlow(options: LinearFlowOptions = {}): Promis
           method: 'POST',
           headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
           body: tokenBody.toString(),
+          signal: AbortSignal.any([exchangeAbort.signal, AbortSignal.timeout(TOKEN_EXCHANGE_TIMEOUT_MS)]),
         });
 
         if (!tokenRes.ok) {
@@ -159,24 +179,16 @@ export async function runLinearPkceFlow(options: LinearFlowOptions = {}): Promis
           throw new Error(`Token exchange failed (${tokenRes.status}): ${errText.slice(0, 300)}`);
         }
 
-        const tokens = (await tokenRes.json()) as {
-          access_token: string;
-          refresh_token?: string;
-          expires_in: number;
-        };
+        const result = parseLinearTokenResponse(await tokenRes.json());
 
-        settled = true;
+        if (!settlement.finish()) return;
         clearTimeout(timeout);
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(successHtml());
         server.close();
-        resolve({
-          accessToken: tokens.access_token,
-          refreshToken: tokens.refresh_token ?? '',
-          expiresIn: tokens.expires_in,
-        });
+        resolve(result);
       } catch (err) {
-        settled = true;
+        if (!settlement.finish()) return;
         clearTimeout(timeout);
         res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(errorHtml(String(err)));
@@ -192,8 +204,8 @@ export async function runLinearPkceFlow(options: LinearFlowOptions = {}): Promis
     });
 
     server.on('error', (err) => {
-      if (!settled) {
-        settled = true;
+      if (settlement.finish()) {
+        exchangeAbort.abort(err);
         clearTimeout(timeout);
         reject(new Error(`Callback server error: ${err.message}`));
       }

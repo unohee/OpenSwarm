@@ -221,6 +221,23 @@ describe('agentBus', () => {
   });
 
   describe('Context Updates', () => {
+    it('serializes context mutations across bus instances', async () => {
+      const executionId = `concurrent-${Date.now()}-${Math.random()}`;
+      const first = createBus(executionId);
+      const second = createBus(executionId);
+      await first.init('workflow-123');
+
+      await Promise.all([
+        first.setData('first', 'one'),
+        second.setData('second', 'two'),
+      ]);
+
+      expect(await first.getData('first')).toBe('one');
+      expect(await first.getData('second')).toBe('two');
+      await first.cleanup();
+      await second.cleanup();
+    });
+
     it('should set custom data', async () => {
       await bus.init('workflow-123');
 
@@ -542,6 +559,25 @@ describe('agentBus', () => {
   });
 
   describe('Polling', () => {
+    it('isolates listener failures and still advances to later messages', async () => {
+      const executionId = `listeners-${Date.now()}-${Math.random()}`;
+      const publisher = createBus(executionId);
+      const subscriber = createBus(executionId);
+      await publisher.init('workflow-123');
+      const received = vi.fn();
+      subscriber.on('log', () => { throw new Error('listener boom'); });
+      subscriber.on('log', received);
+
+      await publisher.publish('log', 'step-1', 'first');
+      await subscriber.pollOnce();
+      await publisher.publish('log', 'step-1', 'second');
+      await subscriber.pollOnce();
+
+      expect(received).toHaveBeenCalledTimes(2);
+      await publisher.cleanup();
+      await subscriber.cleanup();
+    });
+
     it('should start polling', async () => {
       await bus.init('workflow-123');
 

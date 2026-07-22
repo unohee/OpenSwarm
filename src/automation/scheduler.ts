@@ -98,10 +98,32 @@ async function loadSchedules(): Promise<ScheduledJob[]> {
   try {
     await fs.mkdir(SCHEDULE_DIR, { recursive: true });
     const data = await fs.readFile(SCHEDULE_FILE, 'utf-8');
-    return JSON.parse(data);
-  } catch {
-    return [];
+    const parsed: unknown = JSON.parse(data);
+    if (!Array.isArray(parsed) || !parsed.every(isScheduledJob)) {
+      throw new Error('schedule file does not contain a valid schedule array');
+    }
+    return parsed;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw new Error(
+      `Failed to load schedules from ${SCHEDULE_FILE}: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
   }
+}
+
+function isScheduledJob(value: unknown): value is ScheduledJob {
+  if (!value || typeof value !== 'object') return false;
+  const job = value as Record<string, unknown>;
+  return (
+    typeof job.id === 'string' && job.id.length > 0 &&
+    typeof job.name === 'string' && job.name.length > 0 &&
+    typeof job.projectPath === 'string' &&
+    typeof job.prompt === 'string' &&
+    typeof job.schedule === 'string' && job.schedule.length > 0 &&
+    typeof job.enabled === 'boolean' &&
+    typeof job.createdAt === 'number' && Number.isFinite(job.createdAt)
+  );
 }
 
 /**
@@ -109,7 +131,9 @@ async function loadSchedules(): Promise<ScheduledJob[]> {
  */
 async function saveSchedules(schedules: ScheduledJob[]): Promise<void> {
   await fs.mkdir(SCHEDULE_DIR, { recursive: true });
-  await fs.writeFile(SCHEDULE_FILE, JSON.stringify(schedules, null, 2));
+  const tempFile = `${SCHEDULE_FILE}.${process.pid}.${Date.now()}.tmp`;
+  await fs.writeFile(tempFile, JSON.stringify(schedules, null, 2), { mode: 0o600 });
+  await fs.rename(tempFile, SCHEDULE_FILE);
 }
 
 /**
@@ -133,6 +157,13 @@ function intervalToCron(interval: string): string {
     default:
       return interval;
   }
+}
+
+function validateScheduleExpression(schedule: string): string {
+  const cronExpr = intervalToCron(schedule.trim());
+  const probe = new Cron(cronExpr, { paused: true });
+  probe.stop();
+  return cronExpr;
 }
 
 /**
@@ -293,24 +324,29 @@ async function runScheduledJob(
     }
 
     // Update last run + consecutive-failure tracking; auto-pause on repeated failure.
-    const fs = nextFailureState(job.consecutiveFailures ?? 0, success);
     const schedules = await loadSchedules();
+    const latest = schedules.find((schedule) => schedule.id === job.id);
+    if (!latest) {
+      console.log(`[Scheduler] Job "${job.name}" was removed while running; skipping state update`);
+      return success;
+    }
+    const failureState = nextFailureState(latest.consecutiveFailures ?? 0, success);
     const updated = schedules.map((s) =>
       s.id === job.id
         ? {
             ...s,
             lastRun: Date.now(),
-            consecutiveFailures: fs.consecutiveFailures,
-            enabled: fs.autoPause ? false : s.enabled,
+            consecutiveFailures: failureState.consecutiveFailures,
+            enabled: failureState.autoPause ? false : s.enabled,
           }
         : s
     );
     await saveSchedules(updated);
 
-    if (fs.autoPause) {
+    if (failureState.autoPause) {
       activeJobs.get(job.id)?.stop();
       activeJobs.delete(job.id);
-      const msg = `[Scheduler] Job "${job.name}" auto-paused after ${fs.consecutiveFailures} consecutive failures — fix it and re-enable with \`openswarm schedule pause ${job.name}\``;
+      const msg = `[Scheduler] Job "${job.name}" auto-paused after ${failureState.consecutiveFailures} consecutive failures — fix it and re-enable with \`openswarm schedule pause ${job.name}\``;
       console.warn(msg);
       resultListener?.({ ...result, output: `${result.output}\n${msg}`.trim() });
     }
@@ -335,6 +371,7 @@ export async function addSchedule(
   schedule: string,
   createdBy?: string
 ): Promise<ScheduledJob> {
+  validateScheduleExpression(schedule);
   const schedules = await loadSchedules();
 
   // Check for duplicates
@@ -411,6 +448,7 @@ export async function toggleSchedule(
   if (!job) return null;
 
   job.enabled = !job.enabled;
+  if (job.enabled) validateScheduleExpression(job.schedule);
   await saveSchedules(schedules);
 
   // Toggle cron job
@@ -434,20 +472,21 @@ export async function toggleSchedule(
 async function startCronJob(job: ScheduledJob): Promise<void> {
   if (!job.enabled) return;
 
-  const cronExpr = intervalToCron(job.schedule);
-
-  try {
-    const cron = new Cron(cronExpr, () => {
-      void runScheduledJob(job).catch((err) => {
-        console.error(`[Scheduler] Job ${job.name} error:`, err);
-      });
-    });
-
-    activeJobs.set(job.id, cron);
-    console.log(`[Scheduler] Started cron for ${job.name}: ${cronExpr}`);
-  } catch (err) {
-    console.error(`[Scheduler] Failed to start cron for ${job.name}:`, err);
+  const cronExpr = validateScheduleExpression(job.schedule);
+  const existing = activeJobs.get(job.id);
+  if (existing) {
+    existing.stop();
+    activeJobs.delete(job.id);
   }
+
+  const cron = new Cron(cronExpr, () => {
+    void runScheduledJob(job).catch((err) => {
+      console.error(`[Scheduler] Job ${job.name} error:`, err);
+    });
+  });
+
+  activeJobs.set(job.id, cron);
+  console.log(`[Scheduler] Started cron for ${job.name}: ${cronExpr}`);
 }
 
 /**
@@ -456,6 +495,10 @@ async function startCronJob(job: ScheduledJob): Promise<void> {
 export async function startAllSchedules(): Promise<void> {
   const schedules = await loadSchedules();
   console.log(`[Scheduler] Loading ${schedules.length} schedules...`);
+
+  for (const job of schedules) {
+    if (job.enabled) validateScheduleExpression(job.schedule);
+  }
 
   for (const job of schedules) {
     if (job.enabled) {

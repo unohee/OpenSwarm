@@ -3,7 +3,7 @@
 // ============================================
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { writeFileSync, readFileSync, existsSync, watchFile } from 'node:fs';
+import { writeFileSync, readFileSync, existsSync, watchFile, unwatchFile, type Stats } from 'node:fs';
 import { readdir, stat } from 'node:fs/promises';
 import { join, resolve as resolvePath, dirname, basename } from 'node:path';
 import { homedir } from 'node:os';
@@ -19,7 +19,7 @@ import { getGraph, toProjectSlug, getProjectHealth, scanAndCache, listGraphs } f
 import { getProjectGitInfo, startGitStatusPoller } from './gitStatus.js';
 import { getActiveMonitors, registerMonitor, unregisterMonitor } from '../automation/longRunningMonitor.js';
 import type { LongRunningMonitorConfig } from '../core/types.js';
-import { getAllProcesses, killProcess, startHealthChecker } from '../adapters/processRegistry.js';
+import { getAllProcesses, killProcess, startHealthChecker, stopHealthChecker } from '../adapters/processRegistry.js';
 import { setDefaultAdapter, isKnownAdapter, listAdapterNames } from '../adapters/index.js';
 import * as memory from '../memory/index.js';
 import { PairPipeline, type PipelineResult } from '../agents/pairPipeline.js';
@@ -373,6 +373,7 @@ export function applyReposConfig(runner: AutonomousRunner, cfg: ReposConfig = lo
 }
 
 let reposWatcherStarted = false;
+let reposWatcherListener: ((curr: Stats, prev: Stats) => void) | null = null;
 /**
  * Poll the repo registry file and reload when it changes, so external writers
  * (CLI `openswarm add`/`remove`, hand edits) show up in the dashboard within a
@@ -383,7 +384,7 @@ let reposWatcherStarted = false;
 function startReposWatcher(): void {
   if (reposWatcherStarted) return;
   reposWatcherStarted = true;
-  watchFile(REPOS_FILE, { interval: 3000 }, (curr, prev) => {
+  reposWatcherListener = (curr, prev) => {
     if (curr.mtimeMs === prev.mtimeMs) return;
     const runner = runnerRef;
     if (!runner) return;
@@ -393,7 +394,16 @@ function startReposWatcher(): void {
     } catch (e) {
       console.warn('[Web] repos reload failed:', e instanceof Error ? e.message : e);
     }
-  });
+  };
+  watchFile(REPOS_FILE, { interval: 3000 }, reposWatcherListener);
+}
+
+export function stopReposWatcher(): void {
+  if (reposWatcherListener) {
+    unwatchFile(REPOS_FILE, reposWatcherListener);
+    reposWatcherListener = null;
+  }
+  reposWatcherStarted = false;
 }
 
 /**
@@ -443,6 +453,8 @@ export async function startWebServer(port: number = 3847): Promise<void> {
     console.log('Web interface already running, skipping...');
     return;
   }
+
+  if (runnerRef) startReposWatcher();
 
   return new Promise((resolve, reject) => {
     server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
@@ -1423,9 +1435,17 @@ export async function stopWebServer(): Promise<void> {
     clearInterval(gitStatusPoller);
     gitStatusPoller = null;
   }
+  stopHealthChecker();
+  stopReposWatcher();
 
   if (server) {
-    server.close();
+    const current = server;
     server = null;
+    await new Promise<void>((resolve, reject) => {
+      current.close((error) => {
+        if (!error || (error as NodeJS.ErrnoException).code === 'ERR_SERVER_NOT_RUNNING') resolve();
+        else reject(error);
+      });
+    });
   }
 }

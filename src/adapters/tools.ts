@@ -623,11 +623,11 @@ export async function executeTool(
       default:
         // MCP tools (named `server__tool`) route to their server via the MCP client.
         if (isMcpTool(name)) {
-          const text = await callMcpTool(name, (args ?? {}) as Record<string, unknown>);
+          const result = await callMcpTool(name, (args ?? {}) as Record<string, unknown>);
           return {
             tool_call_id: callId,
-            content: text,
-            is_error: text.startsWith('MCP error') || text.startsWith('MCP tool not registered'),
+            content: result.content,
+            is_error: result.isError,
           };
         }
         return { tool_call_id: callId, content: `Unknown tool: ${name}`, is_error: true };

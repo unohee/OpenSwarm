@@ -42,6 +42,16 @@ export interface FailureAnalysis {
   suggestion?: string;
 }
 
+export const MIN_CI_CHECK_INTERVAL_MS = 1_000;
+
+export function validateCIWorkerInterval(value: number | undefined): number {
+  const interval = value ?? 5 * 60 * 1000;
+  if (!Number.isSafeInteger(interval) || interval < MIN_CI_CHECK_INTERVAL_MS) {
+    throw new RangeError(`CI worker checkIntervalMs must be a finite integer >= ${MIN_CI_CHECK_INTERVAL_MS}`);
+  }
+  return interval;
+}
+
 // CI Worker
 
 export class CIWorker {
@@ -51,11 +61,11 @@ export class CIWorker {
 
   constructor(config: CIWorkerConfig) {
     this.config = {
-      checkIntervalMs: config.checkIntervalMs ?? 5 * 60 * 1000, // 5 minutes
+      ...config,
+      checkIntervalMs: validateCIWorkerInterval(config.checkIntervalMs),
       autoRetry: config.autoRetry ?? false,
       createIssues: config.createIssues ?? true,
       maxAgeDays: config.maxAgeDays ?? 30,
-      ...config,
     };
   }
 

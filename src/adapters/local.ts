@@ -75,6 +75,7 @@ export class LocalModelAdapter implements CliAdapter {
   }
 
   async isAvailable(): Promise<boolean> {
+    this.activeUrl = null;
     const candidates = this.configuredUrl
       ? [this.configuredUrl, ...this.endpoints]
       : this.endpoints;
@@ -135,18 +136,17 @@ export class LocalModelAdapter implements CliAdapter {
   async run(options: CliRunOptions): Promise<CliRunResult> {
     const startTime = Date.now();
 
-    // 서버 연결 확인
-    if (!this.activeUrl) {
-      const available = await this.isAvailable();
-      if (!available) {
-        return {
-          exitCode: 1,
-          stdout: '',
-          stderr: `${this.noServerMessage}\n` +
-            `Checked: ${(this.configuredUrl ? [this.configuredUrl, ...this.endpoints] : this.endpoints).join(', ')}`,
-          durationMs: Date.now() - startTime,
-        };
-      }
+    // Re-probe on every run: a previously selected local server can disappear
+    // while another configured endpoint remains healthy.
+    const available = await this.isAvailable();
+    if (!available) {
+      return {
+        exitCode: 1,
+        stdout: '',
+        stderr: `${this.noServerMessage}\n` +
+          `Checked: ${(this.configuredUrl ? [this.configuredUrl, ...this.endpoints] : this.endpoints).join(', ')}`,
+        durationMs: Date.now() - startTime,
+      };
     }
 
     const model = options.model ?? await this.getDefaultModel();

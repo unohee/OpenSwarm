@@ -10,13 +10,14 @@ import type {
   CliRunOptions,
   CliRunResult,
   AdapterCapabilities,
+  CliCommandSpec,
   WorkerResult,
   ReviewResult,
 } from './types.js';
 import { t } from '../locale/index.js';
 import { AuthProfileStore, ensureValidToken } from '../auth/index.js';
 import { getCodexModelIds } from './codexModels.js';
-import { codexMcpConfigFlags } from './memoryMcp.js';
+import { codexMcpConfigArgs } from './memoryMcp.js';
 import { parseReviewerResult } from './resultParsing.js';
 
 const execFileAsync = promisify(execFile);
@@ -69,17 +70,17 @@ export class CodexCliAdapter implements CliAdapter {
     return first ?? CODEX_DEFAULT_MODEL;
   }
 
-  buildCommand(options: CliRunOptions): { command: string; args: string[] } {
+  buildCommand(options: CliRunOptions): CliCommandSpec {
     const promptFile = options.prompt;
     const resolvedModel = options.model ? coerceCodexModel(options.model) : undefined;
-    const modelFlag = resolvedModel ? ` -m ${shellEscape(resolvedModel)}` : '';
     // `--full-auto` was deprecated in codex 0.137 (warns, still runs). Its documented
     // replacement is `--sandbox workspace-write`: same low-friction policy (writes
     // confined to the workspace, no approval prompts in non-interactive `exec`). (INT-1699)
     // Register OpenSwarm's memory MCP server unless the caller needs an isolated run.
-    const memoryFlags = options.memoryTools === false ? '' : ` ${codexMcpConfigFlags()}`;
-    const cmd = `cat ${shellEscape(promptFile)} | codex exec --json --sandbox workspace-write --skip-git-repo-check${modelFlag}${memoryFlags}`;
-    return { command: cmd, args: [] };
+    const args = ['exec', '--json', '--sandbox', 'workspace-write', '--skip-git-repo-check'];
+    if (resolvedModel) args.push('-m', resolvedModel);
+    if (options.memoryTools !== false) args.push(...codexMcpConfigArgs());
+    return { command: 'codex', args, stdinFile: promptFile };
   }
 
   parseStreamingChunk(
@@ -122,10 +123,6 @@ export class CodexCliAdapter implements CliAdapter {
     // contract belong to the shared parser used by every in-process adapter.
     return parseReviewerResult(resultText);
   }
-}
-
-function shellEscape(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 /**

@@ -15,7 +15,7 @@
 
 import { execFile } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { balanceAreasToConcurrency, type AuditArea } from './reviewAudit.js';
 import { runPool } from '../support/concurrencyPool.js';
 import { startProgressHeartbeat } from './reviewProgress.js';
@@ -218,6 +218,7 @@ export function resolveProjectChecks(probe: ProjectProbe, requested?: string[]):
 
 const SOURCE_EXT = 'tsx?|jsx?|mjs|cjs|py|rs|go|java|kt|kts|scala|rb|php|swift|c|cc|cpp|cxx|h|hpp|cs|ex|exs|lua|jl|zig|nim';
 const FILE_RE = new RegExp(String.raw`(?:^|[\s('"\`])((?:[\w.\-]+\/)*[\w.\-]+\.(?:${SOURCE_EXT}))`, 'g');
+const ABS_FILE_RE = new RegExp(String.raw`(?:^|[\s('"\`])((?:\/[\w.\-]+)+\.(?:${SOURCE_EXT}))`, 'g');
 
 /**
  * Extract repo-relative source file paths mentioned in check output — the files
@@ -226,12 +227,21 @@ const FILE_RE = new RegExp(String.raw`(?:^|[\s('"\`])((?:[\w.\-]+\/)*[\w.\-]+\.(
  * pytest `file.py::test`). Pure; caller filters to files that exist. Deduped,
  * `./` stripped.
  */
-export function parseFailingFiles(output: string): string[] {
+export function parseFailingFiles(output: string, projectPath?: string): string[] {
   const out = new Set<string>();
   for (const m of output.matchAll(FILE_RE)) {
     let p = m[1];
     while (p.startsWith('./')) p = p.slice(2);
     if (p && !p.startsWith('/')) out.add(p);
+  }
+  if (projectPath) {
+    const root = resolve(projectPath);
+    for (const m of output.matchAll(ABS_FILE_RE)) {
+      const absolute = resolve(m[1]);
+      const rel = relative(root, absolute);
+      if (isAbsolute(rel) || rel === '..' || rel.startsWith(`..${sep}`)) continue;
+      if (rel) out.add(rel);
+    }
   }
   return [...out];
 }
@@ -374,7 +384,7 @@ async function runAllChecks(
     const hb = tty ? startProgressHeartbeat(`${check.key}…`) : null;
     const { passed, output } = await runCheck(check, cwd);
     hb?.stop();
-    const files = passed ? [] : parseFailingFiles(output).filter((f) => exists(f, cwd));
+    const files = passed ? [] : parseFailingFiles(output, cwd).filter((f) => exists(f, cwd));
     outcomes.push({ key: check.key, passed, output, files });
     log(passed ? `  ${status.ok(check.key)}` : `  ${status.err(`${check.key} — ${files.length} file(s)`)}`);
   }

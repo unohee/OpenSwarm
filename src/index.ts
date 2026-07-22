@@ -21,12 +21,13 @@ if (envLoad.path !== null) {
 delete process.env['CLAUDECODE'];
 delete process.env['CLAUDE_CODE_ENTRYPOINT'];
 
-import { existsSync, readFileSync, unlinkSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig, validateConfig } from './core/config.js';
 import { startService, stopService } from './core/service.js';
 import { DAEMON_PATHS } from './cli/daemon.js';
+import { cleanupDaemonPid, createShutdownHandler } from './core/daemonLifecycle.js';
 
 // index.js lives at <pkg>/dist/index.js → package.json is one level up.
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -88,21 +89,13 @@ async function main(): Promise<void> {
 
   // Signal handlers
   const isDaemon = process.env.OPENSWARM_DAEMON === '1';
-  const shutdown = async (signal: string): Promise<void> => {
-    console.log(`\nReceived ${signal}, shutting down...`);
-    let exitCode = 0;
-    try {
-      await stopService();
-    } catch (err) {
-      exitCode = 1;
-      console.error('Failed to stop service cleanly:', err);
-    } finally {
-      if (isDaemon) {
-        try { unlinkSync(DAEMON_PATHS.PID_FILE); } catch { /* ignore */ }
-      }
-      process.exit(exitCode);
-    }
-  };
+  const shutdown = createShutdownHandler({
+    isDaemon,
+    pidFile: DAEMON_PATHS.PID_FILE,
+    stop: stopService,
+    exit: (code) => process.exit(code),
+    log: (message, error) => error === undefined ? console.log(message) : console.error(message, error),
+  });
 
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
@@ -114,11 +107,13 @@ async function main(): Promise<void> {
     console.log('OpenSwarm is running. Press Ctrl+C to stop.');
   } catch (err) {
     console.error('Failed to start service:', err);
+    cleanupDaemonPid(isDaemon, DAEMON_PATHS.PID_FILE);
     process.exit(1);
   }
 }
 
 main().catch((err) => {
   console.error('Fatal error:', err);
+  cleanupDaemonPid(process.env.OPENSWARM_DAEMON === '1', DAEMON_PATHS.PID_FILE);
   process.exit(1);
 });
