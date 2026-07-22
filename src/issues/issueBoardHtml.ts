@@ -344,6 +344,7 @@ export const ISSUE_BOARD_HTML = `<!DOCTYPE html>
 
     let allIssues = [];
     let projects = new Set();
+    let loadSequence = 0;
 
     // GraphQL helper
     async function gql(query, variables = {}) {
@@ -362,6 +363,7 @@ export const ISSUE_BOARD_HTML = `<!DOCTYPE html>
 
     // 이슈 목록 로드
     async function loadIssues() {
+      const sequence = ++loadSequence;
       const projectId = document.getElementById('filter-project').value || undefined;
       const priority = document.getElementById('filter-priority').value || undefined;
       const search = document.getElementById('search-input').value || undefined;
@@ -371,6 +373,7 @@ export const ISSUE_BOARD_HTML = `<!DOCTYPE html>
       if (priority) filter.priority = [priority];
       if (search) filter.search = search;
 
+      try {
       const data = await gql(\`
         query ListIssues($filter: IssueFilterInput) {
           issues(filter: $filter) {
@@ -387,6 +390,7 @@ export const ISSUE_BOARD_HTML = `<!DOCTYPE html>
           }
         }
       \`, { filter: Object.keys(filter).length > 0 ? filter : null });
+      if (sequence !== loadSequence) return;
 
       allIssues = data.issues.issues;
 
@@ -405,6 +409,11 @@ export const ISSUE_BOARD_HTML = `<!DOCTYPE html>
       document.getElementById('stat-done').textContent = doneCount;
 
       renderBoard();
+      } catch (error) {
+        if (sequence !== loadSequence) return;
+        console.error('Issue board refresh failed:', error);
+        document.getElementById('stat-total').textContent = 'error';
+      }
     }
 
     function updateProjectFilter() {

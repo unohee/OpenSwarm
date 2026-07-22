@@ -45,7 +45,7 @@ export async function syncFromLinear(
     return { created: 0, updated: 0 };
   }
 
-  const states = options?.states ?? ['In Progress', 'Todo', 'Backlog'];
+  const states = options?.states ?? ['In Progress', 'Todo', 'Backlog', 'In Review', 'Done', 'Canceled', 'Cancelled'];
   const limit = options?.limit ?? 50;
 
   let created = 0;

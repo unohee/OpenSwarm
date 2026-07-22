@@ -56,31 +56,34 @@ async function getFileChurns(projectPath: string, sinceDays: number = 30): Promi
       'log',
       `--since=${sinceDays} days ago`,
       '--name-only',
+      '-z',
       '--format=%ct',
     ]);
 
     let currentTimestamp = 0;
 
-    for (const line of output.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
+    for (const token of output.split('\0')) {
+      if (!token) continue;
+      const timestampToken = token.trim();
 
       // If numeric, it's a commit timestamp
-      if (/^\d+$/.test(trimmed)) {
-        currentTimestamp = parseInt(trimmed, 10) * 1000; // Convert to ms
+      if (/^\d+$/.test(timestampToken)) {
+        currentTimestamp = parseInt(timestampToken, 10) * 1000; // Convert to ms
         continue;
       }
 
-      // File path
-      const existing = churns.get(trimmed);
+      // `-z` preserves embedded newlines and other whitespace in filenames.
+      const filePath = token.startsWith('\n') ? token.slice(1) : token;
+      if (!filePath) continue;
+      const existing = churns.get(filePath);
       if (existing) {
         existing.commitCount++;
         if (currentTimestamp > existing.lastCommitDate) {
           existing.lastCommitDate = currentTimestamp;
         }
       } else {
-        churns.set(trimmed, {
-          path: trimmed,
+        churns.set(filePath, {
+          path: filePath,
           commitCount: 1,
           lastCommitDate: currentTimestamp,
         });

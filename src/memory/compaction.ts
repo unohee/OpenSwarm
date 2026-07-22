@@ -122,10 +122,15 @@ export async function compactMemoryTable(): Promise<{
     }
 
     // 1. Read all records
+    const queryLimit = 100_000;
     const allRecords = await table
       .search(Array.from({ length: EMBEDDING_DIM }, () => 0))
-      .limit(100000)
+      .limit(queryLimit)
       .toArray();
+
+    if (allRecords.length >= queryLimit) {
+      throw new Error(`Memory compaction refused: query reached the ${queryLimit}-row safety limit`);
+    }
 
     const beforeCount = allRecords.length;
     console.log(`[Compaction] Found ${beforeCount} records`);

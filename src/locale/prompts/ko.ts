@@ -7,9 +7,16 @@ import type { PromptTemplates } from '../types.js';
 
 const DATA_BLOCK_OPEN = '<openswarm-untrusted-data>';
 const DATA_BLOCK_CLOSE = '</openswarm-untrusted-data>';
+const MAX_PROMPT_DATA_CHARS = 20_000;
+const MAX_PROMPT_COLLECTION_ITEMS = 100;
+
+function bounded<T>(values: readonly T[]): readonly T[] {
+  return values.slice(0, MAX_PROMPT_COLLECTION_ITEMS);
+}
 
 function escapePromptData(value: string): string {
-  return value
+  const limited = value.length > MAX_PROMPT_DATA_CHARS ? `${value.slice(0, MAX_PROMPT_DATA_CHARS)}\n[truncated]` : value;
+  return limited
     .replaceAll(DATA_BLOCK_OPEN, '&lt;openswarm-untrusted-data&gt;')
     .replaceAll(DATA_BLOCK_CLOSE, '&lt;/openswarm-untrusted-data&gt;')
     .replaceAll('```', '`\\`\\`');
@@ -69,7 +76,7 @@ ${promptDataBlock(previousFeedback)}
         parts.push(`- 의존 그래프: ${repo.dependencyGraphAvailable ? '사용 가능; 아래 영향 호출자/import를 확인할 것' : '사용 불가; 편집 전 호출자/import를 보수적으로 직접 확인할 것'}`);
         if (repo.verificationCommands.length) {
           parts.push('- 필수 저장소 검증 명령:');
-          for (const command of repo.verificationCommands) parts.push(promptDataBlock(command));
+          for (const command of bounded(repo.verificationCommands)) parts.push(promptDataBlock(command));
         }
         parts.push('manifest, 패키지 매니저 선택, 호출자, 공유 계약을 저장소의 구속력 있는 컨텍스트로 취급하라. 누락된 의존성을 로컬 stub이나 패키지 재구현으로 대체하지 마라.');
       }
@@ -77,7 +84,7 @@ ${promptDataBlock(previousFeedback)}
       if (context.repoMemories && context.repoMemories.length > 0) {
         parts.push('');
         parts.push('### 저장소 지식 (이 repo의 과거 작업에서 학습)');
-        for (const m of context.repoMemories) {
+        for (const m of bounded(context.repoMemories)) {
           const tag = m.type === 'constraint' ? '⚠️ 함정' : '✓ 패턴';
           parts.push(`- [${tag}] 제목:`);
           parts.push(promptDataBlock(m.title));
@@ -128,7 +135,7 @@ ${promptDataBlock(previousFeedback)}
       if (context.registryBriefs && context.registryBriefs.length > 0) {
         parts.push('');
         parts.push('### 파일 맵 (Code Registry — 이 파일들은 Read 불필요)');
-        for (const brief of context.registryBriefs) {
+        for (const brief of bounded(context.registryBriefs)) {
           parts.push('**파일:**');
           parts.push(promptDataBlock(brief.filePath));
           parts.push('**요약:**');
@@ -138,7 +145,7 @@ ${promptDataBlock(previousFeedback)}
             parts.push(promptDataBlock(brief.highlights.join(', ')));
           }
           if (brief.entities && brief.entities.length > 0) {
-            for (const e of brief.entities) {
+            for (const e of bounded(brief.entities)) {
               const flags: string[] = [];
               if (e.status !== 'active') flags.push(e.status);
               if (!e.hasTests) flags.push('no test');
@@ -164,7 +171,7 @@ ${promptDataBlock(previousFeedback)}
     const da = context?.draftAnalysis;
     if (da?.completionCriteria && da.completionCriteria.length > 0) {
       const lines = ['## 완료 정의 (모든 항목을 — 증거와 함께 — 충족하라)'];
-      for (const c of da.completionCriteria) {
+      for (const c of bounded(da.completionCriteria)) {
         lines.push('- [ ] 기준:');
         lines.push(promptDataBlock(c));
       }
@@ -352,7 +359,7 @@ ${historySection}
 
     const criteriaSection = completionCriteria && completionCriteria.length > 0
       ? `\n## 완료 정의 (HARD GATE — 각 항목을 증거로 검증)
-${completionCriteria.map(c => `- 기준:\n${promptDataBlock(c)}`).join('\n')}
+${bounded(completionCriteria).map(c => `- 기준:\n${promptDataBlock(c)}`).join('\n')}
 
 각 기준에 대해 실제 diff에서 구체적 증거(호출처/배선 file:line, 생성된 산출물, 명령 출력, before/after 수치)를 확인하라. 워커의 자기보고를 믿지 말고 변경된 파일로 검증하라. 한 기준이라도 증거가 없거나, 핵심 작업이 "후속"/"post-merge"로 미뤄졌다면 반드시 **revise**를 선택하라(approve 금지). 배선/실행 없는 스캐폴딩은 기준 충족이 아니다.
 `

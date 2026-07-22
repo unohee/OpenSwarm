@@ -478,6 +478,10 @@ export async function startWebServer(port: number = 3847): Promise<void> {
         writeJson(res, 403, { error: 'Forbidden' });
         return;
       }
+      if (req.method === 'GET' && (url.startsWith('/api/') || isGraphQLRequest(url)) && !isAuthorizedLocalRead(req)) {
+        writeJson(res, 403, { error: 'Forbidden' });
+        return;
+      }
 
       // ---- GraphQL API (이슈 트래커) ----
       if (isGraphQLRequest(req.url)) {
@@ -1415,11 +1419,12 @@ export async function startWebServer(port: number = 3847): Promise<void> {
       }
     });
 
-    server.listen(port, '0.0.0.0', () => {
+    const listenHost = process.env.OPENSWARM_WEB_TOKEN?.trim() ? '0.0.0.0' : '127.0.0.1';
+    server.listen(port, listenHost, () => {
       const tailscaleIP = '100.95.200.28'; // Current Tailscale IP
       console.log(`Web interface running at:`);
       console.log(`  - http://127.0.0.1:${port} (localhost)`);
-      console.log(`  - http://${tailscaleIP}:${port} (Tailscale)`);
+      if (listenHost === '0.0.0.0') console.log(`  - http://${tailscaleIP}:${port} (Tailscale, token required)`);
       gitStatusPoller = startGitStatusPoller(() => Array.from(pinnedProjects));
       startHealthChecker(30000);
       resolve();

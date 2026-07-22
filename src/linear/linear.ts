@@ -154,6 +154,15 @@ const inProgressCache = new Map<string, CachedIssues>();
 const backlogCache = new Map<string, CachedIssues>();
 const myIssuesCache = new Map<string, CachedIssues>();
 const CACHE_TTL_MS = 300000; // 5 minute cache (was 1min, reduced API calls)
+const MAX_AGENT_CACHE_ENTRIES = 50;
+
+function setBoundedIssueCache(cache: Map<string, CachedIssues>, key: string, value: CachedIssues): void {
+  cache.delete(key);
+  cache.set(key, value);
+  while (cache.size > MAX_AGENT_CACHE_ENTRIES) {
+    cache.delete(cache.keys().next().value!);
+  }
+}
 
 function isCacheValid(cache: CachedIssues | undefined): boolean {
   if (!cache) return false;
@@ -357,7 +366,7 @@ export async function getInProgressIssues(
   }
 
   // Cache the result
-  inProgressCache.set(agentLabel, {
+  setBoundedIssueCache(inProgressCache, agentLabel, {
     data: result,
     timestamp: Date.now(),
     agentLabel,
@@ -428,7 +437,7 @@ export async function getNextBacklogIssue(
   };
 
   // Cache the result
-  backlogCache.set(agentLabel, {
+  setBoundedIssueCache(backlogCache, agentLabel, {
     data: [result],
     timestamp: Date.now(),
     agentLabel,
@@ -649,7 +658,7 @@ export async function getMyIssues(
   }
 
   // Cache the result
-  myIssuesCache.set(cacheKey, {
+  setBoundedIssueCache(myIssuesCache, cacheKey, {
     data: result,
     timestamp: Date.now(),
     agentLabel: agentLabel || 'all',

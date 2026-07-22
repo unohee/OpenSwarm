@@ -331,10 +331,10 @@ export async function updateProjectAfterTask(
   // Debounce
   const last = lastUpdateTime.get(projectId) ?? 0;
   if (Date.now() - last < DEBOUNCE_MS) return;
-  lastUpdateTime.set(projectId, Date.now());
 
   // Only refresh overview (Status Updates now handled by dailyReporter)
   await refreshProjectOverview(projectId, task.projectPath);
+  lastUpdateTime.set(projectId, Date.now());
 }
 
 // B-1. Create Status Update
@@ -411,6 +411,7 @@ async function fetchProjectOverviewIssues(
   }).client;
   const issueNodes: ProjectOverviewIssueNode[] = [];
   let after: string | undefined;
+  let complete = false;
 
   for (let page = 0; page < PROJECT_OVERVIEW_MAX_PAGES; page++) {
     const res = await withRateLimit('linear', () =>
@@ -431,9 +432,16 @@ async function fetchProjectOverviewIssues(
     if (!issues) break;
 
     issueNodes.push(...issues.nodes);
-    if (!issues.pageInfo.hasNextPage) break;
+    if (!issues.pageInfo.hasNextPage) {
+      complete = true;
+      break;
+    }
     after = issues.pageInfo.endCursor ?? undefined;
     if (!after) break;
+  }
+
+  if (!complete && issueNodes.length >= PROJECT_OVERVIEW_MAX_PAGES * PROJECT_OVERVIEW_PAGE_SIZE) {
+    throw new Error(`Project overview exceeds the ${PROJECT_OVERVIEW_MAX_PAGES * PROJECT_OVERVIEW_PAGE_SIZE}-issue safety cap`);
   }
 
   return issueNodes;

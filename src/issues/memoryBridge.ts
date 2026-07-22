@@ -5,7 +5,7 @@
 // Dependencies: memoryCore, sqliteStore
 // ============================================
 
-import { saveMemory, searchMemorySafe, saveCognitiveMemory } from '../memory/memoryCore.js';
+import { saveMemory, searchMemorySafe, saveCognitiveMemory, getMemoriesByIds } from '../memory/memoryCore.js';
 import type { SqliteIssueStore } from './sqliteStore.js';
 import type { Issue } from './schema.js';
 
@@ -140,6 +140,11 @@ export async function enrichIssueContext(
   similarIssues: Issue[];
 }> {
   const linkedMemories: Array<{ id: string; content: string; score: number }> = [];
+  const linkedIds = store.getLinkedMemories(issue.id);
+  for (const memory of await getMemoriesByIds(linkedIds)) {
+    linkedMemories.push({ ...memory, score: 1 });
+  }
+  const seenMemoryIds = new Set(linkedIds);
 
   // 2. 의미적으로 유사한 기억 검색
   const query = `${issue.title} ${issue.description}`;
@@ -150,6 +155,8 @@ export async function enrichIssueContext(
 
   if (result.success) {
     for (const mem of result.memories) {
+      if (seenMemoryIds.has(mem.id)) continue;
+      seenMemoryIds.add(mem.id);
       linkedMemories.push({
         id: mem.id,
         content: mem.content,

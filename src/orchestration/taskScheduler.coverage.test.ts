@@ -379,7 +379,7 @@ describe('TaskScheduler pause/resume', () => {
 
 describe('TaskScheduler.getStats byProject aggregation', () => {
   it('counts multiple running tasks under the same project key', () => {
-    const sched = new TaskScheduler({ maxConcurrent: 4, worktreeMode: true });
+    const sched = new TaskScheduler({ maxConcurrent: 4, worktreeMode: true, allowSameProjectConcurrent: true });
     sched.startTask(task('a'), '/repo', pendingExecutor());
     sched.startTask(task('b'), '/repo', pendingExecutor());
     const stats = sched.getStats();

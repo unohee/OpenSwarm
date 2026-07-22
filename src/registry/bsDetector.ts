@@ -261,6 +261,7 @@ export async function scanFile(filePath: string): Promise<BsIssue[]> {
   const language = detectLanguageForBs(ext);
   if (!language) return [];
 
+  if ((await stat(filePath)).size > MAX_FILE_SIZE) return [];
   const content = await readFile(filePath, 'utf-8');
   return scanFileContent(content, filePath, language);
 }
@@ -317,6 +318,8 @@ export async function scanRepository(
   const verbose = options?.verbose ?? false;
   const allIssues: BsIssue[] = [];
   let filesScanned = 0;
+  const deadline = Date.now() + 30_000;
+  const maxFiles = 10_000;
 
   async function walk(dirPath: string, relPath: string): Promise<void> {
     let entries;
@@ -329,6 +332,7 @@ export async function scanRepository(
     }
 
     for (const entry of entries) {
+      if (Date.now() >= deadline || filesScanned >= maxFiles) return;
       const fullPath = join(dirPath, entry.name);
       const entryRelPath = relPath ? `${relPath}/${entry.name}` : entry.name;
 

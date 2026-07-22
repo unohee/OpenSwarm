@@ -7,6 +7,30 @@ import { CryptoQuantAdapter, type RiskOnSignal, type USDCNetflowData } from '../
 import * as fs from 'fs/promises';
 import { resolve } from 'path';
 import { homedir } from 'os';
+import { z } from 'zod';
+
+const RiskOnSignalSchema = z.object({
+  score: z.number().min(0).max(100),
+  trend: z.enum(['increasing', 'decreasing', 'stable']),
+  netflowTrend: z.number().finite(),
+  cexInflowStrength: z.number().min(0).max(100),
+  cexOutflowStrength: z.number().min(0).max(100),
+  confidence: z.number().min(0).max(100),
+  lastUpdated: z.number().finite().nonnegative(),
+  recommendation: z.string(),
+}).strict();
+const CachedRiskOnAnalysisSchema = z.object({
+  sentiment: z.enum(['strong-risk-on', 'moderate-risk-on', 'neutral', 'moderate-risk-off', 'strong-risk-off']),
+  score: z.number().min(0).max(100),
+  signals: z.object({
+    usdc: RiskOnSignalSchema,
+    exchanges: z.array(z.tuple([z.string(), RiskOnSignalSchema])).max(100),
+  }).strict(),
+  lastUpdated: z.number().finite().nonnegative(),
+  dataAge: z.number().finite().nonnegative(),
+  executionRecommendation: z.string(),
+  healthImpact: z.object({ weightToApply: z.number().min(0).max(1), suggestion: z.string() }).strict(),
+}).strict();
 
 /**
  * Market sentiment level
@@ -140,19 +164,22 @@ export class RiskOnAnalyzer {
       await fs.mkdir(this.cacheDir, { recursive: true });
       const cacheFile = resolve(this.cacheDir, 'latest-analysis.json');
       const content = await fs.readFile(cacheFile, 'utf-8');
-      const cached = JSON.parse(content) as any;
+      const cached = CachedRiskOnAnalysisSchema.parse(JSON.parse(content));
 
       const ageMinutes = (Date.now() - cached.lastUpdated) / (1000 * 60);
-      if (ageMinutes > this.cacheTTLMinutes) {
+      if (ageMinutes < 0 || ageMinutes > this.cacheTTLMinutes) {
         console.log(`[RiskOnAnalyzer] Cache expired (${Math.round(ageMinutes)}m > ${this.cacheTTLMinutes}m)`);
         return null;
       }
 
-      cached.dataAge = Math.round(ageMinutes);
-      cached.signals.exchanges = new Map(cached.signals.exchanges);
+      const analysis: RiskOnAnalysis = {
+        ...cached,
+        dataAge: Math.round(ageMinutes),
+        signals: { ...cached.signals, exchanges: new Map(cached.signals.exchanges) },
+      };
 
       console.log(`[RiskOnAnalyzer] Cache valid (${Math.round(ageMinutes)}m old)`);
-      return cached;
+      return analysis;
     } catch {
       return null;
     }

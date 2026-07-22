@@ -6,9 +6,16 @@ import type { PromptTemplates } from '../types.js';
 
 const DATA_BLOCK_OPEN = '<openswarm-untrusted-data>';
 const DATA_BLOCK_CLOSE = '</openswarm-untrusted-data>';
+const MAX_PROMPT_DATA_CHARS = 20_000;
+const MAX_PROMPT_COLLECTION_ITEMS = 100;
+
+function bounded<T>(values: readonly T[]): readonly T[] {
+  return values.slice(0, MAX_PROMPT_COLLECTION_ITEMS);
+}
 
 function escapePromptData(value: string): string {
-  return value
+  const limited = value.length > MAX_PROMPT_DATA_CHARS ? `${value.slice(0, MAX_PROMPT_DATA_CHARS)}\n[truncated]` : value;
+  return limited
     .replaceAll(DATA_BLOCK_OPEN, '&lt;openswarm-untrusted-data&gt;')
     .replaceAll(DATA_BLOCK_CLOSE, '&lt;/openswarm-untrusted-data&gt;')
     .replaceAll('```', '`\\`\\`');
@@ -68,7 +75,7 @@ Apply the above feedback and make corrections.
         parts.push(`- Dependency graph: ${repo.dependencyGraphAvailable ? 'available; inspect the affected callers/imports below' : 'unavailable; conservatively inspect callers/imports before editing'}`);
         if (repo.verificationCommands.length) {
           parts.push('- Required repository verification commands:');
-          for (const command of repo.verificationCommands) parts.push(promptDataBlock(command));
+          for (const command of bounded(repo.verificationCommands)) parts.push(promptDataBlock(command));
         }
         parts.push('Treat manifests, package-manager choice, callers, and shared contracts as binding repository context. Do not replace missing dependencies with local stubs or package reimplementations.');
       }
@@ -76,7 +83,7 @@ Apply the above feedback and make corrections.
       if (context.repoMemories && context.repoMemories.length > 0) {
         parts.push('');
         parts.push('### Repository Knowledge (learned from past tasks in this repo)');
-        for (const m of context.repoMemories) {
+        for (const m of bounded(context.repoMemories)) {
           const tag = m.type === 'constraint' ? '⚠️ PITFALL' : '✓ pattern';
           parts.push(`- [${tag}] Title:`);
           parts.push(promptDataBlock(m.title));
@@ -127,7 +134,7 @@ Apply the above feedback and make corrections.
       if (context.registryBriefs && context.registryBriefs.length > 0) {
         parts.push('');
         parts.push('### File Map (from Code Registry — no need to Read these files)');
-        for (const brief of context.registryBriefs) {
+        for (const brief of bounded(context.registryBriefs)) {
           parts.push('**File:**');
           parts.push(promptDataBlock(brief.filePath));
           parts.push('**Summary:**');
@@ -137,7 +144,7 @@ Apply the above feedback and make corrections.
             parts.push(promptDataBlock(brief.highlights.join(', ')));
           }
           if (brief.entities && brief.entities.length > 0) {
-            for (const e of brief.entities) {
+            for (const e of bounded(brief.entities)) {
               const flags: string[] = [];
               if (e.status !== 'active') flags.push(e.status);
               if (!e.hasTests) flags.push('no test');
@@ -163,7 +170,7 @@ Apply the above feedback and make corrections.
     const da = context?.draftAnalysis;
     if (da?.completionCriteria && da.completionCriteria.length > 0) {
       const lines = ['## Definition of Done (satisfy EVERY item — with evidence)'];
-      for (const c of da.completionCriteria) {
+      for (const c of bounded(da.completionCriteria)) {
         lines.push('- [ ] Criterion:');
         lines.push(promptDataBlock(c));
       }
@@ -354,7 +361,7 @@ After the audit, output results in the following JSON format:
 
     const criteriaSection = completionCriteria && completionCriteria.length > 0
       ? `\n## Definition of Done (HARD GATE — verify each with evidence)
-${completionCriteria.map(c => `- Criterion:\n${promptDataBlock(c)}`).join('\n')}
+${bounded(completionCriteria).map(c => `- Criterion:\n${promptDataBlock(c)}`).join('\n')}
 
 For EACH criterion, confirm concrete evidence in the actual diff (call site / wiring file:line, produced artifact, command output, before/after numbers). Do NOT trust the worker's self-report — verify against the changed files. If ANY criterion lacks evidence, or any core work was deferred to "follow-up"/"post-merge", you MUST choose **revise** (never approve). Scaffolding without wiring/execution does not satisfy a criterion.
 `

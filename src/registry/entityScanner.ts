@@ -300,10 +300,20 @@ export function extractEntities(
   const entities: ExtractedEntity[] = [];
   const config = LANGUAGE_CONFIGS[language];
   const seen = new Set<string>();
+  let inBlockComment = false;
 
   for (let i = 0; i < lines.length; i++) {
     const trimmed = lines[i].trimStart();
     if (!trimmed) continue;
+
+    if (inBlockComment) {
+      if (trimmed.includes('*/')) inBlockComment = false;
+      continue;
+    }
+    if (trimmed.startsWith('/*')) {
+      if (!trimmed.includes('*/', 2)) inBlockComment = true;
+      continue;
+    }
 
     // 주석 스킵
     if (config.commentPrefixes.some(p => trimmed.startsWith(p))) continue;
@@ -314,6 +324,7 @@ export function extractEntities(
 
       const name = match[1];
       if (!name) continue;
+      if (/\b(?:declare|abstract)\b/.test(trimmed) && !trimmed.includes('{')) continue;
 
       const key = `${name}:${i}`;
       if (seen.has(key)) continue;

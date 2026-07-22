@@ -48,13 +48,28 @@ function pipelineResult(overrides: Record<string, unknown> = {}) {
   };
 }
 
-/** runCli always ends in process.exit; surface that as a throw we can assert on. */
+/**
+ * Preflight rejections still terminate through process.exit, which the suite
+ * turns into a throw. Everything from pipeline execution onward sets
+ * process.exitCode and returns normally instead, so those paths use
+ * expectExitCode.
+ */
 function expectExit(code: number, promise: Promise<unknown>) {
   return expect(promise).rejects.toThrow(`exit:${code}`);
 }
 
+async function expectExitCode(code: number, promise: Promise<unknown>) {
+  await expect(promise).resolves.toBeUndefined();
+  expect(process.exitCode).toBe(code);
+}
+
+function logged(spy: unknown): string {
+  return (spy as { mock: { calls: unknown[][] } }).mock.calls.flat().join('\n');
+}
+
 describe('runCli', () => {
   const originalIsTTY = process.stdout.isTTY;
+  const originalExitCode = process.exitCode;
 
   beforeEach(() => {
     mocks.stop.mockReset();
@@ -76,6 +91,8 @@ describe('runCli', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     Object.defineProperty(process.stdout, 'isTTY', { value: originalIsTTY, configurable: true });
+    // Never let an asserted exit code leak into the runner's own exit status.
+    process.exitCode = originalExitCode;
   });
 
   describe('preflight', () => {
@@ -85,8 +102,7 @@ describe('runCli', () => {
 
       await expectExit(1, runCli({ task: 't', projectPath: process.cwd() }));
 
-      expect((console.error as unknown as { mock: { calls: string[][] } }).mock.calls.flat().join('\n'))
-        .toContain('Available adapters: codex, claude');
+      expect(logged(console.error)).toContain('Available adapters: codex, claude');
     });
 
     it('says so plainly when no adapter at all is available', async () => {
@@ -95,22 +111,19 @@ describe('runCli', () => {
 
       await expectExit(1, runCli({ task: 't', projectPath: process.cwd() }));
 
-      expect((console.error as unknown as { mock: { calls: string[][] } }).mock.calls.flat().join('\n'))
-        .toContain('No registered adapters are currently available.');
+      expect(logged(console.error)).toContain('No registered adapters are currently available.');
     });
 
     it('rejects a project path that does not exist', async () => {
       await expectExit(1, runCli({ task: 't', projectPath: '/definitely/not/here-openswarm' }));
 
-      expect((console.error as unknown as { mock: { calls: string[][] } }).mock.calls.flat().join('\n'))
-        .toContain('does not exist');
+      expect(logged(console.error)).toContain('does not exist');
     });
 
     it('rejects a project path that is a file', async () => {
       await expectExit(1, runCli({ task: 't', projectPath: `${process.cwd()}/package.json` }));
 
-      expect((console.error as unknown as { mock: { calls: string[][] } }).mock.calls.flat().join('\n'))
-        .toContain('is not a directory');
+      expect(logged(console.error)).toContain('is not a directory');
     });
 
     it.each([0, -1, 2.5, NaN])('rejects a non-positive-integer iteration cap: %s', async (value) => {
@@ -120,19 +133,19 @@ describe('runCli', () => {
 
   describe('pipeline shape', () => {
     it('runs worker + reviewer by default', async () => {
-      await expectExit(0, runCli({ task: 't', projectPath: process.cwd() }));
+      await expectExitCode(0, runCli({ task: 't', projectPath: process.cwd() }));
 
       expect(mocks.constructed[0]).toMatchObject({ stages: ['worker', 'reviewer'], maxIterations: 3 });
     });
 
     it('runs the worker alone with workerOnly', async () => {
-      await expectExit(0, runCli({ task: 't', projectPath: process.cwd(), workerOnly: true }));
+      await expectExitCode(0, runCli({ task: 't', projectPath: process.cwd(), workerOnly: true }));
 
       expect(mocks.constructed[0]).toMatchObject({ stages: ['worker'] });
     });
 
     it('runs the full four-stage pipeline with pipeline: true', async () => {
-      await expectExit(0, runCli({ task: 't', projectPath: process.cwd(), pipeline: true }));
+      await expectExitCode(0, runCli({ task: 't', projectPath: process.cwd(), pipeline: true }));
 
       expect(mocks.constructed[0]).toMatchObject({
         stages: ['worker', 'reviewer', 'tester', 'documenter'],
@@ -140,13 +153,13 @@ describe('runCli', () => {
     });
 
     it('pins the worker model only when one was requested', async () => {
-      await expectExit(0, runCli({ task: 't', projectPath: process.cwd(), model: 'sonnet', maxIterations: 5 }));
+      await expectExitCode(0, runCli({ task: 't', projectPath: process.cwd(), model: 'sonnet', maxIterations: 5 }));
       expect(mocks.constructed[0]).toMatchObject({
         maxIterations: 5, roles: { worker: { enabled: true, model: 'sonnet', timeoutMs: 0 } },
       });
 
       mocks.constructed.length = 0;
-      await expectExit(0, runCli({ task: 't', projectPath: process.cwd() }));
+      await expectExitCode(0, runCli({ task: 't', projectPath: process.cwd() }));
       expect((mocks.constructed[0] as { roles?: unknown }).roles).toBeUndefined();
     });
   });
@@ -160,12 +173,12 @@ describe('runCli', () => {
         return pipelineResult();
       });
 
-      await expectExit(0, runCli({ task: 't', projectPath: process.cwd() }));
+      await expectExitCode(0, runCli({ task: 't', projectPath: process.cwd() }));
       expect(mocks.stop).toHaveBeenCalled();
 
       // Verbose forces the plain-line path even on a TTY.
       mocks.stop.mockReset();
-      await expectExit(0, runCli({ task: 't', projectPath: process.cwd(), verbose: true }));
+      await expectExitCode(0, runCli({ task: 't', projectPath: process.cwd(), verbose: true }));
       expect(mocks.stop).not.toHaveBeenCalled();
     });
 
@@ -178,14 +191,13 @@ describe('runCli', () => {
         return pipelineResult();
       });
 
-      await expectExit(0, runCli({ task: 't', projectPath: process.cwd() }));
+      await expectExitCode(0, runCli({ task: 't', projectPath: process.cwd() }));
 
-      const written = (process.stdout.write as unknown as { mock: { calls: string[][] } }).mock.calls.flat().join('');
+      const written = logged(process.stdout.write);
       expect(written).toContain('reviewer');
       expect(written).toContain('FAILED');
-      const logged = (console.log as unknown as { mock: { calls: string[][] } }).mock.calls.flat().join('\n');
-      expect(logged).toContain('Iteration 2/3');
-      expect(logged).not.toContain('Iteration 1/3');
+      expect(logged(console.log)).toContain('Iteration 2/3');
+      expect(logged(console.log)).not.toContain('Iteration 1/3');
     });
 
     it('wires the verbose-only listeners', async () => {
@@ -199,15 +211,15 @@ describe('runCli', () => {
         return pipelineResult();
       });
 
-      await expectExit(0, runCli({ task: 't', projectPath: process.cwd(), verbose: true }));
+      await expectExitCode(0, runCli({ task: 't', projectPath: process.cwd(), verbose: true }));
 
-      const logged = (console.log as unknown as { mock: { calls: string[][] } }).mock.calls.flat().join('\n');
-      expect(logged).toContain('tool call');
-      expect(logged).toContain('HALT: budget');
-      expect(logged).toContain('STUCK detected at iteration 2');
-      expect(logged).toContain('Iteration 2 failed: rejected');
-      expect(logged).toContain('Iteration 3 failed');
-      expect(logged).toContain('Iteration 3 completed');
+      const out = logged(console.log);
+      expect(out).toContain('tool call');
+      expect(out).toContain('HALT: budget');
+      expect(out).toContain('STUCK detected at iteration 2');
+      expect(out).toContain('Iteration 2 failed: rejected');
+      expect(out).toContain('Iteration 3 failed');
+      expect(out).toContain('Iteration 3 completed');
     });
 
     it('stops the live progress heartbeat before exiting on a pipeline error', async () => {
@@ -217,7 +229,7 @@ describe('runCli', () => {
         throw new Error('pipeline boom');
       });
 
-      await expectExit(1, runCli({ task: 'test', projectPath: process.cwd() }));
+      await expectExitCode(1, runCli({ task: 'test', projectPath: process.cwd() }));
       expect(mocks.stop).toHaveBeenCalledTimes(1);
     });
   });
@@ -230,14 +242,14 @@ describe('runCli', () => {
         workerResult: { filesChanged: ['a.ts', 'b.ts'], commands: [], summary: 'done' },
       }));
 
-      await expectExit(0, runCli({ task: 't', projectPath: process.cwd() }));
+      await expectExitCode(0, runCli({ task: 't', projectPath: process.cwd() }));
 
-      const logged = (console.log as unknown as { mock: { calls: string[][] } }).mock.calls.flat().join('\n');
-      expect(logged).toContain('Result: APPROVED');
-      expect(logged).toContain('Summary: done');
-      expect(logged).toContain('Files:   a.ts, b.ts');
-      expect(logged).toContain('$0.1234');
-      expect(logged).toContain('1m 5s');
+      const out = logged(console.log);
+      expect(out).toContain('Result: APPROVED');
+      expect(out).toContain('Summary: done');
+      expect(out).toContain('Files:   a.ts, b.ts');
+      expect(out).toContain('$0.1234');
+      expect(out).toContain('1m 5s');
     });
 
     it('truncates a long file list and formats sub-second and sub-minute runs', async () => {
@@ -245,17 +257,15 @@ describe('runCli', () => {
         totalDuration: 800,
         workerResult: { filesChanged: ['1', '2', '3', '4', '5', '6', '7'], commands: [], summary: '' },
       }));
-      await expectExit(0, runCli({ task: 't', projectPath: process.cwd() }));
-      let logged = (console.log as unknown as { mock: { calls: string[][] } }).mock.calls.flat().join('\n');
-      expect(logged).toContain('1, 2, 3, 4, 5 +2 more');
-      expect(logged).toContain('800ms');
+      await expectExitCode(0, runCli({ task: 't', projectPath: process.cwd() }));
+      expect(logged(console.log)).toContain('1, 2, 3, 4, 5 +2 more');
+      expect(logged(console.log)).toContain('800ms');
 
       (console.log as unknown as { mockClear(): void }).mockClear();
       mocks.run.mockResolvedValue(pipelineResult({ totalDuration: 5_500, workerResult: null }));
-      await expectExit(0, runCli({ task: 't', projectPath: process.cwd() }));
-      logged = (console.log as unknown as { mock: { calls: string[][] } }).mock.calls.flat().join('\n');
-      expect(logged).toContain('5.5s');
-      expect(logged).not.toContain('Files:');
+      await expectExitCode(0, runCli({ task: 't', projectPath: process.cwd() }));
+      expect(logged(console.log)).toContain('5.5s');
+      expect(logged(console.log)).not.toContain('Files:');
     });
 
     it('shows at most five feedback lines when the run failed', async () => {
@@ -265,12 +275,12 @@ describe('runCli', () => {
         reviewResult: { feedback: ['l1', 'l2', 'l3', 'l4', 'l5', 'l6'].join('\n') },
       }));
 
-      await expectExit(1, runCli({ task: 't', projectPath: process.cwd() }));
+      await expectExitCode(1, runCli({ task: 't', projectPath: process.cwd() }));
 
-      const logged = (console.log as unknown as { mock: { calls: string[][] } }).mock.calls.flat().join('\n');
-      expect(logged).toContain('Result: REJECTED');
-      expect(logged).toContain('l5');
-      expect(logged).not.toContain('l6');
+      const out = logged(console.log);
+      expect(out).toContain('Result: REJECTED');
+      expect(out).toContain('l5');
+      expect(out).not.toContain('l6');
     });
   });
 
@@ -280,7 +290,7 @@ describe('runCli', () => {
         success: false, finalStatus: 'rejected', reviewResult: { feedback: 'needs tests' },
       }));
 
-      await expectExit(1, runCli({ task: 'my task', projectPath: process.cwd() }));
+      await expectExitCode(1, runCli({ task: 'my task', projectPath: process.cwd() }));
 
       expect(mocks.recordTaskOutcome).toHaveBeenCalledWith(process.cwd(), expect.objectContaining({
         taskTitle: 'my task', rejectionFeedback: 'needs tests', derivedFrom: 'cli:run',
@@ -290,13 +300,13 @@ describe('runCli', () => {
     it('passes a null worker result through instead of fabricating one', async () => {
       mocks.run.mockResolvedValue(pipelineResult({ workerResult: null }));
 
-      await expectExit(0, runCli({ task: 't', projectPath: process.cwd() }));
+      await expectExitCode(0, runCli({ task: 't', projectPath: process.cwd() }));
 
       expect(mocks.recordTaskOutcome.mock.calls[0][1]).toMatchObject({ workerResult: null });
     });
 
     it('skips recording when --no-learn was passed', async () => {
-      await expectExit(0, runCli({ task: 't', projectPath: process.cwd(), learn: false }));
+      await expectExitCode(0, runCli({ task: 't', projectPath: process.cwd(), learn: false }));
 
       expect(mocks.recordTaskOutcome).not.toHaveBeenCalled();
     });
@@ -304,7 +314,7 @@ describe('runCli', () => {
     it('never lets a learning failure change the exit code', async () => {
       mocks.recordTaskOutcome.mockRejectedValue(new Error('lance down'));
 
-      await expectExit(0, runCli({ task: 't', projectPath: process.cwd() }));
+      await expectExitCode(0, runCli({ task: 't', projectPath: process.cwd() }));
     });
   });
 });

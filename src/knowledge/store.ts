@@ -3,12 +3,13 @@
 // JSON persistence (load/save/list)
 // ============================================
 
-import { readFile, writeFile, mkdir, readdir } from 'node:fs/promises';
+import { readFile, mkdir, readdir } from 'node:fs/promises';
 import { join, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { KnowledgeGraph } from './graph.js';
 import { SerializedGraphSchema } from './types.js';
 import type { SerializedGraph } from './types.js';
+import { atomicWriteFile } from '../support/atomicFile.js';
 
 // Constants
 
@@ -34,7 +35,7 @@ export async function saveGraph(graph: KnowledgeGraph): Promise<void> {
   await mkdir(STORE_DIR, { recursive: true });
   const filePath = resolveGraphPath(graph.projectSlug);
   const serialized = graph.serialize();
-  await writeFile(filePath, JSON.stringify(serialized, null, 2), 'utf-8');
+  await atomicWriteFile(filePath, JSON.stringify(serialized, null, 2), 0o600);
   console.log(`[KnowledgeStore] Saved graph: ${graph.projectSlug} (${graph.nodeCount} nodes, ${graph.edgeCount} edges)`);
 }
 

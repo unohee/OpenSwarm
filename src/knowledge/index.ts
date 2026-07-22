@@ -45,6 +45,9 @@ export {
   generateProjectSummary,
   saveGraphWithSummary,
 } from './repository.js';
+import { createHash } from 'node:crypto';
+import { basename, resolve as resolvePath } from 'node:path';
+import { realpathSync } from 'node:fs';
 
 // Singleton Cache
 
@@ -61,13 +64,14 @@ const lastFullScan = new Map<string, number>();
  * Generate project slug (path → identifier)
  */
 export function toProjectSlug(projectPath: string): string {
-  return projectPath
-    .replace(/^~/, '')
-    .replace(process.env.HOME || '', '')
-    .replace(/^\/+/, '')
-    .replace(/\//g, '-')
-    .replace(/[^a-zA-Z0-9-_]/g, '')
-    .toLowerCase();
+  const expanded = projectPath.startsWith('~/')
+    ? resolvePath(process.env.HOME || '', projectPath.slice(2))
+    : resolvePath(projectPath);
+  let canonical = expanded;
+  try { canonical = realpathSync(expanded); } catch { /* path may not exist yet */ }
+  const label = basename(canonical).replace(/[^a-zA-Z0-9-_]/g, '').toLowerCase() || 'project';
+  const digest = createHash('sha256').update(canonical).digest('hex').slice(0, 12);
+  return `${label}-${digest}`;
 }
 
 /**

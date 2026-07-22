@@ -275,7 +275,11 @@ interface McpTool {
 export async function initMcpTools(registry = loadRegistry()): Promise<ToolDefinition[]> {
   serverByTool = {};
   const defs: ToolDefinition[] = [];
-  for (const [server, cfg] of Object.entries(registry)) {
+  const entries = Object.entries(registry);
+  let next = 0;
+  const discover = async (): Promise<void> => {
+    while (next < entries.length) {
+      const [server, cfg] = entries[next++];
     try {
       const listed = (await withClient(cfg, (c) => c.listTools())) as { tools?: McpTool[] };
       for (const tool of listed.tools ?? []) {
@@ -298,7 +302,9 @@ export async function initMcpTools(registry = loadRegistry()): Promise<ToolDefin
     } catch (err) {
       console.warn(`[MCP] server "${server}" unreachable — skipped: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(4, entries.length) }, () => discover()));
   return defs;
 }
 

@@ -146,7 +146,7 @@ export function topologicalSort(steps: WorkflowStep[]): WorkflowStep[] {
   // Add edges (dependencies)
   for (const step of steps) {
     if (step.dependsOn) {
-      for (const dep of step.dependsOn) {
+      for (const dep of new Set(step.dependsOn)) {
         if (!graph.has(dep)) {
           throw new Error(`Step "${step.id}" depends on unknown step "${dep}"`);
         }
@@ -305,8 +305,14 @@ export async function listWorkflows(): Promise<WorkflowConfig[]> {
 
     for (const file of files) {
       if (file.endsWith('.yaml')) {
-        const content = await fs.readFile(resolve(WORKFLOW_DIR, file), 'utf-8');
-        workflows.push(yaml.parse(content));
+        try {
+          const content = await fs.readFile(resolve(WORKFLOW_DIR, file), 'utf-8');
+          const parsed = yaml.parse(content);
+          if (!parsed || typeof parsed !== 'object') throw new Error('workflow root must be an object');
+          workflows.push(parsed as WorkflowConfig);
+        } catch (error) {
+          console.warn(`[Workflow] Skipping invalid workflow ${file}: ${error instanceof Error ? error.message : String(error)}`);
+        }
       }
     }
 

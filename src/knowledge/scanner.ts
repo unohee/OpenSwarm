@@ -33,6 +33,8 @@ const SOURCE_EXTENSIONS = new Set([
   '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
   '.py', '.pyw',
 ]);
+const MAX_INCREMENTAL_FILE_BYTES = 2 * 1024 * 1024;
+const MAX_INCREMENTAL_UPDATE_MS = 15_000;
 
 const TEST_PATTERNS = [
   /\.test\.[tj]sx?$/,
@@ -113,8 +115,10 @@ export async function incrementalUpdate(
   projectPath: string,
   changedFiles: string[],
 ): Promise<void> {
+  const deadline = Date.now() + MAX_INCREMENTAL_UPDATE_MS;
   const root = await realpath(projectPath);
   for (const file of changedFiles) {
+    if (Date.now() >= deadline) throw new Error(`Incremental graph update exceeded ${MAX_INCREMENTAL_UPDATE_MS}ms`);
     const candidate = resolve(root, file);
     const lexicalRelative = relative(root, candidate);
     if (lexicalRelative === '..' || lexicalRelative.startsWith(`..${sep}`) || isAbsolute(lexicalRelative)) {
@@ -144,6 +148,7 @@ export async function incrementalUpdate(
       // Recalculate metrics
       try {
         const fullPath = join(projectPath, relPath);
+        if ((await stat(fullPath)).size > MAX_INCREMENTAL_FILE_BYTES) throw new Error(`Source file exceeds ${MAX_INCREMENTAL_FILE_BYTES} bytes: ${relPath}`);
         const content = await readFile(fullPath, 'utf-8');
         const metrics = computeMetrics(content, detectLanguage(ext));
         node.metrics = metrics;
@@ -158,6 +163,7 @@ export async function incrementalUpdate(
       // New file: add node
       try {
         const fullPath = join(projectPath, relPath);
+        if ((await stat(fullPath)).size > MAX_INCREMENTAL_FILE_BYTES) throw new Error(`Source file exceeds ${MAX_INCREMENTAL_FILE_BYTES} bytes: ${relPath}`);
         const content = await readFile(fullPath, 'utf-8');
         const language = detectLanguage(ext);
         const isTest = isTestFile(relPath);

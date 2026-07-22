@@ -558,11 +558,15 @@ export class SqliteRegistryStore {
   }
 
   removeTag(entityId: string, tag: string): void {
-    this.db.prepare(
+    const result = this.db.prepare(
       'DELETE FROM code_entity_tags WHERE entity_id = ? AND tag = ?'
     ).run(entityId, tag);
 
-    this.addEvent(entityId, 'tag_removed', { oldValue: tag });
+    if (result.changes > 0) {
+      const now = new Date().toISOString();
+      this.db.prepare('UPDATE code_entities SET updated_at = ? WHERE id = ?').run(now, entityId);
+      this.addEvent(entityId, 'tag_removed', { oldValue: tag });
+    }
   }
 
   getTags(entityId: string): EntityTag[] {
@@ -744,6 +748,13 @@ export class SqliteRegistryStore {
       data?.oldValue ?? null, data?.newValue ?? null,
       data?.content ?? null, data?.actor ?? 'system', now,
     );
+    this.db.prepare(`
+      DELETE FROM code_entity_events
+      WHERE entity_id = ? AND id NOT IN (
+        SELECT id FROM code_entity_events WHERE entity_id = ?
+        ORDER BY created_at DESC, id DESC LIMIT 1000
+      )
+    `).run(entityId, entityId);
 
     return {
       id, entityId, type,

@@ -157,7 +157,7 @@ export function isWorkAllowed(config: TimeWindowConfig = DEFAULT_TIME_WINDOW): {
         allowed: false,
         reason: t('timeWindow.blockedWindow', { start: blocked.start, end: blocked.end }),
         currentTime: currentTimeStr,
-        nextAllowedTime: findNextAllowedWindow(currentMinutes, config.allowedWindows),
+        nextAllowedTime: findNextAllowedWindow(currentDay, currentMinutes, config),
       };
     }
   }
@@ -174,7 +174,7 @@ export function isWorkAllowed(config: TimeWindowConfig = DEFAULT_TIME_WINDOW): {
   }
 
   // Not in any allowed time range
-  const nextWindow = findNextAllowedWindow(currentMinutes, config.allowedWindows);
+  const nextWindow = findNextAllowedWindow(currentDay, currentMinutes, config);
   return {
     allowed: false,
     reason: t('timeWindow.outsideAllowed'),
@@ -186,31 +186,25 @@ export function isWorkAllowed(config: TimeWindowConfig = DEFAULT_TIME_WINDOW): {
 /**
  * Find next allowed time window
  */
-function findNextAllowedWindow(currentMinutes: number, windows: TimeRange[]): string | undefined {
-  // Find the nearest start time after current time
-  let nearestStart: number | null = null;
+function findNextAllowedWindow(currentDay: number, currentMinutes: number, config: TimeWindowConfig): string | undefined {
+  // Evaluate the effective policy minute-by-minute for one full week. Merely
+  // returning the next allowed-window start was wrong when that start was also
+  // blocked or landed on a restricted day.
+  for (let offset = 1; offset <= 7 * 24 * 60; offset++) {
+    const absolute = currentMinutes + offset;
+    const dayOffset = Math.floor(absolute / (24 * 60));
+    const minute = absolute % (24 * 60);
+    const day = (currentDay + dayOffset) % 7;
+    const restrictionsApply = !config.restrictedDays?.length || config.restrictedDays.includes(day);
+    const blocked = restrictionsApply && config.blockedWindows.some((range) => isInTimeRange(minute, range));
+    const allowed = !restrictionsApply || (!blocked && config.allowedWindows.some((range) => isInTimeRange(minute, range)));
+    if (!allowed) continue;
 
-  for (const window of windows) {
-    const start = timeToMinutes(window.start);
-
-    if (start > currentMinutes) {
-      if (nearestStart === null || start < nearestStart) {
-        nearestStart = start;
-      }
-    }
+    const time = `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`;
+    if (dayOffset === 0) return time;
+    if (dayOffset === 1) return t('timeWindow.tomorrowAt', { time });
+    return `+${dayOffset}d ${time}`;
   }
-
-  // If no start time after today, use tomorrow's first window
-  if (nearestStart === null && windows.length > 0) {
-    nearestStart = timeToMinutes(windows[0].start);
-    // Indicate "tomorrow" with +24h (display only)
-    return t('timeWindow.tomorrowAt', { time: windows[0].start });
-  }
-
-  if (nearestStart !== null) {
-    return `${String(Math.floor(nearestStart / 60)).padStart(2, '0')}:${String(nearestStart % 60).padStart(2, '0')}`;
-  }
-
   return undefined;
 }
 
@@ -320,7 +314,19 @@ ${!work.allowed && work.nextAllowedTime ? t('timeWindow.nextAllowed', { time: wo
 let currentConfig: TimeWindowConfig = { ...DEFAULT_TIME_WINDOW };
 
 export function setTimeWindowConfig(config: Partial<TimeWindowConfig>): void {
-  currentConfig = { ...currentConfig, ...config };
+  const next = { ...currentConfig, ...config };
+  const validRange = (range: TimeRange): boolean => /^([01]\d|2[0-3]):[0-5]\d$/.test(range.start) && /^([01]\d|2[0-3]):[0-5]\d$/.test(range.end);
+  if (!Array.isArray(next.allowedWindows) || !next.allowedWindows.every(validRange)) throw new Error('Invalid allowed time window');
+  if (!Array.isArray(next.blockedWindows) || !next.blockedWindows.every(validRange)) throw new Error('Invalid blocked time window');
+  if (next.restrictedDays && (!Array.isArray(next.restrictedDays) || next.restrictedDays.some((day) => !Number.isInteger(day) || day < 0 || day > 6))) {
+    throw new Error('restrictedDays must contain integers from 0 to 6');
+  }
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: next.timezone || DEFAULT_TIMEZONE });
+  } catch {
+    throw new Error(`Invalid timezone: ${next.timezone}`);
+  }
+  currentConfig = next;
 }
 
 export function getTimeWindowConfig(): TimeWindowConfig {

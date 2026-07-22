@@ -358,6 +358,14 @@ export class TaskScheduler extends EventEmitter {
       return false;
     }
     const normalizedProject = normalizeProjectPath(projectPath);
+    if (!this.hasAvailableSlot()) {
+      console.warn(`[Scheduler] Refusing start at global capacity: ${task.title}`);
+      return false;
+    }
+    if (this.isProjectBusy(normalizedProject)) {
+      console.warn(`[Scheduler] Refusing start at project capacity: ${projectPath}`);
+      return false;
+    }
     if (this.quarantinedProjects.has(normalizedProject)) {
       console.warn(`[Scheduler] Refusing start in quarantined project: ${projectPath}`);
       return false;

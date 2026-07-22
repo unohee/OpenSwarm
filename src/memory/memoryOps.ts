@@ -22,6 +22,7 @@ import {
 } from './memoryCore.js';
 
 type MemoryTable = NonNullable<ReturnType<typeof getTable>>;
+const MAX_MEMORY_REVISIONS = 20;
 
 function sqlString(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
@@ -99,7 +100,7 @@ export async function reviseMemory(
             reason: options?.reason || 'manual revision',
             previousContent: existing.content.slice(0, 200),
           },
-        ],
+        ].slice(-MAX_MEMORY_REVISIONS),
         lastRevision: {
           timestamp: now,
           reason: options?.reason || 'manual revision',
@@ -423,7 +424,7 @@ export async function consolidateMemories(): Promise<{
       for (let j = i + 1; j < validMemories.length; j++) {
         const m2 = validMemories[j];
         if (merged.includes(m2.id)) continue;
-        if (m1.type !== m2.type) continue;
+        if (m1.type !== m2.type || m1.repo !== m2.repo) continue;
 
         // Calculate cosine similarity
         const similarity = cosineSimilarity(m1.vector, m2.vector);
@@ -453,7 +454,7 @@ export async function consolidateMemories(): Promise<{
           consolidatedFrom: [
             ...(Array.isArray(meta.consolidatedFrom) ? meta.consolidatedFrom : []),
             ...toMerge.map((m: any) => m.id),
-          ],
+          ].slice(-MAX_MEMORY_REVISIONS),
         });
         updatedKept.push(kept);
 

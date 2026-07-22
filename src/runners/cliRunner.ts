@@ -14,6 +14,7 @@ import { initLocale } from '../locale/index.js';
 import { expandPath } from '../core/config.js';
 import { startProgressHeartbeat, type ReviewProgress } from '../cli/reviewProgress.js';
 import { status } from '../support/colors.js';
+import { sanitizeTerminalText } from '../tui/sanitize.js';
 
 // Types
 
@@ -166,11 +167,13 @@ export async function runCli(options: CliRunOptions): Promise<void> {
   };
 
   pipeline.on('stage:start', ({ stage }: { stage: string }) => {
+    stage = sanitizeTerminalText(stage);
     if (liveSpinner) heartbeat = startProgressHeartbeat(`${stage}…`, { write: (s) => process.stdout.write(s) });
     else process.stdout.write(`  ~ ${stage}...\n`);
   });
 
   pipeline.on('stage:complete', ({ stage, result }: { stage: string; result: { success: boolean; duration: number } }) => {
+    stage = sanitizeTerminalText(stage);
     stopHeartbeat();
     const duration = (result.duration / 1000).toFixed(1);
     const line = `${stage} (${duration}s)`;
@@ -178,6 +181,7 @@ export async function runCli(options: CliRunOptions): Promise<void> {
   });
 
   pipeline.on('stage:fail', ({ stage, result }: { stage: string; result: { duration: number } }) => {
+    stage = sanitizeTerminalText(stage);
     stopHeartbeat();
     const duration = (result.duration / 1000).toFixed(1);
     process.stdout.write(`  ${status.err(`${stage} (${duration}s) FAILED`)}\n`);
@@ -192,19 +196,19 @@ export async function runCli(options: CliRunOptions): Promise<void> {
   // 8.5. Verbose event listeners
   if (options.verbose) {
     pipeline.on('log', ({ line }: { line: string }) => {
-      console.log(`  ${line}`);
+      console.log(`  ${sanitizeTerminalText(line)}`);
     });
 
     pipeline.on('halt', ({ reason, sessionId }: { reason: string; sessionId: string }) => {
-      console.log(`  [verbose] HALT: ${reason} (session: ${sessionId})`);
+      console.log(`  [verbose] HALT: ${sanitizeTerminalText(reason)} (session: ${sanitizeTerminalText(sessionId)})`);
     });
 
     pipeline.on('stuck', ({ sessionId, iteration }: { sessionId: string; iteration: number }) => {
-      console.log(`  [verbose] STUCK detected at iteration ${iteration} (session: ${sessionId})`);
+      console.log(`  [verbose] STUCK detected at iteration ${iteration} (session: ${sanitizeTerminalText(sessionId)})`);
     });
 
     pipeline.on('iteration:fail', ({ iteration, reason }: { iteration: number; reason?: string }) => {
-      console.log(`  [verbose] Iteration ${iteration} failed${reason ? `: ${reason}` : ''}`);
+      console.log(`  [verbose] Iteration ${iteration} failed${reason ? `: ${sanitizeTerminalText(reason)}` : ''}`);
     });
 
     pipeline.on('iteration:complete', ({ iteration }: { iteration: number }) => {
@@ -219,7 +223,8 @@ export async function runCli(options: CliRunOptions): Promise<void> {
   } catch (error) {
     stopHeartbeat();
     console.error('\n  Pipeline execution failed:', error instanceof Error ? error.message : error);
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
 
   // 10. Format & print result
@@ -246,7 +251,7 @@ export async function runCli(options: CliRunOptions): Promise<void> {
   }
 
   // 11. Exit code
-  process.exit(result.success ? 0 : 1);
+  process.exitCode = result.success ? 0 : 1;
 }
 
 // Result Formatting
@@ -265,14 +270,14 @@ function printResult(result: PipelineResult): void {
 
   // Summary
   if (result.workerResult?.summary) {
-    console.log(`  Summary: ${result.workerResult.summary}`);
+    console.log(`  Summary: ${sanitizeTerminalText(result.workerResult.summary)}`);
   }
 
   // Files changed
   if (result.workerResult?.filesChanged && result.workerResult.filesChanged.length > 0) {
     const files = result.workerResult.filesChanged;
     if (files.length <= 5) {
-      console.log(`  Files:   ${files.join(', ')}`);
+      console.log(`  Files:   ${files.map(sanitizeTerminalText).join(', ')}`);
     } else {
       console.log(`  Files:   ${files.slice(0, 5).join(', ')} +${files.length - 5} more`);
     }

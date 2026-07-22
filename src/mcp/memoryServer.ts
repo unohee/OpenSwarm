@@ -16,6 +16,12 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { searchRepoMemoryText } from '../memory/repoKnowledge.js';
+import { z } from 'zod';
+
+const SearchArgumentsSchema = z.object({
+  query: z.string().trim().min(1).max(2_000),
+  limit: z.number().int().min(1).max(10).default(5),
+}).strict();
 
 // MCP stdio reserves stdout for protocol frames. Keep all console.log output on
 // stderr for this process lifetime instead of patching/restoring it per request.
@@ -49,9 +55,9 @@ async function main(): Promise<void> {
     if (req.params.name !== 'search_memory') {
       return { content: [{ type: 'text', text: `Unknown tool: ${req.params.name}` }], isError: true };
     }
-    const args = (req.params.arguments ?? {}) as { query?: string; limit?: number };
     try {
-      const text = await searchRepoMemoryText(process.cwd(), String(args.query ?? ''), Number(args.limit) || 5);
+      const args = SearchArgumentsSchema.parse(req.params.arguments ?? {});
+      const text = await searchRepoMemoryText(process.cwd(), args.query, args.limit);
       return { content: [{ type: 'text', text }] };
     } catch (err) {
       return {

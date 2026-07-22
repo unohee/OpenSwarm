@@ -8,6 +8,7 @@ import { pipeline, type FeatureExtractionPipeline } from '@xenova/transformers';
 import { resolve } from 'path';
 import { homedir } from 'os';
 import { c, status } from '../support/colors.js';
+import { randomUUID } from 'node:crypto';
 
 // Memory storage path
 const MEMORY_DIR = resolve(homedir(), '.openswarm/memory');
@@ -192,6 +193,16 @@ const LEGACY_SCHEMA_COLUMNS = new Set(['revisionCount', 'decay', 'stability', 'c
 export function getDb(): Connection | null { return db; }
 export function getTable(): Table | null { return table; }
 export function setTable(t: Table | null): void { table = t; }
+
+export async function getMemoriesByIds(ids: string[]): Promise<Array<{ id: string; content: string }>> {
+  if (ids.length === 0) return [];
+  await initDatabase();
+  if (!table) return [];
+  const quoted = ids.map((id) => `'${id.replace(/'/g, "''")}'`).join(', ');
+  const rows = await table.query().where(`id IN (${quoted})`).limit(Math.min(ids.length, 1_000)).toArray();
+  const byId = new Map(rows.map((row: any) => [String(row.id), String(row.content ?? '')]));
+  return ids.flatMap((id) => byId.has(id) ? [{ id, content: byId.get(id)! }] : []);
+}
 
 /**
  * Retry a Lance write (add/update/delete) on optimistic-concurrency conflict.
@@ -626,7 +637,7 @@ export async function saveMemory(
   }
 
   const now = Date.now();
-  const id = `${type}-${repo}-${now}`;
+  const id = `${type}-${repo}-${now}-${randomUUID()}`;
 
   // Default TTL by type
   let expiresAt: number = PERMANENT_EXPIRY;
@@ -995,4 +1006,3 @@ export async function searchMemory(
   }
   return result.memories;
 }
-
