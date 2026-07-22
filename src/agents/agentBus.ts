@@ -110,9 +110,9 @@ export class AgentBus {
   private executionId: string;
   private contextPath: string;
   private messagesPath: string;
-  private listeners: Map<MessageType, Array<(msg: AgentMessage) => void>> = new Map();
+  private listeners: Map<MessageType, Array<(msg: AgentMessage) => void | Promise<void>>> = new Map();
   private pollInterval: NodeJS.Timeout | null = null;
-  private pollInFlight = false;
+  private pollPromise: Promise<void> | null = null;
   private readonly processedMessageIds = new Set<string>();
   private readonly contextLockPath: string;
 
@@ -334,7 +334,7 @@ export class AgentBus {
   /**
    * Register message listener
    */
-  on(type: MessageType, callback: (msg: AgentMessage) => void): void {
+  on(type: MessageType, callback: (msg: AgentMessage) => void | Promise<void>): void {
     if (!this.listeners.has(type)) {
       this.listeners.set(type, []);
     }
@@ -347,14 +347,8 @@ export class AgentBus {
   startPolling(intervalMs: number = 1000): void {
     if (this.pollInterval) return;
 
-    this.pollInterval = setInterval(async () => {
-      if (this.pollInFlight) return;
-      this.pollInFlight = true;
-      try {
-        await this.pollOnce();
-      } finally {
-        this.pollInFlight = false;
-      }
+    this.pollInterval = setInterval(() => {
+      void this.pollOnce();
     }, intervalMs);
   }
 
@@ -371,7 +365,15 @@ export class AgentBus {
   /**
    * Check for new messages
    */
-  async pollOnce(): Promise<void> {
+  pollOnce(): Promise<void> {
+    if (this.pollPromise) return this.pollPromise;
+    this.pollPromise = this.checkNewMessages().finally(() => {
+      this.pollPromise = null;
+    });
+    return this.pollPromise;
+  }
+
+  private async checkNewMessages(): Promise<void> {
     try {
       const files = await fs.readdir(this.messagesPath);
       const newFiles = files
@@ -387,7 +389,7 @@ export class AgentBus {
         if (callbacks) {
           for (const cb of callbacks) {
             try {
-              cb(message);
+              await cb(message);
             } catch (error) {
               console.warn(`[AgentBus] Listener failed for ${message.type}:`, error instanceof Error ? error.message : String(error));
             }

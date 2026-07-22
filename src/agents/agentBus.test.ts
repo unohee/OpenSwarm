@@ -582,6 +582,28 @@ describe('agentBus', () => {
   });
 
   describe('Polling', () => {
+    it('coalesces overlapping polls while an async listener is still running', async () => {
+      const executionId = `slow-listener-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const publisher = createBus(executionId);
+      const subscriber = createBus(executionId);
+      await publisher.init('workflow-123');
+      let release!: () => void;
+      const listener = vi.fn(() => new Promise<void>((resolve) => { release = resolve; }));
+      subscriber.on('log', listener);
+      await publisher.publish('log', 'step-1', 'message');
+
+      const first = subscriber.pollOnce();
+      await vi.waitFor(() => expect(listener).toHaveBeenCalledTimes(1));
+      const overlapping = subscriber.pollOnce();
+      expect(overlapping).toBe(first);
+      release();
+      await Promise.all([first, overlapping]);
+
+      expect(listener).toHaveBeenCalledTimes(1);
+      await publisher.cleanup();
+      await subscriber.cleanup();
+    });
+
     it('isolates listener failures and still advances to later messages', async () => {
       const executionId = `listeners-${Date.now()}-${Math.random()}`;
       const publisher = createBus(executionId);
