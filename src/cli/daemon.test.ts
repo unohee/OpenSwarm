@@ -17,7 +17,11 @@ vi.mock('node:os', async () => {
 // startDaemon tests.
 vi.mock('node:child_process', async () => {
   const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process');
-  return { ...actual, execFile: vi.fn() };
+  return {
+    ...actual,
+    execFile: vi.fn(),
+    execFileSync: vi.fn(() => `${process.execPath} ${join(process.cwd(), 'src', 'index.js')}`),
+  };
 });
 
 type ExecFileCb = (err: (Error & { code?: number }) | null, stdout: string, stderr: string) => void;

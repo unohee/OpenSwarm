@@ -7,7 +7,7 @@
 // and exits the parent. `openswarm stop` reads the PID file and sends SIGTERM.
 // `openswarm status` reports running/stopped plus port 3847 health.
 
-import { spawn, execFile } from 'node:child_process';
+import { spawn, execFile, execFileSync } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, unlinkSync, writeFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -41,6 +41,18 @@ function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
+  } catch {
+    return false;
+  }
+}
+
+function isOwnedDaemonProcess(pid: number): boolean {
+  if (!isProcessAlive(pid)) return false;
+  try {
+    const command = process.platform === 'win32'
+      ? execFileSync('wmic', ['process', 'where', `ProcessId=${pid}`, 'get', 'CommandLine', '/value'], { encoding: 'utf8', timeout: 2_000 })
+      : execFileSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8', timeout: 2_000 });
+    return command.includes(resolveIndexPath());
   } catch {
     return false;
   }
@@ -95,14 +107,15 @@ export async function startDaemon(): Promise<{ pid: number; logFile: string }> {
   ensureStateDirs();
 
   const existing = readPidFile();
-  if (existing !== null && isProcessAlive(existing)) {
+  if (existing !== null && isOwnedDaemonProcess(existing)) {
     throw new Error(
       `OpenSwarm is already running (pid ${existing}). ` +
       `Run 'openswarm stop' first or 'openswarm status' to check.`
     );
   }
   if (existing !== null) {
-    // Stale pid file — previous run crashed without cleaning up.
+    // Stale or reused PID: never treat/terminate an unrelated live process as
+    // OpenSwarm merely because its numeric PID matches an old file.
     try { unlinkSync(PID_FILE); } catch { /* ignore */ }
   }
 
@@ -162,7 +175,7 @@ export async function stopDaemon(timeoutMs = 10_000): Promise<boolean> {
   const pid = readPidFile();
   if (pid === null) return false;
 
-  if (!isProcessAlive(pid)) {
+  if (!isOwnedDaemonProcess(pid)) {
     // Stale pid file.
     try { unlinkSync(PID_FILE); } catch { /* ignore */ }
     return false;
@@ -295,7 +308,7 @@ export function readLogTail(lines = 20): string {
 
 export function getDaemonStatus(): DaemonStatus {
   const pid = readPidFile();
-  if (pid === null || !isProcessAlive(pid)) {
+  if (pid === null || !isOwnedDaemonProcess(pid)) {
     return { running: false, pidFile: PID_FILE, logFile: LOG_FILE };
   }
 

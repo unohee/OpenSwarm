@@ -33,6 +33,8 @@ vi.mock('node:fs', async () => {
 const spawnMock = vi.fn();
 vi.mock('node:child_process', () => ({
   spawn: (...args: unknown[]) => spawnMock(...args),
+  execFile: vi.fn(),
+  execFileSync: vi.fn(() => `${process.execPath} ${join(process.cwd(), 'src', 'index.js')}`),
 }));
 
 function stubFetch(impl: (url: string, init?: { signal?: AbortSignal }) => Promise<Response>): void {
