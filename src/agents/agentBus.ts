@@ -92,6 +92,9 @@ export interface SharedContext {
 
 const BUS_DIR = resolve(homedir(), '.openswarm/bus');
 const CONTEXT_LOCK_STALE_MS = 30_000;
+const MAX_RETAINED_MESSAGES = 1_000;
+const MAX_CONTEXT_ENTRIES = 1_000;
+const MAX_CONTEXT_ERRORS = 200;
 
 function assertExecutionId(executionId: string): void {
   if (
@@ -115,6 +118,7 @@ export class AgentBus {
   private pollPromise: Promise<void> | null = null;
   private readonly processedMessageIds = new Set<string>();
   private readonly contextLockPath: string;
+  private publishedSincePrune = 0;
 
   constructor(executionId: string) {
     assertExecutionId(executionId);
@@ -167,6 +171,10 @@ export class AgentBus {
     // Save message
     const messagePath = resolve(this.messagesPath, `${message.id}.json`);
     await fs.writeFile(messagePath, JSON.stringify(message, null, 2));
+    if (++this.publishedSincePrune >= 100) {
+      this.publishedSincePrune = 0;
+      await this.pruneMessages();
+    }
 
     // Handle special message types
     if (type === 'step_completed') {
@@ -189,9 +197,16 @@ export class AgentBus {
   private async handleStepCompleted(payload: StepCompletedPayload): Promise<void> {
     await this.mutateContext((context) => {
       context.stepOutputs[payload.stepId] = payload.output;
+      const stepIds = Object.keys(context.stepOutputs);
+      for (const staleId of stepIds.slice(0, Math.max(0, stepIds.length - MAX_CONTEXT_ENTRIES))) {
+        delete context.stepOutputs[staleId];
+      }
       if (payload.changedFiles) {
         for (const file of payload.changedFiles) {
           if (!context.changedFiles.includes(file)) context.changedFiles.push(file);
+        }
+        if (context.changedFiles.length > MAX_CONTEXT_ENTRIES) {
+          context.changedFiles.splice(0, context.changedFiles.length - MAX_CONTEXT_ENTRIES);
         }
       }
     });
@@ -207,6 +222,9 @@ export class AgentBus {
         case 'append':
           if (!Array.isArray(context.data[payload.key])) context.data[payload.key] = [];
           (context.data[payload.key] as unknown[]).push(payload.value);
+          if ((context.data[payload.key] as unknown[]).length > MAX_CONTEXT_ENTRIES) {
+            (context.data[payload.key] as unknown[]).splice(0, (context.data[payload.key] as unknown[]).length - MAX_CONTEXT_ENTRIES);
+          }
           break;
         case 'delete': delete context.data[payload.key]; break;
       }
@@ -219,6 +237,9 @@ export class AgentBus {
   private async handleFileChanged(payload: FileChangedPayload): Promise<void> {
     await this.mutateContext((context) => {
       if (!context.changedFiles.includes(payload.path)) context.changedFiles.push(payload.path);
+      if (context.changedFiles.length > MAX_CONTEXT_ENTRIES) {
+        context.changedFiles.splice(0, context.changedFiles.length - MAX_CONTEXT_ENTRIES);
+      }
     });
   }
 
@@ -228,6 +249,9 @@ export class AgentBus {
   private async handleError(stepId: string, message: string): Promise<void> {
     await this.mutateContext((context) => {
       context.errors.push({ stepId, message, timestamp: Date.now() });
+      if (context.errors.length > MAX_CONTEXT_ERRORS) {
+        context.errors.splice(0, context.errors.length - MAX_CONTEXT_ERRORS);
+      }
     });
   }
 
@@ -397,6 +421,9 @@ export class AgentBus {
         }
 
         this.processedMessageIds.add(file);
+        if (this.processedMessageIds.size > MAX_RETAINED_MESSAGES) {
+          this.processedMessageIds.delete(this.processedMessageIds.values().next().value!);
+        }
       }
     } catch {
       // Ignore
@@ -474,7 +501,23 @@ export class AgentBus {
    */
   async cleanup(): Promise<void> {
     this.stopPolling();
-    // Clean up files if needed
+    await this.pollPromise?.catch(() => {});
+    await this.pruneMessages();
+    this.processedMessageIds.clear();
+    this.listeners.clear();
+  }
+
+  private async pruneMessages(): Promise<void> {
+    try {
+      const files = (await fs.readdir(this.messagesPath)).filter((file) => file.endsWith('.json')).sort();
+      const expired = files.slice(0, Math.max(0, files.length - MAX_RETAINED_MESSAGES));
+      await Promise.all(expired.map(async (file) => {
+        await fs.unlink(resolve(this.messagesPath, file));
+        this.processedMessageIds.delete(file);
+      }));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
   }
 }
 

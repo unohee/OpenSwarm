@@ -4,6 +4,7 @@ import { Box, Text } from 'ink';
 import Gradient from 'ink-gradient';
 import { basename } from 'node:path';
 import { theme, ICON, LOGO_GRADIENT } from '../theme.js';
+import { sanitizeTerminalText } from '../sanitize.js';
 
 export interface ContextBarProps {
   version?: string;
@@ -15,9 +16,9 @@ export interface ContextBarProps {
 
 export function ContextBar({ version, provider, model, cwd, branch }: ContextBarProps) {
   const right = [
-    provider ? (model ? `${provider}:${model}` : provider) : null,
-    cwd ? basename(cwd) : null,
-    branch ? `${ICON.git}${branch}` : null,
+    provider ? sanitizeTerminalText(model ? `${provider}:${model}` : provider) : null,
+    cwd ? sanitizeTerminalText(basename(cwd)) : null,
+    branch ? `${ICON.git}${sanitizeTerminalText(branch)}` : null,
   ]
     .filter(Boolean)
     .join('  ·  ');

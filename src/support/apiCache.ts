@@ -22,7 +22,6 @@ interface CacheEntry<T> {
 interface CacheStats {
   hits: number;
   misses: number;
-  size: number;
   hitRate: number;
 }
 
@@ -157,7 +156,7 @@ export class APICache {
    * 히트 기록
    */
   private recordHit(key: string): void {
-    const stat = this.stats.get(key) ?? { hits: 0, misses: 0, size: 0, hitRate: 0 };
+    const stat = this.stats.get(key) ?? { hits: 0, misses: 0, hitRate: 0 };
     stat.hits++;
     const total = stat.hits + stat.misses;
     stat.hitRate = total > 0 ? stat.hits / total : 0;
@@ -169,7 +168,7 @@ export class APICache {
    * 미스 기록
    */
   private recordMiss(key: string): void {
-    const stat = this.stats.get(key) ?? { hits: 0, misses: 0, size: 0, hitRate: 0 };
+    const stat = this.stats.get(key) ?? { hits: 0, misses: 0, hitRate: 0 };
     stat.misses++;
     const total = stat.hits + stat.misses;
     stat.hitRate = total > 0 ? stat.hits / total : 0;

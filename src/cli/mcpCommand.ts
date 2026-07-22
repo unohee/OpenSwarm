@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import type { McpServerConfig } from '../core/types.js';
 import { BUILTIN_MCP_SERVERS } from '../mcp/mcpClient.js';
 import { atomicWriteFileSync } from '../support/atomicFile.js';
+import { z } from 'zod';
 
 export const MCP_JSON_PATH = join(homedir(), '.openswarm', 'mcp.json');
 
@@ -19,11 +20,17 @@ export interface McpJson {
   mcpServers: Record<string, McpServerConfig>;
 }
 
+const McpServerSchema = z.union([
+  z.object({ preset: z.string().min(1), command: z.undefined().optional(), url: z.undefined().optional(), args: z.undefined().optional() }).strict(),
+  z.object({ url: z.string().url().refine((url) => /^https?:\/\//.test(url), 'URL must use HTTP(S)'), preset: z.undefined().optional(), command: z.undefined().optional(), args: z.undefined().optional() }).strict(),
+  z.object({ command: z.string().min(1), args: z.array(z.string()).optional(), preset: z.undefined().optional(), url: z.undefined().optional() }).strict(),
+]);
+const McpJsonSchema = z.object({ mcpServers: z.record(z.string().min(1), McpServerSchema) }).strict();
+
 export function readMcpJson(path = MCP_JSON_PATH): McpJson {
   if (!existsSync(path)) return { mcpServers: {} };
   try {
-    const parsed = JSON.parse(readFileSync(path, 'utf8')) as { mcpServers?: Record<string, McpServerConfig> };
-    return { mcpServers: parsed.mcpServers ?? {} };
+    return McpJsonSchema.parse(JSON.parse(readFileSync(path, 'utf8'))) as McpJson;
   } catch (error) {
     throw new Error(`MCP registry is malformed at ${path}: ${error instanceof Error ? error.message : String(error)}`);
   }

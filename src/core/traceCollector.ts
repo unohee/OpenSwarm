@@ -73,11 +73,25 @@ export type Trace = {
 export class TraceCollector {
   private traces = new Map<string, Trace>();
 
+  constructor(
+    private readonly maxTraces = 1_000,
+    private readonly maxSpansPerTrace = 1_000,
+  ) {
+    if (!Number.isSafeInteger(maxTraces) || maxTraces <= 0 || !Number.isSafeInteger(maxSpansPerTrace) || maxSpansPerTrace <= 0) {
+      throw new Error('Trace retention limits must be positive integers');
+    }
+  }
+
   /**
    * 새 trace 시작
    * @returns trace ID
    */
   startTrace(name: string, metadata: Record<string, unknown> = {}): string {
+    if (this.traces.size >= this.maxTraces) {
+      const completed = [...this.traces].find(([, trace]) => trace.status !== 'running');
+      if (!completed) throw new Error(`Trace capacity exceeded (${this.maxTraces} active traces)`);
+      this.traces.delete(completed[0]);
+    }
     const traceId = randomUUID();
     const trace: Trace = {
       traceId,
@@ -97,6 +111,8 @@ export class TraceCollector {
   endTrace(traceId: string, status: SpanStatus = 'completed'): Trace | undefined {
     const trace = this.traces.get(traceId);
     if (!trace) return undefined;
+    if (trace.status !== 'running') return trace;
+    if (status === 'running') throw new Error('endTrace requires a terminal status');
 
     trace.endTime = Date.now();
     trace.status = status;
@@ -124,7 +140,10 @@ export class TraceCollector {
     metadata: Record<string, unknown> = {},
   ): string | undefined {
     const trace = this.traces.get(traceId);
-    if (!trace) return undefined;
+    if (!trace || trace.status !== 'running') return undefined;
+    if (trace.spans.length >= this.maxSpansPerTrace) {
+      throw new Error(`Span capacity exceeded for trace ${traceId} (${this.maxSpansPerTrace})`);
+    }
 
     const spanId = randomUUID();
     const span: Span = {
@@ -149,6 +168,8 @@ export class TraceCollector {
 
     const span = trace.spans.find((s) => s.spanId === spanId);
     if (!span) return undefined;
+    if (span.status !== 'running') return span;
+    if (status === 'running') throw new Error('endSpan requires a terminal status');
 
     span.endTime = Date.now();
     span.status = status;

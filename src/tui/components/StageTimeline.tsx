@@ -6,6 +6,7 @@ import { memo } from 'react';
 import { STATUS } from '../theme.js';
 import type { StatusKind } from '../../support/glyphs.js';
 import type { StageEntry } from '../pipelineEvents.js';
+import { sanitizeTerminalText } from '../sanitize.js';
 
 // Single-sourced glyphs + colors (INT-2260): running → ◐, complete → ✓, fail → ✗.
 const KIND: Record<StageEntry['status'], StatusKind> = { start: 'running', complete: 'ok', fail: 'err' };
@@ -27,12 +28,12 @@ export const StageTimeline = memo(function StageTimeline({ stages, max = 12 }: S
       ) : (
         shown.map((s, i) => {
           const dur = s.durationMs ? ` ${Math.round(s.durationMs / 1000)}s` : '';
-          const model = s.model ? ` (${s.model})` : '';
-          const decision = s.decision ? ` → ${s.decision}` : '';
+          const model = s.model ? ` (${sanitizeTerminalText(s.model)})` : '';
+          const decision = s.decision ? ` → ${sanitizeTerminalText(s.decision)}` : '';
           const st = STATUS[KIND[s.status]];
           return (
             <Text key={i} color={st.color}>
-              {`${st.icon} ${s.stage}${model}${dur}${decision}`}
+              {`${st.icon} ${sanitizeTerminalText(s.stage)}${model}${dur}${decision}`}
             </Text>
           );
         })

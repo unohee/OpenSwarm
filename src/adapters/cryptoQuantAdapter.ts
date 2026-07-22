@@ -4,6 +4,13 @@
 // USDC Netflow data integration for Risk-On signals
 
 import * as https from 'https';
+import { resolve } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { atomicWriteFile } from '../support/atomicFile.js';
+import { withFileLock } from '../support/fileLock.js';
+
+const REQUEST_TIMEOUT_MS = 15_000;
+const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 
 /**
  * USDC Exchange Netflow data point
@@ -60,17 +67,26 @@ export class CryptoQuantAdapter {
   private rateLimitPerDay: number;
   private dataWindow: number;
   private rateLimitState: RateLimitState;
+  private rateLimitStatePath: string;
 
   constructor(config: CryptoQuantConfig) {
     this.apiToken = config.apiToken;
     this.baseUrl = config.baseUrl || 'https://api.cryptoquant.com/v1';
+    const apiOrigin = new URL(this.baseUrl);
+    if (apiOrigin.protocol !== 'https:' || !(apiOrigin.hostname === 'cryptoquant.com' || apiOrigin.hostname.endsWith('.cryptoquant.com'))) {
+      throw new Error('CryptoQuant baseUrl must use HTTPS on a cryptoquant.com origin');
+    }
     this.cacheDir = config.cacheDir || './cache/cryptoquant';
     this.rateLimitPerDay = config.rateLimitPerDay || 50;
+    if (!Number.isSafeInteger(this.rateLimitPerDay) || this.rateLimitPerDay <= 0) {
+      throw new Error('CryptoQuant rateLimitPerDay must be a positive integer');
+    }
     this.dataWindow = config.dataWindow || 7; // Default 7 days
     this.rateLimitState = {
       requestsToday: 0,
       lastResetDate: new Date().toISOString().slice(0, 10),
     };
+    this.rateLimitStatePath = resolve(this.cacheDir, 'rate-limit.json');
   }
 
   /**
@@ -79,8 +95,9 @@ export class CryptoQuantAdapter {
    * @param daysBack - Number of days back from today (default: 7)
    */
   async getUSDCNetflow(exchange: string, daysBack: number = 7): Promise<USDCNetflowData[]> {
-    // Check rate limit
-    this.checkRateLimit();
+    // Reserve before the request. Failed and concurrent calls still consume a
+    // durable quota slot, preventing parallel processes from oversubscribing.
+    await this.reserveApiCall();
 
     const toDate = new Date();
     const fromDate = new Date(toDate.getTime() - daysBack * 24 * 60 * 60 * 1000);
@@ -120,7 +137,6 @@ export class CryptoQuantAdapter {
         token: 'usdc_eth',
       }));
 
-      this.recordApiCall();
       return data;
     } catch (err) {
       console.error('[CryptoQuantAdapter] API error:', err);
@@ -228,7 +244,13 @@ export class CryptoQuantAdapter {
    */
   private async makeRequest(url: string): Promise<any> {
     return new Promise((resolve, reject) => {
-      https.get(
+      let settled = false;
+      const fail = (error: Error): void => {
+        if (settled) return;
+        settled = true;
+        reject(error);
+      };
+      const request = https.get(
         url,
         {
           headers: {
@@ -238,8 +260,15 @@ export class CryptoQuantAdapter {
         },
         (res) => {
           let data = '';
+          let bytes = 0;
 
           res.on('data', (chunk) => {
+            bytes += Buffer.byteLength(chunk);
+            if (bytes > MAX_RESPONSE_BYTES) {
+              res.destroy();
+              fail(new Error(`CryptoQuant response exceeded ${MAX_RESPONSE_BYTES} bytes`));
+              return;
+            }
             data += chunk;
           });
 
@@ -247,41 +276,62 @@ export class CryptoQuantAdapter {
             try {
               const json = JSON.parse(data);
               if (res.statusCode !== 200) {
-                reject(new Error(`CryptoQuant API error: ${res.statusCode} ${json.message || ''}`));
+                fail(new Error(`CryptoQuant API error: ${res.statusCode} ${json.message || ''}`));
               } else {
+                settled = true;
                 resolve(json);
               }
             } catch (err) {
-              reject(new Error(`Failed to parse CryptoQuant response: ${err}`));
+              fail(new Error(`Failed to parse CryptoQuant response: ${err}`));
             }
           });
         }
-      ).on('error', reject);
+      );
+      request.setTimeout(REQUEST_TIMEOUT_MS, () => {
+        request.destroy(new Error(`CryptoQuant request timed out after ${REQUEST_TIMEOUT_MS}ms`));
+      });
+      request.on('error', fail);
     });
   }
 
   /**
    * Private: Check rate limit
    */
-  private checkRateLimit(): void {
+  private async reserveApiCall(): Promise<void> {
+    await withFileLock(`${this.rateLimitStatePath}.lock`, async () => {
+      let state = this.rateLimitState;
+      try {
+        const parsed = JSON.parse(await readFile(this.rateLimitStatePath, 'utf8')) as Partial<RateLimitState>;
+        if (!Number.isSafeInteger(parsed.requestsToday) || (parsed.requestsToday ?? -1) < 0 || typeof parsed.lastResetDate !== 'string') {
+          throw new Error('invalid rate limit state');
+        }
+        state = { requestsToday: parsed.requestsToday!, lastResetDate: parsed.lastResetDate };
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+
     const today = new Date().toISOString().slice(0, 10);
 
-    if (today !== this.rateLimitState.lastResetDate) {
-      this.rateLimitState.requestsToday = 0;
-      this.rateLimitState.lastResetDate = today;
-    }
+      if (today !== state.lastResetDate) {
+        state = { requestsToday: 0, lastResetDate: today };
+      }
 
-    if (this.rateLimitState.requestsToday >= this.rateLimitPerDay) {
-      throw new Error(`[CryptoQuantAdapter] Rate limit exceeded: ${this.rateLimitPerDay} requests/day`);
-    }
+      if (state.requestsToday >= this.rateLimitPerDay) {
+        throw new Error(`[CryptoQuantAdapter] Rate limit exceeded: ${this.rateLimitPerDay} requests/day`);
+      }
+      state.requestsToday++;
+      await atomicWriteFile(this.rateLimitStatePath, JSON.stringify(state, null, 2), 0o600);
+      this.rateLimitState = state;
+      console.log(`[CryptoQuantAdapter] API calls today: ${state.requestsToday}/${this.rateLimitPerDay}`);
+    });
   }
 
-  /**
-   * Private: Record API call
-   */
-  private recordApiCall(): void {
-    this.rateLimitState.requestsToday++;
-    console.log(`[CryptoQuantAdapter] API calls today: ${this.rateLimitState.requestsToday}/${this.rateLimitPerDay}`);
+  /** Refresh the date boundary for synchronous status reporting. */
+  private refreshRateLimitDate(): void {
+    const today = new Date().toISOString().slice(0, 10);
+    if (today !== this.rateLimitState.lastResetDate) {
+      this.rateLimitState = { requestsToday: 0, lastResetDate: today };
+    }
   }
 
   /**
@@ -301,6 +351,7 @@ export class CryptoQuantAdapter {
    * Get current rate limit status
    */
   getRateLimitStatus(): { used: number; limit: number; remaining: number } {
+    this.refreshRateLimitDate();
     return {
       used: this.rateLimitState.requestsToday,
       limit: this.rateLimitPerDay,

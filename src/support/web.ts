@@ -16,7 +16,7 @@ import { scanLocalProjects, invalidateProjectCache } from './projectMapper.js';
 import type { AutonomousRunner } from '../automation/autonomousRunner.js';
 import { DASHBOARD_HTML } from './dashboardHtml.js';
 import { getGraph, toProjectSlug, getProjectHealth, scanAndCache, listGraphs } from '../knowledge/index.js';
-import { getProjectGitInfo, startGitStatusPoller } from './gitStatus.js';
+import { getProjectGitInfo, startGitStatusPoller, stopGitStatusPoller } from './gitStatus.js';
 import { getActiveMonitors, registerMonitor, unregisterMonitor } from '../automation/longRunningMonitor.js';
 import type { LongRunningMonitorConfig } from '../core/types.js';
 import { getAllProcesses, killProcess, startHealthChecker, stopHealthChecker } from '../adapters/processRegistry.js';
@@ -1432,7 +1432,7 @@ export async function startWebServer(port: number = 3847): Promise<void> {
  */
 export async function stopWebServer(): Promise<void> {
   if (gitStatusPoller) {
-    clearInterval(gitStatusPoller);
+    stopGitStatusPoller();
     gitStatusPoller = null;
   }
   stopHealthChecker();

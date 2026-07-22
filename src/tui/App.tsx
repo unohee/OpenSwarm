@@ -46,7 +46,7 @@ export interface AppProps {
 }
 
 export function App({ version, provider, model, port, cwd, branch, initialTab = 0, sessionId, initialHistory, goal }: AppProps) {
-  const [active, setActive] = useState(initialTab);
+  const [active, setActive] = useState(() => Number.isInteger(initialTab) && initialTab >= 0 && initialTab < TABS.length ? initialTab : 0);
   const { columns, rows } = useTerminalSize();
   const { exit } = useApp();
 

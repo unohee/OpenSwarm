@@ -5,8 +5,10 @@
 
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
+import { atomicWriteFile } from '../support/atomicFile.js';
+import { withFileLock } from '../support/fileLock.js';
 
 // Types
 
@@ -38,6 +40,7 @@ const OwnershipStateSchema = z.object({
 // Constants
 
 const OWNERSHIP_PATH = resolve(homedir(), '.openswarm', 'pr-ownership.json');
+const OWNERSHIP_LOCK_PATH = `${OWNERSHIP_PATH}.lock`;
 
 // State Management
 
@@ -55,24 +58,25 @@ async function loadState(): Promise<OwnershipState> {
 }
 
 async function saveState(state: OwnershipState): Promise<void> {
-  await mkdir(resolve(homedir(), '.openswarm'), { recursive: true });
   state.updatedAt = new Date().toISOString();
-  await writeFile(OWNERSHIP_PATH, JSON.stringify(state, null, 2));
+  await atomicWriteFile(OWNERSHIP_PATH, JSON.stringify(state, null, 2), 0o600);
 }
 
 // Public API
 
 /** Register a PR as owned by the bot */
 export async function registerOwnedPR(pr: OwnedPR): Promise<void> {
-  const state = await loadState();
-  const exists = state.prs.some(
-    (p) => p.repo === pr.repo && p.prNumber === pr.prNumber
-  );
-  if (!exists) {
-    state.prs.push(pr);
-    await saveState(state);
-    console.log(`[PROwnership] Registered: ${pr.repo}#${pr.prNumber} (${pr.branch})`);
-  }
+  await withFileLock(OWNERSHIP_LOCK_PATH, async () => {
+    const state = await loadState();
+    const exists = state.prs.some(
+      (p) => p.repo === pr.repo && p.prNumber === pr.prNumber
+    );
+    if (!exists) {
+      state.prs.push(pr);
+      await saveState(state);
+      console.log(`[PROwnership] Registered: ${pr.repo}#${pr.prNumber} (${pr.branch})`);
+    }
+  });
 }
 
 /** Check if a PR is owned by the bot */
@@ -83,15 +87,17 @@ export async function isOwnedPR(repo: string, prNumber: number): Promise<boolean
 
 /** Remove a PR from ownership (after merge/close) */
 export async function removeOwnedPR(repo: string, prNumber: number): Promise<void> {
-  const state = await loadState();
-  const before = state.prs.length;
-  state.prs = state.prs.filter(
-    (p) => !(p.repo === repo && p.prNumber === prNumber)
-  );
-  if (state.prs.length < before) {
-    await saveState(state);
-    console.log(`[PROwnership] Removed: ${repo}#${prNumber}`);
-  }
+  await withFileLock(OWNERSHIP_LOCK_PATH, async () => {
+    const state = await loadState();
+    const before = state.prs.length;
+    state.prs = state.prs.filter(
+      (p) => !(p.repo === repo && p.prNumber === prNumber)
+    );
+    if (state.prs.length < before) {
+      await saveState(state);
+      console.log(`[PROwnership] Removed: ${repo}#${prNumber}`);
+    }
+  });
 }
 
 /** Get all owned PRs for a repo */

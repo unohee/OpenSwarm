@@ -47,4 +47,8 @@ describe('Ink shell (EPIC INT-1813 S3/S4/S5)', () => {
     const { lastFrame } = render(<App initialTab={6} />); // Logs
     expect(lastFrame()).toContain('stream logs');
   });
+
+  it.each([-1, 7, Number.NaN])('normalizes invalid initialTab %s', (initialTab) => {
+    expect(render(<App initialTab={initialTab} />).lastFrame()).toContain('type a message');
+  });
 });

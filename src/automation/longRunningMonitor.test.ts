@@ -18,6 +18,8 @@ const fsMocks = vi.hoisted(() => ({
   writeFileSync: vi.fn(),
   mkdirSync: vi.fn(),
 }));
+const atomicWriteFileSyncMock = vi.hoisted(() => vi.fn());
+vi.mock('../support/atomicFile.js', () => ({ atomicWriteFileSync: atomicWriteFileSyncMock }));
 
 vi.mock('node:fs', () => ({
   existsSync: fsMocks.existsSync,
@@ -78,6 +80,7 @@ describe('longRunningMonitor', () => {
     fsMocks.readFileSync.mockReset();
     fsMocks.writeFileSync.mockReset();
     fsMocks.mkdirSync.mockReset();
+    atomicWriteFileSyncMock.mockReset();
     execFileMock.mockReset();
     broadcastEventMock.mockReset();
     vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -365,9 +368,8 @@ describe('longRunningMonitor', () => {
     it('persists to disk on register, creating the directory first', async () => {
       const mod = await freshModule();
       mod.registerMonitor({ id: 'p1', name: 'Persisted', checkCommand: ['curl'], completionCheck: { type: 'exit-code' } });
-      expect(fsMocks.mkdirSync).toHaveBeenCalledWith(expect.any(String), { recursive: true });
-      expect(fsMocks.writeFileSync).toHaveBeenCalled();
-      const [, payload] = fsMocks.writeFileSync.mock.calls[0];
+      expect(atomicWriteFileSyncMock).toHaveBeenCalled();
+      const [, payload] = atomicWriteFileSyncMock.mock.calls[0];
       const parsed = JSON.parse(payload as string);
       expect(parsed.monitors).toHaveLength(1);
       expect(parsed.monitors[0].id).toBe('p1');
@@ -376,10 +378,10 @@ describe('longRunningMonitor', () => {
     it('persists an empty monitor list after unregistering the only monitor', async () => {
       const mod = await freshModule();
       mod.registerMonitor({ id: 'p2', name: 'Temp', checkCommand: ['curl'], completionCheck: { type: 'exit-code' } });
-      fsMocks.writeFileSync.mockClear();
+      atomicWriteFileSyncMock.mockClear();
       const removed = mod.unregisterMonitor('p2');
       expect(removed).toBe(true);
-      const [, payload] = fsMocks.writeFileSync.mock.calls[0];
+      const [, payload] = atomicWriteFileSyncMock.mock.calls[0];
       expect(JSON.parse(payload as string).monitors).toHaveLength(0);
     });
 
@@ -388,8 +390,8 @@ describe('longRunningMonitor', () => {
       expect(mod.unregisterMonitor('nope')).toBe(false);
     });
 
-    it('does not crash when writeFileSync throws', async () => {
-      fsMocks.writeFileSync.mockImplementation(() => {
+    it('does not crash when atomic persistence throws', async () => {
+      atomicWriteFileSyncMock.mockImplementation(() => {
         throw new Error('disk full');
       });
       const mod = await freshModule();
@@ -697,7 +699,7 @@ describe('longRunningMonitor', () => {
           data: expect.objectContaining({ id: 's2', from: 'pending', to: 'completed' }),
         }),
       );
-      expect(fsMocks.writeFileSync).toHaveBeenCalled();
+      expect(atomicWriteFileSyncMock).toHaveBeenCalled();
     });
 
     it('does not run a check on heartbeats that do not divide the checkInterval', async () => {

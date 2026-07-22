@@ -203,7 +203,9 @@ export function addSSEClient(res: ServerResponse, skipReplay = false): () => voi
         res.write(`data: ${JSON.stringify(event)}\n\n`);
       }
     } catch {
-      // Client already gone
+      // A client that cannot consume replay is already gone. Do not retain it
+      // until a future broadcast happens to discover the failure again.
+      return () => {};
     }
   }
   sseClients.add(res);
@@ -226,15 +228,15 @@ export function getActiveSSECount(): number {
 }
 
 export function getLogBuffer(): HubEvent[] {
-  return logBuffer;
+  return structuredClone(logBuffer);
 }
 
 export function getStageBuffer(): HubEvent[] {
-  return stageBuffer;
+  return structuredClone(stageBuffer);
 }
 
 export function getChatBuffer(): HubEvent[] {
-  return chatBuffer;
+  return structuredClone(chatBuffer);
 }
 
 // Test cleanup function - clears all buffers and clients

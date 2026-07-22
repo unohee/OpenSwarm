@@ -669,5 +669,25 @@ export async function executeToolCalls(
   cache?: ReadCache,
   execOptions?: ToolExecOptions,
 ): Promise<ToolResult[]> {
-  return Promise.all(toolCalls.map(tc => executeTool(tc, cwd, cache, execOptions)));
+  const readOnlyTools = new Set(['read_file', 'search_files', 'search_memory', 'web_fetch', 'web_search']);
+  const results: ToolResult[] = [];
+  let index = 0;
+  while (index < toolCalls.length) {
+    const call = toolCalls[index];
+    if (!readOnlyTools.has(call.function.name)) {
+      results.push(await executeTool(call, cwd, cache, execOptions));
+      index++;
+      continue;
+    }
+
+    // Parallelize only a contiguous read-only batch. A mutating call is a
+    // barrier, so reads cannot observe half-applied edits and two model-issued
+    // writes can never race their read/modify/write or rollback snapshots.
+    const batch: ToolCall[] = [];
+    while (index < toolCalls.length && readOnlyTools.has(toolCalls[index].function.name)) {
+      batch.push(toolCalls[index++]);
+    }
+    results.push(...await Promise.all(batch.map((item) => executeTool(item, cwd, cache, execOptions))));
+  }
+  return results;
 }

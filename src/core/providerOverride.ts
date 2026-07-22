@@ -4,10 +4,11 @@
 // (adapter: …) and silently reverts the choice — "I pressed Codex again but it's back to the old
 // provider". We record the last toggle in a small JSON file next to config.yaml and re-apply it on
 // boot. config.yaml itself (with its hand-written comments) is never rewritten.
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { AdapterName } from '../adapters/types.js';
+import { atomicWriteFileSync } from '../support/atomicFile.js';
 
 const OVERRIDE_DIR = join(homedir(), '.config', 'openswarm');
 const OVERRIDE_PATH = join(OVERRIDE_DIR, 'provider-override.json');
@@ -51,8 +52,7 @@ export function formatProviderOverrideMismatchWarning(
 /** Record the user's provider choice so it survives a restart. Best-effort — never blocks the toggle. */
 export function writeProviderOverride(provider: AdapterName): void {
   try {
-    mkdirSync(OVERRIDE_DIR, { recursive: true });
-    writeFileSync(OVERRIDE_PATH, `${JSON.stringify({ provider }, null, 2)}\n`, 'utf8');
+    atomicWriteFileSync(OVERRIDE_PATH, `${JSON.stringify({ provider }, null, 2)}\n`, 0o600);
   } catch {
     /* persistence is an optimization — a failed write must not break the switch */
   }

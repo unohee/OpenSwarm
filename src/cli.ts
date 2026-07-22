@@ -534,7 +534,7 @@ program
   .option('--no-open', 'Start server without opening browser')
   .action(async (opts: { port: number; open: boolean }) => {
     const port = opts.port;
-    const { startWebServer } = await import('./support/web.js');
+    const { startWebServer, stopWebServer } = await import('./support/web.js');
     await startWebServer(port);
     console.log(`Dashboard running at http://localhost:${port}`);
 
@@ -550,9 +550,16 @@ program
     }
 
     // Keep process alive
-    process.on('SIGINT', () => {
-      console.log('\nDashboard stopped.');
-      process.exit(0);
+    let stopping = false;
+    process.once('SIGINT', () => {
+      if (stopping) return;
+      stopping = true;
+      void stopWebServer()
+        .catch((error) => console.error('[Dashboard] graceful shutdown failed:', error))
+        .finally(() => {
+          console.log('\nDashboard stopped.');
+          process.exitCode = 0;
+        });
     });
   });
 

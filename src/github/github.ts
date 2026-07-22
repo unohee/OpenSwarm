@@ -13,11 +13,15 @@ const execFileAsync = promisify(execFile);
 
 /** Safe gh CLI execution (no shell interpolation) */
 async function ghExec(...args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync('gh', args);
+  const { stdout } = await execFileAsync('gh', args, { maxBuffer: 4 * 1024 * 1024 });
   return stdout;
 }
 
-const ACTIVE_FAILURE_RUN_LIMIT = 1000;
+async function ghExecLarge(...args: string[]): Promise<string> {
+  const { stdout } = await execFileAsync('gh', args, { maxBuffer: 16 * 1024 * 1024 });
+  return stdout;
+}
+
 const REPO_SCAN_CONCURRENCY = 5;
 const BLOCKING_CONCLUSIONS = new Set([
   'failure', 'timed_out', 'cancelled', 'action_required', 'startup_failure', 'stale',
@@ -352,13 +356,17 @@ export async function saveCIState(state: CIState): Promise<void> {
 export async function getActiveFailures(repo: string, maxAgeDays: number = 30): Promise<ActiveFailure[] | null> {
   try {
     const since = new Date(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-    const { stdout } = await execFileAsync('gh', [
-      'run', 'list', '-R', repo,
-      '--created', `>=${since}`,
-      '--json', 'databaseId,name,headBranch,createdAt,conclusion,url',
-      '-L', String(ACTIVE_FAILURE_RUN_LIMIT)
-    ]);
-    const runs = JSON.parse(stdout);
+    const stdout = await ghExec(
+      'api', '--method', 'GET', '--paginate', '--slurp',
+      `repos/${repo}/actions/runs`, '-f', 'per_page=100', '-f', `created=>=${since}`,
+    );
+    const parsed = JSON.parse(stdout) as unknown;
+    const runs = Array.isArray(parsed) && parsed.every((page) => page && typeof page === 'object' && 'workflow_runs' in page)
+      ? parsed.flatMap((page) => (page as { workflow_runs: any[] }).workflow_runs).map((run) => ({
+          databaseId: run.id, name: run.name, headBranch: run.head_branch,
+          createdAt: run.created_at, conclusion: run.conclusion, url: run.html_url,
+        }))
+      : parsed as any[];
     if (runs.length === 0) return [];
 
     // Keep only the latest run per workflow+branch (gh run list returns newest first)
@@ -373,7 +381,7 @@ export async function getActiveFailures(repo: string, maxAgeDays: number = 30): 
     const maxAgeMs = maxAgeDays * 24 * 60 * 60 * 1000;
     const failures: ActiveFailure[] = [];
     for (const [, run] of latest) {
-      if (run.conclusion === 'failure') {
+      if (isBlockingConclusion(String(run.conclusion ?? ''))) {
         // Ignore old failures from stale branches
         const age = Date.now() - new Date(run.createdAt).getTime();
         if (age > maxAgeMs) continue;
@@ -521,7 +529,7 @@ export async function getPRContext(repo: string, prNumber: number): Promise<PRDe
   try {
     const [viewStdout, diffStdout, checks] = await Promise.all([
       ghExec('pr', 'view', String(prNumber), '-R', repo, '--json', 'title,headRefName,createdAt,url,body,author'),
-      ghExec('pr', 'diff', String(prNumber), '-R', repo).catch((e) => { console.warn(`[GitHub] PR diff fetch failed for ${repo}#${prNumber}:`, e); return ''; }),
+      ghExecLarge('pr', 'diff', String(prNumber), '-R', repo),
       getPRChecks(repo, prNumber),
     ]);
 

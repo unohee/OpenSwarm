@@ -7,6 +7,7 @@ const lifecycle = vi.hoisted(() => ({
   startHealthChecker: vi.fn(),
   stopHealthChecker: vi.fn(),
   pollers: [] as NodeJS.Timeout[],
+  pollersCreated: 0,
 }));
 
 vi.mock('node:fs', async () => {
@@ -31,7 +32,12 @@ vi.mock('./gitStatus.js', async () => {
       const timer = setInterval(() => {}, 60_000);
       timer.unref();
       lifecycle.pollers.push(timer);
+      lifecycle.pollersCreated++;
       return timer;
+    }),
+    stopGitStatusPoller: vi.fn(() => {
+      const timer = lifecycle.pollers.pop();
+      if (timer) clearInterval(timer);
     }),
   };
 });
@@ -43,6 +49,7 @@ describe('web lifecycle ownership', () => {
     await stopWebServer();
     for (const timer of lifecycle.pollers) clearInterval(timer);
     lifecycle.pollers.length = 0;
+    lifecycle.pollersCreated = 0;
     vi.clearAllMocks();
   });
 
@@ -66,6 +73,7 @@ describe('web lifecycle ownership', () => {
     expect(lifecycle.unwatchFile).toHaveBeenCalledTimes(2);
     expect(lifecycle.startHealthChecker).toHaveBeenCalledTimes(2);
     expect(lifecycle.stopHealthChecker).toHaveBeenCalledTimes(2);
-    expect(lifecycle.pollers).toHaveLength(2);
+    expect(lifecycle.pollersCreated).toBe(2);
+    expect(lifecycle.pollers).toHaveLength(0);
   });
 });

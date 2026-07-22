@@ -4,7 +4,7 @@
 // ============================================
 
 import { execFile } from 'node:child_process';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import type {
@@ -14,6 +14,7 @@ import type {
   CompletionCheck,
 } from '../core/types.js';
 import { broadcastEvent } from '../core/eventHub.js';
+import { atomicWriteFileSync } from '../support/atomicFile.js';
 
 // Constants
 
@@ -137,7 +138,6 @@ function loadFromDisk(): void {
 
 function saveToDisk(): void {
   try {
-    mkdirSync(PERSIST_DIR, { recursive: true });
     const active = Array.from(monitors.values()).filter(
       m => m.state === 'pending' || m.state === 'running'
     );
@@ -145,7 +145,7 @@ function saveToDisk(): void {
       monitors: active,
       updatedAt: new Date().toISOString(),
     };
-    writeFileSync(PERSIST_FILE, JSON.stringify(data, null, 2));
+    atomicWriteFileSync(PERSIST_FILE, `${JSON.stringify(data, null, 2)}\n`);
   } catch (err) {
     console.warn('[Monitor] Failed to save monitors to disk:', err);
   }

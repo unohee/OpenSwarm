@@ -27,6 +27,9 @@ export function useMonitor(
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
+    setTable(null);
+    setError(null);
+    setLoading(Boolean(port));
     if (!port) return;
     let cancelled = false;
     let inFlight = false;

@@ -265,6 +265,20 @@ describe('eventHub', () => {
       expect(getActiveSSECount()).toBe(0);
     });
 
+    it('does not retain a client when replay delivery fails', () => {
+      broadcastEvent({ type: 'chat:user', data: { text: 'hello', ts: Date.now() } });
+      const brokenRes = {
+        write: vi.fn(() => { throw new Error('gone'); }),
+        once: vi.fn(),
+        removeListener: vi.fn(),
+      } as any;
+
+      addSSEClient(brokenRes);
+
+      expect(getActiveSSECount()).toBe(0);
+      expect(brokenRes.once).not.toHaveBeenCalled();
+    });
+
     it('should skip replay when skipReplay is true', () => {
       // Add some events to replay buffer
       broadcastEvent({
@@ -319,6 +333,18 @@ describe('eventHub', () => {
       const buffer = getLogBuffer();
       expect(buffer.length).toBeGreaterThan(0);
       expect(buffer.some(e => e.type === 'log')).toBe(true);
+    });
+
+    it('returns detached buffer snapshots', () => {
+      broadcastEvent({ type: 'log', data: { taskId: 'task-1', stage: 'run', line: 'original' } });
+      const snapshot = getLogBuffer();
+      const event = snapshot[0] as Extract<HubEvent, { type: 'log' }>;
+      event.data.line = 'mutated';
+      snapshot.length = 0;
+
+      const current = getLogBuffer();
+      expect(current).toHaveLength(1);
+      expect((current[0] as Extract<HubEvent, { type: 'log' }>).data.line).toBe('original');
     });
 
     it('should store stage events in stageBuffer', () => {

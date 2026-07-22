@@ -59,6 +59,11 @@ export async function startService(config: SwarmConfig): Promise<void> {
   try {
     await startServiceLocked(config);
   } catch (error) {
+    try {
+      await stopServiceLocked();
+    } catch (cleanupError) {
+      console.error('[Service] Startup rollback was incomplete:', cleanupError);
+    }
     if (serviceInstanceLock === lock) {
       lock.release();
       serviceInstanceLock = null;
@@ -549,10 +554,19 @@ export async function stopService(): Promise<void> {
 
 async function stopServiceLocked(): Promise<void> {
   console.log('Stopping OpenSwarm service...');
+  const cleanupErrors: unknown[] = [];
+  const cleanup = async (label: string, operation: () => void | Promise<void>): Promise<void> => {
+    try {
+      await operation();
+    } catch (error) {
+      cleanupErrors.push(error);
+      console.error(`[Service] Failed to stop ${label}:`, error);
+    }
+  };
 
   // Stop task admission first and let real executors drain while their tracker,
   // notifier, rate limiter, and web dependencies are still alive.
-  await autonomous.stopAutonomous();
+  await cleanup('autonomous runner', () => autonomous.stopAutonomous());
   console.log('Autonomous runner stopped');
 
   // Clean up GitHub monitoring timer
@@ -578,30 +592,33 @@ async function stopServiceLocked(): Promise<void> {
 
   // Stop PR Processor
   if (prProcessor) {
-    prProcessor.stop();
+    await cleanup('PR processor', () => prProcessor?.stop());
     prProcessor = null;
     console.log('PR Processor stopped');
   }
 
   // Stop CI Worker
-  stopCIWorker();
+  await cleanup('CI worker', () => stopCIWorker());
   console.log('CI Worker stopped');
 
   // Stop scheduler
-  scheduler.stopAllSchedules();
+  await cleanup('scheduler', () => scheduler.stopAllSchedules());
   console.log('Scheduler stopped');
 
   // Stop web server
-  await web.stopWebServer();
+  await cleanup('web server', () => web.stopWebServer());
 
   // Cleanup rate limiters
-  destroyRateLimiters();
+  await cleanup('rate limiters', () => destroyRateLimiters());
   console.log('Rate limiters destroyed');
   console.log('Web server stopped');
 
   // Shutdown Discord
-  await discord.stopDiscord();
+  await cleanup('Discord', () => discord.stopDiscord());
 
   state.running = false;
   console.log('Service stopped');
+  if (cleanupErrors.length > 0) {
+    throw new AggregateError(cleanupErrors, 'OpenSwarm service shutdown was incomplete');
+  }
 }

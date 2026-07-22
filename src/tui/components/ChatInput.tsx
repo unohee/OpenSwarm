@@ -6,6 +6,7 @@
 import { Box, Text, useInput } from 'ink';
 import Spinner from 'ink-spinner';
 import { theme, ICON } from '../theme.js';
+import { sanitizeTerminalText } from '../sanitize.js';
 import { inputDebugEnabled, appendInputDebug } from '../inputDebug.js';
 import { dedupeDoubledGrapheme } from '../chatModel.js';
 
@@ -86,7 +87,7 @@ export function ChatInput({
       ) : (
         <Box>
           <Text color={theme.accent}>{`${ICON.prompt} `}</Text>
-          {value ? <Text>{value}</Text> : <Text color={theme.dim}>{'type a message…   / for commands'}</Text>}
+          {value ? <Text>{sanitizeTerminalText(value)}</Text> : <Text color={theme.dim}>{'type a message…   / for commands'}</Text>}
           {active ? <Text inverse> </Text> : null}
         </Box>
       )}

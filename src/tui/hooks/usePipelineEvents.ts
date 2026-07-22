@@ -47,15 +47,22 @@ export function usePipelineEvents(
     dispatch({ type: 'reset' });
     setConnected(false);
     if (!port) return;
+    let disposed = false;
     // Buffer events and flush a single batched dispatch per window; connection
     // status stays immediate (not coalesced) so the live indicator is snappy.
     const coalescer = createCoalescer<HubEvent>({
       delayMs: flushMs,
-      onFlush: (events) => dispatch({ type: 'batch', events }),
+      onFlush: (events) => {
+        if (!disposed) dispatch({ type: 'batch', events });
+      },
     });
-    const handle = connectEventStream({ port, onEvent: (e) => coalescer.push(e), onStatus: setConnected });
+    const handle = connectEventStream({
+      port,
+      onEvent: (e) => { if (!disposed) coalescer.push(e); },
+      onStatus: (status) => { if (!disposed) setConnected(status); },
+    });
     return () => {
-      setConnected(false);
+      disposed = true;
       coalescer.cancel();
       handle.close();
     };

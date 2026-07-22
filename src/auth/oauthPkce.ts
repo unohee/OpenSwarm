@@ -7,6 +7,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { randomBytes, createHash } from 'node:crypto';
 import { AuthProfileStore, type AuthProfile } from './oauthStore.js';
 import { openBrowser } from './openBrowser.js';
+import { PkceSettlement, TOKEN_EXCHANGE_TIMEOUT_MS } from './pkceSettlement.js';
 
 // Constants
 
@@ -93,18 +94,19 @@ export async function runOAuthPkceFlow(options: OAuthFlowOptions = {}): Promise<
 
   // 3. 로컬 HTTP 서버 시작 + callback 대기
   return new Promise<OAuthFlowResult>((resolve, reject) => {
-    let settled = false;
+    const settlement = new PkceSettlement();
+    const exchangeAbort = new AbortController();
 
     const timeout = setTimeout(() => {
-      if (!settled) {
-        settled = true;
+      if (settlement.finish()) {
+        exchangeAbort.abort(new Error('OAuth login timed out'));
         server.close();
         reject(new Error('OAuth login timed out (120s). 다시 시도하세요.'));
       }
     }, LOGIN_TIMEOUT_MS);
 
     const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
-      if (settled) {
+      if (settlement.settled) {
         res.writeHead(400);
         res.end();
         return;
@@ -122,8 +124,14 @@ export async function runOAuthPkceFlow(options: OAuthFlowOptions = {}): Promise<
       const returnedState = url.searchParams.get('state');
       const error = url.searchParams.get('error');
 
+      if (!settlement.tryClaim()) {
+        res.writeHead(409);
+        res.end('OAuth callback already being processed');
+        return;
+      }
+
       if (error) {
-        settled = true;
+        settlement.finish();
         clearTimeout(timeout);
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(errorHtml(error));
@@ -133,7 +141,7 @@ export async function runOAuthPkceFlow(options: OAuthFlowOptions = {}): Promise<
       }
 
       if (!code || returnedState !== state) {
-        settled = true;
+        settlement.finish();
         clearTimeout(timeout);
         res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(errorHtml('Invalid callback parameters'));
@@ -156,6 +164,7 @@ export async function runOAuthPkceFlow(options: OAuthFlowOptions = {}): Promise<
           method: 'POST',
           headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
           body: tokenBody.toString(),
+          signal: AbortSignal.any([exchangeAbort.signal, AbortSignal.timeout(TOKEN_EXCHANGE_TIMEOUT_MS)]),
         });
 
         if (!tokenRes.ok) {
@@ -203,14 +212,14 @@ export async function runOAuthPkceFlow(options: OAuthFlowOptions = {}): Promise<
           accountId,
         };
 
-        settled = true;
+        if (!settlement.finish()) return;
         clearTimeout(timeout);
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(successHtml());
         server.close();
         resolve(result);
       } catch (err) {
-        settled = true;
+        if (!settlement.finish()) return;
         clearTimeout(timeout);
         res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(errorHtml(String(err)));
@@ -226,8 +235,8 @@ export async function runOAuthPkceFlow(options: OAuthFlowOptions = {}): Promise<
     });
 
     server.on('error', (err) => {
-      if (!settled) {
-        settled = true;
+      if (settlement.finish()) {
+        exchangeAbort.abort(err);
         clearTimeout(timeout);
         reject(new Error(`Callback server error: ${err.message}`));
       }

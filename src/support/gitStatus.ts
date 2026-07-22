@@ -33,6 +33,7 @@ const cache = new Map<string, { data: ProjectGitInfo; ts: number }>();
 const CACHE_TTL = 30_000;
 const MAX_CACHE_ENTRIES = 200;
 const CMD_TIMEOUT = 5_000;
+let activePoller: NodeJS.Timeout | null = null;
 
 // --- Helpers ---
 
@@ -154,9 +155,18 @@ export function startGitStatusPoller(
   getPaths: () => string[],
   intervalMs: number = 30_000,
 ): NodeJS.Timeout {
-  return setInterval(async () => {
+  stopGitStatusPoller();
+  activePoller = setInterval(async () => {
     const paths = getPaths();
     // Background refresh — ignore errors
     await Promise.allSettled(paths.map((p) => getProjectGitInfo(p)));
   }, intervalMs);
+  activePoller.unref();
+  return activePoller;
+}
+
+export function stopGitStatusPoller(): void {
+  if (!activePoller) return;
+  clearInterval(activePoller);
+  activePoller = null;
 }

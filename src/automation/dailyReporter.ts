@@ -11,6 +11,7 @@ let cronJob: Cron | null = null;
 let linearClient: LinearClient | null = null;
 let discordReporter: ((content: any) => Promise<void>) | null = null;
 let teamId: string | null = null;
+let reportInFlight: Promise<void> | null = null;
 // Project path mapping (projectId → projectPath) for knowledge graph metrics
 let projectPathMapping = new Map<string, string>();
 
@@ -56,7 +57,11 @@ export function startDailyReporter(config: DailyReporterConfig): void {
   const schedule = config.schedule || '0 18 * * *'; // Default: 6 PM daily
 
   cronJob = new Cron(schedule, async () => {
-    await generateDailyReports();
+    if (reportInFlight) return;
+    reportInFlight = generateDailyReports()
+      .catch((error) => console.error('[DailyReporter] Scheduled report failed:', error))
+      .finally(() => { reportInFlight = null; });
+    await reportInFlight;
   });
 
   console.log(`[DailyReporter] Started with schedule: ${schedule}`);

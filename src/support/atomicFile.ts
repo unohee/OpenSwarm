@@ -10,6 +10,7 @@ import {
 } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { dirname } from 'node:path';
+import { chmod, mkdir, open, rename, unlink } from 'node:fs/promises';
 
 export function atomicWriteFileSync(path: string, contents: string, mode = 0o600): void {
   const directory = dirname(path);
@@ -30,6 +31,24 @@ export function atomicWriteFileSync(path: string, contents: string, mode = 0o600
     } catch {
       // Preserve the original write failure.
     }
+    throw error;
+  }
+}
+
+export async function atomicWriteFile(path: string, contents: string, mode = 0o600): Promise<void> {
+  const directory = dirname(path);
+  await mkdir(directory, { recursive: true });
+  const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  const handle = await open(temporaryPath, 'wx', mode);
+  try {
+    await handle.writeFile(contents, 'utf8');
+    await handle.sync();
+    await handle.close();
+    await rename(temporaryPath, path);
+    await chmod(path, mode);
+  } catch (error) {
+    await handle.close().catch(() => {});
+    await unlink(temporaryPath).catch(() => {});
     throw error;
   }
 }

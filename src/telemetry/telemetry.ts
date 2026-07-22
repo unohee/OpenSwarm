@@ -46,8 +46,10 @@ let configDisabled = false;
 /** Initialize from the entry point: inject version and the config opt-out flag. */
 export function initTelemetry(opts: { version: string; enabled?: boolean }): void {
   version = opts.version;
-  // Only an explicit `false` disables; undefined leaves the opt-out default (on).
-  configDisabled = opts.enabled === false;
+  // Calls that only refresh the version must not undo an earlier config-level
+  // opt-out. An explicit boolean remains authoritative (and keeps tests and
+  // embedded callers able to reconfigure a long-lived process deliberately).
+  if (opts.enabled !== undefined) configDisabled = !opts.enabled;
 }
 
 function readState(): TelemetryState | null {
@@ -130,24 +132,36 @@ export interface TelemetryPayload {
   isError: 0 | 1;
 }
 
-function sanitizeTelemetryLabel(value: string | undefined, fallback?: string): string | undefined {
+const ALLOWED_EVENTS = new Set(['invoke', 'complete', 'error', 'start', 'stop']);
+const ALLOWED_COMMANDS = new Set([
+  'add', 'auth', 'chat', 'dash', 'doctor', 'init', 'mcp', 'projects', 'remove',
+  'review', 'run', 'start', 'status', 'stop', 'upgrade', 'version',
+]);
+const ALLOWED_ADAPTERS = new Set([
+  'atlascloud', 'claude', 'codex', 'codex-responses', 'gpt', 'lmstudio', 'local', 'openrouter',
+]);
+
+function allowTelemetryLabel(
+  value: string | undefined,
+  allowed: ReadonlySet<string>,
+  fallback?: string,
+): string | undefined {
   if (!value) return fallback;
   const normalized = value.trim().toLowerCase();
-  if (/^[a-z][a-z0-9:_-]{0,39}$/.test(normalized)) return normalized;
-  return fallback;
+  return allowed.has(normalized) ? normalized : fallback;
 }
 
 /** Build the payload (pure — used directly by tests to assert the privacy contract). */
 export function buildPayload(opts: TrackOptions, installId: string): TelemetryPayload {
   return {
     installId,
-    event: sanitizeTelemetryLabel(opts.event, 'invoke') ?? 'invoke',
+    event: allowTelemetryLabel(opts.event, ALLOWED_EVENTS, 'invoke') ?? 'invoke',
     version,
     platform: os.platform(),
     arch: os.arch(),
     nodeVersion: process.versions.node,
-    command: sanitizeTelemetryLabel(opts.command),
-    adapter: sanitizeTelemetryLabel(opts.adapter),
+    command: allowTelemetryLabel(opts.command, ALLOWED_COMMANDS),
+    adapter: allowTelemetryLabel(opts.adapter, ALLOWED_ADAPTERS),
     isError: opts.isError ? 1 : 0,
   };
 }

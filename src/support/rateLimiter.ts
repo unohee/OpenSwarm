@@ -49,6 +49,18 @@ export class RateLimiter {
     private readonly name: string,
     private readonly config: RateLimiterConfig
   ) {
+    if (!Number.isFinite(config.maxRequests) || !Number.isInteger(config.maxRequests) || config.maxRequests <= 0) {
+      throw new Error(`[RateLimiter:${name}] maxRequests must be a positive integer`);
+    }
+    if (!Number.isFinite(config.windowMs) || config.windowMs <= 0) {
+      throw new Error(`[RateLimiter:${name}] windowMs must be positive`);
+    }
+    if (config.maxQueueSize !== undefined && (!Number.isInteger(config.maxQueueSize) || config.maxQueueSize < 0)) {
+      throw new Error(`[RateLimiter:${name}] maxQueueSize must be a non-negative integer`);
+    }
+    if (config.queueTimeoutMs !== undefined && (!Number.isFinite(config.queueTimeoutMs) || config.queueTimeoutMs <= 0)) {
+      throw new Error(`[RateLimiter:${name}] queueTimeoutMs must be positive`);
+    }
     this.tokens = config.maxRequests;
     this.lastRefill = Date.now();
     this.metrics = {

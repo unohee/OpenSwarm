@@ -7,12 +7,15 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 // test fully in-memory and never touches the real ~/.openswarm directory.
 const fsMock = vi.hoisted(() => ({
   readFile: vi.fn(),
-  writeFile: vi.fn(),
-  mkdir: vi.fn(),
 }));
+const atomicWriteFileMock = vi.hoisted(() => vi.fn());
 
 vi.mock('node:fs/promises', () => fsMock);
 vi.mock('node:os', () => ({ homedir: () => '/test-home' }));
+vi.mock('../support/atomicFile.js', () => ({ atomicWriteFile: atomicWriteFileMock }));
+vi.mock('../support/fileLock.js', () => ({
+  withFileLock: vi.fn(async (_path: string, operation: () => Promise<unknown>) => operation()),
+}));
 
 import {
   registerOwnedPR,
@@ -37,8 +40,7 @@ const samplePR = (overrides: Partial<OwnedPR> = {}): OwnedPR => ({
 describe('prOwnership', () => {
   beforeEach(() => {
     fsMock.readFile.mockReset();
-    fsMock.writeFile.mockReset().mockResolvedValue(undefined);
-    fsMock.mkdir.mockReset().mockResolvedValue(undefined);
+    atomicWriteFileMock.mockReset().mockResolvedValue(undefined);
     vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-07-10T12:00:00.000Z'));
@@ -90,10 +92,10 @@ describe('prOwnership', () => {
 
       await registerOwnedPR(pr);
 
-      expect(fsMock.mkdir).toHaveBeenCalledWith(OWNERSHIP_DIR, { recursive: true });
-      expect(fsMock.writeFile).toHaveBeenCalledTimes(1);
-      const [writtenPath, writtenBody] = fsMock.writeFile.mock.calls[0];
+      expect(atomicWriteFileMock).toHaveBeenCalledTimes(1);
+      const [writtenPath, writtenBody, mode] = atomicWriteFileMock.mock.calls[0];
       expect(writtenPath).toBe(OWNERSHIP_PATH);
+      expect(mode).toBe(0o600);
       const written = JSON.parse(writtenBody as string);
       expect(written.prs).toEqual([pr]);
       expect(written.updatedAt).toBe('2026-07-10T12:00:00.000Z');
@@ -105,7 +107,7 @@ describe('prOwnership', () => {
 
       await registerOwnedPR(samplePR({ branch: 'swarm/different-branch' }));
 
-      expect(fsMock.writeFile).not.toHaveBeenCalled();
+      expect(atomicWriteFileMock).not.toHaveBeenCalled();
     });
 
     it('treats PRs with the same number in different repos as distinct', async () => {
@@ -114,8 +116,8 @@ describe('prOwnership', () => {
 
       await registerOwnedPR(samplePR({ repo: 'owner/repo-b' }));
 
-      expect(fsMock.writeFile).toHaveBeenCalledTimes(1);
-      const written = JSON.parse(fsMock.writeFile.mock.calls[0][1] as string);
+      expect(atomicWriteFileMock).toHaveBeenCalledTimes(1);
+      const written = JSON.parse(atomicWriteFileMock.mock.calls[0][1] as string);
       expect(written.prs).toHaveLength(2);
     });
   });
@@ -154,8 +156,8 @@ describe('prOwnership', () => {
 
       await removeOwnedPR('owner/repo', 1);
 
-      expect(fsMock.writeFile).toHaveBeenCalledTimes(1);
-      const written = JSON.parse(fsMock.writeFile.mock.calls[0][1] as string);
+      expect(atomicWriteFileMock).toHaveBeenCalledTimes(1);
+      const written = JSON.parse(atomicWriteFileMock.mock.calls[0][1] as string);
       expect(written.prs).toEqual([toKeep]);
     });
 
@@ -164,7 +166,7 @@ describe('prOwnership', () => {
 
       await removeOwnedPR('owner/repo', 404);
 
-      expect(fsMock.writeFile).not.toHaveBeenCalled();
+      expect(atomicWriteFileMock).not.toHaveBeenCalled();
     });
 
     it('is a no-op against an empty state', async () => {
@@ -172,7 +174,7 @@ describe('prOwnership', () => {
 
       await removeOwnedPR('owner/repo', 1);
 
-      expect(fsMock.writeFile).not.toHaveBeenCalled();
+      expect(atomicWriteFileMock).not.toHaveBeenCalled();
     });
   });
 

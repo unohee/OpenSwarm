@@ -32,6 +32,17 @@ describe('parseSseFrames (EPIC INT-1813 S5)', () => {
     expect(events[0].type).toBe('heartbeat');
   });
 
+  it('parses CRLF-delimited frames', () => {
+    const { events, rest } = parseSseFrames('data: {"type":"heartbeat"}\r\n\r\n');
+    expect(events).toEqual([{ type: 'heartbeat' }]);
+    expect(rest).toBe('');
+  });
+
+  it('rejects structurally invalid JSON values', () => {
+    const { events } = parseSseFrames('data: null\n\ndata: {"type":"log","data":null}\n\ndata: {"type":"heartbeat"}\n\n');
+    expect(events).toEqual([{ type: 'heartbeat' }]);
+  });
+
   it('ignores non-data lines (SSE comments / keepalive)', () => {
     const { events, rest } = parseSseFrames(': keepalive\n\ndata: {"type":"heartbeat"}\n\n');
     expect(events).toHaveLength(1);

@@ -19,22 +19,52 @@ export function parseSseFrames(buffer: string): { events: HubEvent[]; rest: stri
   const events: HubEvent[] = [];
   let rest = buffer;
   let idx: number;
-  while ((idx = rest.indexOf('\n\n')) !== -1) {
+  const frameBoundary = /\r?\n\r?\n/;
+  while ((idx = rest.search(frameBoundary)) !== -1) {
+    const boundary = rest.slice(idx).match(frameBoundary)?.[0] ?? '\n\n';
     const frame = rest.slice(0, idx);
-    rest = rest.slice(idx + 2);
-    for (const line of frame.split('\n')) {
+    rest = rest.slice(idx + boundary.length);
+    for (const line of frame.split(/\r?\n/)) {
       const trimmed = line.trimStart();
       if (!trimmed.startsWith('data:')) continue;
       const json = trimmed.slice(5).trim();
       if (!json) continue;
       try {
-        events.push(JSON.parse(json) as HubEvent);
+        const value = JSON.parse(json) as unknown;
+        if (isHubEvent(value)) events.push(value);
       } catch {
         // skip a malformed frame
       }
     }
   }
   return { events, rest };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+export function isHubEvent(value: unknown): value is HubEvent {
+  if (!isRecord(value) || typeof value.type !== 'string') return false;
+  if (value.type === 'heartbeat') return true;
+  if (!isRecord(value.data)) return false;
+  if (value.type === 'pipeline:stage') {
+    return typeof value.data.taskId === 'string'
+      && typeof value.data.stage === 'string'
+      && ['start', 'complete', 'fail'].includes(String(value.data.status));
+  }
+  if (value.type === 'pipeline:fanout') {
+    return typeof value.data.taskId === 'string'
+      && typeof value.data.enabled === 'boolean'
+      && typeof value.data.shouldFanOut === 'boolean'
+      && typeof value.data.score === 'number'
+      && typeof value.data.threshold === 'number'
+      && Array.isArray(value.data.reasons);
+  }
+  if (value.type === 'log') return typeof value.data.taskId === 'string' && typeof value.data.stage === 'string' && typeof value.data.line === 'string';
+  if (value.type === 'process:spawn') return typeof value.data.taskId === 'string' && typeof value.data.stage === 'string';
+  if (value.type === 'process:exit') return value.data.taskId === undefined || typeof value.data.taskId === 'string';
+  return true;
 }
 
 export interface EventStreamHandle {

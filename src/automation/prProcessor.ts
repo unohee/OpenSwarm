@@ -7,9 +7,11 @@ import { Cron } from 'croner';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { existsSync } from 'node:fs';
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { z } from 'zod';
+import { atomicWriteFileSync } from '../support/atomicFile.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -147,6 +149,14 @@ type PRState = {
   updatedAt: string;
 };
 
+const PRStateEntrySchema = z.object({
+  repo: z.string().min(1), prNumber: z.number().int().positive(),
+  status: z.enum(['pending', 'processing', 'completed', 'failed']),
+  iterations: z.number().int().nonnegative(),
+  lastProcessed: z.string().optional(), lastReviewFeedbackProcessed: z.string().optional(), lastError: z.string().optional(),
+});
+const PRStateSchema = z.object({ prs: z.record(z.string(), PRStateEntrySchema), updatedAt: z.string() });
+
 // Constants
 
 const PR_STATE_PATH = resolve(homedir(), '.openswarm', 'pr-state.json');
@@ -156,6 +166,7 @@ const PR_STATE_PATH = resolve(homedir(), '.openswarm', 'pr-state.json');
 export class PRProcessor {
   private config: PRProcessorConfig;
   private cronJob: Cron | null = null;
+  private initialRunTimer: NodeJS.Timeout | null = null;
   private processing = false;
   private conflictResolver: ConflictResolver | null = null;
   private currentPR: string | null = null;
@@ -189,6 +200,10 @@ export class PRProcessor {
    * Start schedule
    */
   start(): void {
+    if (this.cronJob) {
+      console.log('[PRProcessor] Already running');
+      return;
+    }
     console.log(`[PRProcessor] Starting (schedule: ${this.config.schedule})`);
 
     this.cronJob = new Cron(this.config.schedule, async () => {
@@ -196,17 +211,23 @@ export class PRProcessor {
     });
 
     // Initial run after 30 seconds
-    setTimeout(() => {
+    this.initialRunTimer = setTimeout(() => {
+      this.initialRunTimer = null;
       void this.processPRs().catch((err) => {
         console.error('[PRProcessor] Initial run error:', err);
       });
     }, 30_000);
+    this.initialRunTimer.unref();
   }
 
   /**
    * Stop schedule
    */
   stop(): void {
+    if (this.initialRunTimer) {
+      clearTimeout(this.initialRunTimer);
+      this.initialRunTimer = null;
+    }
     if (this.cronJob) {
       this.cronJob.stop();
       this.cronJob = null;
@@ -958,15 +979,17 @@ export class PRProcessor {
   private async loadState(): Promise<PRState> {
     try {
       const data = await readFile(PR_STATE_PATH, 'utf-8');
-      return JSON.parse(data);
-    } catch {
+      return PRStateSchema.parse(JSON.parse(data));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw new Error(`PR processor state is invalid at ${PR_STATE_PATH}`, { cause: error });
+      }
       return { prs: {}, updatedAt: new Date().toISOString() };
     }
   }
 
   private async saveState(state: PRState): Promise<void> {
-    await mkdir(resolve(homedir(), '.openswarm'), { recursive: true });
     state.updatedAt = new Date().toISOString();
-    await writeFile(PR_STATE_PATH, JSON.stringify(state, null, 2));
+    atomicWriteFileSync(PR_STATE_PATH, `${JSON.stringify(state, null, 2)}\n`);
   }
 }

@@ -20,11 +20,8 @@ vi.mock('node:child_process', () => ({
 import { checkPRCIStatus, getActiveFailures, getAllFailedRuns, getPRChecks } from './github.js';
 
 function mockGhJson(value: unknown): void {
-  execFileMock.mockImplementationOnce((
-    _cmd: string,
-    _args: string[],
-    callback: (err: Error | null, stdout: string, stderr: string) => void,
-  ) => {
+  execFileMock.mockImplementationOnce((...args: unknown[]) => {
+    const callback = args.at(-1) as (err: Error | null, stdout: string, stderr: string) => void;
     callback(null, JSON.stringify(value), '');
   });
 }
@@ -87,7 +84,8 @@ describe('repository fan-out', () => {
     execFileMock.mockReset();
     let active = 0;
     let maximum = 0;
-    execFileMock.mockImplementation((_cmd, _args, callback) => {
+    execFileMock.mockImplementation((...args: unknown[]) => {
+      const callback = args.at(-1) as (err: Error | null, stdout: string, stderr: string) => void;
       active++;
       maximum = Math.max(maximum, active);
       setTimeout(() => {
@@ -141,10 +139,17 @@ describe('getActiveFailures', () => {
     ]);
 
     const args = execFileMock.mock.calls[0][1] as string[];
-    expect(args).toContain('--created');
-    expect(args).toContain('>=2026-06-01');
-    expect(args).toContain('-L');
-    expect(args).toContain('1000');
-    expect(args).not.toContain('20');
+    expect(args).toContain('--paginate');
+    expect(args).toContain('--slurp');
+    expect(args).toContain('created=>=2026-06-01');
+  });
+
+  it('treats every blocking conclusion as an active failure', async () => {
+    mockGhJson(['timed_out', 'cancelled', 'action_required', 'startup_failure', 'stale'].map((conclusion, index) => ({
+      databaseId: index + 1, name: `ci-${index}`, headBranch: 'main',
+      createdAt: '2026-06-30T00:00:00.000Z', conclusion, url: `https://example.test/${index}`,
+    })));
+    const failures = await getActiveFailures('owner/repo', 30);
+    expect(failures).toHaveLength(5);
   });
 });

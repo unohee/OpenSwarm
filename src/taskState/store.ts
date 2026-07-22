@@ -103,19 +103,45 @@ export type OpenSwarmTaskState = z.infer<typeof OpenSwarmTaskStateSchema>;
 type TaskStateStore = z.infer<typeof TaskStateStoreSchema>;
 
 let cache: TaskStateStore | null = null;
+let cacheStamp: string | null = null;
 const LOCK_STALE_MS = 30_000;
 const LOCK_WAIT_MS = 10;
 const LOCK_TIMEOUT_MS = 5_000;
 const lockWaitBuffer = new Int32Array(new SharedArrayBuffer(4));
+
+type StoreLockOwner = { pid: number; token: string };
+
+function readStoreLockOwner(lockPath: string): StoreLockOwner | null {
+  try {
+    const value = JSON.parse(readFileSync(lockPath, 'utf8')) as Partial<StoreLockOwner>;
+    return Number.isInteger(value.pid) && (value.pid ?? 0) > 0 && typeof value.token === 'string'
+      ? { pid: value.pid!, token: value.token }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
 
 function getStorePath(): string {
   return process.env.OPENSWARM_TASK_STATE_FILE || join(homedir(), '.openswarm', 'task-state.json');
 }
 
 function ensureStoreLoaded(): TaskStateStore {
-  if (cache) return cache;
-
   const path = getStorePath();
+  const currentStamp = existsSync(path)
+    ? (() => { const stat = statSync(path); return `${stat.mtimeMs}:${stat.size}`; })()
+    : 'missing';
+  if (cache && cacheStamp === currentStamp) return cache;
+
   if (existsSync(path)) {
     let data: unknown;
     try {
@@ -131,6 +157,7 @@ function ensureStoreLoaded(): TaskStateStore {
     }
 
     cache = parsed.data;
+    cacheStamp = currentStamp;
     return cache;
   }
 
@@ -139,11 +166,13 @@ function ensureStoreLoaded(): TaskStateStore {
     tasks: createTaskMap(),
     updatedAt: new Date().toISOString(),
   };
+  cacheStamp = currentStamp;
   return cache;
 }
 
 export function resetTaskStateStoreForTests(): void {
   cache = null;
+  cacheStamp = null;
 }
 
 function withStoreLock<T>(operation: () => T): T {
@@ -153,17 +182,21 @@ function withStoreLock<T>(operation: () => T): T {
   mkdirSync(directory, { recursive: true });
   const deadline = Date.now() + LOCK_TIMEOUT_MS;
   let lockFd: number | undefined;
+  const lockToken = randomUUID();
 
   while (lockFd === undefined) {
     try {
       lockFd = openSync(lockPath, 'wx', 0o600);
-      writeFileSync(lockFd, `${process.pid}\n`, 'utf8');
+      writeFileSync(lockFd, JSON.stringify({ pid: process.pid, token: lockToken }), 'utf8');
       fsyncSync(lockFd);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== 'EEXIST') throw error;
       try {
-        if (Date.now() - statSync(lockPath).mtimeMs > LOCK_STALE_MS) {
+        const owner = readStoreLockOwner(lockPath);
+        const staleMalformedLock = !owner && Date.now() - statSync(lockPath).mtimeMs > LOCK_STALE_MS;
+        const abandonedLock = owner !== null && !isProcessAlive(owner.pid);
+        if (staleMalformedLock || abandonedLock) {
           unlinkSync(lockPath);
           continue;
         }
@@ -185,7 +218,9 @@ function withStoreLock<T>(operation: () => T): T {
   } finally {
     closeSync(lockFd);
     try {
-      unlinkSync(lockPath);
+      // Only the process/token that created the current path may unlink it. If
+      // an operator or recovery path replaced the lock, leave the replacement.
+      if (readStoreLockOwner(lockPath)?.token === lockToken) unlinkSync(lockPath);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
         console.warn(`[TaskState] Failed to remove lock ${lockPath}: ${error instanceof Error ? error.message : String(error)}`);
@@ -215,6 +250,8 @@ function persistStore(): void {
     fd = undefined;
     renameSync(temporaryPath, path);
     chmodSync(path, 0o600);
+    const persistedStat = statSync(path);
+    cacheStamp = `${persistedStat.mtimeMs}:${persistedStat.size}`;
 
     // Persist the directory entry where the platform supports directory fsync.
     let directoryFd: number | undefined;

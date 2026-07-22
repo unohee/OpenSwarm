@@ -11,6 +11,7 @@ import { theme, ICON } from '../theme.js';
 import { Spinner } from './Status.js';
 import type { AuditArea, AuditProgress, FixProgress } from '../../cli/reviewAudit.js';
 import type { ReviewResult } from '../../agents/agentPair.js';
+import { sanitizeTerminalText } from '../sanitize.js';
 
 type AreaStatus = {
   status: 'pending' | 'running' | 'done' | 'error';
@@ -80,8 +81,8 @@ export function AuditBoard({ areas, concurrency, events, mode = 'audit' }: Audit
         <Text key={label} color={theme.dim}>
           {'  '}
           <Spinner />
-          {` ${label}`}
-          {s.lastLog ? `  ${truncate(s.lastLog, 48)}` : ''}
+          {` ${sanitizeTerminalText(label)}`}
+          {s.lastLog ? `  ${truncate(sanitizeTerminalText(s.lastLog), 48)}` : ''}
         </Text>
       ))}
       <Text color={theme.dim}>

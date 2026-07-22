@@ -78,8 +78,8 @@ async function postJson(url: string, body: unknown): Promise<void> {
 
 /** Logs only — used when no channel is configured. */
 class NoopNotifier implements Notifier {
-  async notify(message: string | EmbedBuilder): Promise<void> {
-    console.log('[Notify] (no channel):', messageToText(message).slice(0, 200));
+  async notify(_message: string | EmbedBuilder): Promise<void> {
+    console.log('[Notify] Notification skipped because channel is disabled');
   }
 }
 
@@ -97,7 +97,7 @@ class DiscordNotifier implements Notifier {
         await this.send({ embeds: [message] });
       }
     } catch (err) {
-      console.error('[Notify] Discord send failed:', err);
+      console.error('[Notify] Discord send failed:', sanitizeNotificationError(err));
     }
   }
 }

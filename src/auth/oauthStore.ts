@@ -3,9 +3,10 @@
 // Persistent storage + auto-refresh for OAuth tokens
 // ============================================
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync, chmodSync } from 'node:fs';
+import { readFileSync, existsSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { atomicWriteFileSync } from '../support/atomicFile.js';
 
 // Types
 
@@ -61,8 +62,7 @@ function isAuthProfileFile(value: unknown): value is AuthProfileFile {
 
 // Constants
 
-const STORE_DIR = join(homedir(), '.openswarm');
-const STORE_PATH = join(STORE_DIR, 'auth-profiles.json');
+const STORE_PATH = join(homedir(), '.openswarm', 'auth-profiles.json');
 const REFRESH_BUFFER_MS = 5 * 60 * 1000; // 5분 전에 갱신
 const OPENAI_TOKEN_ENDPOINT = 'https://auth.openai.com/oauth/token';
 const LINEAR_TOKEN_ENDPOINT = 'https://api.linear.app/oauth/token';
@@ -89,19 +89,17 @@ export class AuthProfileStore {
     try {
       const raw = readFileSync(STORE_PATH, 'utf-8');
       const parsed: unknown = JSON.parse(raw);
-      return isAuthProfileFile(parsed) ? parsed : { version: 1, profiles: {} };
-    } catch {
-      return { version: 1, profiles: {} };
+      if (!isAuthProfileFile(parsed)) throw new Error('auth profile schema validation failed');
+      return parsed;
+    } catch (error) {
+      const corruptPath = `${STORE_PATH}.corrupt-${Date.now()}`;
+      try { renameSync(STORE_PATH, corruptPath); } catch { /* preserve original read error */ }
+      throw new Error(`Auth profile store is corrupt; preserved at ${corruptPath}`, { cause: error });
     }
   }
 
   save(): void {
-    if (!existsSync(STORE_DIR)) {
-      mkdirSync(STORE_DIR, { recursive: true });
-    }
-    writeFileSync(STORE_PATH, JSON.stringify(this.data, null, 2), 'utf-8');
-    // owner read/write only
-    chmodSync(STORE_PATH, 0o600);
+    atomicWriteFileSync(STORE_PATH, `${JSON.stringify(this.data, null, 2)}\n`, 0o600);
   }
 
   getProfile(key: string): AuthProfile | null {

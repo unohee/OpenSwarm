@@ -79,4 +79,19 @@ describe('AuditBoard (INT-2006)', () => {
     expect(f).toContain('1 edited');
     expect(f).toContain('3 files');
   });
+
+  it('strips terminal controls from area labels and progress logs', async () => {
+    const events = new EventEmitter();
+    const unsafeAreas = [{ label: '\u001b]52;c;bad\u0007src/a', dir: 'src/a', files: ['src/a/x.ts'] }];
+    const r = render(<AuditBoard areas={unsafeAreas} concurrency={1} events={events} />);
+    await act(tick);
+    await act(async () => {
+      events.emit('progress', { type: 'start', label: unsafeAreas[0].label, done: 0, total: 1 });
+      events.emit('progress', { type: 'log', label: unsafeAreas[0].label, line: '\u001b[31munsafe\u001b[0m' });
+      await tick();
+    });
+    expect(r.lastFrame()).toContain('src/a');
+    expect(r.lastFrame()).toContain('unsafe');
+    expect(r.lastFrame()).not.toContain('\u001b');
+  });
 });
