@@ -525,6 +525,17 @@ program
     console.log(`  logs:   ${status.logFile}`);
   });
 
+// openswarm provider
+
+program
+  .command('provider')
+  .description('Show or switch the active AI provider (interactive picker when no name is given)')
+  .argument('[name]', 'Provider to switch to — omit for the picker')
+  .action(async (name?: string) => {
+    const { runProviderCommand } = await import('./cli/providerCommand.js');
+    process.exitCode = await runProviderCommand(name);
+  });
+
 // openswarm dash
 
 program

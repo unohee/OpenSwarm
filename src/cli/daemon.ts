@@ -336,4 +336,4 @@ export async function getDaemonStatusFull(): Promise<DaemonStatus> {
 }
 
 export const DAEMON_PATHS = { STATE_DIR, LOG_DIR, PID_FILE, LOG_FILE } as const;
-export { LAUNCHD_LABEL };
+export { LAUNCHD_LABEL, DAEMON_PORT };
