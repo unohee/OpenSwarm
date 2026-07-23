@@ -25,4 +25,30 @@ describe('GraphQL transport authorization', () => {
     expect(isGraphQLTransportAuthorized(request('10.0.0.2', { 'x-openswarm-graphql-token': 'secret' }))).toBe(true);
     expect(isGraphQLTransportAuthorized(request('10.0.0.2', { authorization: 'Bearer wrong' }))).toBe(false);
   });
+
+  it('accepts any whitespace separator and any header casing', () => {
+    process.env.OPENSWARM_GRAPHQL_TOKEN = 'secret';
+    for (const header of ['bearer secret', 'BEARER   secret', 'Bearer\tsecret', 'Bearer secret  ']) {
+      expect(isGraphQLTransportAuthorized(request('100.64.1.2', { authorization: header }))).toBe(true);
+    }
+  });
+
+  it('rejects malformed authorization headers', () => {
+    process.env.OPENSWARM_GRAPHQL_TOKEN = 'secret';
+    for (const header of ['', 'Bearer', 'Bearer ', 'Bearersecret', 'Basic secret', 'secret']) {
+      expect(isGraphQLTransportAuthorized(request('100.64.1.2', { authorization: header }))).toBe(false);
+    }
+  });
+
+  it('parses a tab-padded bearer header in linear time (js/polynomial-redos)', () => {
+    process.env.OPENSWARM_GRAPHQL_TOKEN = 'secret';
+    // The old /^Bearer\s+(.+)$/i backtracked polynomially on this shape.
+    const attack = `Bearer${'\t'.repeat(50_000)}`;
+
+    const started = process.hrtime.bigint();
+    expect(isGraphQLTransportAuthorized(request('100.64.1.2', { authorization: attack }))).toBe(false);
+    const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+
+    expect(elapsedMs).toBeLessThan(250);
+  });
 });

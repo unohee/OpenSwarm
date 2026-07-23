@@ -58,11 +58,28 @@ function tokenMatches(candidate: string | undefined, expected: string): boolean 
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
+/**
+ * Pull the credentials out of an `Authorization: Bearer <token>` header.
+ *
+ * Parsed by hand rather than with `/^Bearer\s+(.+)$/i`: there the `\s+` and
+ * `(.+)` overlap, so an attacker-supplied `Bearer` header padded with tabs
+ * backtracks polynomially (CodeQL js/polynomial-redos). Slicing and trimming
+ * is linear in the header length.
+ */
+const BEARER_SCHEME = 'bearer';
+
+function parseBearerToken(auth: string): string | undefined {
+  if (auth.slice(0, BEARER_SCHEME.length).toLowerCase() !== BEARER_SCHEME) return undefined;
+  const rest = auth.slice(BEARER_SCHEME.length);
+  // RFC 7235: at least one space separates the scheme from the credentials.
+  if (rest === '' || !/\s/.test(rest[0])) return undefined;
+  return rest.trim() || undefined;
+}
+
 function hasValidToken(headers: { authorization?: string; token?: string }): boolean {
   const token = process.env.OPENSWARM_GRAPHQL_TOKEN?.trim();
   if (!token) return false;
-  const auth = headers.authorization ?? '';
-  const bearer = auth.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
+  const bearer = parseBearerToken(headers.authorization ?? '');
   return tokenMatches(bearer, token) || tokenMatches(headers.token?.trim(), token);
 }
 
