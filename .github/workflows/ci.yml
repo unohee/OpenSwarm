@@ -75,6 +75,12 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
+      # Verification runs each command inside an OS sandbox and fails closed
+      # when it cannot get one. On Linux that sandbox is bubblewrap, which the
+      # runner image does not ship, so without this every verify test reports
+      # "OS verification sandbox is unavailable". macOS uses built-in
+      # sandbox-exec and needs no install.
+      - run: sudo apt-get update && sudo apt-get install -y bubblewrap
       - run: npm ci
       # Coverage thresholds live in vitest.config.ts (ratcheted floor below the
       # measured baseline — see that file's comment). Previously `npm test` had
