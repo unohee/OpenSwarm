@@ -10,8 +10,22 @@ vi.mock('../core/providerOverride.js', () => ({
 }));
 vi.mock('../core/config.js', () => ({ loadConfig: loadConfigMock }));
 
+const selectMock = vi.hoisted(() => vi.fn());
+vi.mock('@inquirer/prompts', () => ({ select: selectMock }));
+
 const fetchMock = vi.fn();
 vi.stubGlobal('fetch', fetchMock);
+
+/** Run the command as if attached to a terminal, then restore the real flag. */
+async function withTty<T>(run: () => Promise<T>): Promise<T> {
+  const original = process.stdin.isTTY;
+  Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
+  try {
+    return await run();
+  } finally {
+    Object.defineProperty(process.stdin, 'isTTY', { value: original, configurable: true });
+  }
+}
 
 function statsResponse(adapters: unknown) {
   return { ok: true, json: async () => ({ adapters }) };
@@ -20,6 +34,7 @@ function statsResponse(adapters: unknown) {
 describe('provider command helpers', () => {
   beforeEach(() => {
     fetchMock.mockReset();
+    selectMock.mockReset();
     readProviderOverrideMock.mockReset();
     writeProviderOverrideMock.mockReset();
     loadConfigMock.mockReset();
@@ -148,6 +163,81 @@ describe('provider command helpers', () => {
       expect(log.mock.calls[0]?.[0]).toContain('Already running');
       // Only the status probe ran — no switch was attempted.
       expect(fetchMock).toHaveBeenCalledTimes(1);
+      log.mockRestore();
+    });
+
+    it('switches to the provider chosen in the interactive picker', async () => {
+      fetchMock
+        .mockResolvedValueOnce(statsResponse({ defaultAdapter: 'codex-responses' }))
+        .mockResolvedValueOnce({ ok: true, text: async () => '{"ok":true}' });
+      selectMock.mockResolvedValue('claude');
+      const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+      const { runProviderCommand } = await import('./providerCommand.js');
+      const code = await withTty(() => runProviderCommand(undefined));
+
+      expect(code).toBe(0);
+      // The picker offers the live registry, with the running provider preselected.
+      const options = selectMock.mock.calls[0][0] as { default: string; choices: Array<{ value: string }> };
+      expect(options.default).toBe('codex-responses');
+      expect(options.choices.map(c => c.value)).toContain('claude');
+      expect(writeProviderOverrideMock).toHaveBeenCalledWith('claude');
+      expect(log.mock.calls.map(c => String(c[0])).join('\n')).toContain('running daemon is using it now');
+      log.mockRestore();
+    });
+
+    it('leaves the provider untouched when the picker is cancelled', async () => {
+      fetchMock.mockResolvedValue(statsResponse({ defaultAdapter: 'codex-responses' }));
+      // @inquirer throws ExitPromptError on Ctrl+C rather than resolving.
+      selectMock.mockRejectedValue(new Error('User force closed the prompt'));
+      const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+      const { runProviderCommand } = await import('./providerCommand.js');
+      const code = await withTty(() => runProviderCommand(undefined));
+
+      expect(code).toBe(0);
+      expect(writeProviderOverrideMock).not.toHaveBeenCalled();
+      expect(log.mock.calls.map(c => String(c[0])).join('\n')).toContain('Cancelled');
+      log.mockRestore();
+    });
+
+    it('reports a no-op when the picker selects the provider already running', async () => {
+      fetchMock.mockResolvedValue(statsResponse({ defaultAdapter: 'claude' }));
+      selectMock.mockResolvedValue('claude');
+      const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+      const { runProviderCommand } = await import('./providerCommand.js');
+
+      expect(await withTty(() => runProviderCommand(undefined))).toBe(0);
+      expect(log.mock.calls.map(c => String(c[0])).join('\n')).toContain('Already running');
+      expect(writeProviderOverrideMock).not.toHaveBeenCalled();
+      log.mockRestore();
+    });
+
+    it('fails with a nonzero code when a live daemon refuses the switch', async () => {
+      fetchMock
+        .mockResolvedValueOnce(statsResponse({ defaultAdapter: 'codex' }))
+        .mockResolvedValueOnce({ ok: false, status: 400, text: async () => 'Invalid provider' });
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const { runProviderCommand } = await import('./providerCommand.js');
+
+      expect(await runProviderCommand('claude')).toBe(1);
+      expect(error.mock.calls[0]?.[0]).toContain('Provider switch failed');
+      expect(writeProviderOverrideMock).not.toHaveBeenCalled();
+      error.mockRestore();
+    });
+
+    it('says the choice applies on the next start when no daemon is running', async () => {
+      fetchMock.mockRejectedValue(new Error('ECONNREFUSED'));
+      readProviderOverrideMock.mockReturnValue('codex');
+      const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+      const { runProviderCommand } = await import('./providerCommand.js');
+
+      expect(await runProviderCommand('claude')).toBe(0);
+      expect(writeProviderOverrideMock).toHaveBeenCalledWith('claude');
+      expect(log.mock.calls.map(c => String(c[0])).join('\n')).toContain('applies on the next start');
       log.mockRestore();
     });
 
