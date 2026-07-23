@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.19.0 — 2026-07-23
+
+### Added
+
+- **`openswarm provider` switches the provider from the terminal** — provider switching only existed in the dashboard and the TUI, so an operator whose provider ran out of quota had to open a browser or hand-edit `provider-override.json` and restart the daemon. `openswarm provider` opens a picker with the current provider preselected; `openswarm provider <name>` switches directly. A running daemon is switched **in place**, so work already in flight moves too, and with no daemon the choice is recorded for the next start. If a live daemon refuses the switch nothing is persisted, so the override file can never describe a provider the running process is not using. Non-TTY invocations print status instead of prompting. The picker lists adapters from the live registry rather than a hardcoded set. (INT-2997, #317)
+- **Durable run state machine for the autonomous loop** — a SQLite-backed state machine with fenced leases, repository admission, retry/cost circuits, transactional outbox delivery and crash reconciliation. The loop previously mixed in-memory completion state, async callbacks, tracker/PR side effects and filesystem cleanup with no single ownership authority, so a restart, timeout, duplicate daemon generation or late callback could duplicate work, lose a completion, prune a live worktree or start an overlapping worker. Expired owners now stay fenced until the original executor actually exits or a replacement proves the owner PID is dead. (#310)
+- **Worker models route by workload tier** — GPT-5.6 models are selected per workload tier instead of one model for every role. (#311)
+
+### Changed
+
+- **Verification runs inside an OS sandbox and fails closed without one** — every verification command is now executed under `sandbox-exec` on macOS and `bubblewrap` on Linux, with process-tree termination and environment isolation. **This adds a deployment prerequisite:** a Linux host needs `bwrap` installed *and* unprivileged user namespaces permitted (ubuntu-24.04 restricts these through AppArmor), otherwise every verification is refused with `[security] OS verification sandbox is unavailable`. macOS needs no setup. (#315)
+
+### Fixed
+
+- **Same-repository issues no longer starve each other** — with `allowSameProjectConcurrent` enabled but `maxConcurrentPerProject` unset, the scheduler read the per-repository limit as unlimited while the durable coordinator defaulted to 1, so independent issues in one repository cycled `queued → started → claim_deferred` forever (one deployment measured 70 open issues with 1 running and 14 deferred). All three layers now derive the cap from one source, scope resolution is shared, unknown write scope fails closed instead of racing, the heartbeat compares candidates against workers already running in another worktree, and claim-time scope overlap is checked inside the same SQLite transaction as the claim. (INT-2927, #316)
+- **Repeated and false STUCK issues** — a stuck report could be raised for work that was progressing and re-raised for the same issue. (#311)
+- **An empty reviewer response is no longer a verdict** — a reasoning-only or blank completion was accepted by the final-answer salvage path, and unparseable reviewer text defaulted to `REVISE`, so a review with no findings looked like a legitimate rejection. Empty output is now retried once and then failed explicitly. (INT-2879, #307)
+- **`review --max --fix` is repository-aware and fails closed** — fixes are planned from repository dependency and runtime context instead of treating each area as independent, fix units run in isolated Git sandboxes with promotion-scope and conflict validation, and publication requires the final re-review to approve with deterministic verification reporting `passed`. Shared-path cloning, symlink containment, rollback, stale-base detection and verification time budgets are hardened, and repository-local review history is fed back so repeated audits stop rediscovering the same follow-ups. (INT-2920, #308, #309)
+- **Codebase-wide hardening from the 2026-07-21 audit** — four sprints covering runtime safety (argv-safe process spawning, CLI/daemon lifecycle, PKCE settlement, network deadlines, serialized shared state), durable data (atomic and concurrency-safe persistence, realpath containment, GraphQL authorization and pagination), UX and verification boundaries (bounded streaming/caches/queues, prompt and terminal sanitization, planner output validation), and reliability under concurrency (cross-process locking, PID ownership verification, bounded stores and event history, process-tree termination). (#312, #313, #315)
+- **File lock crash during hand-off** — `withFileLock` stat'd the lock file to age out malformed locks after the open already failed, so when the previous holder released it in between the caller crashed with `ENOENT` instead of acquiring the now-free lock. (#317)
+
+### Security
+
+- **ReDoS in GraphQL bearer token parsing** — the `Authorization` header was matched with `/^Bearer\s+(.+)$/i`, whose `\s+` and `(.+)` overlap; an attacker-supplied header of `Bearer` followed by many tabs backtracked polynomially before failing to match. Header parsing is now linear in header length. (CodeQL `js/polynomial-redos`, #313)
+
 ## 0.18.1 — 2026-07-21
 
 ### Fixed
