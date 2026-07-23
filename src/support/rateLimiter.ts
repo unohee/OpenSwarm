@@ -38,7 +38,7 @@ interface RateLimiterMetrics {
   queueSize: number;
 }
 
-class RateLimiter {
+export class RateLimiter {
   private tokens: number;
   private lastRefill: number;
   private queue: QueuedRequest[] = [];
@@ -64,6 +64,7 @@ class RateLimiter {
       this.refill();
       this.processQueue();
     }, 100); // Check every 100ms
+    this.refillInterval.unref?.();
   }
 
   /**
@@ -86,16 +87,15 @@ class RateLimiter {
     const now = Date.now();
     const timeout = this.config.queueTimeoutMs ?? 30000;
 
+    while (this.queue.length > 0 && now - this.queue[0].timestamp > timeout) {
+      const request = this.queue.shift()!;
+      this.metrics.queueSize = this.queue.length;
+      this.metrics.totalRejected++;
+      request.reject(new Error(`[RateLimiter:${this.name}] Request timed out in queue after ${timeout}ms`));
+    }
+
     while (this.queue.length > 0 && this.tokens >= 1) {
       const request = this.queue[0];
-
-      // Check timeout
-      if (now - request.timestamp > timeout) {
-        this.queue.shift();
-        this.metrics.queueSize = this.queue.length;
-        request.reject(new Error(`[RateLimiter:${this.name}] Request timed out in queue after ${timeout}ms`));
-        continue;
-      }
 
       // Try to acquire token
       if (this.tryAcquire()) {

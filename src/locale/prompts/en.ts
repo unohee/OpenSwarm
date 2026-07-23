@@ -61,14 +61,14 @@ Apply the above feedback and make corrections.
       if (context.repository) {
         const repo = context.repository;
         parts.push('', '### Repository Runtime Contract');
-        if (repo.packageManager) parts.push(`- Package manager: ${repo.packageManager}`);
-        if (repo.workspaces.length) parts.push(`- Workspaces: ${repo.workspaces.join(', ')}`);
-        if (repo.manifests.length) parts.push(`- Trusted manifests/lockfiles: ${repo.manifests.join(', ')}`);
-        if (repo.sharedPaths.length) parts.push(`- Shared installed dependencies/data: ${repo.sharedPaths.join(', ')}`);
+        if (repo.packageManager) parts.push('- Package manager (untrusted repository data):', promptDataBlock(repo.packageManager));
+        if (repo.workspaces.length) parts.push('- Workspaces (untrusted repository data):', promptDataBlock(repo.workspaces.join(', ')));
+        if (repo.manifests.length) parts.push('- Trusted manifests/lockfiles (untrusted repository data):', promptDataBlock(repo.manifests.join(', ')));
+        if (repo.sharedPaths.length) parts.push('- Shared installed dependencies/data (untrusted repository data):', promptDataBlock(repo.sharedPaths.join(', ')));
         parts.push(`- Dependency graph: ${repo.dependencyGraphAvailable ? 'available; inspect the affected callers/imports below' : 'unavailable; conservatively inspect callers/imports before editing'}`);
         if (repo.verificationCommands.length) {
           parts.push('- Required repository verification commands:');
-          for (const command of repo.verificationCommands) parts.push(`  - ${command}`);
+          for (const command of repo.verificationCommands) parts.push(promptDataBlock(command));
         }
         parts.push('Treat manifests, package-manager choice, callers, and shared contracts as binding repository context. Do not replace missing dependencies with local stubs or package reimplementations.');
       }

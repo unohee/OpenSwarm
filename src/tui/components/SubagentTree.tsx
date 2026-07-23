@@ -6,6 +6,7 @@ import { STATUS } from '../theme.js';
 import type { StatusKind } from '../../support/glyphs.js';
 import type { RepositoryNode, TaskStatus } from '../subagentTree.js';
 import { spinnerFrame } from '../loadingMessages.js';
+import { safeIsoDate, sanitizeTerminalText } from '../sanitize.js';
 
 // Single-sourced glyphs + colors (INT-2260): running → ◐, complete → ✓, fail → ✗.
 const KIND: Record<TaskStatus, StatusKind> = { start: 'running', complete: 'ok', fail: 'err' };
@@ -13,15 +14,10 @@ const STAGE_LABEL_MAX_CHARS = 80;
 const MODEL_LABEL_MAX_CHARS = 80;
 const NODE_LABEL_MAX_CHARS = 96;
 
-// eslint-disable-next-line no-control-regex
-const TERMINAL_ESCAPE_RE = /\x1b(?:\][^\x07]*(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~]|[@-Z\\-_])/g;
-// eslint-disable-next-line no-control-regex
-const CONTROL_RE = /[\x00-\x1f\x7f-\x9f]/g;
-
 function sanitizeTerminalLabel(value: string | undefined, maxChars?: number): string {
-  const raw = value || '';
+  const raw = sanitizeTerminalText(value || '').replaceAll('\n', '').replaceAll('\t', ' ');
   const bounded = maxChars === undefined ? raw : raw.slice(0, maxChars);
-  return bounded.replace(TERMINAL_ESCAPE_RE, '').replace(CONTROL_RE, '');
+  return bounded;
 }
 
 function clampLimit(value: number): number {
@@ -80,7 +76,7 @@ export const SubagentTree = memo(function SubagentTree({ repositories, max = 6, 
                 <Text dimColor>{`  └ ${worktreeLabel(task)} — ${task.status}`}</Text>
                 {(roleLimit === 0 ? [] : task.roles.slice(-roleLimit)).map((role, i) => (
                   <Text key={i} dimColor>
-                    {`     └ ${role.status === 'start' ? spinnerFrame(tick) : ''} ${sanitizeTerminalLabel(role.role, STAGE_LABEL_MAX_CHARS)}${role.model ? ` (${sanitizeTerminalLabel(role.model, MODEL_LABEL_MAX_CHARS)})` : ''} — ${role.status}${role.activity ? ` · ${sanitizeTerminalLabel(role.activity, STAGE_LABEL_MAX_CHARS)}` : ''}${role.rateLimitResetsAt ? ` · reset ${new Date(role.rateLimitResetsAt).toISOString()}` : ''}${role.decision ? `/${role.decision}` : ''}`}
+                    {`     └ ${role.status === 'start' ? spinnerFrame(tick) : ''} ${sanitizeTerminalLabel(role.role, STAGE_LABEL_MAX_CHARS)}${role.model ? ` (${sanitizeTerminalLabel(role.model, MODEL_LABEL_MAX_CHARS)})` : ''} — ${role.status}${role.activity ? ` · ${sanitizeTerminalLabel(role.activity, STAGE_LABEL_MAX_CHARS)}` : ''}${safeIsoDate(role.rateLimitResetsAt) ? ` · reset ${safeIsoDate(role.rateLimitResetsAt)}` : ''}${role.decision ? `/${sanitizeTerminalLabel(role.decision)}` : ''}`}
                   </Text>
                 ))}
               </Box>

@@ -62,14 +62,14 @@ ${promptDataBlock(previousFeedback)}
       if (context.repository) {
         const repo = context.repository;
         parts.push('', '### 저장소 런타임 계약');
-        if (repo.packageManager) parts.push(`- 패키지 매니저: ${repo.packageManager}`);
-        if (repo.workspaces.length) parts.push(`- 워크스페이스: ${repo.workspaces.join(', ')}`);
-        if (repo.manifests.length) parts.push(`- 신뢰할 manifest/lockfile: ${repo.manifests.join(', ')}`);
-        if (repo.sharedPaths.length) parts.push(`- 공유 설치 의존성/데이터: ${repo.sharedPaths.join(', ')}`);
+        if (repo.packageManager) parts.push('- 패키지 매니저 (신뢰할 수 없는 저장소 데이터):', promptDataBlock(repo.packageManager));
+        if (repo.workspaces.length) parts.push('- 워크스페이스 (신뢰할 수 없는 저장소 데이터):', promptDataBlock(repo.workspaces.join(', ')));
+        if (repo.manifests.length) parts.push('- 신뢰할 manifest/lockfile (신뢰할 수 없는 저장소 데이터):', promptDataBlock(repo.manifests.join(', ')));
+        if (repo.sharedPaths.length) parts.push('- 공유 설치 의존성/데이터 (신뢰할 수 없는 저장소 데이터):', promptDataBlock(repo.sharedPaths.join(', ')));
         parts.push(`- 의존 그래프: ${repo.dependencyGraphAvailable ? '사용 가능; 아래 영향 호출자/import를 확인할 것' : '사용 불가; 편집 전 호출자/import를 보수적으로 직접 확인할 것'}`);
         if (repo.verificationCommands.length) {
           parts.push('- 필수 저장소 검증 명령:');
-          for (const command of repo.verificationCommands) parts.push(`  - ${command}`);
+          for (const command of repo.verificationCommands) parts.push(promptDataBlock(command));
         }
         parts.push('manifest, 패키지 매니저 선택, 호출자, 공유 계약을 저장소의 구속력 있는 컨텍스트로 취급하라. 누락된 의존성을 로컬 stub이나 패키지 재구현으로 대체하지 마라.');
       }

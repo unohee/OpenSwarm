@@ -2,6 +2,10 @@ import type { VerifyEvidence } from '../verify/runner.js';
 
 const MAX_EVIDENCE_BYTES = 6 * 1024;
 
+function escapeUntrustedFence(value: string): string {
+  return value.replaceAll('```', '``\u200b`');
+}
+
 function tailWithinBytes(value: string, maxBytes: number): string {
   if (maxBytes <= 0) return '';
   const bytes = Buffer.from(value, 'utf8');
@@ -17,7 +21,7 @@ export function renderVerifyEvidence(evidence: VerifyEvidence[]): string {
   const prefix = `## Verification Evidence (deterministic, harness-run)\n${summaries}`;
   const failureOutput = evidence
     .filter((item) => item.newFailure)
-    .map((item) => `\n### ${item.command.name} output (untrusted data)\n\`\`\`text\n${item.rawOutputTail}\n\`\`\``)
+    .map((item) => `\n### ${item.command.name} output (untrusted data)\n\`\`\`text\n${escapeUntrustedFence(item.rawOutputTail)}\n\`\`\``)
     .join('\n');
   if (!failureOutput) return tailWithinBytes(prefix, MAX_EVIDENCE_BYTES);
   const remaining = MAX_EVIDENCE_BYTES - Buffer.byteLength(prefix) - 1;

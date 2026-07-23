@@ -80,17 +80,12 @@ describe('APICache', () => {
       expect(cache.get('api:users:1')).not.toBeNull();
     });
 
-    it('복수 단어 패턴 매칭을 지원한다', () => {
-      cache.set('api:projects:1', 'value1', 5000);
-      cache.set('api:projects:2', 'value2', 5000);
-      cache.set('api:users:1', 'value3', 5000);
-
-      // api:projects:.* 패턴은 api:projects: 로 시작하는 모든 키 매칭
-      cache.invalidatePattern('api:projects:.*');
-
-      expect(cache.get('api:projects:1')).toBeNull();
-      expect(cache.get('api:projects:2')).toBeNull();
-      expect(cache.get('api:users:1')).not.toBeNull();
+    it('정규식 메타문자는 리터럴로 취급하고 *만 와일드카드로 사용한다', () => {
+      cache.set('api.+:one', 'value1', 5000);
+      cache.set('apixxx:one', 'value2', 5000);
+      cache.invalidatePattern('api.+:*');
+      expect(cache.get('api.+:one')).toBeNull();
+      expect(cache.get('apixxx:one')).not.toBeNull();
     });
   });
 
