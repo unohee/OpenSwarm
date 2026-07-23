@@ -56,6 +56,19 @@ jobs:
           cache: 'npm'
           registry-url: 'https://registry.npmjs.org'
 
+      # Verification runs each command inside an OS sandbox and fails closed
+      # without one; on Linux that sandbox is bubblewrap, which the runner image
+      # does not ship. ubuntu-24.04 also restricts unprivileged user namespaces
+      # through AppArmor, which bwrap needs for its network namespace. Same setup
+      # as the Tests job in ci.yml — without it the release gate fails on every
+      # src/verify test.
+      - name: Install the Linux verification sandbox
+        if: steps.ver.outputs.exists == 'false'
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          bwrap --ro-bind / / --unshare-net --dev /dev --proc /proc -- /bin/sh -lc 'echo sandbox-ok'
+
       - if: steps.ver.outputs.exists == 'false'
         run: npm ci
 
