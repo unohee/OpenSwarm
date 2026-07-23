@@ -840,6 +840,7 @@ export class PairPipeline extends EventEmitter {
       // Stuck detection check (before iteration starts)
       const stuckCheck = this.stuckDetector.check();
       if (stuckCheck.isStuck) {
+        context.stuckReason = stuckCheck.reason;
         console.error(`[${context.taskPrefix}] STUCK DETECTED: ${stuckCheck.reason}`);
         console.error(`[${context.taskPrefix}] Suggestion: ${stuckCheck.suggestion}`);
         this.emit('stuck', {
@@ -1262,7 +1263,6 @@ export class PairPipeline extends EventEmitter {
     const session = context.session;
     const finalStatus = session.status as PipelineResult['finalStatus'] || 'failed';
     const success = finalStatus === 'approved';
-
     // Aggregate costs from all stages
     const stageCosts: (CostInfo | undefined)[] = [];
     if (context.workerResult?.costInfo) stageCosts.push(context.workerResult.costInfo);
@@ -1272,18 +1272,18 @@ export class PairPipeline extends EventEmitter {
     if (context.auditorResult?.costInfo) stageCosts.push(context.auditorResult.costInfo);
     if (context.skillDocumenterResult?.costInfo) stageCosts.push(context.skillDocumenterResult.costInfo);
     const totalCost = stageCosts.length > 0 ? aggregateCosts(stageCosts) : undefined;
-
     if (totalCost) {
       console.log(`[${context.taskPrefix}] Total cost: ${formatCost(totalCost)}`);
       broadcastEvent({ type: 'task:cost', data: { taskId: context.task.id, cost: totalCost } });
     }
-
     const result: PipelineResult = {
       success,
       sessionId: context.session.id,
       stages,
       finalStatus,
-      failureSignal: context.guardsResult?.results.some(r => r.blocking && !r.passed) || context.testerResult?.success === false ? 'gate-fail' : undefined,
+      failureSignal: context.stuckReason ? 'stuck'
+        : context.guardsResult?.results.some(r => r.blocking && !r.passed) || context.testerResult?.success === false ? 'gate-fail' : undefined,
+      stuckReason: context.stuckReason,
       totalDuration: Date.now() - startTime,
       iterations: context.currentIteration,
       workerResult: context.workerResult,

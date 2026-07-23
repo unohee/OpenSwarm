@@ -95,11 +95,12 @@ describe('resolveSharedPaths (INT-2415)', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it('auto-detects node_modules/.venv/venv that exist at the repo root', () => {
+  it('auto-detects node_modules and verification virtualenvs that exist at the repo root', () => {
     mkdirSync(join(repo, 'node_modules'), { recursive: true });
+    mkdirSync(join(repo, '.venv-verify'), { recursive: true });
     mkdirSync(join(repo, '.venv'), { recursive: true });
     // venv is absent → excluded; only existing candidates are returned.
-    expect(resolveSharedPaths(repo, null).sort()).toEqual(['.venv', 'node_modules']);
+    expect(resolveSharedPaths(repo, null).sort()).toEqual(['.venv', '.venv-verify', 'node_modules']);
   });
 
   it('returns [] when no auto-detect candidates exist', () => {

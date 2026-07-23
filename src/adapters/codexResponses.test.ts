@@ -78,7 +78,12 @@ describe('parseWorkerOutput command backfill', () => {
 
 describe('selectDefaultCodexResponseModel', () => {
   it('prefers the stable default when the live catalog includes it', () => {
-    expect(selectDefaultCodexResponseModel(['gpt-5.3-codex-spark', 'gpt-5.4-mini', 'gpt-5.5'])).toBe('gpt-5.5');
+    expect(selectDefaultCodexResponseModel([
+      'gpt-5.3-codex-spark',
+      'gpt-5.6-sol',
+      'gpt-5.6-terra',
+      'gpt-5.6-luna',
+    ])).toBe('gpt-5.6-terra');
   });
 
   it('does not pick Spark implicitly when another model is available', () => {
@@ -86,7 +91,7 @@ describe('selectDefaultCodexResponseModel', () => {
   });
 
   it('does not choose Spark implicitly even if it is the only discovered model', () => {
-    expect(selectDefaultCodexResponseModel(['gpt-5.3-codex-spark'])).toBe('gpt-5.5');
+    expect(selectDefaultCodexResponseModel(['gpt-5.3-codex-spark'])).toBe('gpt-5.6-terra');
   });
 });
 
@@ -96,7 +101,7 @@ describe('unsupported-model fallback', () => {
     const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       const target = String(url);
       if (target.includes('/backend-api/codex/models')) {
-        return new Response(JSON.stringify({ models: [{ slug: 'gpt-5.5', priority: 1 }] }), { status: 200 });
+        return new Response(JSON.stringify({ models: [{ slug: 'gpt-5.6-terra', priority: 1 }] }), { status: 200 });
       }
 
       const body = JSON.parse(String(init?.body ?? '{}')) as { model?: string };
@@ -129,7 +134,7 @@ describe('unsupported-model fallback', () => {
     await callApi([{ role: 'user', content: 'first' }], []);
     await callApi([{ role: 'user', content: 'second' }], []);
 
-    expect(requestedModels).toEqual(['unsupported-model', 'gpt-5.5', 'gpt-5.5']);
+    expect(requestedModels).toEqual(['unsupported-model', 'gpt-5.6-terra', 'gpt-5.6-terra']);
   });
 });
 

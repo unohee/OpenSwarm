@@ -25,7 +25,9 @@ import { isInfraError } from './errorClassification.js';
 import { getCodexModelIds } from './codexModels.js';
 
 const CODEX_RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses';
-const DEFAULT_MODEL = 'gpt-5.5';
+// Balanced default for unpinned work. Role configs can select Sol for
+// quality-first work and Luna for high-volume/light work.
+const DEFAULT_MODEL = 'gpt-5.6-terra';
 const PROFILE_KEY = 'openai-gpt:default';
 const SPARK_MODEL = 'gpt-5.3-codex-spark';
 

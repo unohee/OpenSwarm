@@ -3,9 +3,9 @@
 # Copy this file to config.yaml to use
 
 # Default CLI adapter for worker/reviewer stages
-# Options: claude, codex, gpt, local, lmstudio, openrouter, atlascloud
-# For GPT: run `openswarm auth login --provider gpt`
-#   (uses the public Codex OAuth client by default — no extra config needed)
+# Options: codex-responses, codex, gpt, local, lmstudio, openrouter, atlascloud, claude
+# For ChatGPT OAuth: run `openswarm auth login --provider gpt`
+#   `codex-responses` runs OpenSwarm's native tool loop with the same login.
 # For OpenRouter: run `openswarm auth login --provider openrouter`
 #   (PKCE browser flow → stores a sk-or-* API key; falls back to manual paste)
 # For Atlas Cloud: set ATLASCLOUD_API_KEY
@@ -13,7 +13,7 @@
 # For lmstudio: start LM Studio Local Server (default http://localhost:1234)
 #   Optional env: LMSTUDIO_BASE_URL, LMSTUDIO_MODEL, LMSTUDIO_API_KEY
 #   If LMSTUDIO_MODEL is unset, the adapter auto-selects the first loaded model.
-adapter: claude
+adapter: codex-responses
 
 discord:
   token: ${DISCORD_TOKEN}
@@ -62,7 +62,7 @@ autonomous:
   decomposition:
     enabled: true                    # Enable decomposition
     thresholdMinutes: 30             # Decompose if estimated time exceeds this
-    plannerModel: claude-opus-4-7    # Planner model (Opus for deep decomposition)
+    plannerModel: gpt-5.6-sol         # High-leverage decomposition stays on Sol
 
   # Backlog grooming (Planner compares fetched open queue states against the repo).
   # Safe default: comment recommendations only. Set mode: apply to update
@@ -71,42 +71,36 @@ autonomous:
     enabled: false
     cadenceHours: 24
     mode: comment
-    plannerModel: claude-opus-4-7
+    plannerModel: gpt-5.6-terra       # Bulk queue analysis favors the balanced tier
     maxIssues: 80
 
   # Per-role settings
-  # Hybrid config: Claude for complex coding, local model for review/docs ($0)
+  # GPT-5.6: Luna=high-volume/light, Terra=balanced default, Sol=quality gate.
   defaultRoles:
     worker:
       enabled: true
-      adapter: claude
-      model: claude-sonnet-4-6         # Sonnet for coding tasks
-      escalateModel: claude-opus-4-7          # On failure: Opus
-      escalateAfterIteration: 3
+      model: gpt-5.6-terra             # Default implementation tier
+      escalateModel: gpt-5.6-sol       # Repeated failure earns the frontier tier
+      escalateAfterIteration: 2
       timeoutMs: 1800000  # 30 minutes
     reviewer:
       enabled: true
-      adapter: local                          # Local model — free, 7s response
-      model: gemma-4-e4b-it                   # Gemma 4 e4b via LMStudio
-      escalateModel: claude-sonnet-4-6 # Spot check: Sonnet reviews after N revisions
-      escalateAfterIteration: 3               # Escalate from 3rd iteration
-      timeoutMs: 60000    # 1 minute (local models are slower)
+      model: gpt-5.6-sol               # Correctness gate; light profile lowers this to Terra
+      timeoutMs: 600000
     tester:
       enabled: false
+      model: gpt-5.6-terra             # Used only if deterministic verify cannot run
     documenter:
       enabled: false
-      adapter: local
-      model: gemma-4-e4b-it
+      model: gpt-5.6-luna
       timeoutMs: 120000   # 2 minutes
     auditor:
       enabled: false
-      adapter: local
-      model: gemma-4-e4b-it
+      model: gpt-5.6-sol
       timeoutMs: 300000   # 5 minutes
     skill-documenter:
       enabled: false
-      adapter: local
-      model: gemma-4-e4b-it
+      model: gpt-5.6-luna
       timeoutMs: 120000   # 2 minutes
 
   # Deterministic baseline-diff verification (enabled by default).
@@ -137,17 +131,21 @@ autonomous:
   # (identical errors twice in a row). Default: 3.
   maxReflections: 3
 
-  # Job profiles for lightweight vs heavy work
+  # Job profiles override the default Worker/Reviewer pair by task estimate.
   jobProfiles:
-    - name: quick-analysis
-      maxMinutes: 15
+    - name: light
+      minMinutes: 1
+      maxMinutes: 29
+      effort: low
       roles:
-        worker: claude-haiku-4-5-20251001     # Haiku for simple tasks
-    - name: deep-engineering
-      minMinutes: 16
+        worker: gpt-5.6-luna
+        reviewer: gpt-5.6-terra
+    - name: heavy
+      minMinutes: 30
+      effort: high
       roles:
-        worker: claude-sonnet-4-6      # Sonnet for complex work
-        reviewer: claude-sonnet-4-6    # Sonnet reviews Sonnet
+        worker: gpt-5.6-terra
+        reviewer: gpt-5.6-sol
 
 # Long-running task monitoring (RunPod training, batch processing, etc.)
 #

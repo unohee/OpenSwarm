@@ -301,12 +301,12 @@ export interface PipelineHistoryEntry {
   completedAt: string; // ISO-8601
 }
 
-export type FailureCause = 'reviewer-reject' | 'infra' | 'rate-limit' | 'no-changes' | 'gate-fail' | 'timeout' | 'cancelled';
+export type FailureCause = 'reviewer-reject' | 'infra' | 'rate-limit' | 'no-changes' | 'gate-fail' | 'timeout' | 'stuck' | 'cancelled';
 
 export interface FailureCauseSignals {
   success: boolean;
   finalStatus: string;
-  failureSignal?: 'gate-fail' | 'timeout';
+  failureSignal?: 'gate-fail' | 'timeout' | 'stuck';
   workerFilesChanged?: number;
   reviewerDecision?: string;
 }
@@ -318,6 +318,7 @@ export function classifyFailureCause(signals: FailureCauseSignals): FailureCause
   if (signals.finalStatus === 'rate_limited') return 'rate-limit';
   if (signals.failureSignal === 'timeout') return 'timeout';
   if (signals.finalStatus === 'infra_error') return 'infra';
+  if (signals.failureSignal === 'stuck') return 'stuck';
   if (signals.workerFilesChanged === 0) return 'no-changes';
   if (signals.failureSignal === 'gate-fail') return 'gate-fail';
   if (signals.finalStatus === 'rejected' || signals.reviewerDecision === 'reject' || signals.reviewerDecision === 'revise') return 'reviewer-reject';
@@ -327,7 +328,7 @@ export function classifyFailureCause(signals: FailureCauseSignals): FailureCause
 export function aggregateFailureCauses(entries: PipelineHistoryEntry[]): Record<FailureCause, number> {
   const counts: Record<FailureCause, number> = {
     'reviewer-reject': 0, infra: 0, 'rate-limit': 0, 'no-changes': 0,
-    'gate-fail': 0, timeout: 0, cancelled: 0,
+    'gate-fail': 0, timeout: 0, stuck: 0, cancelled: 0,
   };
   for (const entry of entries) if (entry.failureCause) counts[entry.failureCause]++;
   return counts;

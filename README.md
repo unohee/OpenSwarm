@@ -192,7 +192,7 @@ adapter: codex   # one of: codex · codex-responses · gpt · openrouter · atla
 
 | Adapter | Backend | Models | Auth |
 |---------|---------|--------|------|
-| `codex-responses` | OpenAI Responses API (native loop, no CLI binary) | gpt-5-codex (default), o3, o4-mini | ChatGPT OAuth |
+| `codex-responses` | OpenAI Responses API (native loop, no CLI binary) | gpt-5.6-terra (default), gpt-5.6-sol, gpt-5.6-luna | ChatGPT OAuth |
 | `codex` | OpenAI Codex CLI (delegated) | gpt-5-codex (default), o3, o4-mini | ChatGPT OAuth / `codex` CLI auth |
 | `gpt` | OpenAI Chat API | gpt-4o (default), o3, … | OAuth PKCE |
 | `openrouter` | OpenRouter API (native agentic loop) | any OpenRouter model — gpt-5, gemini-2.5, deepseek, glm, qwen, … | `OPENROUTER_API_KEY` or OAuth PKCE |
@@ -211,7 +211,7 @@ autonomous:
   defaultRoles:
     worker:
       adapter: codex-responses
-      model: gpt-5-codex
+      model: gpt-5.6-terra
     reviewer:
       adapter: openrouter
       model: anthropic/claude-sonnet-4
@@ -229,7 +229,7 @@ autonomous:
     enabled: false
     cadenceHours: 24
     mode: comment
-    plannerModel: gpt-5.5
+    plannerModel: gpt-5.6-terra
     maxIssues: 80
 ```
 
@@ -239,20 +239,43 @@ autonomous:
 autonomous:
   defaultRoles:
     worker:
-      model: gpt-5-codex
-      escalateModel: openai/gpt-5     # escalate after repeated review failures
-      escalateAfterIteration: 3
+      model: gpt-5.6-terra            # balanced default implementation
+      escalateModel: gpt-5.6-sol      # frontier retry after a failed attempt
+      escalateAfterIteration: 2
       timeoutMs: 1800000
     reviewer:
-      model: gpt-5-codex
+      model: gpt-5.6-sol              # correctness gate
       timeoutMs: 600000
     tester:
       enabled: false
+      model: gpt-5.6-terra            # LLM fallback after deterministic verify
     documenter:
       enabled: false
+      model: gpt-5.6-luna
     auditor:
       enabled: false
+      model: gpt-5.6-sol
+    skill-documenter:
+      enabled: false
+      model: gpt-5.6-luna
+  jobProfiles:
+    - name: light
+      minMinutes: 1
+      maxMinutes: 29
+      effort: low
+      roles:
+        worker: gpt-5.6-luna
+        reviewer: gpt-5.6-terra
+    - name: heavy
+      minMinutes: 30
+      effort: high
+      roles:
+        worker: gpt-5.6-terra
+        reviewer: gpt-5.6-sol
 ```
+
+The native Codex adapter uses Terra when no model is pinned. Draft analysis uses
+Luna because it runs for every task; decomposition and hard review stay on Sol.
 
 ### Running the daemon
 

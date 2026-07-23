@@ -3,7 +3,13 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { curatedModels, getDefaultChatModel, buildRepoContext } from './chatBackend.js';
+import {
+  CHAT_MODEL_ALIASES,
+  buildRepoContext,
+  curatedModels,
+  getDefaultChatModel,
+  inferProviderFromModel,
+} from './chatBackend.js';
 
 describe('curatedModels (INT-1961)', () => {
   it('includes the provider default first and dedupes', () => {
@@ -17,6 +23,21 @@ describe('curatedModels (INT-1961)', () => {
     for (const p of ['codex', 'codex-responses', 'gpt', 'local', 'lmstudio', 'openrouter', 'atlascloud'] as const) {
       const m = curatedModels(p);
       expect(m).toContain(getDefaultChatModel(p));
+    }
+  });
+
+  it('maps Codex Responses aliases to the GPT-5.6 capability tiers', () => {
+    expect(getDefaultChatModel('codex-responses')).toBe('gpt-5.6-terra');
+    expect(CHAT_MODEL_ALIASES['codex-responses']).toEqual(expect.objectContaining({
+      big: 'gpt-5.6-sol',
+      medium: 'gpt-5.6-terra',
+      small: 'gpt-5.6-luna',
+    }));
+  });
+
+  it('infers codex-responses for bare GPT-5.6 tier slugs', () => {
+    for (const tier of ['sol', 'terra', 'luna']) {
+      expect(inferProviderFromModel(`gpt-5.6-${tier}`)).toBe('codex-responses');
     }
   });
 });

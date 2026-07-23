@@ -68,7 +68,8 @@ export interface PipelineResult {
   sessionId: string;
   stages: StageResult[];
   finalStatus: 'approved' | 'rejected' | 'failed' | 'cancelled' | 'decomposed' | 'superseded' | 'rate_limited' | 'infra_error';
-  failureSignal?: 'gate-fail' | 'timeout';
+  failureSignal?: 'gate-fail' | 'timeout' | 'stuck';
+  stuckReason?: string;
   rateLimitResetsAt?: number;
   totalDuration: number;
   iterations: number;
@@ -121,6 +122,8 @@ export interface PipelineContext {
   trustedVerifyInputFingerprint?: string;
   /** Deferred capture error so invalid manifests retain tester-stage failure semantics. */
   trustedVerifyError?: unknown;
+  /** Pair-level stagnation detector reason, preserved so the scheduler does not rerun the same loop. */
+  stuckReason?: string;
 }
 
 export type PipelineEventType = 'stage:start' | 'stage:complete' | 'stage:fail' | 'iteration:start' | 'iteration:complete' | 'iteration:fail' | 'pipeline:complete' | 'pipeline:fail' | 'fanout:gate' | 'halt';

@@ -28,6 +28,11 @@ import type { AdapterName } from '../adapters/types.js';
  * updates) — it is one constant per provider, easy to bump.
  */
 const DRAFT_MODELS: Partial<Record<AdapterName, string>> = {
+  // Drafting is a high-volume classification/routing pass, so the efficient
+  // GPT-5.6 tier is the right default. Downstream implementation/review still
+  // use their independently configured Terra/Sol tiers.
+  codex: 'gpt-5.6-luna',
+  'codex-responses': 'gpt-5.6-luna',
   // Capable but cost-aware model for the brief (INT-1915): the drafter runs on
   // EVERY task, and claude -p loads the full personal env (~39k tokens/call), so
   // opus on every brief was too costly. sonnet keeps the brief faithful at a

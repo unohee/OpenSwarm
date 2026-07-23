@@ -378,7 +378,11 @@ describe('PairPipeline coverage extension', () => {
 
     const result = await pipeline.run(task(), process.cwd());
 
-    expect(result.success).toBe(false);
+    expect(result).toMatchObject({
+      success: false,
+      failureSignal: 'stuck',
+      stuckReason: expect.stringContaining('Same error repeated'),
+    });
     // Stuck detection fires before a 4th worker call would happen.
     expect(runWorker).toHaveBeenCalledTimes(3);
     expect(console.error).toHaveBeenCalledWith(expect.stringContaining('STUCK DETECTED'));

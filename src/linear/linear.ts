@@ -1543,6 +1543,8 @@ export async function getStuckIssues(): Promise<{
       reason = 'Blocked by dependencies';
     } else if (labelNames.includes('needs-help')) {
       reason = 'Needs manual intervention';
+    } else if (labelNames.includes(STUCK_LABEL)) {
+      reason = 'Automatic retries exhausted';
     }
 
     failedIssues.push({

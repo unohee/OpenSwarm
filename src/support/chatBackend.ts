@@ -1,6 +1,7 @@
 import { spawn, execFileSync } from 'node:child_process';
-import { writeFile, unlink } from 'node:fs/promises';
+import { mkdtemp, rmdir, unlink, writeFile } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import type { AdapterName } from '../adapters/index.js';
 import { getAdapter, getDefaultAdapterName } from '../adapters/index.js';
@@ -38,9 +39,9 @@ export const CHAT_MODEL_ALIASES: Record<AdapterName, Record<string, string>> = {
   },
   'codex-responses': {
     // Codex backend tiers (see `openswarm auth models` for the live list).
-    big: 'gpt-5.5',
-    medium: 'gpt-5.4',
-    small: 'gpt-5.4-mini',
+    big: 'gpt-5.6-sol',
+    medium: 'gpt-5.6-terra',
+    small: 'gpt-5.6-luna',
     codex: 'gpt-5.3-codex',
   },
   gpt: {
@@ -95,6 +96,10 @@ export const CHAT_MODEL_ALIASES: Record<AdapterName, Record<string, string>> = {
 
 export function inferProviderFromModel(model?: string): AdapterName {
   if (!model) return getDefaultAdapterName();
+  // The GPT-5.6 capability-tier slugs are served by the ChatGPT Codex backend
+  // in this app. Keep an explicit --provider gpt escape hatch for public-API
+  // callers, but do not silently route a bare tier slug to /v1/chat/completions.
+  if (/^gpt-5\.6-(?:sol|terra|luna)$/i.test(model)) return 'codex-responses';
   if (model.includes('codex')) return 'codex';
   if (model.startsWith('gpt-') || model.startsWith('o3') || model.startsWith('o4')) return 'gpt';
   if (model.includes('/')) return 'openrouter';
@@ -105,7 +110,7 @@ export function inferProviderFromModel(model?: string): AdapterName {
 
 export function getDefaultChatModel(provider: AdapterName): string {
   if (provider === 'codex') return 'gpt-5-codex';
-  if (provider === 'codex-responses') return 'gpt-5.5';
+  if (provider === 'codex-responses') return 'gpt-5.6-terra';
   if (provider === 'gpt') return 'gpt-4o';
   if (provider === 'local') return 'gemma3:4b';
   if (provider === 'lmstudio') return process.env.LMSTUDIO_MODEL ?? 'local-model';
@@ -149,6 +154,13 @@ export function shortenChatModel(model: string): string {
   // OpenRouter: "anthropic/claude-sonnet-4" → "claude-sonnet-4"
   if (model.includes('/')) return model.split('/').pop() ?? model;
   return model;
+}
+
+function chatAbortError(signal?: AbortSignal): Error {
+  if (signal?.reason instanceof Error) return signal.reason;
+  const error = new Error('Chat response cancelled');
+  error.name = 'AbortError';
+  return error;
 }
 
 /**
@@ -275,6 +287,8 @@ async function runChatViaAdapter(
 }
 
 export async function runChatCompletion(options: ChatCompletionOptions): Promise<ChatCompletionResult> {
+  if (options.signal?.aborted) throw chatAbortError(options.signal);
+
   const provider = options.provider ?? inferProviderFromModel(options.model);
   const model = resolveChatModel(options.model, provider);
   const adapter = getAdapter(provider);
@@ -284,10 +298,14 @@ export async function runChatCompletion(options: ChatCompletionOptions): Promise
     return runChatViaAdapter(adapter, provider, model, cwd, options);
   }
 
-  const promptFile = `/tmp/openswarm-chat-${Date.now()}.txt`;
-  await writeFile(promptFile, options.prompt);
+  // CLI adapters consume a prompt path. Use a private, unpredictable directory
+  // and owner-only file instead of exposing prompt contents in a predictable
+  // world-readable /tmp filename.
+  const promptDir = await mkdtemp(join(tmpdir(), 'openswarm-chat-'));
+  const promptFile = join(promptDir, 'prompt.txt');
 
   try {
+    await writeFile(promptFile, options.prompt, { mode: 0o600 });
     const { command, args } = adapter.buildCommand({
       prompt: promptFile,
       cwd,
@@ -309,6 +327,35 @@ export async function runChatCompletion(options: ChatCompletionOptions): Promise
       let startedStreaming = false;
       let thinkingTimer: NodeJS.Timeout | null = null;
       let timeout: NodeJS.Timeout | null = null;
+      let abortKillTimer: NodeJS.Timeout | null = null;
+      let settled = false;
+
+      const cleanupProcessHooks = () => {
+        if (timeout) clearTimeout(timeout);
+        if (thinkingTimer) clearTimeout(thinkingTimer);
+        if (abortKillTimer) clearTimeout(abortKillTimer);
+        options.signal?.removeEventListener('abort', onAbort);
+      };
+
+      const settle = (action: () => void) => {
+        if (settled) return;
+        settled = true;
+        cleanupProcessHooks();
+        action();
+      };
+
+      const onAbort = () => {
+        proc.kill('SIGTERM');
+        // A child can trap/ignore SIGTERM. Do not let cancellation leave an
+        // orphaned model process behind indefinitely.
+        abortKillTimer = setTimeout(() => {
+          if (proc.exitCode === null) proc.kill('SIGKILL');
+        }, 1000);
+        abortKillTimer.unref();
+      };
+
+      if (options.signal?.aborted) onAbort();
+      else options.signal?.addEventListener('abort', onAbort, { once: true });
 
       const resetThinkingTimer = () => {
         if (!options.onText) return;
@@ -354,17 +401,20 @@ export async function runChatCompletion(options: ChatCompletionOptions): Promise
       if ((options.timeoutMs ?? 180000) > 0) {
         timeout = setTimeout(() => {
           proc.kill('SIGKILL');
-          reject(new Error('Chat response timeout'));
+          settle(() => reject(new Error('Chat response timeout')));
         }, options.timeoutMs ?? 180000);
       }
 
       proc.on('close', (code) => {
-        if (timeout) clearTimeout(timeout);
-        if (thinkingTimer) clearTimeout(thinkingTimer);
         flushLines(true);
 
+        if (options.signal?.aborted) {
+          settle(() => reject(chatAbortError(options.signal)));
+          return;
+        }
+
         if (code !== 0 && !stdout.trim()) {
-          reject(new Error(stderr.trim() || `${provider} exited with code ${code}`));
+          settle(() => reject(new Error(stderr.trim() || `${provider} exited with code ${code}`)));
           return;
         }
 
@@ -372,25 +422,28 @@ export async function runChatCompletion(options: ChatCompletionOptions): Promise
         const cost = undefined;
         const tokens = undefined;
 
-        resolve({
+        settle(() => resolve({
           response: response || '[No response]',
           provider,
           model,
           sessionId: capturedSessionId || undefined,
           cost,
           tokens,
-        });
+        }));
       });
 
       proc.on('error', (error) => {
-        if (timeout) clearTimeout(timeout);
-        if (thinkingTimer) clearTimeout(thinkingTimer);
-        reject(error);
+        settle(() => reject(options.signal?.aborted ? chatAbortError(options.signal) : error));
       });
     });
   } finally {
     try {
       await unlink(promptFile);
+    } catch {
+      // Ignore temp cleanup errors.
+    }
+    try {
+      await rmdir(promptDir);
     } catch {
       // Ignore temp cleanup errors.
     }

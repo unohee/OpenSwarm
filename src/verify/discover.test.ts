@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,7 +10,10 @@ const roots: string[] = [];
 async function fixture(files: Record<string, string>): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), 'openswarm-verify-discover-'));
   roots.push(root);
-  await Promise.all(Object.entries(files).map(([name, content]) => writeFile(join(root, name), content, 'utf8')));
+  await Promise.all(Object.entries(files).map(async ([name, content]) => {
+    await mkdir(dirname(join(root, name)), { recursive: true });
+    await writeFile(join(root, name), content, 'utf8');
+  }));
   return root;
 }
 
@@ -45,6 +48,16 @@ describe('discoverVerifyCommands', () => {
     const root = await fixture({ [name]: content });
     expect(await discoverVerifyCommands(root)).toEqual([
       { name: 'pytest', run: 'python -m pytest -x -q', kind: 'test', timeoutMs: 300_000 },
+    ]);
+  });
+
+  it('prefers the repository verification virtualenv for pytest', async () => {
+    const root = await fixture({
+      'pytest.ini': '[pytest]\n',
+      '.venv-verify/bin/python': '#!/bin/sh\n',
+    });
+    expect(await discoverVerifyCommands(root)).toEqual([
+      { name: 'pytest', run: './.venv-verify/bin/python -m pytest -x -q', kind: 'test', timeoutMs: 300_000 },
     ]);
   });
 

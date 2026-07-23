@@ -84,6 +84,10 @@ describe('runDraftAnalysis fallback', () => {
     expect(adapterModule.getAdapter).not.toHaveBeenCalledWith('claude');
     // Single adapter attempt only — quota error breaks out to best-effort, no fallback.
     expect(adapterModule.spawnCli).toHaveBeenCalledTimes(1);
+    expect(adapterModule.spawnCli).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ model: 'gpt-5.6-luna' }),
+    );
     // Pipeline continues with a best-effort (insufficient) draft.
     expect(result.sufficient).toBe(false);
   });

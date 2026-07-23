@@ -36,6 +36,7 @@ interface CommandResult {
   status: 'pass' | 'fail' | 'infra';
   output: string;
   outputFingerprint?: string;
+  environmentFailure?: boolean;
   baselineEnvironmentChanged?: boolean;
 }
 
@@ -68,6 +69,27 @@ function hasSameFailure(base: CommandResult, head: CommandResult): boolean {
   return base.outputFingerprint !== undefined && base.outputFingerprint === head.outputFingerprint;
 }
 
+function normalizeFailureOutput(output: string, projectRoot: string): string {
+  const escapedRoot = projectRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return output
+    .replace(new RegExp(escapedRoot, 'g'), '<PROJECT>')
+    .replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g'), '')
+    .replace(/(=+ .*? in )\d+(?:\.\d+)?s( =+)/g, '$1<DURATION>$2')
+    .replace(/(Ran \d+ tests? in )\d+(?:\.\d+)?s/g, '$1<DURATION>')
+    .replace(/(finished in )\d+(?:\.\d+)?s/gi, '$1<DURATION>');
+}
+
+function isEnvironmentFailure(output: string): boolean {
+  return [
+    /ModuleNotFoundError:\s*No module named\b/i,
+    /ImportError:\s*No module named\b/i,
+    /Cannot find module ['"]/i,
+    /could not find [`']?Cargo\.toml/i,
+    /failed to (?:load|read) manifest for workspace member/i,
+    /Cargo\.toml.*(?:No such file or directory|os error 2)/i,
+  ].some((pattern) => pattern.test(output));
+}
+
 function appendTail(current: Buffer, chunk: Buffer): Buffer {
   const combined = Buffer.concat([current, chunk]);
   return combined.length <= OUTPUT_TAIL_BYTES ? combined : combined.subarray(combined.length - OUTPUT_TAIL_BYTES);
@@ -98,15 +120,28 @@ async function runCommand(command: VerifyCommand, root: string, env: NodeJS.Proc
       detached,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    child.stdout.on('data', (chunk: Buffer) => { outputHash.update(chunk); output = appendTail(output, chunk); });
-    child.stderr.on('data', (chunk: Buffer) => { outputHash.update(chunk); output = appendTail(output, chunk); });
+    const record = (chunk: Buffer) => {
+      outputHash.update(normalizeFailureOutput(chunk.toString('utf8'), cwd));
+      output = appendTail(output, chunk);
+    };
+    child.stdout.on('data', record);
+    child.stderr.on('data', record);
 
     const finish = (status: CommandResult['status'], extra = '') => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      if (extra) { outputHash.update(extra); output = appendTail(output, Buffer.from(extra)); }
-      resolveResult({ status, output: output.toString('utf8'), outputFingerprint: outputHash.digest('hex') });
+      if (extra) {
+        outputHash.update(normalizeFailureOutput(extra, cwd));
+        output = appendTail(output, Buffer.from(extra));
+      }
+      const outputText = output.toString('utf8');
+      resolveResult({
+        status,
+        output: outputText,
+        outputFingerprint: outputHash.digest('hex'),
+        environmentFailure: status === 'fail' && isEnvironmentFailure(outputText),
+      });
     };
     const timer = setTimeout(() => {
       timedOut = true;
@@ -327,12 +362,14 @@ export async function runVerify(options: RunVerifyOptions): Promise<VerifyEviden
     const rawOutputTail = Buffer.from(`[base]\n${base.output}\n[head]\n${head.output}`, 'utf8')
       .subarray(-OUTPUT_TAIL_BYTES)
       .toString('utf8');
+    const sameFailure = base.status === 'fail' && hasSameFailure(base, head);
+    const sameEnvironmentFailure = !!(sameFailure && base.environmentFailure && head.environmentFailure);
     evidence.push({
       command,
       baseStatus: base.status,
       headStatus: 'fail',
       newFailure: base.status === 'pass'
-        || (base.status === 'fail' && (base.baselineEnvironmentChanged || !hasSameFailure(base, head))),
+        || (base.status === 'fail' && (!sameFailure || (!!base.baselineEnvironmentChanged && !sameEnvironmentFailure))),
       rawOutputTail,
       durationMs: Date.now() - started,
     });
