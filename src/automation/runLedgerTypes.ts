@@ -114,6 +114,8 @@ export interface ClaimOptions {
   now?: number;
   /** Atomic repository admission cap. Defaults to one active run per repository. */
   maxActiveForProject?: number;
+  /** Normalized predicted write set. Unknown scope serializes against live same-repo claims. */
+  conflictScope?: string[];
   maxAttemptsPerHour?: number;
   maxFailuresPerHour?: number;
   maxCostUsdPerDay?: number;

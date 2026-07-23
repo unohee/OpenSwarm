@@ -99,6 +99,48 @@ function isVolatileScopePath(path: string): boolean {
 }
 
 /**
+ * Resolve the best available preflight write scope for one task. The normalized
+ * result is written back to the task so the scheduler and durable admission
+ * layer can make the same decision without repeating Knowledge Graph work.
+ */
+export async function resolveTaskFileScope(task: TaskItem, projectPath: string): Promise<string[]> {
+  const declared = normalizeScope(task.fileScope);
+  if (declared.size > 0) {
+    const scope = [...declared];
+    task.fileScope = scope;
+    return scope;
+  }
+
+  try {
+    const impact = await analyzeIssue(projectPath, task.title, task.description);
+    if (impact) {
+      const inferred = normalizeScope([...impact.directModules, ...impact.dependentModules]);
+      if (inferred.size > 0) {
+        const scope = [...inferred];
+        task.fileScope = scope;
+        return scope;
+      }
+    }
+  } catch (err) {
+    console.warn(`[ConflictDetector] Impact analysis failed for ${task.id}:`, err);
+  }
+
+  task.fileScope = undefined;
+  return [];
+}
+
+/** Unknown scope conflicts fail closed while another same-repo worker is live. */
+export function fileScopesConflict(left: string[] | undefined, right: string[] | undefined): boolean {
+  const a = normalizeScope(left);
+  const b = normalizeScope(right);
+  if (a.size === 0 || b.size === 0) return true;
+  for (const file of a) {
+    if (b.has(file)) return true;
+  }
+  return false;
+}
+
+/**
  * Detect file-scope overlap between tasks. Each task's scope prefers the
  * planner-declared `fileScope` (authoritative), falling back to Knowledge Graph
  * inference (`analyzeIssue`) only when no explicit scope is available.
@@ -109,39 +151,15 @@ export async function detectFileConflicts(
   tasks: TaskItem[],
   projectPath: string,
 ): Promise<ConflictDetectionResult> {
-  if (tasks.length <= 1) {
-    return { safe: tasks, conflictGroups: [] };
-  }
-
   // Step 1: 각 태스크의 영향 모듈 집합 수집
   const taskImpacts: Map<number, Set<string>> = new Map();
   const unknownScopeIndices = new Set<number>();
 
   await Promise.all(
     tasks.map(async (task, idx) => {
-      // Prefer the planner-declared file scope. It is what the worker is
-      // actually constrained to, so it is more accurate than KG inference and
-      // needs no graph lookup.
-      const declared = normalizeScope(task.fileScope);
-      if (declared.size > 0) {
-        taskImpacts.set(idx, declared);
-        return;
-      }
-
-      // Fall back to Knowledge Graph inference when no explicit scope exists.
-      try {
-        const impact = await analyzeIssue(projectPath, task.title, task.description);
-        if (impact) {
-          const modules = normalizeScope([...impact.directModules, ...impact.dependentModules]);
-          if (modules.size > 0) {
-            taskImpacts.set(idx, modules);
-            return;
-          }
-        }
-      } catch (err) {
-        console.warn(`[ConflictDetector] Impact analysis failed for ${task.id}:`, err);
-      }
-      unknownScopeIndices.add(idx);
+      const scope = await resolveTaskFileScope(task, projectPath);
+      if (scope.length > 0) taskImpacts.set(idx, new Set(scope));
+      else unknownScopeIndices.add(idx);
     })
   );
 
@@ -156,9 +174,11 @@ export async function detectFileConflicts(
     for (let j = i + 1; j < tasks.length; j++) {
       const modulesJ = taskImpacts.get(j);
       if (unknownScopeIndices.has(i) || unknownScopeIndices.has(j)) {
-        // Unknown scope is a soft risk, not proof of a file conflict. Let the
-        // PR processor handle any real merge conflicts later instead of
-        // starving worker slots on uncertainty.
+        // Worktrees isolate filesystem writes, but they do not make two unknown
+        // write sets safe to merge. Serialize uncertainty and retry after the
+        // known owner exits.
+        pairShared.set(`${i}:${j}`, new Set([UNKNOWN_SCOPE]));
+        uf.union(i, j);
         continue;
       }
 

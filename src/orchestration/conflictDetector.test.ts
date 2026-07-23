@@ -92,13 +92,14 @@ describe('detectFileConflicts (planner-declared file scope)', () => {
     expect(result.conflictGroups).toHaveLength(0);
   });
 
-  it('treats unknown scope as a soft PR-time risk, not a hard scheduling conflict', async () => {
+  it('serializes unknown scope because merge safety cannot be proven', async () => {
     const result = await detectFileConflicts(
       [task('A', 2, ['unknown-file-scope']), task('B', 2, ['src/shared.ts'])],
       PROJECT,
     );
 
-    expect(new Set(result.safe.map((t) => t.id))).toEqual(new Set(['A', 'B']));
-    expect(result.conflictGroups).toHaveLength(0);
+    expect(result.safe).toHaveLength(1);
+    expect(result.conflictGroups).toHaveLength(1);
+    expect(result.conflictGroups[0].sharedModules).toEqual(['unknown-file-scope']);
   });
 });

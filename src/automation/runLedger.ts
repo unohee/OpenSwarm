@@ -4,6 +4,8 @@ import { homedir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { ACTIVE_LEASE_STATES, ALLOWED_TRANSITIONS, AUTOMATION_SCHEMA_VERSION, CLAIMABLE_STATES, RUN_STATES } from './runLedgerTypes.js';
+import { admitsConflictScope } from './runLedgerScope.js';
+import { migrateAutomationSchema } from './runLedgerSchema.js';
 import type {
   AttemptResultInput,
   ClaimOptions,
@@ -147,145 +149,13 @@ export class RunLedger {
       this.db.pragma('journal_mode = WAL');
       this.db.pragma('foreign_keys = ON');
       this.db.pragma('synchronous = FULL');
-      this.migrate();
+      migrateAutomationSchema(this.db);
     } catch (error) {
       this.db.close();
       throw error;
     }
   }
 
-  private migrate(): void {
-    const migrate = this.db.transaction(() => {
-      this.db.exec(`
-      CREATE TABLE IF NOT EXISTS automation_meta (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS automation_runs (
-        issue_id TEXT PRIMARY KEY,
-        source TEXT NOT NULL,
-        identifier TEXT,
-        title TEXT,
-        project_path TEXT NOT NULL,
-        state TEXT NOT NULL,
-        state_version INTEGER NOT NULL DEFAULT 1,
-        attempt_no INTEGER NOT NULL DEFAULT 0,
-        owner_instance_id TEXT,
-        lease_token TEXT,
-        lease_epoch INTEGER NOT NULL DEFAULT 0,
-        lease_expires_at INTEGER,
-        retry_at INTEGER,
-        branch_name TEXT,
-        worktree_path TEXT,
-        pr_url TEXT,
-        head_sha TEXT,
-        last_error_code TEXT,
-        last_error_message TEXT,
-        discovered_at INTEGER NOT NULL,
-        started_at INTEGER,
-        updated_at INTEGER NOT NULL,
-        completed_at INTEGER,
-        metadata_json TEXT
-      );
-
-      CREATE TABLE IF NOT EXISTS automation_attempts (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        issue_id TEXT NOT NULL,
-        attempt_no INTEGER NOT NULL,
-        lease_epoch INTEGER NOT NULL,
-        status TEXT NOT NULL,
-        stage TEXT NOT NULL,
-        started_at INTEGER NOT NULL,
-        finished_at INTEGER,
-        result_json TEXT,
-        error_code TEXT,
-        error_message TEXT,
-        result_status TEXT,
-        success INTEGER,
-        cost_usd REAL,
-        UNIQUE(issue_id, attempt_no),
-        FOREIGN KEY (issue_id) REFERENCES automation_runs(issue_id) ON DELETE CASCADE
-      );
-
-      CREATE TABLE IF NOT EXISTS automation_effects (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        issue_id TEXT NOT NULL,
-        attempt_no INTEGER NOT NULL,
-        kind TEXT NOT NULL,
-        dedupe_key TEXT NOT NULL UNIQUE,
-        payload_json TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'pending',
-        attempts INTEGER NOT NULL DEFAULT 0,
-        available_at INTEGER NOT NULL,
-        owner_instance_id TEXT,
-        delivery_token TEXT,
-        lease_epoch INTEGER NOT NULL DEFAULT 0,
-        lease_expires_at INTEGER,
-        last_error TEXT,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
-        applied_at INTEGER,
-        FOREIGN KEY (issue_id) REFERENCES automation_runs(issue_id) ON DELETE CASCADE
-      );
-
-      CREATE TABLE IF NOT EXISTS automation_events (
-        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
-        issue_id TEXT NOT NULL,
-        attempt_no INTEGER,
-        kind TEXT NOT NULL,
-        from_state TEXT,
-        to_state TEXT,
-        data_json TEXT,
-        created_at INTEGER NOT NULL,
-        FOREIGN KEY (issue_id) REFERENCES automation_runs(issue_id) ON DELETE CASCADE
-      );
-
-      CREATE TABLE IF NOT EXISTS automation_repo_circuits (
-        project_path TEXT PRIMARY KEY,
-        reason TEXT NOT NULL,
-        opened_at INTEGER NOT NULL,
-        open_until INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_automation_runs_state_retry
-        ON automation_runs(state, retry_at, updated_at);
-      CREATE INDEX IF NOT EXISTS idx_automation_runs_project_state
-        ON automation_runs(project_path, state, lease_expires_at);
-      CREATE INDEX IF NOT EXISTS idx_automation_runs_worktree
-        ON automation_runs(worktree_path) WHERE worktree_path IS NOT NULL;
-      CREATE INDEX IF NOT EXISTS idx_automation_effects_delivery
-        ON automation_effects(status, available_at, lease_expires_at, id);
-      CREATE INDEX IF NOT EXISTS idx_automation_events_issue
-        ON automation_events(issue_id, sequence);
-    `);
-
-    // v1 -> v2 is additive and safe under WAL. SQLite has no ADD COLUMN IF NOT
-    // EXISTS, so inspect first for idempotent crash-restart migration.
-      const attemptColumns = new Set(
-        (this.db.pragma('table_info(automation_attempts)') as Array<{ name: string }>).map((column) => column.name),
-      );
-      if (!attemptColumns.has('result_status')) this.db.exec('ALTER TABLE automation_attempts ADD COLUMN result_status TEXT');
-      if (!attemptColumns.has('success')) this.db.exec('ALTER TABLE automation_attempts ADD COLUMN success INTEGER');
-      if (!attemptColumns.has('cost_usd')) this.db.exec('ALTER TABLE automation_attempts ADD COLUMN cost_usd REAL');
-      this.db.exec(`CREATE INDEX IF NOT EXISTS idx_automation_attempts_budget
-        ON automation_attempts(started_at, success, cost_usd)`);
-
-      const current = this.db.prepare('SELECT value FROM automation_meta WHERE key = ?').get('schema_version') as { value: string } | undefined;
-      if (current && Number(current.value) > AUTOMATION_SCHEMA_VERSION) {
-        throw new Error(`automation.db schema ${current.value} is newer than supported ${AUTOMATION_SCHEMA_VERSION}`);
-      }
-      this.db.prepare(`
-        INSERT INTO automation_meta(key, value) VALUES('schema_version', ?)
-        ON CONFLICT(key) DO UPDATE SET value = excluded.value
-      `).run(String(AUTOMATION_SCHEMA_VERSION));
-    });
-    // Schema inspection + ALTER must be one writer-serialized unit. Two daemon
-    // generations can overlap during launchd restart; a deferred migration lets
-    // both observe the old schema and race the same ADD COLUMN.
-    migrate.immediate();
-  }
 
   registerRun(input: RegisterRunInput, now = Date.now()): RunRecord {
     if (!input.issueId.trim()) throw new Error('issueId is required');
@@ -604,16 +474,26 @@ export class RunLedger {
         }
       }
 
-      const activeCount = (this.db.prepare(`
-        SELECT COUNT(*) AS count FROM automation_runs
+      const activeRows = this.db.prepare(`
+        SELECT issue_id, state, metadata_json FROM automation_runs
         WHERE project_path = ?
           AND (
             state IN (${placeholders(ACTIVE_LEASE_STATES)})
             OR state = 'NEEDS_RECONCILE'
           )
           AND issue_id <> ?
-      `).get(row.project_path, ...ACTIVE_LEASE_STATES, issueId) as { count: number }).count;
-      if (activeCount >= maxActive) return null;
+      `).all(row.project_path, ...ACTIVE_LEASE_STATES, issueId) as Array<Pick<RunRow, 'issue_id' | 'state' | 'metadata_json'>>;
+      if (activeRows.length >= maxActive) return null;
+
+      // The cap controls capacity; the write scope controls safety inside that
+      // capacity. Both checks happen in the same SQLite transaction as the
+      // claim, so two daemon instances cannot race disjoint scheduler views.
+      if (maxActive > 1) {
+        const activeScopes = activeRows
+          .filter(active => ACTIVE_LEASE_STATES.includes(active.state as RunState))
+          .map(active => parseJson(active.metadata_json));
+        if (!admitsConflictScope(options.conflictScope, activeScopes)) return null;
+      }
 
       const epoch = row.lease_epoch + 1;
       const attemptNo = row.attempt_no + 1;

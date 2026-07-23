@@ -41,6 +41,8 @@ export interface DurableExecuteOptions {
 
 export interface RepositoryAdmissionPolicy {
   maxConcurrent?: number;
+  /** Predicted repository-relative write set used for atomic conflict admission. */
+  conflictScope?: string[];
   maxAttemptsPerHour?: number;
   maxFailuresPerHour?: number;
   maxCostUsdPerDay?: number;
@@ -179,6 +181,7 @@ export class DurableRunCoordinator {
       metadata: {
         projectId: task.linearProject?.id,
         projectName: task.linearProject?.name,
+        fileScope: task.fileScope,
       },
     }, now);
 
@@ -214,6 +217,7 @@ export class DurableRunCoordinator {
       ownerInstanceId: this.instanceId,
       leaseMs: this.leaseMs,
       maxActiveForProject: options.admission?.maxConcurrent ?? this.maxActiveForProject,
+      conflictScope: options.admission?.conflictScope,
       maxAttemptsPerHour: options.admission?.maxAttemptsPerHour,
       maxFailuresPerHour: options.admission?.maxFailuresPerHour,
       maxCostUsdPerDay: options.admission?.maxCostUsdPerDay,

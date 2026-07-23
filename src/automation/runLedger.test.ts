@@ -16,13 +16,14 @@ function createDbPath(): string {
   return join(root, 'automation.db');
 }
 
-function register(ledger: RunLedger, issueId: string, projectPath = '/repo'): void {
+function register(ledger: RunLedger, issueId: string, projectPath = '/repo', fileScope?: string[]): void {
   ledger.registerRun({
     issueId,
     source: 'linear',
     identifier: issueId,
     title: `Task ${issueId}`,
     projectPath,
+    metadata: fileScope ? { fileScope } : undefined,
   }, 1_000);
 }
 
@@ -162,6 +163,44 @@ describe('RunLedger claim and fencing races', () => {
     second.close();
   });
 
+  it('admits disjoint same-repository scopes and rejects an overlapping scope atomically', () => {
+    const ledger = new RunLedger(createDbPath());
+    register(ledger, 'SCOPE-A', '/same-repo', ['src/a.ts']);
+    register(ledger, 'SCOPE-B', '/same-repo', ['src/b.ts']);
+    register(ledger, 'SCOPE-OVERLAP', '/same-repo', ['./SRC/A.ts']);
+
+    expect(ledger.claimRun('SCOPE-A', {
+      ownerInstanceId: 'a', leaseMs: 1_000, now: 2_000,
+      maxActiveForProject: 3, conflictScope: ['src/a.ts'],
+    })).not.toBeNull();
+    expect(ledger.claimRun('SCOPE-B', {
+      ownerInstanceId: 'b', leaseMs: 1_000, now: 2_001,
+      maxActiveForProject: 3, conflictScope: ['src/b.ts'],
+    })).not.toBeNull();
+    expect(ledger.claimRun('SCOPE-OVERLAP', {
+      ownerInstanceId: 'c', leaseMs: 1_000, now: 2_002,
+      maxActiveForProject: 3, conflictScope: ['./SRC/A.ts'],
+    })).toBeNull();
+    expect(ledger.listRuns(['CLAIMED'])).toHaveLength(2);
+    ledger.close();
+  });
+
+  it('fails closed when either side of a parallel repository claim has unknown scope', () => {
+    const ledger = new RunLedger(createDbPath());
+    register(ledger, 'KNOWN', '/same-repo', ['src/known.ts']);
+    register(ledger, 'UNKNOWN', '/same-repo');
+    const known = ledger.claimRun('KNOWN', {
+      ownerInstanceId: 'known', leaseMs: 1_000, now: 2_000,
+      maxActiveForProject: 2, conflictScope: ['src/known.ts'],
+    });
+    expect(known).not.toBeNull();
+    expect(ledger.claimRun('UNKNOWN', {
+      ownerInstanceId: 'unknown', leaseMs: 1_000, now: 2_001,
+      maxActiveForProject: 2,
+    })).toBeNull();
+    ledger.close();
+  });
+
   it('rejects a late callback after lease expiry and replacement', () => {
     const dbPath = createDbPath();
     const oldDaemon = new RunLedger(dbPath);
@@ -280,6 +319,29 @@ describe('RunLedger claim and fencing races', () => {
     const verify = new RunLedger(path);
     expect(verify.listRuns(['CLAIMED'])).toHaveLength(1);
     verify.close();
+  }, 30_000);
+
+  it('atomically separates disjoint and overlapping scopes across real OS processes', async () => {
+    const tsxCli = resolve('node_modules/tsx/dist/cli.mjs');
+    const fixture = resolve('src/automation/runLedgerClaimProcess.fixture.ts');
+
+    const disjointPath = createDbPath();
+    const disjoint = await Promise.all(['a', 'b', 'c'].map((scope, index) =>
+      execFileAsync(process.execPath, [
+        tsxCli, fixture, disjointPath, `DISJOINT-${index}`, `owner-${index}`,
+        '2000', '3', `src/${scope}.ts`,
+      ]),
+    ));
+    expect(disjoint.filter(({ stdout }) => stdout.trim() === 'claimed')).toHaveLength(3);
+
+    const overlapPath = createDbPath();
+    const overlapping = await Promise.all(Array.from({ length: 3 }, (_, index) =>
+      execFileAsync(process.execPath, [
+        tsxCli, fixture, overlapPath, `OVERLAP-${index}`, `owner-${index}`,
+        '2000', '3', 'src/shared.ts',
+      ]),
+    ));
+    expect(overlapping.filter(({ stdout }) => stdout.trim() === 'claimed')).toHaveLength(1);
   }, 30_000);
 
   it('fails closed without a partial claim when the SQLite writer is busy', () => {

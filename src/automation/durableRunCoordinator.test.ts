@@ -72,6 +72,32 @@ describe('DurableRunCoordinator', () => {
     second.close();
   });
 
+  it('runs disjoint same-repository scopes concurrently in separate worktrees', async () => {
+    const path = dbPath();
+    const first = new DurableRunCoordinator({ mode: 'primary', dbPath: path, instanceId: 'a', maxActiveForProject: 2 });
+    const second = new DurableRunCoordinator({ mode: 'primary', dbPath: path, instanceId: 'b', maxActiveForProject: 2 });
+    const firstTask = { ...task('PAR-A'), fileScope: ['src/a.ts'] };
+    const secondTask = { ...task('PAR-B'), fileScope: ['src/b.ts'] };
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+
+    const firstRun = first.execute(firstTask, '/repo', async () => {
+      await held;
+      return result();
+    }, { admission: { maxConcurrent: 2, conflictScope: firstTask.fileScope } });
+    await Promise.resolve();
+    const secondResult = await second.execute(secondTask, '/repo', async () => result(), {
+      admission: { maxConcurrent: 2, conflictScope: secondTask.fileScope },
+    });
+
+    expect(secondResult.success).toBe(true);
+    expect(first.getRun('PAR-A')?.state).toBe('EXECUTING');
+    release();
+    expect((await firstRun).success).toBe(true);
+    first.close();
+    second.close();
+  });
+
   it('records worktree, verification, publication, and durable sync state', async () => {
     const coordinator = new DurableRunCoordinator({ mode: 'primary', dbPath: dbPath(), instanceId: 'daemon' });
     const pipeline = await coordinator.execute(task('FLOW'), '/repo', async (hooks) => {

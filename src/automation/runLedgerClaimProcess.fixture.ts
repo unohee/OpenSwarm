@@ -1,6 +1,6 @@
 import { RunLedger } from './runLedger.js';
 
-const [dbPath, issueId, ownerInstanceId, nowText] = process.argv.slice(2);
+const [dbPath, issueId, ownerInstanceId, nowText, maxActiveText, scopeText] = process.argv.slice(2);
 if (!dbPath || !issueId || !ownerInstanceId || !nowText) {
   throw new Error('usage: runLedgerClaimProcess.fixture.ts <db> <issue> <owner> <now>');
 }
@@ -13,11 +13,13 @@ try {
     identifier: issueId,
     title: `Process race ${issueId}`,
     projectPath: '/process-repo',
+    metadata: scopeText ? { fileScope: [scopeText] } : undefined,
   }, Number(nowText) - 1);
   const claimed = ledger.claimRun(issueId, {
     ownerInstanceId,
     leaseMs: 60_000,
-    maxActiveForProject: 1,
+    maxActiveForProject: maxActiveText ? Number(maxActiveText) : 1,
+    conflictScope: scopeText ? [scopeText] : undefined,
     now: Number(nowText),
   });
   process.stdout.write(claimed ? 'claimed\n' : 'blocked\n');

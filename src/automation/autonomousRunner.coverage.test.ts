@@ -26,10 +26,19 @@ import type { DecisionResult, TaskItem } from '../orchestration/decisionEngine.j
 import type { AutonomousConfig } from './runnerTypes.js';
 import type { ITaskSource } from './taskSource.js';
 
-const detectFileConflictsMock = vi.hoisted(() => vi.fn());
+const { detectFileConflictsMock, resolveTaskFileScopeMock, fileScopesConflictMock } = vi.hoisted(() => ({
+  detectFileConflictsMock: vi.fn(),
+  resolveTaskFileScopeMock: vi.fn(async (task: TaskItem) => {
+    task.fileScope ??= [`scope/${task.id}`];
+    return task.fileScope;
+  }),
+  fileScopesConflictMock: vi.fn(() => false),
+}));
 
 vi.mock('../orchestration/conflictDetector.js', () => ({
   detectFileConflicts: detectFileConflictsMock,
+  resolveTaskFileScope: resolveTaskFileScopeMock,
+  fileScopesConflict: fileScopesConflictMock,
 }));
 
 // writeProviderOverride writes unconditionally to ~/.config/openswarm/ (no dryRun
@@ -239,6 +248,31 @@ describe('AutonomousRunner coverage — safely-reachable helpers', () => {
       expect(detectFileConflictsMock).toHaveBeenCalledWith([first, second], '/repo');
     });
 
+    it('defers a candidate whose scope overlaps an already-running worktree', async () => {
+      const r = new AutonomousRunner(cfg({
+        allowSameProjectConcurrent: true, worktreeMode: true, maxConcurrentTasks: 3,
+      }));
+      const internal = r as unknown as Internal;
+      const candidate = task({ id: 'candidate', fileScope: ['src/shared.ts'] });
+      const activeTask = task({ id: 'active', fileScope: ['src/shared.ts'] });
+      fileScopesConflictMock.mockReturnValueOnce(true);
+      internal.scheduler.getRunningTasks = () => [{
+        runId: 'active-run',
+        task: activeTask,
+        projectPath: '/repo',
+        startedAt: Date.now(),
+        promise: Promise.resolve(pipelineResult('approved', { success: true })),
+        executorSettled: Promise.resolve(),
+        abortController: new AbortController(),
+      }];
+
+      const safe = await internal.detectSafeCandidateIds([{ task: candidate, projectPath: '/repo' }]);
+
+      expect(safe).toEqual(new Set());
+      expect(fileScopesConflictMock).toHaveBeenCalledWith(candidate.fileScope, activeTask.fileScope);
+      expect(detectFileConflictsMock).not.toHaveBeenCalled();
+    });
+
     it('serializes a repository when conflict analysis cannot prove tasks disjoint', () => {
       const candidates = [
         { task: task({ id: 'first' }), projectPath: '/repo' },
@@ -255,10 +289,12 @@ describe('AutonomousRunner coverage — safely-reachable helpers', () => {
       expect(internal.sameProjectCandidateCap()).toBeNull();
     });
 
-    it('sameProjectCandidateCap is null when maxConcurrentPerProject is unset', () => {
-      const r = new AutonomousRunner(cfg({ allowSameProjectConcurrent: true, worktreeMode: true }));
+    it('sameProjectCandidateCap uses the shared safe default when the setting is omitted', () => {
+      const r = new AutonomousRunner(cfg({
+        allowSameProjectConcurrent: true, worktreeMode: true, maxConcurrentTasks: 4,
+      }));
       const internal = r as unknown as Internal;
-      expect(internal.sameProjectCandidateCap()).toBeNull();
+      expect(internal.sameProjectCandidateCap()).toBe(2);
     });
 
     it('sameProjectCandidateCap clamps between 1 and maxConcurrentTasks', () => {

@@ -61,7 +61,11 @@ import { loadRepoMetadata } from '../support/repoMetadata.js';
 import { STUCK_LABEL } from '../linear/index.js';
 import { refreshGraph, toProjectSlug } from '../knowledge/index.js';
 import { checkAllMonitors, getActiveMonitors } from './longRunningMonitor.js';
-import { detectFileConflicts } from '../orchestration/conflictDetector.js';
+import {
+  detectFileConflicts,
+  fileScopesConflict,
+  resolveTaskFileScope,
+} from '../orchestration/conflictDetector.js';
 import { resolveAdapterDefaultModel } from '../agents/stageModelResolver.js';
 import type { AutonomousConfig, RunnerState } from './runnerTypes.js';
 import type { AdapterName } from '../adapters/types.js';
@@ -88,6 +92,17 @@ export type { ProjectInfo } from './runnerState.js';
 
 let runnerInstance: AutonomousRunner | null = null;
 const DECISION_SELECTION_OVERSAMPLE = 3;
+
+/** One source of truth for scheduler, heartbeat, and durable admission. */
+export function effectiveProjectConcurrency(config: Pick<AutonomousConfig,
+  'allowSameProjectConcurrent' | 'worktreeMode' | 'maxConcurrentPerProject' | 'maxConcurrentTasks'
+>): number {
+  const globalCap = Math.max(1, Math.floor(config.maxConcurrentTasks ?? 1));
+  const parallel = (config.allowSameProjectConcurrent ?? true) && (config.worktreeMode ?? false);
+  if (!parallel) return 1;
+  const requested = Math.floor(config.maxConcurrentPerProject ?? Math.min(2, globalCap));
+  return Math.max(1, Math.min(requested, globalCap));
+}
 
 export type RunnableCandidate = { task: TaskItem; projectPath: string };
 
@@ -219,10 +234,7 @@ export class AutonomousRunner {
 
   private sameProjectCandidateCap(): number | null {
     const sameProjectParallel = (this.config.allowSameProjectConcurrent ?? true) && (this.config.worktreeMode ?? false);
-    if (!sameProjectParallel || this.config.maxConcurrentPerProject == null) return null;
-    const cap = Math.floor(this.config.maxConcurrentPerProject);
-    const maxConcurrent = this.config.maxConcurrentTasks ?? 1;
-    return Math.max(1, Math.min(cap, maxConcurrent));
+    return sameProjectParallel ? effectiveProjectConcurrency(this.config) : null;
   }
 
   private currentProjectLoad(projectPath: string): number {
@@ -338,7 +350,7 @@ export class AutonomousRunner {
     this.scheduler = initScheduler({
       maxConcurrent: config.maxConcurrentTasks ?? 1,
       allowSameProjectConcurrent: config.allowSameProjectConcurrent ?? true,
-      maxConcurrentPerProject: config.maxConcurrentPerProject,
+      maxConcurrentPerProject: effectiveProjectConcurrency(config),
       worktreeMode: config.worktreeMode ?? false,
     });
 
@@ -348,8 +360,7 @@ export class AutonomousRunner {
       mode: ledgerMode,
       dbPath: config.automationDbPath,
       leaseMs: config.automationLeaseMs,
-      // Same-repo parallelism is never implicit at the durable admission layer.
-      maxActiveForProject: config.maxConcurrentPerProject ?? 1,
+      maxActiveForProject: effectiveProjectConcurrency(config),
     });
 
     // Set up scheduler event handling
@@ -1059,8 +1070,9 @@ export class AutonomousRunner {
         && (this.config.allowSameProjectConcurrent ?? true);
       admission = {
         maxConcurrent: sameRepoParallelAllowed
-          ? (metadata?.automation?.maxConcurrent ?? this.config.maxConcurrentPerProject ?? 1)
+          ? (metadata?.automation?.maxConcurrent ?? effectiveProjectConcurrency(this.config))
           : 1,
+        conflictScope: task.fileScope,
         maxAttemptsPerHour: metadata?.automation?.maxAttemptsPerHour ?? 12,
         maxFailuresPerHour: metadata?.automation?.maxFailuresPerHour ?? 6,
         maxCostUsdPerDay: metadata?.automation?.maxCostUsdPerDay,
@@ -2036,14 +2048,27 @@ export class AutonomousRunner {
     // Detect file conflicts per project using Knowledge Graph
     const safeTasks = new Set<string>(); // task IDs safe to enqueue
     for (const [projPath, group] of byProject) {
-      if (group.length <= 1) {
-        // 단일 태스크 → 충돌 없음
-        for (const c of group) safeTasks.add(c.task.id);
-        continue;
-      }
-
       try {
-        const result = await detectFileConflicts(group.map(c => c.task), projPath);
+        await Promise.all(group.map(c => resolveTaskFileScope(c.task, projPath)));
+
+        // A later heartbeat must compare new candidates with workers that are
+        // already editing another worktree. Candidate-vs-candidate detection
+        // alone leaves a race window across heartbeat cycles.
+        const active = this.scheduler.getRunningTasks()
+          .filter(running => normalizeProjectPath(running.projectPath) === projPath);
+        const runnable = group.filter(candidate => {
+          const conflict = active.some(running => fileScopesConflict(
+            candidate.task.fileScope,
+            running.task.fileScope,
+          ));
+          if (conflict) {
+            this.syslog(`Conflict with active worktree — deferring: ${candidate.task.issueIdentifier || candidate.task.id.slice(0, 8)} ${candidate.task.title}`);
+          }
+          return !conflict;
+        });
+        if (runnable.length === 0) continue;
+
+        const result = await detectFileConflicts(runnable.map(c => c.task), projPath);
 
         for (const t of result.safe) {
           safeTasks.add(t.id);
