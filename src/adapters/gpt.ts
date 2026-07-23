@@ -171,7 +171,7 @@ export class GptCliAdapter implements CliAdapter {
           // 401 → 토큰 갱신 후 1회 재시도
           if (res.status === 401 && !retried) {
             retried = true;
-            token = await refreshAndRetry(store);
+            token = await refreshExpiredProfileForRetry(store);
             return doCall(token);
           }
 
@@ -206,14 +206,13 @@ export class GptCliAdapter implements CliAdapter {
 
 // Streamed chat/completions responses are parsed by consumeChatCompletionsStream.
 
-async function refreshAndRetry(store: AuthProfileStore): Promise<string> {
+export async function refreshExpiredProfileForRetry(store: AuthProfileStore): Promise<string> {
   const profile = store.getProfile(PROFILE_KEY);
   if (!profile) {
     throw new Error('No auth profile found');
   }
   // 강제 갱신 (expires를 0으로 설정)
-  profile.expires = 0;
-  store.setProfile(PROFILE_KEY, profile);
+  store.setProfile(PROFILE_KEY, { ...profile, expires: 0 });
   return ensureValidToken(store, PROFILE_KEY);
 }
 

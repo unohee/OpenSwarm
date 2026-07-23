@@ -91,6 +91,13 @@ describe('track() transport', () => {
     await expect(track({ command: 'run' })).resolves.toBeUndefined();
   });
 
+  it('cancels the unused response body', async () => {
+    const cancel = vi.fn(async () => {});
+    vi.stubGlobal('fetch', vi.fn(async () => ({ body: { cancel } } as unknown as Response)));
+    await track({ command: 'run' });
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
   it('unrefs the timeout so fire-and-forget telemetry does not keep the process alive', async () => {
     const realSetTimeout = globalThis.setTimeout;
     const unref = vi.fn();

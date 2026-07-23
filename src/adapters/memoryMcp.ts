@@ -45,12 +45,21 @@ export function writeClaudeMcpConfig(): string {
  * `codex exec` (TOML dotted paths; values are TOML literals — JSON quoting works).
  */
 export function codexMcpConfigFlags(): string {
+  const args = codexMcpConfigArgs();
+  const flags: string[] = [];
+  for (let i = 0; i < args.length; i += 2) {
+    flags.push(`-c '${args[i + 1].replaceAll("'", "'\\''")}'`);
+  }
+  return flags.join(' ');
+}
+
+/** Argv-safe config overrides for codex exec. */
+export function codexMcpConfigArgs(): string[] {
   const { command, args } = memoryServerLaunch();
   const argsToml = '[' + args.map((a) => JSON.stringify(a)).join(', ') + ']';
   const overrides = [
     `mcp_servers.${MEMORY_MCP_NAME}.command=${JSON.stringify(command)}`,
     `mcp_servers.${MEMORY_MCP_NAME}.args=${argsToml}`,
   ];
-  // Single-quote each override for the shell (inner double quotes are preserved).
-  return overrides.map((o) => `-c '${o}'`).join(' ');
+  return overrides.flatMap((override) => ['-c', override]);
 }

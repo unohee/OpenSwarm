@@ -35,6 +35,8 @@ const MCP_STDIO_ENV_ALLOWLIST = new Set([
   'PATHEXT',
 ]);
 const MAX_MCP_TOOL_RESULT_CHARS = 20_000;
+const MCP_CONNECT_TIMEOUT_MS = 15_000;
+const MCP_OPERATION_TIMEOUT_MS = 30_000;
 const EMPTY_INPUT_SCHEMA: Record<string, unknown> = { type: 'object', properties: {} };
 
 interface ServerConfig {
@@ -219,11 +221,24 @@ function safeInheritedEnv(): Record<string, string> {
   return env;
 }
 
+export async function withDeadline<T>(operation: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([operation, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 async function withClient<T>(cfg: ServerConfig, fn: (c: Client) => Promise<T>): Promise<T> {
   const client = new Client({ name: 'openswarm', version: '0.7.0' }, { capabilities: {} });
   try {
-    await client.connect(makeTransport(cfg));
-    return await fn(client);
+    await withDeadline(client.connect(makeTransport(cfg)), MCP_CONNECT_TIMEOUT_MS, 'MCP connect');
+    return await withDeadline(fn(client), MCP_OPERATION_TIMEOUT_MS, 'MCP operation');
   } finally {
     await client.close().catch(() => {});
   }
@@ -339,19 +354,24 @@ export async function resolveMcpTools(
 }
 
 /** Execute a `server__tool` call against its MCP server. Returns text content. */
-export async function callMcpTool(qualified: string, args: Record<string, unknown>): Promise<string> {
+export interface McpCallResult {
+  content: string;
+  isError: boolean;
+}
+
+export async function callMcpTool(qualified: string, args: Record<string, unknown>): Promise<McpCallResult> {
   const entry = serverByTool[qualified];
-  if (!entry) return `MCP tool not registered: ${qualified}`;
+  if (!entry) return { content: `MCP tool not registered: ${qualified}`, isError: true };
   try {
     const result = (await withClient(entry.cfg, (c) =>
       c.callTool({ name: entry.toolName, arguments: args }),
     )) as { content?: Array<{ type?: string; text?: string }>; isError?: boolean };
     const content = Array.isArray(result.content) ? result.content : [];
     const text = renderMcpToolContent(content);
-    if (result.isError) return `MCP error calling ${qualified}: ${text || '(empty error result)'}`;
-    return text || '(empty result)';
+    if (result.isError) return { content: `MCP error calling ${qualified}: ${text || '(empty error result)'}`, isError: true };
+    return { content: text || '(empty result)', isError: false };
   } catch (err) {
-    return `MCP error calling ${qualified}: ${err instanceof Error ? err.message : String(err)}`;
+    return { content: `MCP error calling ${qualified}: ${err instanceof Error ? err.message : String(err)}`, isError: true };
   }
 }
 
@@ -374,5 +394,7 @@ function renderMcpToolContent(content: Array<{ type?: string; text?: string }>):
       break;
     }
   }
-  return truncated ? `${out}\n[truncated MCP tool result at ${MAX_MCP_TOOL_RESULT_CHARS} chars]` : out;
+  if (!truncated) return out;
+  const marker = `\n[truncated MCP tool result at ${MAX_MCP_TOOL_RESULT_CHARS} chars]`;
+  return `${out.slice(0, MAX_MCP_TOOL_RESULT_CHARS - marker.length)}${marker}`;
 }

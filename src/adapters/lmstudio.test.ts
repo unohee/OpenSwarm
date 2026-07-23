@@ -8,6 +8,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LmStudioAdapter } from './lmstudio.js';
+import { LocalModelAdapter } from './local.js';
 import { getAdapter } from './index.js';
 
 describe('LmStudioAdapter', () => {
@@ -67,6 +68,7 @@ describe('LmStudioAdapter', () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ data: [{ id: 'gemma-4-26b-a4b-it-mlx' }] }), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ data: [{ id: 'gemma-4-26b-a4b-it-mlx' }] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: [{ id: 'gemma-4-26b-a4b-it-mlx' }] }), { status: 200 }))
       .mockResolvedValueOnce(new Response('data: {"choices":[{"delta":{"role":"assistant","content":"LM Studio is ready."},"finish_reason":"stop"}]}\n\ndata: [DONE]\n', { status: 200, headers: { 'Content-Type': 'text/event-stream' } }));
     vi.stubGlobal('fetch', fetchMock);
 
@@ -88,5 +90,29 @@ describe('LmStudioAdapter', () => {
     expect(chatCall?.[0]).toBe('http://127.0.0.1:4321/v1/chat/completions');
     const body = JSON.parse(chatCall?.[1]?.body as string) as { model: string };
     expect(body.model).toBe('gemma-4-26b-a4b-it-mlx');
+  });
+
+  it('rediscovers a healthy endpoint when the previously selected server disappears', async () => {
+    const stream = 'data: {"choices":[{"delta":{"role":"assistant","content":"fallback"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n';
+    let primaryHealthChecks = 0;
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url === 'http://primary/v1/models') {
+        primaryHealthChecks += 1;
+        if (primaryHealthChecks > 1) throw new TypeError('primary offline');
+      }
+      if (url.endsWith('/v1/chat/completions')) {
+        return new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+      }
+      return new Response(JSON.stringify({ data: [{ id: 'local-model' }] }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const adapter = new LocalModelAdapter({ endpoints: ['http://primary', 'http://fallback'] });
+    await expect(adapter.isAvailable()).resolves.toBe(true);
+    expect(adapter.getActiveUrl()).toBe('http://primary');
+
+    await expect(adapter.run({ prompt: 'hello', cwd: process.cwd() })).resolves.toMatchObject({ exitCode: 0 });
+    expect(adapter.getActiveUrl()).toBe('http://fallback');
+    expect(fetchMock.mock.calls.at(-1)?.[0]).toBe('http://fallback/v1/chat/completions');
   });
 });

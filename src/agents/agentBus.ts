@@ -91,6 +91,17 @@ export interface SharedContext {
 // Bus Implementation (File-based)
 
 const BUS_DIR = resolve(homedir(), '.openswarm/bus');
+const CONTEXT_LOCK_STALE_MS = 30_000;
+
+function assertExecutionId(executionId: string): void {
+  if (
+    !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(executionId) ||
+    executionId === '.' ||
+    executionId === '..'
+  ) {
+    throw new Error(`Invalid AgentBus execution ID: ${JSON.stringify(executionId)}`);
+  }
+}
 
 /**
  * Message bus class
@@ -99,14 +110,18 @@ export class AgentBus {
   private executionId: string;
   private contextPath: string;
   private messagesPath: string;
-  private listeners: Map<MessageType, Array<(msg: AgentMessage) => void>> = new Map();
+  private listeners: Map<MessageType, Array<(msg: AgentMessage) => void | Promise<void>>> = new Map();
   private pollInterval: NodeJS.Timeout | null = null;
-  private lastMessageId: string = '';
+  private pollPromise: Promise<void> | null = null;
+  private readonly processedMessageIds = new Set<string>();
+  private readonly contextLockPath: string;
 
   constructor(executionId: string) {
+    assertExecutionId(executionId);
     this.executionId = executionId;
     this.contextPath = resolve(BUS_DIR, executionId, 'context.json');
     this.messagesPath = resolve(BUS_DIR, executionId, 'messages');
+    this.contextLockPath = resolve(BUS_DIR, executionId, 'context.lock');
   }
 
   /**
@@ -172,75 +187,48 @@ export class AgentBus {
    * Handle step completion
    */
   private async handleStepCompleted(payload: StepCompletedPayload): Promise<void> {
-    const context = await this.getContext();
-    if (!context) return;
-
-    context.stepOutputs[payload.stepId] = payload.output;
-
-    if (payload.changedFiles) {
-      for (const file of payload.changedFiles) {
-        if (!context.changedFiles.includes(file)) {
-          context.changedFiles.push(file);
+    await this.mutateContext((context) => {
+      context.stepOutputs[payload.stepId] = payload.output;
+      if (payload.changedFiles) {
+        for (const file of payload.changedFiles) {
+          if (!context.changedFiles.includes(file)) context.changedFiles.push(file);
         }
       }
-    }
-
-    await this.saveContext(context);
+    });
   }
 
   /**
    * Handle context update
    */
   private async handleContextUpdate(payload: ContextUpdatePayload): Promise<void> {
-    const context = await this.getContext();
-    if (!context) return;
-
-    switch (payload.operation) {
-      case 'set':
-        context.data[payload.key] = payload.value;
-        break;
-      case 'append':
-        if (!Array.isArray(context.data[payload.key])) {
-          context.data[payload.key] = [];
-        }
-        (context.data[payload.key] as unknown[]).push(payload.value);
-        break;
-      case 'delete':
-        delete context.data[payload.key];
-        break;
-    }
-
-    await this.saveContext(context);
+    await this.mutateContext((context) => {
+      switch (payload.operation) {
+        case 'set': context.data[payload.key] = payload.value; break;
+        case 'append':
+          if (!Array.isArray(context.data[payload.key])) context.data[payload.key] = [];
+          (context.data[payload.key] as unknown[]).push(payload.value);
+          break;
+        case 'delete': delete context.data[payload.key]; break;
+      }
+    });
   }
 
   /**
    * Handle file change
    */
   private async handleFileChanged(payload: FileChangedPayload): Promise<void> {
-    const context = await this.getContext();
-    if (!context) return;
-
-    if (!context.changedFiles.includes(payload.path)) {
-      context.changedFiles.push(payload.path);
-    }
-
-    await this.saveContext(context);
+    await this.mutateContext((context) => {
+      if (!context.changedFiles.includes(payload.path)) context.changedFiles.push(payload.path);
+    });
   }
 
   /**
    * Handle error
    */
   private async handleError(stepId: string, message: string): Promise<void> {
-    const context = await this.getContext();
-    if (!context) return;
-
-    context.errors.push({
-      stepId,
-      message,
-      timestamp: Date.now(),
+    await this.mutateContext((context) => {
+      context.errors.push({ stepId, message, timestamp: Date.now() });
     });
-
-    await this.saveContext(context);
   }
 
   /**
@@ -259,7 +247,53 @@ export class AgentBus {
    * Save context
    */
   private async saveContext(context: SharedContext): Promise<void> {
-    await fs.writeFile(this.contextPath, JSON.stringify(context, null, 2));
+    const temp = `${this.contextPath}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+    await fs.writeFile(temp, JSON.stringify(context, null, 2), { mode: 0o600 });
+    await fs.rename(temp, this.contextPath);
+  }
+
+  private async mutateContext(mutator: (context: SharedContext) => void): Promise<void> {
+    await this.withContextLock(async () => {
+      const context = await this.getContext();
+      if (!context) return;
+      mutator(context);
+      await this.saveContext(context);
+    });
+  }
+
+  private async withContextLock<T>(operation: () => Promise<T>): Promise<T> {
+    const deadline = Date.now() + 10_000;
+    while (true) {
+      try {
+        await fs.mkdir(this.contextLockPath);
+        break;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        if (await this.recoverStaleContextLock()) continue;
+        if (Date.now() >= deadline) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+    }
+    try {
+      return await operation();
+    } finally {
+      await fs.rmdir(this.contextLockPath).catch(() => {});
+    }
+  }
+
+  private async recoverStaleContextLock(): Promise<boolean> {
+    try {
+      const stats = await fs.stat(this.contextLockPath);
+      if (Date.now() - stats.mtimeMs < CONTEXT_LOCK_STALE_MS) return false;
+      const stalePath = `${this.contextLockPath}.stale.${process.pid}.${Math.random().toString(36).slice(2)}`;
+      await fs.rename(this.contextLockPath, stalePath);
+      await fs.rm(stalePath, { recursive: true, force: true });
+      console.warn(`[AgentBus] Recovered stale context lock for ${this.executionId}`);
+      return true;
+    } catch (error) {
+      if (['ENOENT', 'EEXIST'].includes((error as NodeJS.ErrnoException).code ?? '')) return false;
+      throw error;
+    }
   }
 
   /**
@@ -300,7 +334,7 @@ export class AgentBus {
   /**
    * Register message listener
    */
-  on(type: MessageType, callback: (msg: AgentMessage) => void): void {
+  on(type: MessageType, callback: (msg: AgentMessage) => void | Promise<void>): void {
     if (!this.listeners.has(type)) {
       this.listeners.set(type, []);
     }
@@ -313,8 +347,8 @@ export class AgentBus {
   startPolling(intervalMs: number = 1000): void {
     if (this.pollInterval) return;
 
-    this.pollInterval = setInterval(async () => {
-      await this.checkNewMessages();
+    this.pollInterval = setInterval(() => {
+      void this.pollOnce();
     }, intervalMs);
   }
 
@@ -331,11 +365,19 @@ export class AgentBus {
   /**
    * Check for new messages
    */
+  pollOnce(): Promise<void> {
+    if (this.pollPromise) return this.pollPromise;
+    this.pollPromise = this.checkNewMessages().finally(() => {
+      this.pollPromise = null;
+    });
+    return this.pollPromise;
+  }
+
   private async checkNewMessages(): Promise<void> {
     try {
       const files = await fs.readdir(this.messagesPath);
       const newFiles = files
-        .filter(f => f.endsWith('.json') && f > this.lastMessageId)
+        .filter(f => f.endsWith('.json') && !this.processedMessageIds.has(f))
         .sort();
 
       for (const file of newFiles) {
@@ -346,11 +388,15 @@ export class AgentBus {
         const callbacks = this.listeners.get(message.type);
         if (callbacks) {
           for (const cb of callbacks) {
-            cb(message);
+            try {
+              await cb(message);
+            } catch (error) {
+              console.warn(`[AgentBus] Listener failed for ${message.type}:`, error instanceof Error ? error.message : String(error));
+            }
           }
         }
 
-        this.lastMessageId = file;
+        this.processedMessageIds.add(file);
       }
     } catch {
       // Ignore

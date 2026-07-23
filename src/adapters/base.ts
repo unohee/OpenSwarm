@@ -14,7 +14,7 @@ import { codexMcpAuthHint } from './errorClassification.js';
 
 /**
  * Spawn a CLI process using the given adapter and options.
- * Handles: temp file write, spawn with shell, timeout/SIGKILL,
+ * Handles: temp file write, argv-safe spawn, timeout/SIGKILL,
  * stdout/stderr buffering, stream parsing via onLog, cleanup.
  */
 export async function spawnCli(
@@ -28,27 +28,32 @@ export async function spawnCli(
 
   const promptFile = `/tmp/openswarm-prompt-${Date.now()}.txt`;
   await fs.writeFile(promptFile, options.prompt);
+  let cleanupPaths: string[] = [];
 
   try {
-    const { command, args } = adapter.buildCommand({
+    const commandSpec = adapter.buildCommand({
       ...options,
       // Pass the temp file path as the prompt so buildCommand can reference it
       prompt: promptFile,
     });
+    const { command, args, stdinFile } = commandSpec;
+    cleanupPaths = commandSpec.cleanupPaths ?? [];
 
-    const cmd = [command, ...args].join(' ');
+    const stdin = stdinFile ? await fs.readFile(stdinFile) : undefined;
     const startTime = Date.now();
 
     return await new Promise<CliRunResult>((resolve, reject) => {
-      const proc = spawn(cmd, {
-        shell: true,
+      const proc = spawn(command, args, {
+        shell: false,
         cwd: options.cwd,
         // Inject OpenSwarm's bundled node_modules/.bin (gives workers access
         // to `cxt` and other shipped CLIs) without touching the user's shell
         // PATH or ~/.claude/ config.
         env: buildWorkerEnv(process.env),
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: [stdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
       });
+
+      if (stdin) proc.stdin?.end(stdin);
 
       // Register process for tracking if context provided
       if (options.processContext && proc.pid) {
@@ -145,6 +150,9 @@ export async function spawnCli(
       await fs.unlink(promptFile);
     } catch {
       // Ignore cleanup errors
+    }
+    for (const cleanupPath of cleanupPaths) {
+      await fs.rm(cleanupPath, { recursive: true, force: true }).catch(() => {});
     }
   }
 }

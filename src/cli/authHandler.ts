@@ -38,8 +38,6 @@ function assertProvider(provider: string): asserts provider is Provider {
 export interface AuthLoginOpts {
   clientId?: string;
   port?: number;
-  /** OpenRouter: PKCE 없이 직접 입력받은 API key */
-  apiKey?: string;
 }
 
 /**
@@ -71,14 +69,8 @@ export async function handleAuthLogin(
 }
 
 async function loginOpenRouter(opts: AuthLoginOpts): Promise<void> {
-  // 1) Explicit --api-key wins.
-  if (opts.apiKey) {
-    saveOpenRouterApiKey(opts.apiKey);
-    console.log(`[Auth] OpenRouter API key 저장 완료: ${PROFILE_KEYS.openrouter}`);
-    return;
-  }
-
-  // 2) OPENROUTER_API_KEY env (headless / CI).
+  // API keys must never be supplied through argv because process listings and
+  // shell history expose them. Use the environment or hidden prompt instead.
   const envKey = process.env.OPENROUTER_API_KEY?.trim();
   if (envKey) {
     saveOpenRouterApiKey(envKey);
@@ -88,7 +80,7 @@ async function loginOpenRouter(opts: AuthLoginOpts): Promise<void> {
     return;
   }
 
-  // 3) PKCE browser flow (primary path).
+  // PKCE browser flow (primary path).
   try {
     await loginAndSaveOpenRouterProfile(opts.port);
     return;
@@ -98,7 +90,7 @@ async function loginOpenRouter(opts: AuthLoginOpts): Promise<void> {
     console.error('[Auth] API 키 직접 입력으로 전환합니다.');
   }
 
-  // 4) Interactive API-key fallback when PKCE could not complete.
+  // Interactive API-key fallback when PKCE could not complete.
   const manualKey = await promptForApiKey();
   saveOpenRouterApiKey(manualKey);
   console.log(`[Auth] OpenRouter API key 저장 완료: ${PROFILE_KEYS.openrouter}`);
@@ -106,7 +98,7 @@ async function loginOpenRouter(opts: AuthLoginOpts): Promise<void> {
 
 function promptForApiKey(): Promise<string> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    throw new Error('비대화형 환경에서는 --api-key 또는 OPENROUTER_API_KEY를 사용하세요.');
+    throw new Error('비대화형 환경에서는 OPENROUTER_API_KEY를 사용하세요.');
   }
 
   return password({ message: 'OpenRouter API key (hidden):' }).then((answer) => {

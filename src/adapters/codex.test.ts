@@ -5,48 +5,49 @@ describe('CodexCliAdapter', () => {
   const adapter = new CodexCliAdapter();
 
   it('builds a codex exec command with sandbox json mode', () => {
-    const { command } = adapter.buildCommand({
+    const { command, args, stdinFile } = adapter.buildCommand({
       prompt: '/tmp/prompt.txt',
       cwd: '/tmp/project',
       model: 'gpt-5-codex',
     });
 
-    expect(command).toContain('codex exec');
-    expect(command).toContain('--json');
+    expect(command).toBe('codex');
+    expect(args).toContain('exec');
+    expect(args).toContain('--json');
     // --full-auto was deprecated in codex 0.137 → --sandbox workspace-write (INT-1699)
-    expect(command).toContain('--sandbox workspace-write');
-    expect(command).not.toContain('--full-auto');
-    expect(command).toContain('--skip-git-repo-check');
-    expect(command).toContain("-m 'gpt-5-codex'");
+    expect(args).toContain('workspace-write');
+    expect(args).not.toContain('--full-auto');
+    expect(args).toContain('--skip-git-repo-check');
+    expect(args.slice(args.indexOf('-m'), args.indexOf('-m') + 2)).toEqual(['-m', 'gpt-5-codex']);
     // Memory MCP server is registered so codex can call search_memory (INT-1855)
-    expect(command).toContain("-c 'mcp_servers.openswarm_memory.command=");
-    expect(command).toContain("-c 'mcp_servers.openswarm_memory.args=[");
+    expect(args.some((arg) => arg.startsWith('mcp_servers.openswarm_memory.command='))).toBe(true);
+    expect(args.some((arg) => arg.startsWith('mcp_servers.openswarm_memory.args=['))).toBe(true);
+    expect(stdinFile).toBe('/tmp/prompt.txt');
   });
 
   it('omits the memory MCP flags when memoryTools=false', () => {
-    const { command } = adapter.buildCommand({
+    const { args } = adapter.buildCommand({
       prompt: '/tmp/prompt.txt',
       cwd: '/tmp/project',
       model: 'gpt-5-codex',
       memoryTools: false,
     });
 
-    expect(command).toContain('codex exec');
-    expect(command).not.toContain('openswarm_memory');
-    expect(command).not.toContain("mcp_servers.openswarm_memory");
+    expect(args).toContain('exec');
+    expect(args.join(' ')).not.toContain('openswarm_memory');
   });
 
   it('substitutes a claude model with the codex default and warns', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const { command } = adapter.buildCommand({
+      const { args } = adapter.buildCommand({
         prompt: '/tmp/prompt.txt',
         cwd: '/tmp/project',
         model: 'claude-sonnet-4-20250514',
       });
       // Should not pass the claude model through to the codex CLI.
-      expect(command).not.toContain('claude-sonnet');
-      expect(command).toContain("-m 'gpt-5-codex'");
+      expect(args).not.toContain('claude-sonnet-4-20250514');
+      expect(args.slice(args.indexOf('-m'), args.indexOf('-m') + 2)).toEqual(['-m', 'gpt-5-codex']);
       // Warning emitted at least once for this model name.
       const messages = warn.mock.calls.map((c) => String(c[0]));
       expect(messages.some((m) => m.includes('claude-sonnet-4-20250514'))).toBe(true);

@@ -10,6 +10,7 @@ import {
   resolveMcpTools,
   initMcpTools,
   callMcpTool,
+  withDeadline,
 } from './mcpClient.js';
 import type { ToolDefinition } from '../adapters/tools.js';
 
@@ -170,7 +171,7 @@ describe('initMcpTools / callMcpTool regressions', () => {
     const defs = await initMcpTools(registry);
 
     expect(defs.map((d) => d.function.name)).toEqual(['svc__ok_tool']);
-    expect(await callMcpTool('svc__bad.tool', {})).toBe('MCP tool not registered: svc__bad.tool');
+    expect(await callMcpTool('svc__bad.tool', {})).toEqual({ content: 'MCP tool not registered: svc__bad.tool', isError: true });
   });
 
   it('propagates MCP callTool isError responses as tool failures', async () => {
@@ -183,8 +184,38 @@ describe('initMcpTools / callMcpTool regressions', () => {
       isError: true,
     });
 
-    await expect(callMcpTool('svc__fail_tool', {})).resolves.toBe(
-      'MCP error calling svc__fail_tool: permission denied',
-    );
+    await expect(callMcpTool('svc__fail_tool', {})).resolves.toEqual({
+      content: 'MCP error calling svc__fail_tool: permission denied',
+      isError: true,
+    });
+  });
+
+  it('returns a typed successful result', async () => {
+    clientMock.listTools.mockResolvedValue({ tools: [{ name: 'ok', inputSchema: { type: 'object' } }] });
+    await initMcpTools(registry);
+    clientMock.callTool.mockResolvedValue({ content: [{ type: 'text', text: 'done' }] });
+    await expect(callMcpTool('svc__ok', {})).resolves.toEqual({ content: 'done', isError: false });
+  });
+
+  it('keeps the truncation marker inside the configured result cap', async () => {
+    clientMock.listTools.mockResolvedValue({ tools: [{ name: 'large', inputSchema: { type: 'object' } }] });
+    await initMcpTools(registry);
+    clientMock.callTool.mockResolvedValue({ content: [{ type: 'text', text: 'x'.repeat(25_000) }] });
+
+    const result = await callMcpTool('svc__large', {});
+    expect(result.content).toHaveLength(20_000);
+    expect(result.content).toContain('[truncated MCP tool result');
+  });
+});
+
+describe('withDeadline', () => {
+  it('rejects a stalled MCP operation at its deadline', async () => {
+    vi.useFakeTimers();
+    const pending = new Promise<never>(() => {});
+    const result = withDeadline(pending, 25, 'MCP test');
+    const assertion = expect(result).rejects.toThrow('MCP test timed out after 25ms');
+    await vi.advanceTimersByTimeAsync(25);
+    await assertion;
+    vi.useRealTimers();
   });
 });

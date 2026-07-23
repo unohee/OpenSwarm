@@ -169,12 +169,13 @@ export async function track(opts: TrackOptions): Promise<void> {
       timer.unref();
     }
     try {
-      await fetch(endpoint, {
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'User-Agent': `OpenSwarm/${version}` },
         body: JSON.stringify(payload),
         signal: controller.signal,
       });
+      await response.body?.cancel().catch(() => {});
     } finally {
       clearTimeout(timer);
     }

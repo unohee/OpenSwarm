@@ -110,7 +110,7 @@ async function runQualityGate(
 
   if (pyFiles.length > 0) {
     try {
-      await execFileAsync('ruff', ['check', ...pyFiles], {
+      await execFileAsync('ruff', ['check', '--', ...pyFiles], {
         cwd: projectPath,
         timeout: 60_000,
       });

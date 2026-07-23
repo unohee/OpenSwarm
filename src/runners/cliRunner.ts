@@ -217,6 +217,7 @@ export async function runCli(options: CliRunOptions): Promise<void> {
   try {
     result = await pipeline.run(task, projectPath);
   } catch (error) {
+    stopHeartbeat();
     console.error('\n  Pipeline execution failed:', error instanceof Error ? error.message : error);
     process.exit(1);
   }

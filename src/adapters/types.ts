@@ -128,6 +128,15 @@ export interface AdapterCapabilities {
   supportedSkills: string[];
 }
 
+export interface CliCommandSpec {
+  command: string;
+  args: string[];
+  /** Feed this file to child stdin without involving a shell or argv. */
+  stdinFile?: string;
+  /** Adapter-owned temporary paths removed after the child settles. */
+  cleanupPaths?: string[];
+}
+
 /**
  * CLI adapter interface — all adapters must implement this
  */
@@ -147,8 +156,8 @@ export interface CliAdapter {
    */
   getDefaultModel(): Promise<string>;
 
-  /** Build the shell command and args for execution */
-  buildCommand(options: CliRunOptions): { command: string; args: string[] };
+  /** Build an executable + argv. Shell interpretation is never applied. */
+  buildCommand(options: CliRunOptions): CliCommandSpec;
 
   /**
    * Parse incremental stdout chunks for live log streaming.

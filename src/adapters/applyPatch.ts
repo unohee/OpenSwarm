@@ -82,9 +82,7 @@ export function parseV4A(patchText: string): FileOp[] {
       }
     }
   }
-  // No explicit End marker — finalize what we have.
-  pushOp();
-  return ops;
+  throw new Error('missing "*** End Patch"');
 }
 
 /** Locate `block` in `content` lines; return start index, or -1. Tries exact, then trimEnd-fuzzy. */

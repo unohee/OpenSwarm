@@ -9,7 +9,7 @@
 
 import { spawn, execFile } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync, statSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, unlinkSync, writeFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -267,11 +267,29 @@ export async function stopExternalDaemon(timeoutMs = 10_000): Promise<ExternalSt
  * show why the daemon exited when it dies during startup.
  */
 export function readLogTail(lines = 20): string {
+  if (!Number.isSafeInteger(lines) || lines <= 0) return '';
+  let fd: number | null = null;
   try {
-    const content = readFileSync(LOG_FILE, 'utf8');
-    return content.split('\n').slice(-lines).join('\n').trimEnd();
+    fd = openSync(LOG_FILE, 'r');
+    const size = fstatSync(fd).size;
+    const chunks: Buffer[] = [];
+    const blockSize = 64 * 1024;
+    let position = size;
+    let newlineCount = 0;
+    while (position > 0 && newlineCount <= lines) {
+      const length = Math.min(blockSize, position);
+      position -= length;
+      const chunk = Buffer.allocUnsafe(length);
+      readSync(fd, chunk, 0, length, position);
+      chunks.unshift(chunk);
+      for (const byte of chunk) if (byte === 0x0a) newlineCount++;
+    }
+    const content = Buffer.concat(chunks).toString('utf8').trimEnd();
+    return content ? content.split('\n').slice(-lines).join('\n') : '';
   } catch {
     return '(log file unavailable)';
+  } finally {
+    if (fd !== null) closeSync(fd);
   }
 }
 

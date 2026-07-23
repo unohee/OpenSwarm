@@ -3,7 +3,7 @@
 // OpenSwarm - CLI Entry Point
 // `openswarm run`, `openswarm init`, `openswarm validate`, `openswarm chat`, `openswarm start`
 
-import { Command, InvalidArgumentError } from 'commander';
+import { Command } from 'commander';
 import { writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +14,7 @@ import { loadConfig, validateConfig, generateSampleConfig } from './core/config.
 import { loadEnvFile } from './core/envFile.js';
 import { initTelemetry, track } from './telemetry/telemetry.js';
 import { maybeAutoUpdate } from './support/updateNotifier.js';
+import { parsePositiveIntegerOption, parseTcpPortOption } from './cli/optionParsers.js';
 
 // Load .env so CLI commands (e.g. `auth login --provider linear` reading
 // LINEAR_OAUTH_CLIENT_ID) see the same env the daemon does. Idempotent; never
@@ -27,18 +28,6 @@ const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8
 const VERSION = pkg.version;
 
 const program = new Command();
-
-function parsePositiveIntegerOption(value: string): number {
-  const trimmed = value.trim();
-  if (!/^[1-9]\d*$/.test(trimmed)) {
-    throw new InvalidArgumentError('must be a positive integer');
-  }
-  const parsed = Number(trimmed);
-  if (!Number.isSafeInteger(parsed)) {
-    throw new InvalidArgumentError('must be a safe positive integer');
-  }
-  return parsed;
-}
 
 function loadTelemetryEnabledQuietly(quiet: boolean): boolean | undefined {
   if (!quiet) return loadConfig().telemetry?.enabled;
@@ -400,7 +389,7 @@ program
   .description('Execute a task via the running daemon (auto-starts if needed)')
   .argument('<prompt>', 'Task prompt to execute')
   .option('--path <path>', 'Project path (default: cwd)')
-  .option('--timeout <seconds>', 'Timeout in seconds (default: 600)', parseInt)
+  .option('--timeout <seconds>', 'Timeout in seconds (default: 600)', parsePositiveIntegerOption)
   .option('--no-auto-start', 'Do not auto-start the service')
   .option('--local', 'Execute locally without daemon')
   .option('--pipeline', 'Full pipeline: worker + reviewer + tester + documenter')
@@ -541,10 +530,10 @@ program
 program
   .command('dash')
   .description('Open the web dashboard in a browser')
-  .option('-p, --port <port>', 'Port number', '3847')
+  .option('-p, --port <port>', 'Port number', parseTcpPortOption, 3847)
   .option('--no-open', 'Start server without opening browser')
-  .action(async (opts: { port: string; open: boolean }) => {
-    const port = parseInt(opts.port, 10);
+  .action(async (opts: { port: number; open: boolean }) => {
+    const port = opts.port;
     const { startWebServer } = await import('./support/web.js');
     await startWebServer(port);
     console.log(`Dashboard running at http://localhost:${port}`);
@@ -640,9 +629,8 @@ authCmd
   .description('Login via OAuth/PKCE (gpt, openrouter, linear)')
   .option('--provider <provider>', 'Provider to authenticate (gpt | openrouter | linear)', 'gpt')
   .option('--client-id <clientId>', 'GPT only: override OAuth Client ID (defaults to the public Codex client)')
-  .option('--api-key <apiKey>', 'OpenRouter only: skip browser flow and store this sk-or-* key directly')
-  .option('--port <port>', 'Callback server port', parseInt)
-  .action(async (opts: { provider: string; clientId?: string; apiKey?: string; port?: number }) => {
+  .option('--port <port>', 'Callback server port', parseTcpPortOption)
+  .action(async (opts: { provider: string; clientId?: string; port?: number }) => {
     const { handleAuthLogin } = await import('./cli/authHandler.js');
     await handleAuthLogin(opts.provider, opts);
   });

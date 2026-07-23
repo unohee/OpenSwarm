@@ -8,7 +8,7 @@
 // ============================================
 
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -48,7 +48,7 @@ describe('pipelineGuards — additional coverage', () => {
     writeFileSync(tscFixture, '#!/bin/sh\nif [ -f bad.ts ]; then exit 1; fi\n');
     chmodSync(tscFixture, 0o755);
     const ruffFixture = join(fixtureBin, 'ruff');
-    writeFileSync(ruffFixture, '#!/bin/sh\nshift\nif grep -q "import os" "$@"; then exit 1; fi\n');
+    writeFileSync(ruffFixture, '#!/bin/sh\nif [ -n "$RUFF_ARGS_LOG" ]; then printf "%s\\n" "$@" > "$RUFF_ARGS_LOG"; fi\nshift\nif grep -q "import os" "$@"; then exit 1; fi\n');
     chmodSync(ruffFixture, 0o755);
     originalPath = process.env.PATH;
     process.env.PATH = `${fixtureBin}:${originalPath ?? ''}`;
@@ -56,6 +56,7 @@ describe('pipelineGuards — additional coverage', () => {
 
   afterEach(() => {
     process.env.PATH = originalPath;
+    delete process.env.RUFF_ARGS_LOG;
     if (existsSync(repo)) rmSync(repo, { recursive: true, force: true });
   });
 
@@ -104,6 +105,19 @@ describe('pipelineGuards — additional coverage', () => {
       const issues = guardIssues(res, 'qualityGate');
       expect(issues.some(i => i.includes('Ruff check failed'))).toBe(true);
       expect(res.allPassed).toBe(false);
+    }, 30000);
+
+    it('separates Ruff options from adversarial Python filenames with --', async () => {
+      const file = '--select.py';
+      const argsLog = join(repo, 'ruff-args.txt');
+      process.env.RUFF_ARGS_LOG = argsLog;
+      writeFileSync(join(repo, file), 'x = 1\n');
+
+      const res = await runGuards(mockWorker([file]), repo, { qualityGate: true });
+
+      expect(res.allPassed).toBe(true);
+      expect(readFileSync(argsLog, 'utf8').trim().split('\n')).toEqual(['check', '--', file]);
+      delete process.env.RUFF_ARGS_LOG;
     }, 30000);
   });
 
