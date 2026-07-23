@@ -12,6 +12,7 @@ import { getAdapter, spawnCli } from '../adapters/index.js';
 import { mapModelForProvider } from '../adapters/modelCompat.js';
 import { RateLimitError } from '../adapters/rateLimitError.js';
 import { expandPath } from '../core/config.js';
+import { z } from 'zod';
 
 // Types
 
@@ -55,6 +56,55 @@ export interface PlannerResult {
   totalEstimatedMinutes: number;
   error?: string;
   costInfo?: CostInfo;
+}
+
+const subTaskSchema = z.object({
+  title: z.string().trim().min(1).max(300),
+  description: z.string().trim().min(1).max(20_000),
+  estimatedMinutes: z.number().int().min(1).max(24 * 60),
+  priority: z.number().int().min(1).max(4),
+  dependencies: z.array(z.string().trim().min(1).max(300)).max(100).optional(),
+  fileScope: z.array(z.string().trim().min(1).max(2_000)).max(1_000).optional(),
+});
+
+const plannerOutputSchema = z.object({
+  needsDecomposition: z.boolean(),
+  reason: z.string().trim().max(20_000).optional(),
+  subTasks: z.array(subTaskSchema).max(100),
+  totalEstimatedMinutes: z.number().finite().nonnegative().max(100 * 24 * 60),
+}).superRefine((value, ctx) => {
+  if (value.needsDecomposition && value.subTasks.length === 0) {
+    ctx.addIssue({ code: 'custom', path: ['subTasks'], message: 'must contain at least one task when decomposition is required' });
+  }
+  const titles = new Set<string>();
+  for (const [index, task] of value.subTasks.entries()) {
+    if (titles.has(task.title)) ctx.addIssue({ code: 'custom', path: ['subTasks', index, 'title'], message: 'duplicate task title' });
+    titles.add(task.title);
+  }
+});
+
+function validatedPlannerResult(value: unknown, originalTitle: string): PlannerResult {
+  const parsed = plannerOutputSchema.safeParse(value);
+  if (!parsed.success) {
+    const evidence = parsed.error.issues
+      .slice(0, 5)
+      .map((issue) => `${issue.path.join('.') || '<root>'}: ${issue.message}`)
+      .join('; ');
+    return {
+      success: false,
+      originalIssue: originalTitle,
+      needsDecomposition: false,
+      subTasks: [],
+      totalEstimatedMinutes: 0,
+      reason: 'Planner output failed structural validation',
+      error: `Invalid planner output: ${evidence}`,
+    };
+  }
+  return {
+    success: true,
+    originalIssue: originalTitle,
+    ...parsed.data,
+  };
 }
 
 // Prompts
@@ -184,14 +234,7 @@ function parsePlannerOutput(output: string, originalTitle: string): PlannerResul
         const parsed = JSON.parse(jsonBlockMatch[1]) as Record<string, unknown>;
         if ('needsDecomposition' in parsed) {
           console.log('[Planner] Parsed JSON block from plain text output');
-          return {
-            success: true,
-            originalIssue: originalTitle,
-            needsDecomposition: Boolean(parsed.needsDecomposition),
-            reason: parsed.reason as string | undefined,
-            subTasks: Array.isArray(parsed.subTasks) ? parsed.subTasks as SubTask[] : [],
-            totalEstimatedMinutes: (parsed.totalEstimatedMinutes as number) || 0,
-          };
+          return validatedPlannerResult(parsed, originalTitle);
         }
       } catch { /* not valid JSON, try other methods */ }
     }
@@ -235,15 +278,8 @@ function parsePlanResult(resultText: string, originalTitle: string): PlannerResu
     return extractFromText(resultText, originalTitle);
   }
 
-  const parsed = JSON.parse(jsonMatch[1]) as Record<string, unknown>;
-  return {
-    success: true,
-    originalIssue: originalTitle,
-    needsDecomposition: Boolean(parsed.needsDecomposition),
-    reason: parsed.reason as string | undefined,
-    subTasks: Array.isArray(parsed.subTasks) ? parsed.subTasks as SubTask[] : [],
-    totalEstimatedMinutes: (parsed.totalEstimatedMinutes as number) || 0,
-  };
+  const parsed = JSON.parse(jsonMatch[1]) as unknown;
+  return validatedPlannerResult(parsed, originalTitle);
 }
 
 /**
@@ -265,15 +301,8 @@ function parseDirectJson(text: string, startIdx: number, originalTitle: string):
   }
 
   try {
-    const parsed = JSON.parse(text.slice(startIdx, endIdx));
-    return {
-      success: true,
-      originalIssue: originalTitle,
-      needsDecomposition: Boolean(parsed.needsDecomposition),
-      reason: parsed.reason,
-      subTasks: Array.isArray(parsed.subTasks) ? parsed.subTasks : [],
-      totalEstimatedMinutes: parsed.totalEstimatedMinutes || 0,
-    };
+    const parsed = JSON.parse(text.slice(startIdx, endIdx)) as unknown;
+    return validatedPlannerResult(parsed, originalTitle);
   } catch {
     return extractFromText(text, originalTitle);
   }

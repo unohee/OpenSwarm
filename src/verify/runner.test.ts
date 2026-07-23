@@ -41,6 +41,31 @@ describe('runVerify', () => {
     expect(git('worktree', 'list', '--porcelain')).not.toContain('openswarm-verify-base-');
   });
 
+  it('does not expose supervisor secrets or the supervisor home to verification code', async () => {
+    const originalSecret = process.env.OPENSWARM_VERIFY_SECRET;
+    process.env.OPENSWARM_VERIFY_SECRET = 'must-not-leak';
+    try {
+      const [evidence] = await runVerify({
+        projectPath: repo,
+        commands: [verify('test -z "$OPENSWARM_VERIFY_SECRET"; test "$HOME" != "' + process.env.HOME + '"')],
+        baseRef: 'HEAD',
+      });
+      expect(evidence.headStatus).toBe('pass');
+    } finally {
+      if (originalSecret === undefined) delete process.env.OPENSWARM_VERIFY_SECRET;
+      else process.env.OPENSWARM_VERIFY_SECRET = originalSecret;
+    }
+  });
+
+  it('runs each verification command from a fresh HEAD sandbox', async () => {
+    const evidence = await runVerify({
+      projectPath: repo,
+      commands: [verify('touch leaked-artifact'), verify('test ! -e leaked-artifact')],
+      baseRef: 'HEAD',
+    });
+    expect(evidence.map((item) => item.headStatus)).toEqual(['pass', 'pass']);
+  });
+
   it.each(['node_modules', '.venv'])('does not write through shared %s during head verification', async (sharedPath) => {
     await mkdir(join(repo, sharedPath), { recursive: true });
     await writeFile(join(repo, sharedPath, 'state.txt'), 'original\n');
@@ -68,6 +93,33 @@ describe('runVerify', () => {
 
     expect(evidence).toMatchObject({ headStatus: 'fail', baseStatus: 'pass', newFailure: true });
     expect(await readFile(join(repo, 'node_modules', 'state.txt'), 'utf8')).toBe('original\n');
+  });
+
+  it('rejects a worker-created symlink that could write outside the verification sandbox', async () => {
+    const outside = join(root, 'outside.txt');
+    await writeFile(outside, 'original\n');
+    await symlink(outside, join(repo, 'escape'));
+
+    const [evidence] = await runVerify({
+      projectPath: repo,
+      commands: [verify('printf mutated > escape')],
+      baseRef: 'HEAD',
+    });
+    expect(evidence).toMatchObject({ headStatus: 'fail', baseStatus: 'skipped', newFailure: true });
+    expect(evidence.rawOutputTail).toContain('rejects escaping symlink');
+    expect(await readFile(outside, 'utf8')).toBe('original\n');
+  });
+
+  it('allows a relative symlink whose target remains inside the repository sandbox', async () => {
+    await writeFile(join(repo, 'target.txt'), 'original\n');
+    await symlink('target.txt', join(repo, 'inside-link'));
+    const [evidence] = await runVerify({
+      projectPath: repo,
+      commands: [verify('printf sandbox > inside-link')],
+      baseRef: 'HEAD',
+    });
+    expect(evidence.headStatus).toBe('pass');
+    expect(await readFile(join(repo, 'target.txt'), 'utf8')).toBe('original\n');
   });
 
   it('marks a head failure over a passing base as new', async () => {
@@ -382,7 +434,7 @@ describe('runVerify', () => {
     const [evidence] = await runVerify({ projectPath: repo, commands: [command], baseRef: 'HEAD' });
 
     expect(evidence).toMatchObject({ headStatus: 'fail', baseStatus: 'skipped', newFailure: true });
-    expect(evidence.rawOutputTail).toContain('[security] verify cwd escapes project root');
+    expect(evidence.rawOutputTail).toContain('[security] verify sandbox rejects escaping symlink');
   });
 
   it('classifies a timeout as infrastructure', async () => {

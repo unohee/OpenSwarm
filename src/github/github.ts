@@ -18,6 +18,14 @@ async function ghExec(...args: string[]): Promise<string> {
 }
 
 const ACTIVE_FAILURE_RUN_LIMIT = 1000;
+const REPO_SCAN_CONCURRENCY = 5;
+const BLOCKING_CONCLUSIONS = new Set([
+  'failure', 'timed_out', 'cancelled', 'action_required', 'startup_failure', 'stale',
+]);
+
+export function isBlockingConclusion(conclusion: string): boolean {
+  return BLOCKING_CONCLUSIONS.has(conclusion.toLowerCase());
+}
 
 function normalizePRCheck(c: any): { name: string; status: string; conclusion: string } {
   const bucket = String(c.bucket ?? '').toLowerCase();
@@ -38,8 +46,11 @@ function normalizePRCheck(c: any): { name: string; status: string; conclusion: s
     case 'in_progress':
     case 'requested':
     case 'waiting':
-    case 'action_required':
       return { name: c.name, status: 'pending', conclusion: 'pending' };
+    case 'action_required':
+      return { name: c.name, status: 'completed', conclusion: 'action_required' };
+    case 'stale':
+      return { name: c.name, status: 'completed', conclusion: 'stale' };
     case 'skipping':
     case 'skipped':
     case 'neutral':
@@ -112,9 +123,15 @@ export async function getAllFailedRuns(
   repos: string[],
   limit: number = 3
 ): Promise<FailedRun[]> {
-  const results = await Promise.all(
-    repos.map((repo) => getFailedRuns(repo, limit))
-  );
+  const results: FailedRun[][] = Array.from({ length: repos.length });
+  let next = 0;
+  const workers = Array.from({ length: Math.min(REPO_SCAN_CONCURRENCY, repos.length) }, async () => {
+    while (next < repos.length) {
+      const index = next++;
+      results[index] = await getFailedRuns(repos[index], limit);
+    }
+  });
+  await Promise.all(workers);
   return results.flat().sort(
     (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
   );
@@ -509,9 +526,7 @@ export async function getPRContext(repo: string, prNumber: number): Promise<PRDe
     ]);
 
     const view = JSON.parse(viewStdout);
-    const failedChecks = checks.filter(
-      (c) => c.conclusion === 'failure' || c.conclusion === 'timed_out'
-    );
+    const failedChecks = checks.filter((c) => isBlockingConclusion(c.conclusion));
 
     let failedLogs = '';
     if (failedChecks.length > 0) {
@@ -715,7 +730,7 @@ export async function checkPRCIStatus(repo: string, prNumber: number): Promise<C
       return { status: 'pending' };
     }
 
-    const failed = checks.filter(c => c.conclusion === 'failure' || c.conclusion === 'timed_out' || c.conclusion === 'cancelled');
+    const failed = checks.filter(c => isBlockingConclusion(c.conclusion));
     if (failed.length > 0) {
       return {
         status: 'failure',

@@ -12,6 +12,7 @@ import type { ChatLine } from '../chatModel.js';
 import { renderMarkdown } from '../markdown.js';
 import { theme, ICON } from '../theme.js';
 import { WorkingIndicator } from './WorkingIndicator.js';
+import { sanitizeTerminalText } from '../sanitize.js';
 
 const ROLE_COLOR: Record<ChatLine['role'], string> = {
   user: theme.user,
@@ -40,7 +41,8 @@ function tailLines(text: string, n: number): string {
 }
 
 function Message({ line }: { line: ChatLine }) {
-  const body = line.role === 'assistant' ? renderMarkdown(line.content) : line.content;
+  const safeContent = sanitizeTerminalText(line.content);
+  const body = line.role === 'assistant' ? renderMarkdown(safeContent) : safeContent;
   return (
     <Box flexDirection="column" marginBottom={1}>
       <Text color={ROLE_COLOR[line.role]} bold>{`${ROLE_ICON[line.role]} ${ROLE_LABEL[line.role]}`}</Text>
@@ -74,9 +76,9 @@ export function ChatLog({ history, streaming, activity = [], busy, maxMessages =
           <Text color={theme.assistant} bold>{`${ICON.assistant} ${ROLE_LABEL.assistant}`}</Text>
           <Box flexDirection="column" paddingLeft={2}>
             {activity.slice(-5).map((line, i) => (
-              <Text key={i} color={theme.dim}>{`${ICON.tool} ${line}`}</Text>
+              <Text key={i} color={theme.dim}>{`${ICON.tool} ${sanitizeTerminalText(line)}`}</Text>
             ))}
-            {streaming ? <Text>{tailLines(streaming, STREAM_TAIL_LINES)}</Text> : null}
+            {streaming ? <Text>{tailLines(sanitizeTerminalText(streaming), STREAM_TAIL_LINES)}</Text> : null}
             {busy ? <WorkingIndicator /> : null}
           </Box>
         </Box>

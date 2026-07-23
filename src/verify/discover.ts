@@ -5,11 +5,22 @@ import type { VerifyCommand } from './manifest.js';
 const DEFAULT_TIMEOUT_MS = 300_000;
 
 async function exists(path: string): Promise<boolean> {
-  return access(path).then(() => true).catch(() => false);
+  try {
+    await access(path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw new Error(`Cannot access verification input ${path}`, { cause: error });
+  }
 }
 
 async function readText(path: string): Promise<string | null> {
-  return readFile(path, 'utf8').catch(() => null);
+  try {
+    return await readFile(path, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw new Error(`Cannot read verification input ${path}`, { cause: error });
+  }
 }
 
 async function pythonCommand(projectPath: string): Promise<string> {
@@ -29,7 +40,7 @@ function command(name: string, run: string, kind: VerifyCommand['kind']): Verify
 export async function discoverVerifyCommands(projectPath: string): Promise<VerifyCommand[]> {
   const commands: VerifyCommand[] = [];
 
-  // Node/TypeScript: prefer repository scripts, then fall back to plain tsc.
+  // Node/TypeScript: prefer repository scripts, then a repository-installed tsc.
   const packageSource = await readText(join(projectPath, 'package.json'));
   let scripts: Record<string, unknown> = {};
   if (packageSource) {
@@ -38,14 +49,18 @@ export async function discoverVerifyCommands(projectPath: string): Promise<Verif
       if (parsed.scripts && typeof parsed.scripts === 'object' && !Array.isArray(parsed.scripts)) {
         scripts = parsed.scripts as Record<string, unknown>;
       }
-    } catch {
-      // An unreadable package manifest is not a discovery error; other ecosystems may still apply.
+    } catch (error) {
+      throw new Error(`Invalid package.json in ${projectPath}`, { cause: error });
     }
   }
   if (typeof scripts.typecheck === 'string' && scripts.typecheck.trim()) {
     commands.push(command('typecheck', 'npm run typecheck', 'typecheck'));
-  } else if (await exists(join(projectPath, 'tsconfig.json'))) {
-    commands.push(command('typecheck', 'npx tsc --noEmit', 'typecheck'));
+  } else if (
+    await exists(join(projectPath, 'tsconfig.json'))
+    && await exists(join(projectPath, 'node_modules', '.bin', process.platform === 'win32' ? 'tsc.cmd' : 'tsc'))
+  ) {
+    const localTsc = process.platform === 'win32' ? './node_modules/.bin/tsc.cmd' : './node_modules/.bin/tsc';
+    commands.push(command('typecheck', `${localTsc} --noEmit`, 'typecheck'));
   }
   if (
     typeof scripts.test === 'string'

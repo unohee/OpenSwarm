@@ -31,6 +31,7 @@ export interface ProjectGitInfo {
 
 const cache = new Map<string, { data: ProjectGitInfo; ts: number }>();
 const CACHE_TTL = 30_000;
+const MAX_CACHE_ENTRIES = 200;
 const CMD_TIMEOUT = 5_000;
 
 // --- Helpers ---
@@ -115,8 +116,14 @@ async function fetchOpenPRs(projectPath: string): Promise<PRSummary[]> {
 // --- Public API ---
 
 export async function getProjectGitInfo(path: string): Promise<ProjectGitInfo> {
+  const now = Date.now();
+  for (const [key, entry] of cache) {
+    if (now - entry.ts >= CACHE_TTL) cache.delete(key);
+  }
   const cached = cache.get(path);
-  if (cached && Date.now() - cached.ts < CACHE_TTL) {
+  if (cached) {
+    cache.delete(path);
+    cache.set(path, cached);
     return cached.data;
   }
 
@@ -127,7 +134,20 @@ export async function getProjectGitInfo(path: string): Promise<ProjectGitInfo> {
 
   const data: ProjectGitInfo = { git: gitStatus, prs };
   cache.set(path, { data, ts: Date.now() });
+  while (cache.size > MAX_CACHE_ENTRIES) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
   return data;
+}
+
+export function clearGitStatusCache(): void {
+  cache.clear();
+}
+
+export function getGitStatusCacheSizeForTests(): number {
+  return cache.size;
 }
 
 export function startGitStatusPoller(

@@ -79,6 +79,7 @@ export function ChatPanel({ active, provider: providerProp, model: modelProp, pr
   // When set, the next submitted line is routed here (a /plan confirm or edit)
   // instead of being treated as chat — the Ink analogue of blessed pendingInput.
   const [pending, setPending] = useState<{ resolve: (value: string) => void } | null>(null);
+  const pendingRef = useRef<{ resolve: (value: string) => void } | null>(null);
 
   // provider/model are runtime-switchable via /provider and /model (INT-1960/1961).
   const [provider, setProvider] = useState<AdapterName>((providerProp as AdapterName | undefined) ?? loadDefaultProvider());
@@ -94,6 +95,9 @@ export function ChatPanel({ active, provider: providerProp, model: modelProp, pr
       mountedRef.current = false;
       modelSelectorRequestRef.current += 1;
       abortRef.current?.abort();
+      const pendingRequest = pendingRef.current;
+      pendingRef.current = null;
+      pendingRequest?.resolve('no');
     };
   }, []);
 
@@ -138,7 +142,9 @@ export function ChatPanel({ active, provider: providerProp, model: modelProp, pr
           return;
         }
         dispatch({ type: 'system', content: prompt });
-        setPending({ resolve });
+        const request = { resolve };
+        pendingRef.current = request;
+        setPending(request);
       }),
     [],
   );
@@ -360,12 +366,14 @@ export function ChatPanel({ active, provider: providerProp, model: modelProp, pr
       if (pending) {
         if (parsed?.kind === 'command' && parsed.name === '/goal' && parsed.args.trim() === 'clear') {
           const { resolve } = pending;
+          pendingRef.current = null;
           setPending(null);
           runCommand(parsed.name, parsed.args);
           resolve('no');
           return;
         }
         const { resolve } = pending;
+        pendingRef.current = null;
         setPending(null);
         resolve(raw);
         return;

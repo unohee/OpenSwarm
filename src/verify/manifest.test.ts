@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -64,6 +64,24 @@ commands:
     expect(result.error).toContain('Failed to parse .openswarm/verify.yaml');
   });
 
+  it('rejects an oversized manifest before YAML parsing', async () => {
+    const project = await projectWithManifest(`version: 1\ncommands:\n${' '.repeat(70 * 1024)}`);
+    const result = await loadVerifyManifest(project);
+    expect(result.manifest).toBeNull();
+    expect(result.error).toContain('manifest exceeds 65536 bytes');
+  });
+
+  it('rejects a symlinked manifest instead of following special or external files', async () => {
+    const project = await projectWithManifest();
+    const outside = join(project, 'outside.yaml');
+    await writeFile(outside, 'version: 1\ncommands: []\n');
+    await mkdir(join(project, '.openswarm'), { recursive: true });
+    await symlink(outside, join(project, '.openswarm', 'verify.yaml'));
+    const result = await loadVerifyManifest(project);
+    expect(result.manifest).toBeNull();
+    expect(result.error).toContain('Failed to read');
+  });
+
   it('reports an unsupported command kind', async () => {
     const project = await projectWithManifest('version: 1\ncommands:\n  - name: deploy\n    run: ./deploy\n    kind: deploy\n');
     const result = await loadVerifyManifest(project);
@@ -92,10 +110,24 @@ commands:
     expect(result.error).toContain('Command must be a single line');
   });
 
+  it('rejects NUL bytes before passing a command to spawn', async () => {
+    const project = await projectWithManifest('version: 1\ncommands:\n  - name: test\n    run: "npm test\\0"\n    kind: test\n');
+    const result = await loadVerifyManifest(project);
+    expect(result.manifest).toBeNull();
+    expect(result.error).toContain('must not contain NUL bytes');
+  });
+
   it('rejects a cwd that escapes the repository', async () => {
     const project = await projectWithManifest('version: 1\ncommands:\n  - name: test\n    run: npm test\n    kind: test\n    cwd: ../outside\n');
     const result = await loadVerifyManifest(project);
     expect(result.manifest).toBeNull();
     expect(result.error).toContain('cwd must stay within the repository');
+  });
+
+  it('rejects NUL bytes in cwd before filesystem calls', async () => {
+    const project = await projectWithManifest('version: 1\ncommands:\n  - name: test\n    run: npm test\n    kind: test\n    cwd: "subdir\\0"\n');
+    const result = await loadVerifyManifest(project);
+    expect(result.manifest).toBeNull();
+    expect(result.error).toContain('cwd must not contain NUL bytes');
   });
 });

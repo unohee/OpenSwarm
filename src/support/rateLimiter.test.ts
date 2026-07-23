@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { destroyRateLimiters, initRateLimiters } from './rateLimiter.js';
+import { destroyRateLimiters, initRateLimiters, RateLimiter } from './rateLimiter.js';
 
 describe('rateLimiter lifecycle', () => {
   afterEach(() => {
@@ -16,5 +16,20 @@ describe('rateLimiter lifecycle', () => {
     initRateLimiters();
 
     expect(clearIntervalSpy).toHaveBeenCalledTimes(3);
+  });
+
+  it('expires queued requests by deadline even when no token can become available', async () => {
+    vi.useFakeTimers();
+    const limiter = new RateLimiter('zero', {
+      maxRequests: 0,
+      windowMs: 1_000,
+      maxQueueSize: 1,
+      queueTimeoutMs: 50,
+    });
+    const queued = expect(limiter.acquire()).rejects.toThrow(/timed out in queue/);
+    await vi.advanceTimersByTimeAsync(101);
+    await queued;
+    limiter.destroy();
+    vi.useRealTimers();
   });
 });

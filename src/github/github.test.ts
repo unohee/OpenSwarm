@@ -17,7 +17,7 @@ vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
 }));
 
-import { checkPRCIStatus, getActiveFailures, getPRChecks } from './github.js';
+import { checkPRCIStatus, getActiveFailures, getAllFailedRuns, getPRChecks } from './github.js';
 
 function mockGhJson(value: unknown): void {
   execFileMock.mockImplementationOnce((
@@ -41,6 +41,7 @@ describe('getPRChecks', () => {
       { name: 'build', state: 'QUEUED', bucket: 'pending' },
       { name: 'docs', state: 'SKIPPED', bucket: 'skipping' },
       { name: 'deploy', state: 'CANCELLED', bucket: 'cancel' },
+      { name: 'approval', state: 'ACTION_REQUIRED', bucket: 'action_required' },
     ]);
 
     await expect(getPRChecks('owner/repo', 42)).resolves.toEqual([
@@ -49,6 +50,7 @@ describe('getPRChecks', () => {
       { name: 'build', status: 'pending', conclusion: 'pending' },
       { name: 'docs', status: 'completed', conclusion: 'skipped' },
       { name: 'deploy', status: 'completed', conclusion: 'cancelled' },
+      { name: 'approval', status: 'completed', conclusion: 'action_required' },
     ]);
 
     expect(execFileMock.mock.calls[0][1]).toContain('name,state,bucket');
@@ -64,6 +66,37 @@ describe('getPRChecks', () => {
       status: 'failure',
       failedChecks: [{ name: 'lint', conclusion: 'failure' }],
     });
+  });
+
+  it('treats every blocking conclusion as a failed PR status', async () => {
+    mockGhJson([
+      { name: 'cancel', state: 'CANCELLED', bucket: 'cancel' },
+      { name: 'approval', state: 'ACTION_REQUIRED', bucket: 'action_required' },
+      { name: 'stale', state: 'STALE', bucket: 'stale' },
+    ]);
+    const result = await checkPRCIStatus('owner/repo', 42);
+    expect(result.status).toBe('failure');
+    if (result.status === 'failure') {
+      expect(result.failedChecks.map((check) => check.conclusion)).toEqual(['cancelled', 'action_required', 'stale']);
+    }
+  });
+});
+
+describe('repository fan-out', () => {
+  it('bounds concurrent gh calls across repositories', async () => {
+    execFileMock.mockReset();
+    let active = 0;
+    let maximum = 0;
+    execFileMock.mockImplementation((_cmd, _args, callback) => {
+      active++;
+      maximum = Math.max(maximum, active);
+      setTimeout(() => {
+        active--;
+        callback(null, '[]', '');
+      }, 2);
+    });
+    await getAllFailedRuns(Array.from({ length: 20 }, (_, index) => `owner/repo-${index}`));
+    expect(maximum).toBeLessThanOrEqual(5);
   });
 });
 

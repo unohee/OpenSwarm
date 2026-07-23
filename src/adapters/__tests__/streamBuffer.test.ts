@@ -285,6 +285,19 @@ describe('SmartStreamBuffer', () => {
     expect(stdout).toContain('final result');
   });
 
+  it('keeps sustained streams bounded while preserving newest context', () => {
+    const buf = new SmartStreamBuffer();
+    for (let i = 0; i < 400; i++) {
+      buf.processChunk(ndjson({ type: 'assistant', message: { content: [{ type: 'text', text: `${i}:` + 'x'.repeat(2000) }] } }));
+      buf.processChunk(ndjson({ type: 'result', result: `result-${i}` }));
+    }
+    const stdout = buf.buildFilteredStdout();
+    expect(Buffer.byteLength(stdout)).toBeLessThan(300 * 1024);
+    expect(stdout).toContain('399:');
+    expect(stdout).not.toContain('"text":"0:' + 'x'.repeat(100));
+    expect(stdout.split('\n').filter((line) => JSON.parse(line).type === 'result')).toHaveLength(8);
+  });
+
   it('handles non-JSON lines gracefully', () => {
     const buf = new SmartStreamBuffer();
     buf.processChunk('this is not json\n');

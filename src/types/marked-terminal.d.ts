@@ -8,6 +8,6 @@ declare module 'marked-terminal' {
     tab?: number | string;
     [key: string]: unknown;
   }
-  // Returns a marked extension object (passed to marked.use).
+  /** Runtime export from marked-terminal v7, consumed by marked.use(). */
   export function markedTerminal(options?: MarkedTerminalOptions, highlightOptions?: unknown): MarkedExtension;
 }

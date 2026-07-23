@@ -33,6 +33,23 @@ describe('runPlanner — agentic loop migration', () => {
     expect(res.subTasks[0].title).toBe('A');
   });
 
+  it('rejects structurally invalid generated tasks with actionable evidence', async () => {
+    mockedSpawnCli.mockResolvedValue(cliResult('```json\n{"needsDecomposition":true,"subTasks":[{"title":"","description":"d","estimatedMinutes":0,"priority":9}],"totalEstimatedMinutes":-1}\n```') as never);
+    const res = await runPlanner({ taskTitle: 'bad plan', taskDescription: 'do it', projectPath: '/tmp/x' });
+    expect(res.success).toBe(false);
+    expect(res.needsDecomposition).toBe(false);
+    expect(res.subTasks).toEqual([]);
+    expect(res.error).toContain('Invalid planner output');
+    expect(res.error).toContain('subTasks.0.title');
+  });
+
+  it('rejects a decomposition without generated tasks', async () => {
+    mockedSpawnCli.mockResolvedValue(cliResult('```json\n{"needsDecomposition":true,"subTasks":[],"totalEstimatedMinutes":20}\n```') as never);
+    const res = await runPlanner({ taskTitle: 'empty plan', taskDescription: 'do it', projectPath: '/tmp/x' });
+    expect(res.success).toBe(false);
+    expect(res.error).toContain('at least one task');
+  });
+
   it('runs read-only and multi-turn (guard appended, maxTurns > 1)', async () => {
     mockedSpawnCli.mockResolvedValue(cliResult(PLAN_JSON) as never);
     await runPlanner({ taskTitle: 't', taskDescription: 'd', projectPath: '/tmp/x' });

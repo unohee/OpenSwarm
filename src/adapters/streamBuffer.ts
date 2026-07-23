@@ -12,6 +12,11 @@ export interface OutputSizeInfo {
   savingsPercent: number;
 }
 
+const MAX_RESULT_EVENTS = 8;
+const MAX_TEXT_FRAGMENTS = 256;
+const MAX_TEXT_BYTES = 256 * 1024;
+const MAX_LINE_BUFFER_BYTES = 1024 * 1024;
+
 /**
  * SmartStreamBuffer filters Claude CLI stream-json (NDJSON) output in real-time.
  *
@@ -47,6 +52,9 @@ export class SmartStreamBuffer {
     const lines = combined.split('\n');
     // Last element may be incomplete — buffer it
     this.lineBuffer = lines.pop() ?? '';
+    if (Buffer.byteLength(this.lineBuffer, 'utf8') > MAX_LINE_BUFFER_BYTES) {
+      this.lineBuffer = this.lineBuffer.slice(-MAX_LINE_BUFFER_BYTES);
+    }
 
     for (const line of lines) {
       const trimmed = line.trim();
@@ -72,6 +80,7 @@ export class SmartStreamBuffer {
       if (event.type === 'result') {
         // Preserve result events verbatim — they contain cost/usage data
         this.resultEvents.push(line);
+        if (this.resultEvents.length > MAX_RESULT_EVENTS) this.resultEvents.shift();
         return;
       }
 
@@ -80,6 +89,12 @@ export class SmartStreamBuffer {
         for (const block of event.message.content) {
           if (block.type === 'text' && block.text) {
             this.textFragments.push(block.text);
+            while (
+              this.textFragments.length > MAX_TEXT_FRAGMENTS
+              || Buffer.byteLength(this.textFragments.join('\n'), 'utf8') > MAX_TEXT_BYTES
+            ) {
+              this.textFragments.shift();
+            }
           }
         }
         return;

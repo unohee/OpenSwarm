@@ -636,11 +636,9 @@ export async function getRecentConversations(
     const table = getTable();
     if (!table) return [];
 
-    // Filter by journal type + chat repo, then sort by createdAt descending
-    const results = await table
-      .search(Array.from({ length: EMBEDDING_DIM }, () => 0))  // dummy vector for full scan
-      .limit(1000)  // Sufficiently large number
-      .toArray();
+    // Scalar scan is intentional: vector similarity must not decide which
+    // messages count as recent. The final ordering uses the source timestamp.
+    const results = await table.query().limit(100_000).toArray();
 
     // Filter: journal + chat (channelId matching is loose for legacy data compat)
     const filtered = results

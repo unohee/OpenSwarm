@@ -40,6 +40,7 @@ export class APICache {
     this.maxStats = maxStats;
     // 1분마다 만료된 캐시 정리
     this.cleanupInterval = setInterval(() => this.cleanup(), cleanupIntervalMs);
+    this.cleanupInterval.unref?.();
   }
 
   /**
@@ -111,7 +112,11 @@ export class APICache {
    * 패턴 기반 무효화 (와일드카드)
    */
   invalidatePattern(pattern: string): void {
-    const regex = new RegExp(pattern.replace(/\*/g, '.*'));
+    if (pattern.length > 1_000) throw new Error('Cache invalidation pattern is too long');
+    const regex = new RegExp(`^${pattern
+      .split('*')
+      .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      .join('.*')}$`);
     for (const key of this.cache.keys()) {
       if (regex.test(key)) {
         this.cache.delete(key);

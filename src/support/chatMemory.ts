@@ -7,7 +7,7 @@
  * - Maintains conversation continuity
  */
 
-import * as memory from '../memory/memoryCore.js';
+import * as memory from '../memory/index.js';
 
 /**
  * Chat message source
@@ -130,19 +130,7 @@ export async function getRecentChatHistory(
   channelId: string,
   limit: number = 20
 ): Promise<memory.MemorySearchResult[]> {
-  // Use a broad query to get all messages for this channel
-  const query = `chat conversation history ${channelId}`;
-
-  const memories = await searchChatHistory(query, {
-    channelId,
-    limit: limit * 2,  // Fetch more to account for filtering
-    minSimilarity: 0.1,  // Low similarity threshold
-  });
-
-  // Sort by timestamp (most recent first)
-  return memories
-    .sort((a, b) => b.createdAt - a.createdAt)
-    .slice(0, limit);
+  return await memory.getRecentConversations(channelId, Math.max(0, Math.trunc(limit)));
 }
 
 /**

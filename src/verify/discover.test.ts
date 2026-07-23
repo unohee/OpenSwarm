@@ -30,14 +30,26 @@ describe('discoverVerifyCommands', () => {
     ]);
   });
 
-  it('falls back to tsc and ignores the npm placeholder test', async () => {
+  it('uses only a repository-installed tsc and ignores the npm placeholder test', async () => {
     const root = await fixture({
       'package.json': JSON.stringify({ scripts: { test: 'echo "Error: no test specified" && exit 1' } }),
       'tsconfig.json': '{}',
+      'node_modules/.bin/tsc': '#!/bin/sh\n',
     });
     expect(await discoverVerifyCommands(root)).toEqual([
-      { name: 'typecheck', run: 'npx tsc --noEmit', kind: 'typecheck', timeoutMs: 300_000 },
+      { name: 'typecheck', run: './node_modules/.bin/tsc --noEmit', kind: 'typecheck', timeoutMs: 300_000 },
     ]);
+  });
+
+  it('does not download a compiler when tsconfig exists without a local tsc', async () => {
+    const root = await fixture({ 'tsconfig.json': '{}' });
+    expect(await discoverVerifyCommands(root)).toEqual([]);
+  });
+
+  it('surfaces filesystem read failures instead of silently disabling discovery', async () => {
+    const root = await fixture({});
+    await mkdir(join(root, 'package.json'));
+    await expect(discoverVerifyCommands(root)).rejects.toThrow('Cannot read verification input');
   });
 
   it.each([
